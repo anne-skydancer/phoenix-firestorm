@@ -2387,6 +2387,14 @@ if (WINDOWS)
           )
     endif ()
 
+    if (USE_MESAZINK)
+      list(APPEND COPY_INPUT_DEPENDENCIES
+           ${SHARED_LIB_STAGING_DIR}/libgallium_wgl.dll
+           ${SHARED_LIB_STAGING_DIR}/opengl32.dll
+           ${SHARED_LIB_STAGING_DIR}/libglapi.dll
+          )
+    endif ()
+
     add_custom_command(
       OUTPUT  ${CMAKE_CFG_INTDIR}/copy_touched.bat
       COMMAND ${PYTHON_EXECUTABLE}
@@ -2400,6 +2408,7 @@ if (WINDOWS)
         "--fmodstudio=${USE_FMODSTUDIO}"
         "--openal=${USE_OPENAL}"
         "--tracy=${USE_TRACY}"
+        "--mesazink=${USE_MESAZINK}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"
         --build=${CMAKE_CURRENT_BINARY_DIR}
         --buildtype=$<CONFIG>
@@ -2442,6 +2451,7 @@ if (WINDOWS)
             "--fmodstudio=${USE_FMODSTUDIO}"
             "--openal=${USE_OPENAL}"
             "--tracy=${USE_TRACY}"
+            "--mesazink=${USE_MESAZINK}"
             "--avx2=${USE_AVX2_OPTIMIZATION}"
             --build=${CMAKE_CURRENT_BINARY_DIR}
             --buildtype=$<IF:$<BOOL:${LL_GENERATOR_IS_MULTI_CONFIG}>,$<CONFIG>,${CMAKE_BUILD_TYPE}>
@@ -2510,6 +2520,7 @@ if (WINDOWS)
               "--fmodstudio=${USE_FMODSTUDIO}"
               "--openal=${USE_OPENAL}"
               "--tracy=${USE_TRACY}"
+              "--mesazink=${USE_MESAZINK}"
               "--velopack=${USE_VELOPACK}"
               "--avx2=${USE_AVX2_OPTIMIZATION}"
               --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2733,6 +2744,7 @@ if (LINUX)
         "--fmodstudio=${USE_FMODSTUDIO}"
         "--openal=${USE_OPENAL}"
         "--tracy=${USE_TRACY}"
+        "--mesazink=${USE_MESAZINK}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"        
         --build=${CMAKE_CURRENT_BINARY_DIR}
         --buildtype=${CMAKE_BUILD_TYPE}
@@ -2762,6 +2774,7 @@ if (LINUX)
       "--fmodstudio=${USE_FMODSTUDIO}"
       "--openal=${USE_OPENAL}"
       "--tracy=${USE_TRACY}"
+      "--mesazink=${USE_MESAZINK}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
       --build=${CMAKE_CURRENT_BINARY_DIR}
       --buildtype=${CMAKE_BUILD_TYPE}
@@ -2857,6 +2870,7 @@ if (DARWIN)
       "--fmodstudio=${USE_FMODSTUDIO}"
       "--openal=${USE_OPENAL}"
       "--tracy=${USE_TRACY}"
+      "--mesazink=${USE_MESAZINK}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
       --build=${CMAKE_CURRENT_BINARY_DIR}
       --buildtype=$<CONFIG>
@@ -2894,6 +2908,7 @@ if (DARWIN)
           "--fmodstudio=${USE_FMODSTUDIO}"
           "--openal=${USE_OPENAL}"
           "--tracy=${USE_TRACY}"
+          "--mesazink=${USE_MESAZINK}"
           "--avx2=${USE_AVX2_OPTIMIZATION}"          
           --build=${CMAKE_CURRENT_BINARY_DIR}
           --buildtype=${CMAKE_BUILD_TYPE}

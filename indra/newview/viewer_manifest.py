@@ -732,6 +732,12 @@ class Windows_x86_64_Manifest(ViewerManifest):
             self.path("growl.dll")
             self.path("growl++.dll")
 
+            # Mesa Zink (opt-in)
+            if self.args.get('mesazink') == 'ON':
+                self.path("libgallium_wgl.dll")
+                self.path("opengl32.dll")
+                self.path("libglapi.dll")
+
             # <FS:ND> Copy symbols for breakpad
             #self.path("ssleay32.pdb")
             #self.path("libeay32.pdb")
@@ -2512,6 +2518,7 @@ if __name__ == "__main__":
              if BugSplat crash reporting is desired""", default=''),
         dict(name='discord', description="""Indication discord social sdk libraries are needed""", default='OFF'),
         dict(name='fmodstudio', description="""Indication if fmod studio libraries are needed""", default='OFF'),
+        dict(name='mesazink', description="""Indication Mesa Zink GL-over-Vulkan DLL overrides are bundled""", default='OFF'),
         dict(name='openal', description="""Indication openal libraries are needed""", default='OFF'),
         dict(name='tracy', description="""Indication tracy profiler is enabled""", default='OFF'),
         dict(name='velopack', description="""Use Velopack installer instead of NSIS""", default='OFF'),

@@ -3,7 +3,10 @@
 project(llimagej2coj)
 
 # <FS:ND> when using KDU, why compile the OpenJPEG library?
-if (NOT USE_KDU)
+# Also skip this if USE_GROK has selected Grok as the Kakadu-free
+# codec instead, so the fallbackCreateLLImageJ2CImpl() factory function
+# is only ever defined by exactly one J2C implementation.
+if (NOT USE_KDU AND NOT USE_GROK)
 
 include(00-Common)
 include(LLCommon)

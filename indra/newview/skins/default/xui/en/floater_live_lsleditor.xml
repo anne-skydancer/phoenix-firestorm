@@ -91,17 +91,31 @@
     layout="topleft"
     name="running"
     width="205" />
-  <check_box
-    left_delta="130"
-    enabled="true"
+  <!-- SLua: compile-target selector (replaces the old Mono checkbox) -->
+  <text
+    type="string"
     follows="left|bottom"
-    font="SansSerif"
     height="18"
-    initial_value="true"
-    label="Mono"
     layout="topleft"
-    name="mono"
-    width="100" />
+    left_delta="135"
+    top_delta="0"
+    name="compile_target_label"
+    width="58">
+    Compiler:
+  </text>
+  <combo_box
+    follows="left|bottom"
+    height="23"
+    layout="topleft"
+    left_pad="2"
+    top_delta="-4"
+    name="compile_target"
+    width="150">
+    <combo_box.item label="LSL: Legacy (LSO2)" name="compile_target_lsl2" value="lsl2" />
+    <combo_box.item label="LSL: Mono" name="compile_target_mono" value="mono" />
+    <combo_box.item label="LSL: 2025 VM" name="compile_target_lsl_luau" value="lsl-luau" />
+    <combo_box.item label="SLua" name="compile_target_luau" value="luau" />
+  </combo_box>
   <check_box width="130"
              height="21"
              enabled="false"

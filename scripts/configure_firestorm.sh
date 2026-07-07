@@ -650,6 +650,13 @@ if [ $WANTS_BUILD -eq $TRUE ] ; then
           echo "Build failed! No Firestorm.slnx or Firestorm.sln found"
           exit 1
         fi
+        # With -p:useenv=true, MSBuild resolves link.exe from PATH. Under Git bash,
+        # Git's GNU coreutils /usr/bin/link.exe shadows the MSVC linker and breaks
+        # linking. Put the MSVC host-x64 toolset bin first so the right link.exe wins.
+        _vcbin=$(ls -d "/c/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/"*/bin/HostX64/x64 2>/dev/null | sort -V | tail -1)
+        if [ -n "$_vcbin" ]; then
+            export PATH="$_vcbin:$PATH"
+        fi
         msbuild.exe "$SOLUTION" -p:Configuration=${BTYPE} -flp:LogFile="logs\\FirestormBuild_win-${AUTOBUILD_ADDRSIZE}.log" \
             -flp1:"errorsonly;LogFile=logs\\FirestormBuild_win-${AUTOBUILD_ADDRSIZE}.err" -p:Platform=${AUTOBUILD_WIN_VSPLATFORM} -t:Build -p:useenv=true \
             -verbosity:normal -toolsversion:Current -p:"VCBuildAdditionalOptions= /incremental"

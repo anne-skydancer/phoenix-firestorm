@@ -17,7 +17,7 @@
     </floater.string>
     <panel
      follows="left|top|right|bottom"
-     height="522"
+     height="492"
      layout="topleft"
      left="10"
      name="script panel"
@@ -73,4 +73,29 @@
      name="desc"
      top_delta="-2"
      width="394" />
+    <!-- SLua: compile-target selector -->
+    <text
+     type="string"
+     follows="left|bottom"
+     height="18"
+     layout="topleft"
+     left="13"
+     top="560"
+     name="compile_target_label"
+     width="58">
+        Compiler:
+    </text>
+    <combo_box
+     follows="left|bottom"
+     height="23"
+     layout="topleft"
+     left_pad="2"
+     top_delta="-3"
+     name="compile_target"
+     width="150">
+        <combo_box.item label="LSL: Legacy (LSO2)" name="compile_target_lsl2" value="lsl2" />
+        <combo_box.item label="LSL: Mono" name="compile_target_mono" value="mono" />
+        <combo_box.item label="LSL: 2025 VM" name="compile_target_lsl_luau" value="lsl-luau" />
+        <combo_box.item label="SLua" name="compile_target_luau" value="luau" />
+    </combo_box>
 </floater>

@@ -385,6 +385,16 @@ public:
         decoder = opj_create_decompress(OPJ_CODEC_J2K);
         opj_setup_decoder(decoder, &parameters);
 
+        // Parallelize each decode across resolution levels / tiles. OpenJPEG's
+        // internal threading was previously unused (opj_codec_set_threads never
+        // called), so every texture decoded single-threaded. Keep the per-decode
+        // count modest so it composes with the image-decode thread pool rather
+        // than oversubscribing cores.
+        if (opj_has_thread_support())
+        {
+            opj_codec_set_threads(decoder, 2);
+        }
+
         opj_set_info_handler(decoder, info_callback, this);
         opj_set_warning_handler(decoder, warning_callback, this);
         opj_set_error_handler(decoder, error_callback, this);

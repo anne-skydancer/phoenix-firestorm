@@ -12,6 +12,7 @@ include(LLAddBuildTest)
 include(LLCommon)
 include(Tut)
 include(bugsplat)
+include(websocketpp)   # SLua: external-editor WebSocket bridge
 
 set(llcorehttp_SOURCE_FILES
     bufferarray.cpp
@@ -36,6 +37,8 @@ set(llcorehttp_SOURCE_FILES
     _httprequestqueue.cpp
     _httpservice.cpp
     _refcounted.cpp
+    llwebsocketmgr.cpp
+    lljsonrpcws.cpp
     )
 
 set(llcorehttp_HEADER_FILES
@@ -68,6 +71,8 @@ set(llcorehttp_HEADER_FILES
     _mutex.h
     _refcounted.h
     _thread.h
+    llwebsocketmgr.h
+    lljsonrpcws.h
     )
 
 if (DARWIN OR LINUX)
@@ -85,6 +90,8 @@ target_link_libraries(
         ll::libcurl
         ll::openssl
         ll::nghttp2
+        ll::websocketpp
+        ll::boost
   )
 target_include_directories( llcorehttp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 # llmessage depends on llcorehttp, yet llcorehttp also depends on llmessage (at least for includes).

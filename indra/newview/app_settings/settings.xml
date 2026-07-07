@@ -18586,6 +18586,39 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Value</key>
       <string />
     </map>
+    <key>ExternalWebsocketSyncEnable</key>
+    <map>
+      <key>Comment</key>
+      <string>SLua: enable the WebSocket JSON-RPC server for external (e.g. VSCode) script editing.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+    </map>
+    <key>ExternalWebsocketSyncPort</key>
+    <map>
+      <key>Comment</key>
+      <string>SLua: port the external-editor WebSocket JSON-RPC server listens on.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>S32</string>
+      <key>Value</key>
+      <integer>9020</integer>
+    </map>
+    <key>ExternalWebsocketSyncLocal</key>
+    <map>
+      <key>Comment</key>
+      <string>SLua: restrict the external-editor WebSocket server to local (loopback) connections only.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>1</integer>
+    </map>
     <key>YawFromMousePosition</key>
     <map>
       <key>Comment</key>

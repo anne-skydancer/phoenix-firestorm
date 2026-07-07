@@ -36,6 +36,7 @@ include(LLWindow)
 include(NDOF)
 include(NVAPI)
 include(OPENAL)
+include(SOLOUD)
 include(OpenGL)
 include(OpenSSL)
 include(OpenXR)
@@ -697,6 +698,8 @@ set(viewer_SOURCE_FILES
     llsceneview.cpp
     llscreenchannel.cpp
     llscripteditor.cpp
+    llscripteditorws.cpp
+    llfloaterscripting.cpp
     llscriptfloater.cpp
     llscrollingpanelparam.cpp
     llscrollingpanelparambase.cpp
@@ -1549,6 +1552,8 @@ set(viewer_HEADER_FILES
     llsceneview.h
     llscreenchannel.h
     llscripteditor.h
+    llscripteditorws.h
+    llfloaterscripting.h
     llscriptfloater.h
     llscriptruntimeperms.h
     llscrollingpanelparam.h
@@ -2391,7 +2396,16 @@ if (WINDOWS)
       list(APPEND COPY_INPUT_DEPENDENCIES
            ${SHARED_LIB_STAGING_DIR}/libgallium_wgl.dll
            ${SHARED_LIB_STAGING_DIR}/opengl32.dll
-           ${SHARED_LIB_STAGING_DIR}/libglapi.dll
+          )
+    endif ()
+
+    # Grok (GrokImageCompression/grok) J2C decoder, opt-in via USE_GROK.
+    # See indra/cmake/Grok.cmake and indra/llimagej2cgrok/CMakeLists.txt;
+    # this is mutually exclusive with USE_KDU and staged the same way
+    # USE_MESAZINK stages its own DLLs above.
+    if (USE_GROK)
+      list(APPEND COPY_INPUT_DEPENDENCIES
+           ${SHARED_LIB_STAGING_DIR}/grokj2k.dll
           )
     endif ()
 
@@ -2409,6 +2423,7 @@ if (WINDOWS)
         "--openal=${USE_OPENAL}"
         "--tracy=${USE_TRACY}"
         "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"
         --build=${CMAKE_CURRENT_BINARY_DIR}
         --buildtype=$<CONFIG>
@@ -2452,6 +2467,7 @@ if (WINDOWS)
             "--openal=${USE_OPENAL}"
             "--tracy=${USE_TRACY}"
             "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
             "--avx2=${USE_AVX2_OPTIMIZATION}"
             --build=${CMAKE_CURRENT_BINARY_DIR}
             --buildtype=$<IF:$<BOOL:${LL_GENERATOR_IS_MULTI_CONFIG}>,$<CONFIG>,${CMAKE_BUILD_TYPE}>
@@ -2521,6 +2537,7 @@ if (WINDOWS)
               "--openal=${USE_OPENAL}"
               "--tracy=${USE_TRACY}"
               "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
               "--velopack=${USE_VELOPACK}"
               "--avx2=${USE_AVX2_OPTIMIZATION}"
               --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2745,6 +2762,7 @@ if (LINUX)
         "--openal=${USE_OPENAL}"
         "--tracy=${USE_TRACY}"
         "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"        
         --build=${CMAKE_CURRENT_BINARY_DIR}
         --buildtype=${CMAKE_BUILD_TYPE}
@@ -2775,6 +2793,7 @@ if (LINUX)
       "--openal=${USE_OPENAL}"
       "--tracy=${USE_TRACY}"
       "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
       --build=${CMAKE_CURRENT_BINARY_DIR}
       --buildtype=${CMAKE_BUILD_TYPE}
@@ -2871,6 +2890,7 @@ if (DARWIN)
       "--openal=${USE_OPENAL}"
       "--tracy=${USE_TRACY}"
       "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
       --build=${CMAKE_CURRENT_BINARY_DIR}
       --buildtype=$<CONFIG>
@@ -2909,6 +2929,7 @@ if (DARWIN)
           "--openal=${USE_OPENAL}"
           "--tracy=${USE_TRACY}"
           "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
           "--avx2=${USE_AVX2_OPTIMIZATION}"          
           --build=${CMAKE_CURRENT_BINARY_DIR}
           --buildtype=${CMAKE_BUILD_TYPE}

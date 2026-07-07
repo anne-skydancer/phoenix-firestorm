@@ -106,6 +106,9 @@
 #ifdef OPENSIM
 #include "llviewernetwork.h"    // for Grid manager
 #endif // OPENSIM
+#include <regex>                // SLua: is_lua_script() language heuristic (must stay outside the OPENSIM guard)
+#include "llscripteditorws.h"   // SLua: external-editor WebSocket bridge
+#include "llwebsocketmgr.h"     // SLua: external-editor WebSocket bridge
 
 const std::string HELLO_LSL =
     "default\n"
@@ -120,6 +123,15 @@ const std::string HELLO_LSL =
     "       llSay(0, \"Touched.\");\n"
     "   }\n"
     "}\n";
+
+// SLua starter, shown when a fresh New Script is flipped to the SLua compile target.
+// (LSL library functions live under the ll.* table; verify exact names against the SLua API.)
+const std::string HELLO_LUAU =
+    "-- New SLua (Luau) script\n"
+    "-- LSL functions live under the ll.* table, e.g. ll.OwnerSay / ll.Say.\n"
+    "\n"
+    "ll.OwnerSay(\"Hello, Avatar!\")\n";
+
 const std::string HELP_LSL_PORTAL_TOPIC = "LSL_Portal";
 
 const std::string DEFAULT_SCRIPT_NAME = "New Script"; // *TODO:Translate?
@@ -133,6 +145,66 @@ static bool have_script_upload_cap(LLUUID& object_id)
 {
     LLViewerObject* object = gObjectList.findObject(object_id);
     return object && (! object->getRegion()->getCapability("UpdateScriptTask").empty());
+}
+
+// SLua: is Lua scripting enabled on the relevant region?
+static bool have_lua_enabled(const LLUUID& object_id)
+{
+    LLViewerRegion* region = nullptr;
+    LLViewerObject* object = gObjectList.findObject(object_id);
+    if (object)
+    {
+        region = object->getRegion();
+    }
+    else
+    {
+        region = gAgent.getRegion();
+    }
+
+    if (region && region->simulatorFeaturesReceived())
+    {
+        LLSD simulatorFeatures;
+        region->getSimulatorFeatures(simulatorFeatures);
+        return simulatorFeatures["LuaScriptsEnabled"].asBoolean();
+    }
+
+    return false;
+}
+
+// TEMPORARY: Quick check to see if the code is Lua
+// since we don't have another way to determine the language yet
+bool is_lua_script(const std::string& code)
+{
+    // Check for LSL's signature "default" state pattern
+    std::regex lsl_pattern("\\s*default\\s*\\{");
+    if (std::regex_search(code, lsl_pattern))
+        return false;
+
+    // "default" state not found, assuming it's Lua
+    return true;
+}
+
+// SLua: whitespace-insensitive compare, so a server-supplied default body
+// (its indentation / line-endings can differ from our HELLO_LSL/HELLO_LUAU literals)
+// still counts as "the untouched default" when deciding whether to swap starters.
+static std::string squash_ws(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    bool pending_space = false;
+    for (char c : s)
+    {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v')
+        {
+            pending_space = !out.empty();
+        }
+        else
+        {
+            if (pending_space) { out += ' '; pending_space = false; }
+            out += c;
+        }
+    }
+    return out;
 }
 
 // [SL:KB] - Patch: Build-ScriptRecover | Checked: 2011-11-23 (Catznip-3.2.0) | Added: Catznip-3.2.0
@@ -623,10 +695,11 @@ bool LLScriptEdCore::postBuild()
     initMenu();
     initButtonBar();    // <FS:CR> Advanced Script Editor
 
-    mSyntaxIDConnection = LLSyntaxIdLSL::getInstance()->addSyntaxIDCallback(boost::bind(&LLScriptEdCore::processKeywords, this));
+    // SLua: route the syntax-id callback to the no-arg processKeywords() (disambiguates the new overload)
+    mSyntaxIDConnection = LLSyntaxDefCache::getInstance()->addSyntaxIDCallback([this](){ processKeywords(); });
 
     // Intialise keyword highlighting for the current simulator's version of LSL
-    LLSyntaxIdLSL::getInstance()->initialize();
+    LLSyntaxDefCache::getInstance();
     processKeywords();
 
     // <FS:Ansariel> FIRE-20818: User-selectable font and size for script editor
@@ -638,16 +711,30 @@ bool LLScriptEdCore::postBuild()
     //getChild<LLMenuButton>("font_btn")->setMenu(context_menu, LLMenuButton::MP_BOTTOM_LEFT, true);
     // </FS:Ansariel>
 
+    // SLua: compile-target selector (Mono / LSL2 / Luau / LSL-on-Luau); Luau options gated on region support
+    bool lua_scripts_enabled = have_lua_enabled(LLUUID::null);
+    mCompileTarget = getChild<LLComboBox>("compile_target");
+    if (mCompileTarget)
+    {
+        mCompileTarget->setEnabledByValue("luau", lua_scripts_enabled);
+        mCompileTarget->setEnabledByValue("lsl-luau", lua_scripts_enabled);
+    }
+
     return true;
 }
 
 void LLScriptEdCore::processKeywords()
 {
+    processKeywords(mEditor->getIsLuauLanguage());
+}
+
+void LLScriptEdCore::processKeywords(bool luau_language)
+{
     LL_DEBUGS("SyntaxLSL") << "Processing keywords" << LL_ENDL;
     // <FS:Ansariel> FIRE-15906: Clear combobox values before adding new
     mFunctions->clearRows();
     mEditor->clearSegments();
-    mEditor->initKeywords();
+    mEditor->initKeywords(luau_language);
 
     // <FS:Ansariel> Re-add legacy format support
     std::vector<std::string> funcs;
@@ -1188,6 +1275,9 @@ void LLScriptEdCore::draw()
         S32 line = 0;
         S32 column = 0;
         mEditor->getCurrentLineAndColumn( &line, &column, false );  // don't include wordwrap
+        // SLua: Luau is 1-indexed for line/column reporting
+        line = mEditor->getIsLuauLanguage() ? (line + 1) : line;
+        column = mEditor->getIsLuauLanguage() ? (column + 1) : column;
         LLStringUtil::format_map_t args;
         std::string cursor_pos;
         args["[LINE]"] = llformat ("%d", line);
@@ -1655,6 +1745,8 @@ void LLScriptEdCore::openInExternalEditor()
         mLiveFile->addToEventTimer();
         // FS:TS FIRE-6122 end
 
+        mContainer->startWebsocketServer();   // SLua: register this script with the external-editor WS server
+
         status = ed.run(filename);
         if (status != LLExternalEditor::EC_SUCCESS)
         {
@@ -1688,6 +1780,8 @@ void LLScriptEdCore::onErrorList(LLUICtrl*, void* user_data)
         LLStringUtil::replaceChar(line, ',',' ');
         LLStringUtil::replaceChar(line, ')',' ');
         sscanf(line.c_str(), "%d %d", &row, &column);
+        // SLua: Luau error rows are 1-indexed relative to the editor's internal numbering
+        row = (self->mEditor->getIsLuauLanguage() ? row - 1 : row);
         //LL_INFOS() << "LLScriptEdCore::onErrorList() - " << row << ", "
         //<< column << LL_ENDL;
         // NaCl - LSL Preprocessor
@@ -2080,6 +2174,12 @@ LLScriptEdContainer::~LLScriptEdContainer()
     if ( (!mBackupFilename.empty()) && (gAgent.getRegion()) )
         LLFile::remove(mBackupFilename);
     delete mBackupTimer;
+
+    // SLua: drop our subscription from the external-editor WS server
+    if (!mWebSocketServer.expired())
+    {
+        unsubscribeScript();
+    }
 }
 
 void LLScriptEdContainer::refreshFromItem()
@@ -2157,6 +2257,73 @@ std::string LLScriptEdContainer::getTmpFileName(const std::string& script_name)
     else
     {
         return std::string(LLFile::tmpdir()) + "sl_script_" + script_name + "_" + script_id_hash_str + ".lsl";
+    }
+}
+
+// ---- SLua: external-editor WebSocket bridge (LLScriptEdContainer side) ----
+std::string LLScriptEdContainer::getUniqueHash() const
+{
+    // Object + inventory item id, MD5-hashed so multiple scripts in one object can be edited at once.
+    std::string script_id = mObjectUUID.asString() + "_" + mItemUUID.asString();
+    char  script_id_hash_str[33]; /* Flawfinder: ignore */
+    LLMD5 script_id_hash((const U8*)script_id.c_str());
+    script_id_hash.hex_digest(script_id_hash_str);
+    return std::string(script_id_hash_str);
+}
+
+void LLScriptEdContainer::startWebsocketServer()
+{
+    if (gSavedSettings.getBOOL("ExternalWebsocketSyncEnable"))
+    {
+        LLWebsocketMgr&               wsmgr  = LLWebsocketMgr::instance();
+        LLScriptEditorWSServer::ptr_t server =
+            std::static_pointer_cast<LLScriptEditorWSServer>(
+                wsmgr.findServerByName(LLScriptEditorWSServer::DEFAULT_SERVER_NAME));
+
+        if (!server)
+        {   // None yet; create it
+            U16 server_port = static_cast<U16>(gSavedSettings.getS32("ExternalWebsocketSyncPort"));
+            bool server_localhost = gSavedSettings.getBOOL("ExternalWebsocketSyncLocal");
+            server = std::make_shared<LLScriptEditorWSServer>(LLScriptEditorWSServer::DEFAULT_SERVER_NAME, server_port, server_localhost);
+            wsmgr.addServer(server);
+        }
+
+        bool is_running = server->isRunning();
+        if (!is_running)
+        {
+            is_running = wsmgr.startServer(LLScriptEditorWSServer::DEFAULT_SERVER_NAME);
+        }
+
+        if (!is_running && !server->isRunning())
+        {
+            LL_WARNS() << "Failed to start script editor websocket server" << LL_ENDL;
+            return;
+        }
+
+        std::string script_id_hash_str(getUniqueHash());
+        server->subscribeScriptEditor(mObjectUUID, mItemUUID, mScriptEd->mScriptName, getHandle(), script_id_hash_str);
+        mWebSocketServer = server;
+    }
+}
+
+void LLScriptEdContainer::unsubscribeScript()
+{
+    auto server = mWebSocketServer.lock();
+    if (server)
+    {
+        std::string script_id_hash_str(getUniqueHash());
+        server->sendUnsubscribeScriptEditor(script_id_hash_str);
+        server->unsubscribeEditor(script_id_hash_str);
+    }
+}
+
+void LLScriptEdContainer::sendCompileResults(LLSD& params)
+{
+    auto server = mWebSocketServer.lock();
+    if (server)
+    {
+        std::string script_id_hash_str(getUniqueHash());
+        server->sendCompileResults(script_id_hash_str, params);
     }
 }
 
@@ -2284,7 +2451,42 @@ bool LLPreviewLSL::postBuild()
     childSetCommitCallback("desc", LLPreview::onText, this);
     getChild<LLLineEditor>("desc")->setPrevalidate(&LLTextValidate::validateASCIIPrintableNoPipe);
 
+    // SLua: wire the compile-target combo (it lives in this floater, not the shared script panel)
+    if (mScriptEd)
+    {
+        mScriptEd->mCompileTarget = getChild<LLComboBox>("compile_target");
+        if (mScriptEd->mCompileTarget)
+        {
+            mScriptEd->mCompileTarget->setCommitCallback([&](LLUICtrl*, const LLSD&) { onCompileTargetChanged(); });
+            // Gate the Luau options on region support (was previously done on the panel combo)
+            bool lua_scripts_enabled = have_lua_enabled(LLUUID::null);
+            mScriptEd->mCompileTarget->setEnabledByValue("luau", lua_scripts_enabled);
+            mScriptEd->mCompileTarget->setEnabledByValue("lsl-luau", lua_scripts_enabled);
+        }
+    }
+
     return LLPreview::postBuild();
+}
+
+void LLPreviewLSL::onCompileTargetChanged()
+{
+    if (!mScriptEd->mCompileTarget)
+    {
+        return;
+    }
+    bool is_lua = mScriptEd->mCompileTarget->getValue().asString() == "luau";
+    // SLua: flipping a still-pristine New Script between languages swaps the starter template.
+    std::string cur = squash_ws(mScriptEd->mEditor->getText());
+    if (is_lua && cur == squash_ws(HELLO_LSL))
+    {
+        mScriptEd->setScriptText(HELLO_LUAU, true);
+    }
+    else if (!is_lua && cur == squash_ws(HELLO_LUAU))
+    {
+        mScriptEd->setScriptText(HELLO_LSL, true);
+    }
+    mScriptEd->mEditor->setLuauLanguage(is_lua);
+    mScriptEd->processKeywords(is_lua);
 }
 
 void LLPreviewLSL::draw()
@@ -2519,22 +2721,12 @@ bool LLPreviewLSL::failedLSLUpload(LLUUID itemId, LLUUID taskId, LLSD response, 
 // <FS:ND> Asset uploader that can be used for LSL and Mono
 class FSScriptAssetUpload: public LLScriptAssetUpload
 {
-    bool m_bMono;
 public:
-    FSScriptAssetUpload(LLUUID itemId, std::string buffer, invnUploadFinish_f finish, uploadFailed_f failure, bool a_bMono)
-    : LLScriptAssetUpload(itemId, buffer, finish, failure)
+    // SLua: carries a compile-target string (mono / lsl2 / luau / lsl-luau) instead of a mono bool.
+    // The base LLScriptAssetUpload::generatePostBody() now sets body["target"] from getCompileTarget().
+    FSScriptAssetUpload(LLUUID itemId, std::string compileTarget, std::string buffer, invnUploadFinish_f finish, uploadFailed_f failure)
+    : LLScriptAssetUpload(itemId, compileTarget, buffer, finish, failure)
     {
-        m_bMono = a_bMono;
-    }
-
-    virtual LLSD generatePostBody()
-    {
-        LLSD body = LLScriptAssetUpload::generatePostBody();
-        if (m_bMono)
-            body["target"] = "mono";
-        else
-            body["target"] = "lsl2";
-        return body;
     }
 };
 // </FS:ND>
@@ -2605,18 +2797,23 @@ void LLPreviewLSL::saveIfNeeded(bool sync /*= true*/)
 
             LLUUID old_asset_id = inv_item->getAssetUUID().isNull() ? mScriptEd->getAssetID() : inv_item->getAssetUUID();
 
-            //LLResourceUploadInfo::ptr_t uploadInfo(std::make_shared<LLScriptAssetUpload>(mItemUUID, buffer,
-            //    [old_asset_id](LLUUID itemId, LLUUID, LLUUID, LLSD response) {
-            //        LLFileSystem::removeFile(old_asset_id, LLAssetType::AT_LSL_TEXT);
-            //        LLPreviewLSL::finishedLSLUpload(itemId, response);
-            //    },
-            //LLPreviewLSL::failedLSLUpload));
-            LLResourceUploadInfo::ptr_t uploadInfo(std::make_shared<FSScriptAssetUpload>(mItemUUID, buffer,
+            // SLua: a Luau target chosen in the combo wins; otherwise FS's mono/lsl2 inventory setting
+            std::string compile_target = domono ? "mono" : "lsl2";
+            if (mScriptEd->mCompileTarget)
+            {
+                std::string combo_target = mScriptEd->mCompileTarget->getValue().asString();
+                if (combo_target == "luau" || combo_target == "lsl-luau")
+                {
+                    compile_target = combo_target;
+                }
+            }
+
+            LLResourceUploadInfo::ptr_t uploadInfo(std::make_shared<FSScriptAssetUpload>(mItemUUID, compile_target, buffer,
                 [old_asset_id](LLUUID itemId, LLUUID, LLUUID, LLSD response) {
                     LLFileSystem::removeFile(old_asset_id, LLAssetType::AT_LSL_TEXT);
                     LLPreviewLSL::finishedLSLUpload(itemId, response);
                 },
-                LLPreviewLSL::failedLSLUpload, domono));
+                LLPreviewLSL::failedLSLUpload));
 
             LLViewerAssetUpload::EnqueueInventoryUpload(url, uploadInfo);
         }
@@ -2740,9 +2937,10 @@ bool LLLiveLSLEditor::postBuild()
     childSetAction("Reset",&LLLiveLSLEditor::onReset,this);
     getChildView("Reset")->setEnabled(true);
 
-    mMonoCheckbox = getChild<LLCheckBoxCtrl>("mono");
-    childSetCommitCallback("mono", &LLLiveLSLEditor::onMonoCheckboxClicked, this);
-    getChildView("mono")->setEnabled(true);
+    // SLua: wire the compile-target combo (replaces the old Mono checkbox)
+    mScriptEd->mCompileTarget = getChild<LLComboBox>("compile_target");
+    mScriptEd->mCompileTarget->setCommitCallback([&](LLUICtrl*, const LLSD&) { onCompileTargetChanged(); });
+    mScriptEd->mCompileTarget->setEnabled(true);
 
     mScriptEd->mEditor->makePristine();
     mScriptEd->mEditor->setFocus(true);
@@ -3109,7 +3307,7 @@ void LLLiveLSLEditor::draw()
             // incorrect after a release/claim cycle, but will be
             // correct after clicking on it.
             runningCheckbox->set(false);
-            mMonoCheckbox->set(false);
+            if (mScriptEd->mCompileTarget) mScriptEd->mCompileTarget->setEnabled(false);   // SLua: was mMonoCheckbox
         }
     }
     else if(!object)
@@ -3118,7 +3316,7 @@ void LLLiveLSLEditor::draw()
         // Really ought to put in main window.
         setTitle(LLTrans::getString("ObjectOutOfRange"));
         runningCheckbox->setEnabled(false);
-        mMonoCheckbox->setEnabled(false);
+        if (mScriptEd->mCompileTarget) mScriptEd->mCompileTarget->setEnabled(false);   // SLua: was mMonoCheckbox
         // object may have fallen out of range.
         mHaveRunningInfo = false;
     }
@@ -3253,8 +3451,10 @@ void LLLiveLSLEditor::saveIfNeeded(bool sync /*= true*/)
         //</FS:KC> Script Preprocessor
         LLUUID old_asset_id = mScriptEd->getAssetID();
 
+        // SLua: compile target comes from the combo (mono / lsl2 / luau / lsl-luau)
+        std::string compile_target(mScriptEd->mCompileTarget ? mScriptEd->mCompileTarget->getValue().asString() : std::string("mono"));
         LLResourceUploadInfo::ptr_t uploadInfo(std::make_shared<LLScriptAssetUpload>(mObjectUUID, mItemUUID,
-                monoChecked() ? LLScriptAssetUpload::MONO : LLScriptAssetUpload::LSL2,
+                compile_target,
                 isRunning, mScriptEd->getAssociatedExperience(), buffer,
                 [isRunning, old_asset_id](LLUUID itemId, LLUUID taskId, LLUUID newAssetId, LLSD response) {
                         LLFileSystem::removeFile(old_asset_id, LLAssetType::AT_LSL_TEXT);
@@ -3324,24 +3524,62 @@ void LLLiveLSLEditor::processScriptRunningReply(LLMessageSystem* msg, void**)
         msg->getBOOLFast(_PREHASH_Script, _PREHASH_Running, running);
         LLCheckBoxCtrl* runningCheckbox = instance->getChild<LLCheckBoxCtrl>("running");
         runningCheckbox->set(running);
-        bool mono;
+
+        // SLua: derive the compile target from the script-running reply flags.
+        // String literals (not _PREHASH_) keep this independent of message_prehash, matching FS's existing "Mono" usage.
+        bool mono = false, luau = false, luau_language = false;
         msg->getBOOLFast(_PREHASH_Script, "Mono", mono);
-        LLCheckBoxCtrl* monoCheckbox = instance->getChild<LLCheckBoxCtrl>("mono");
-        monoCheckbox->setEnabled(instance->getIsModifiable() && have_script_upload_cap(object_id));
-        monoCheckbox->set(mono);
+        msg->getBOOLFast(_PREHASH_Script, "Luau", luau);              // Luau compiler enabled
+        msg->getBOOLFast(_PREHASH_Script, "LuauLanguage", luau_language);
+
+        std::string compile_target;
+        if (luau)
+        {
+            compile_target = luau_language ? "luau" : "lsl-luau";     // lsl-luau = Luau compiler in LSL-compat mode
+        }
+        else if (mono)
+        {
+            compile_target = "mono";
+        }
+        else
+        {
+            compile_target = "lsl2";
+        }
+
+        if (instance->mScriptEd->mCompileTarget)
+        {
+            instance->mScriptEd->mCompileTarget->setValue(compile_target);
+            instance->mScriptEd->processKeywords(luau && luau_language); // Luau highlighting only for actual Luau scripts
+
+            bool lua_scripts_enabled = have_lua_enabled(object_id);
+            instance->mScriptEd->mCompileTarget->setEnabledByValue("luau", lua_scripts_enabled);
+            instance->mScriptEd->mCompileTarget->setEnabledByValue("lsl-luau", lua_scripts_enabled);
+            instance->mScriptEd->mCompileTarget->setEnabled(instance->getIsModifiable() && have_script_upload_cap(object_id));
+        }
     }
 }
 
-void LLLiveLSLEditor::onMonoCheckboxClicked(LLUICtrl*, void* userdata)
+void LLLiveLSLEditor::onCompileTargetChanged()
 {
-    LLLiveLSLEditor* self = static_cast<LLLiveLSLEditor*>(userdata);
-    self->mMonoCheckbox->setEnabled(have_script_upload_cap(self->mObjectUUID));
-    self->mScriptEd->enableSave(self->getIsModifiable());
-}
-
-bool LLLiveLSLEditor::monoChecked() const
-{
-    return mMonoCheckbox && mMonoCheckbox->getValue();
+    if (!mScriptEd->mCompileTarget)
+    {
+        return;
+    }
+    mScriptEd->mCompileTarget->setEnabled(have_script_upload_cap(mObjectUUID));
+    mScriptEd->enableSave(getIsModifiable());
+    bool is_lua = mScriptEd->mCompileTarget->getValue().asString() == "luau";
+    // SLua: flipping a still-pristine New Script between languages swaps the starter template.
+    std::string cur = squash_ws(mScriptEd->mEditor->getText());
+    if (is_lua && cur == squash_ws(HELLO_LSL))
+    {
+        mScriptEd->setScriptText(HELLO_LUAU, true);
+    }
+    else if (!is_lua && cur == squash_ws(HELLO_LUAU))
+    {
+        mScriptEd->setScriptText(HELLO_LSL, true);
+    }
+    mScriptEd->mEditor->setLuauLanguage(is_lua);
+    mScriptEd->processKeywords(is_lua);
 }
 
 void LLLiveLSLEditor::setAssociatedExperience( LLHandle<LLLiveLSLEditor> editor, const LLSD& experience )

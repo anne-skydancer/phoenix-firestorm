@@ -52,6 +52,7 @@ class LLMenuBarGL;
 class LLKeywordToken;
 class LLViewerInventoryItem;
 class LLScriptEdContainer;
+class LLScriptEditorWSServer;   // SLua: external-editor WS bridge
 class LLFloaterGotoLine;
 class LLFloaterExperienceProfile;
 class LLScriptMovedObserver;
@@ -113,6 +114,8 @@ public:
 
     void            initMenu();
     void            processKeywords();
+    void            processKeywords(bool luau_language);   // SLua: language-specific keyword set
+    bool            isLuauLanguage() const { return mEditor->getIsLuauLanguage(); }   // SLua: WS bridge accessor
 
     virtual void    draw();
     /*virtual*/ bool    postBuild();
@@ -224,6 +227,7 @@ private:
     std::string     mSampleText;
     std::string     mScriptName;
     LLScriptEditor* mEditor;
+    LLComboBox*     mCompileTarget = nullptr;   // SLua: compile-target selector (mono/lsl2/luau/lsl-luau)
     void            (*mLoadCallback)(void* userdata);
     // <FS:Ansariel> FIRE-7514: Script in external editor needs to be saved twice
     //void          (*mSaveCallback)(void* userdata, bool close_after_save);
@@ -293,8 +297,16 @@ public:
 
     bool handleKeyHere(KEY key, MASK mask);
 
+    LLScriptEdCore* getScriptEdCore() const { return mScriptEd; }   // SLua: WS bridge accessor (called from llscripteditorws)
+
+    // SLua: external-editor WebSocket bridge
+    void            startWebsocketServer();
+    void            unsubscribeScript();
+    void            sendCompileResults(LLSD& params);
+
 protected:
     std::string     getTmpFileName(const std::string& script_name);
+    std::string     getUniqueHash() const;   // SLua: WS bridge script id
 // [SL:KB] - Patch: Build-ScriptRecover | Checked: 2011-11-23 (Catznip-3.2.0) | Added: Catznip-3.2.0
     virtual std::string getBackupFileName() const;
     bool            onBackupTimer();
@@ -304,6 +316,7 @@ protected:
     virtual void    saveIfNeeded(bool sync = true) = 0;
 
     LLScriptEdCore*     mScriptEd;
+    std::weak_ptr<LLScriptEditorWSServer> mWebSocketServer;   // SLua: external-editor WS bridge
 // [SL:KB] - Patch: Build-ScriptRecover | Checked: 2011-11-23 (Catznip-3.2.0) | Added: Catznip-3.2.0
     std::string         mBackupFilename;
     LLEventTimer*       mBackupTimer;
@@ -337,6 +350,7 @@ protected:
 
     virtual void loadAsset();
     /*virtual*/ void saveIfNeeded(bool sync = true);
+    void onCompileTargetChanged();   // SLua: live language switch for inventory scripts
 
     static void onSearchReplace(void* userdata);
     static void onLoad(void* userdata);
@@ -406,7 +420,7 @@ private:
 
     virtual void loadAsset();
     /*virtual*/ void saveIfNeeded(bool sync = true);
-    bool monoChecked() const;
+    void onCompileTargetChanged();   // SLua: replaces monoChecked()/onMonoCheckboxClicked
 
 
     static void onSearchReplace(void* userdata);
@@ -425,8 +439,6 @@ private:
     void loadScriptText(const LLUUID &uuid, LLAssetType::EType type);
 
     static void* createScriptEdPanel(void* userdata);
-
-    static void onMonoCheckboxClicked(LLUICtrl*, void* userdata);
 
     static void finishLSLUpload(LLUUID itemId, LLUUID taskId, LLUUID newAssetId, LLSD response, bool isRunning);
     static void receiveExperienceIds(LLSD result, LLHandle<LLLiveLSLEditor> parent);
@@ -447,7 +459,6 @@ private:
 
     bool getIsModifiable() const { return mIsModifiable; } // Evaluated on load assert
 
-    LLCheckBoxCtrl* mMonoCheckbox;
     bool mIsModifiable;
 
 

@@ -7,6 +7,7 @@ include(LLCommon)
 include(LLImage)
 include(JPEG)
 include(LLKDU)
+include(Grok)
 include(ZLIBNG)
 include(LLAddBuildTest)
 include(bugsplat)
@@ -51,9 +52,14 @@ target_include_directories( llimage  INTERFACE   ${CMAKE_CURRENT_SOURCE_DIR})
 # Sort by high-level to low-level
 if (USE_KDU)
     target_link_libraries(llimage llkdu)
-else (USE_KDU)
+elseif (USE_GROK)
+    # Grok (GrokImageCompression/grok) is AGPLv3; only select this for a
+    # build that does not also link Kakadu, FMOD, or Vivox in the same
+    # binary. See indra/cmake/Grok.cmake.
+    target_link_libraries(llimage llimagej2cgrok)
+else ()
     target_link_libraries(llimage llimagej2coj)
-endif (USE_KDU)
+endif ()
 
 target_link_libraries(llimage
         llfilesystem

@@ -520,6 +520,39 @@ int APIENTRY WINMAIN(HINSTANCE hInstance,
     }
 #endif
 
+    // <FSVulkan> Built-in Mesa Zink (GL-over-Vulkan) tuning.
+    // The bundled Mesa opengl32.dll reads these env vars when the GL context is
+    // created. Setting them here - before the driver loads - bakes the
+    // optimizations into the viewer so no launcher script is needed. Each is
+    // only applied if the user hasn't already set it, so manual overrides
+    // (e.g. MESA_GLTHREAD=false to A/B test) still win.
+    {
+        auto set_env_default = [](const char* name, const char* value)
+        {
+            if (GetEnvironmentVariableA(name, nullptr, 0) == 0) // unset
+            {
+                _putenv_s(name, value);            // CRT env (getenv)
+                SetEnvironmentVariableA(name, value); // Win32 block (DLL load)
+            }
+        };
+
+        set_env_default("GALLIUM_DRIVER", "zink");   // route OpenGL over Vulkan
+        set_env_default("ZINK_DESCRIPTORS", "db");   // EXT_descriptor_buffer: lowest per-draw CPU; big FPS win on RDNA4 (validated 2026-06)
+        set_env_default("MESA_GLTHREAD", "true");    // threaded GL submission
+
+        // Persistent shader/pipeline cache in per-user LocalAppData so re-seen
+        // pipelines are not recompiled (kills first-sight stutter across runs).
+        char local_app_data[MAX_PATH];
+        if (GetEnvironmentVariableA("LOCALAPPDATA", local_app_data, MAX_PATH) > 0)
+        {
+            std::string cache_dir = std::string(local_app_data) + "\\FSVulkanShaderCache";
+            CreateDirectoryA(cache_dir.c_str(), nullptr); // ok if it already exists
+            set_env_default("MESA_SHADER_CACHE_DIR", cache_dir.c_str());
+            set_env_default("MESA_SHADER_CACHE_MAX_SIZE", "10G");
+        }
+    }
+    // </FSVulkan>
+
     // Call Tracy first thing to have it allocate memory
     // https://github.com/wolfpld/tracy/issues/196
     LL_PROFILER_FRAME_END;

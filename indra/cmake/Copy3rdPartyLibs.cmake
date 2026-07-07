@@ -98,7 +98,13 @@ if(WINDOWS)
     endif ()
 
     if (USE_MESAZINK AND ADDRESS_SIZE EQUAL 64)
-        list(APPEND release_files libgallium_wgl.dll opengl32.dll libglapi.dll)
+        # Mesa Zink DLLs ship under packages/bin/release (alongside CEF/VLC),
+        # not lib/release, so stage them straight from there.
+        to_staging_dirs(
+            "${ARCH_PREBUILT_DIRS_RELEASE}/../../bin/release"
+            third_party_targets
+            libgallium_wgl.dll opengl32.dll
+            )
     endif ()
 
     #*******************************

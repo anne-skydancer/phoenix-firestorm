@@ -736,7 +736,10 @@ class Windows_x86_64_Manifest(ViewerManifest):
             if self.args.get('mesazink') == 'ON':
                 self.path("libgallium_wgl.dll")
                 self.path("opengl32.dll")
-                self.path("libglapi.dll")
+
+            # Grok J2C decoder (opt-in, mutually exclusive with Kakadu)
+            if self.args.get('usegrok') == 'ON':
+                self.path("grokj2k.dll")
 
             # <FS:ND> Copy symbols for breakpad
             #self.path("ssleay32.pdb")
@@ -2519,6 +2522,7 @@ if __name__ == "__main__":
         dict(name='discord', description="""Indication discord social sdk libraries are needed""", default='OFF'),
         dict(name='fmodstudio', description="""Indication if fmod studio libraries are needed""", default='OFF'),
         dict(name='mesazink', description="""Indication Mesa Zink GL-over-Vulkan DLL overrides are bundled""", default='OFF'),
+        dict(name='usegrok', description="""Indication the Grok J2C decoder DLL is bundled (mutually exclusive with Kakadu)""", default='OFF'),
         dict(name='openal', description="""Indication openal libraries are needed""", default='OFF'),
         dict(name='tracy', description="""Indication tracy profiler is enabled""", default='OFF'),
         dict(name='velopack', description="""Use Velopack installer instead of NSIS""", default='OFF'),

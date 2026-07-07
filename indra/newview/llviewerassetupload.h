@@ -256,25 +256,31 @@ private:
 class LLScriptAssetUpload : public LLBufferedAssetUploadInfo
 {
 public:
-    enum TargetType_t
-    {
-        LSL2,
-        MONO
-    };
-
-    LLScriptAssetUpload(LLUUID itemId, std::string buffer, invnUploadFinish_f finish, uploadFailed_f failed);
-    LLScriptAssetUpload(LLUUID taskId, LLUUID itemId, TargetType_t targetType,
+    LLScriptAssetUpload(LLUUID itemId, std::string compileTarget, std::string buffer, invnUploadFinish_f finish, uploadFailed_f failed);
+    LLScriptAssetUpload(LLUUID taskId, LLUUID itemId, std::string compileTarget,
             bool isRunning, LLUUID exerienceId, std::string buffer, taskUploadFinish_f finish, uploadFailed_f failed);
+
+    // SLua backward-compat shim: FS callers predating the compile-target string only know mono/lsl2.
+    // (llcompilequeue's LLScriptAssetUploadWithId, particleeditor, fslslbridge, llfloaterscriptrecover.)
+    // These delegate to the string ctors; no ambiguity (enum 3rd param vs std::string, and 4- vs 5-arg).
+    enum TargetType_t { LSL2, MONO };
+    LLScriptAssetUpload(LLUUID itemId, std::string buffer, invnUploadFinish_f finish, uploadFailed_f failed)
+        : LLScriptAssetUpload(itemId, std::string("mono"), buffer, finish, failed) {}
+    LLScriptAssetUpload(LLUUID taskId, LLUUID itemId, TargetType_t targetType,
+            bool isRunning, LLUUID exerienceId, std::string buffer, taskUploadFinish_f finish, uploadFailed_f failed)
+        : LLScriptAssetUpload(taskId, itemId, std::string(targetType == MONO ? "mono" : "lsl2"),
+                              isRunning, exerienceId, buffer, finish, failed) {}
+    TargetType_t        getTargetType() const { return mCompileTarget == "mono" ? MONO : LSL2; }
 
     virtual LLSD        generatePostBody();
 
     LLUUID              getExerienceId() const { return mExerienceId; }
-    TargetType_t        getTargetType() const { return mTargetType; }
+    const std::string&  getCompileTarget() const { return mCompileTarget; }
     bool                getIsRunning() const { return mIsRunning; }
 
 private:
     LLUUID              mExerienceId;
-    TargetType_t        mTargetType;
+    std::string         mCompileTarget;
     bool                mIsRunning;
 
 };

@@ -58,6 +58,14 @@ find_library(BOOST_URL_LIBRARY
     boost_url-mt${addrsfx}
     PATHS "${ARCH_PREBUILT_DIRS_RELEASE}" REQUIRED NO_DEFAULT_PATH)
 
+# SLua: WebSocket bridge (lljsonrpcws) uses Boost.JSON
+find_library(BOOST_JSON_LIBRARY
+    NAMES
+    boost_json
+    boost_json-mt
+    boost_json-mt${addrsfx}
+    PATHS "${ARCH_PREBUILT_DIRS_RELEASE}" REQUIRED NO_DEFAULT_PATH)
+
 # <FS:Ansariel> LSL Preprocessor support
 find_library(BOOST_WAVE_LIBRARY
     NAMES
@@ -74,6 +82,7 @@ target_link_libraries(ll::boost INTERFACE
     ${BOOST_PROGRAMOPTIONS_LIBRARY}
     ${BOOST_THREAD_LIBRARY}
     ${BOOST_URL_LIBRARY}
+    ${BOOST_JSON_LIBRARY} # SLua: Boost.JSON for the WebSocket bridge
     ${BOOST_WAVE_LIBRARY}) # <FS:Ansariel> LSL Preprocessor support
 
 if (LINUX)

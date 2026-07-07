@@ -52,6 +52,10 @@
 #include "llaudioengine_openal.h"
 #endif
 
+#ifdef LL_SOLOUD
+#include "llaudioengine_soloud.h"
+#endif
+
 #include "llavatarnamecache.h"
 #include "llexperiencecache.h"
 #include "lllandmark.h"
@@ -1102,12 +1106,29 @@ bool idle_startup()
             delete gAudiop;
             gAudiop = NULL;
 
+#ifdef LL_SOLOUD
+            // SoLoud is the default engine; set FS_AUDIO_FMOD to fall back to FMOD for A/B comparison
+            if (NULL == getenv("FS_AUDIO_FMOD"))
+            {
+                gAudiop = (LLAudioEngine *) new LLAudioEngine_SoLoud();
+            }
+#endif
+
 #ifdef LL_FMODSTUDIO
 #if !LL_WINDOWS
-            if (NULL == getenv("LL_BAD_FMODSTUDIO_DRIVER"))
+            if (!gAudiop && NULL == getenv("LL_BAD_FMODSTUDIO_DRIVER"))
+#else
+            if (!gAudiop)
 #endif // !LL_WINDOWS
             {
                 gAudiop = (LLAudioEngine *) new LLAudioEngine_FMODSTUDIO(gSavedSettings.getBOOL("FMODProfilerEnable"), gSavedSettings.getU32("FMODResampleMethod"));
+            }
+#endif
+
+#ifdef LL_SOLOUD
+            if (!gAudiop)
+            {
+                gAudiop = (LLAudioEngine *) new LLAudioEngine_SoLoud();
             }
 #endif
 

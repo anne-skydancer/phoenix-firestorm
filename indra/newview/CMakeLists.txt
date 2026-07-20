@@ -2181,6 +2181,8 @@ set(viewer_APPSETTINGS_FILES
     app_settings/key_bindings.xml
     app_settings/keywords.ini
     app_settings/keywords_lsl_default.xml
+    app_settings/syntax_default/lsl_keywords.xml
+    app_settings/syntax_default/lua_keywords.xml
     app_settings/logcontrol.xml
     app_settings/posestand.xml
     app_settings/quick_preferences.xml

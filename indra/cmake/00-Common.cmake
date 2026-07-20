@@ -251,3 +251,65 @@ if (LINUX OR DARWIN)
   add_compile_options(-m${ADDRESS_SIZE})
 endif (LINUX OR DARWIN)
 
+if (FREEBSD)
+  # FreeBSD builds with base clang + lld and pulls dependencies from the OS
+  # package manager, so it needs its own flag set rather than the glibc/GNU-ld
+  # oriented LINUX block (which uses -Wl,--no-keep-memory, unavailable on lld).
+  # Compile flags mirror the set proven by Megapahit on FreeBSD 15.
+  set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+  set(CMAKE_INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib")
+
+  find_program(CCACHE_EXE ccache)
+  if (CCACHE_EXE AND NOT DISABLE_CCACHE)
+    set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_EXE})
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_EXE})
+  endif ()
+
+  add_compile_definitions(
+      _REENTRANT
+      _FORTIFY_SOURCE=2
+      APPID=secondlife
+      LL_IGNORE_SIGCHLD
+      EXTERNAL_TOS            # no CEF on BSD -> TOS opens in an external browser
+      )
+
+  add_compile_options(
+      -fexceptions
+      -fno-math-errno
+      -fno-strict-aliasing
+      -fsigned-char
+      -pthread
+      -fno-stack-protector
+      )
+  if (CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64")
+    add_compile_options(-msse2 -mfpmath=sse)
+  endif ()
+  if (NOT BUILD_SHARED_LIBS)
+    add_compile_options(-fvisibility=hidden)
+  endif ()
+
+  # clang warning posture (mirrors Megapahit). -Werror is intentionally left OFF
+  # during initial bring-up; set FREEBSD_WERROR=ON once the tree builds clean.
+  add_compile_options(
+      -Wno-parentheses
+      -Wno-deprecated
+      -Wno-c++20-compat
+      -Wno-pessimizing-move
+      -Wno-inconsistent-missing-override
+      )
+  if (FREEBSD_WERROR AND NOT GCC_DISABLE_FATAL_WARNINGS)
+    add_compile_options(-Werror)
+  endif ()
+
+  # Improvements over the reference: no -lstdc++ force-link (base clang uses
+  # libc++ and auto-links it) and no --no-undefined (needlessly hard-fails
+  # plugin links); keep the link line lld-safe and minimal.
+  add_link_options(
+      -Wl,--build-id
+      -Wl,--exclude-libs,ALL
+      )
+
+  set(CMAKE_CXX_FLAGS_DEBUG "-fno-inline ${CMAKE_CXX_FLAGS_DEBUG}")
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ".so;.a")
+endif (FREEBSD)
+

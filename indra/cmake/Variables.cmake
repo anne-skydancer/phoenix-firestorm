@@ -8,6 +8,7 @@
 #   DARWIN  - macOS
 #   LINUX   - Linux
 #   WINDOWS - Windows
+#   FREEBSD - FreeBSD
 
 # Switches set here and in 00-Common.cmake must agree with
 # https://bitbucket.org/lindenlab/viewer-build-variables/src/tip/variables
@@ -174,6 +175,19 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS Build Arch" FORCE)
 endif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
+if (${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+  set(FREEBSD ON)
+
+  # FreeBSD has no autobuild prebuilts; dependencies come from the OS package
+  # manager (pkg) and are resolved via use_system_binary()/USESYSTEMLIBS (see
+  # Prebuilt.cmake). pkgconf already searches /usr/local/libdata/pkgconfig, so
+  # -- unlike the Linux path -- we deliberately do NOT run ConfigurePkgConfig,
+  # which would overwrite PKG_CONFIG_LIBDIR with Debian multiarch paths.
+  set(CMAKE_SYSTEM_PREFIX_PATH /usr/local ${CMAKE_SYSTEM_PREFIX_PATH})
+  set(CMAKE_SYSTEM_LIBRARY_PATH /usr/local/lib ${CMAKE_SYSTEM_LIBRARY_PATH})
+  set(FIND_LIBRARY_USE_LIB64_PATHS OFF)
+endif (${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+
 # Default deploy grid
 set(GRID agni CACHE STRING "Target Grid")
 
@@ -203,10 +217,10 @@ if (HAVOK_TPV)
     message(STATUS "Compiling with Havok libraries - disabling OpenSim support")
   endif (OPENSIM)
 
-  if (LINUX)
-    message(STATUS "Compiling with Havok libraries is not supported on Linux - switching to VHACD")
+  if (LINUX OR FREEBSD)
+    message(STATUS "Compiling with Havok libraries is not supported on Linux/FreeBSD - switching to VHACD")
     set(HAVOK_TPV OFF)
-  endif (LINUX)
+  endif (LINUX OR FREEBSD)
 
   set(OPENSIM OFF)
 endif (HAVOK_TPV)

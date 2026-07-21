@@ -18,6 +18,19 @@ if( USE_CONAN )
     "${CONAN_INCLUDE_DIRS_COLLADADOM}/collada-dom/1.4/" )
 endif()
 
+if (FREEBSD)
+  # System COLLADA DOM (collada-dom port: the 1.4 module = collada14dom),
+  # minizip and libxml2 -- all from pkg. No build-from-source needed.
+  include(FindPkgConfig)
+  pkg_check_modules(MINIZIP    REQUIRED IMPORTED_TARGET minizip)
+  pkg_check_modules(LIBXML2    REQUIRED IMPORTED_TARGET libxml-2.0)
+  pkg_check_modules(COLLADADOM REQUIRED IMPORTED_TARGET collada-dom-141)
+  target_link_libraries(ll::minizip-ng INTERFACE PkgConfig::MINIZIP)
+  target_link_libraries(ll::libxml     INTERFACE PkgConfig::LIBXML2)
+  target_link_libraries(ll::colladadom INTERFACE PkgConfig::COLLADADOM ll::boost ll::libxml ll::minizip-ng)
+  return()
+endif ()
+
 use_system_binary( colladadom )
 
 use_prebuilt_binary(colladadom)

@@ -10,6 +10,16 @@ if( USE_CONAN )
   return()
 endif()
 
+if (FREEBSD)
+  # System Boost from pkg (devel/boost-libs), which ships BoostConfig.cmake.
+  find_package(Boost CONFIG REQUIRED COMPONENTS
+      context fiber filesystem program_options thread url json wave)
+  target_link_libraries(ll::boost INTERFACE
+      Boost::context Boost::fiber Boost::filesystem Boost::program_options
+      Boost::thread Boost::url Boost::json Boost::wave)
+  return()
+endif ()
+
 use_prebuilt_binary(boost)
 
 # As of sometime between Boost 1.67 and 1.72, Boost libraries are suffixed

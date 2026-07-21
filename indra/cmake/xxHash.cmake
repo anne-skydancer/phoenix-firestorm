@@ -2,4 +2,7 @@
 include_guard()
 
 include(Prebuilt)
-use_prebuilt_binary(xxhash)
+if (NOT FREEBSD)
+  # On FreeBSD xxhash.h comes from the system include path (devel/xxhash).
+  use_prebuilt_binary(xxhash)
+endif ()

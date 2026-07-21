@@ -259,6 +259,11 @@ if (FREEBSD)
   set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
   set(CMAKE_INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib")
 
+  # Base clang does not search /usr/local by default, but pkg installs headers
+  # and libraries there. Add them globally (mirrors -isystem /usr/local/include).
+  include_directories(SYSTEM /usr/local/include)
+  link_directories(/usr/local/lib)
+
   find_program(CCACHE_EXE ccache)
   if (CCACHE_EXE AND NOT DISABLE_CCACHE)
     set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_EXE})

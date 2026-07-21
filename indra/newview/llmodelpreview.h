@@ -40,6 +40,19 @@ class LLTextBox;
 class LLVertexBuffer;
 class DAE;
 class daeElement;
+#if defined(__FreeBSD__)
+// System collada-dom 2.5 namespaces the versioned dom types (see lldaeloader.h).
+namespace ColladaDOM141 {
+    class domProfile_COMMON;
+    class domInstance_geometry;
+    class domNode;
+    class domTranslate;
+    class domController;
+    class domSkin;
+    class domMesh;
+}
+using namespace ColladaDOM141;
+#else
 class domProfile_COMMON;
 class domInstance_geometry;
 class domNode;
@@ -47,6 +60,7 @@ class domTranslate;
 class domController;
 class domSkin;
 class domMesh;
+#endif
 
 // const strings needed by classes that use model preivew
 static const std::string lod_name[NUM_LOD + 1] =

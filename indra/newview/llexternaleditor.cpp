@@ -55,6 +55,8 @@ LLExternalEditor::EErrorCode LLExternalEditor::setCommand(const std::string& env
         static const std::string os_cmd = "/usr/bin/open -t \"%s\"";
 #elif LL_LINUX
         static const std::string os_cmd = "/usr/bin/xdg-open \"%s\"";
+#elif __FreeBSD__
+        static const std::string os_cmd = "/usr/local/bin/xdg-open \"%s\"";
 #endif
         cmd = findCommand("", os_cmd);
         if (cmd.empty())

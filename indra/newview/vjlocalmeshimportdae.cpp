@@ -64,12 +64,20 @@ LLLocalMeshImportDAE::loadFile_return LLLocalMeshImportDAE::loadFile(const std::
     if (gSavedSettings.getBOOL("ImporterPreprocessDAE"))
     {
         LL_DEBUGS("LocalMesh") << "Performing dae preprocessing" << LL_ENDL;
+#if defined(__FreeBSD__)
+        collada_dom = daeSafeCast<domCOLLADA>(collada_core.openFromMemory(filename, LLDAELoader::preprocessDAE(filename).c_str()));
+#else
         collada_dom = collada_core.openFromMemory(filename, LLDAELoader::preprocessDAE(filename).c_str());
+#endif
     }
     else
     {
         LL_INFOS() << "Skipping dae preprocessing" << LL_ENDL;
+#if defined(__FreeBSD__)
+        collada_dom = daeSafeCast<domCOLLADA>(collada_core.open(filename));
+#else
         collada_dom = collada_core.open(filename);
+#endif
     }
 
     if (!collada_dom)

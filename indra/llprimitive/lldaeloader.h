@@ -34,10 +34,11 @@ class DAE;
 class daeElement;
 #if defined(__FreeBSD__)
 // FreeBSD links the system collada-dom 2.5, whose types live in the
-// ColladaDOM141 namespace. Forward-declare them there, then alias each into
-// the global scope with a using-declaration (a synonym for the same entity,
-// so unqualified use stays unambiguous even where dae.h's using-directive is
-// also in effect). Other platforms link a global-namespace collada-dom build.
+// ColladaDOM141 namespace and which its own headers expose with
+// `using namespace ColladaDOM141`. Forward-declare the types there and pull
+// the whole namespace in with a using-directive (not per-type using-
+// declarations, which would create competing global symbols and clash with
+// the library's own directive). Other platforms link a global-namespace build.
 namespace ColladaDOM141 {
     class domProfile_COMMON;
     class domInstance_geometry;
@@ -47,13 +48,7 @@ namespace ColladaDOM141 {
     class domSkin;
     class domMesh;
 }
-using ColladaDOM141::domProfile_COMMON;
-using ColladaDOM141::domInstance_geometry;
-using ColladaDOM141::domNode;
-using ColladaDOM141::domTranslate;
-using ColladaDOM141::domController;
-using ColladaDOM141::domSkin;
-using ColladaDOM141::domMesh;
+using namespace ColladaDOM141;
 #else
 class domProfile_COMMON;
 class domInstance_geometry;

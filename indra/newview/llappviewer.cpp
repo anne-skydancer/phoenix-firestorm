@@ -154,7 +154,9 @@
 #include "stringize.h"
 #include "llcoros.h"
 #include "llexception.h"
-#include "cef/dullahan_version.h"
+#if !defined(__FreeBSD__)
+#include "cef/dullahan_version.h" // no CEF/Dullahan on FreeBSD (EXTERNAL_TOS)
+#endif
 #if !LL_LINUX
 #include "vlc/libvlc_version.h"
 #endif // LL_LINUX
@@ -355,6 +357,8 @@ LLUUID gLastAgentSessionId;
 #   define LL_PLATFORM_KEY "mac"
 #elif LL_LINUX
 #   define LL_PLATFORM_KEY "lnx"
+#elif __FreeBSD__
+#   define LL_PLATFORM_KEY "bsd"
 #else
 #   error "Unknown Platform"
 #endif
@@ -1142,7 +1146,7 @@ bool LLAppViewer::init()
     std::string mime_types_name;
 #if LL_DARWIN
     mime_types_name = "mime_types_mac.xml";
-#elif LL_LINUX
+#elif LL_LINUX || __FreeBSD__
     mime_types_name = "mime_types_linux.xml";
 #else
     mime_types_name = "mime_types.xml";
@@ -4191,7 +4195,7 @@ LLSD LLAppViewer::getViewerInfo() const
         info["VOICE_VERSION"] = LLTrans::getString("NotConnected");
     }
 
-//#if !LL_LINUX
+#if !defined(__FreeBSD__)
     std::ostringstream cef_ver_codec;
     cef_ver_codec << "Dullahan: ";
     cef_ver_codec << DULLAHAN_VERSION_MAJOR;
@@ -4217,9 +4221,9 @@ LLSD LLAppViewer::getViewerInfo() const
     cef_ver_codec << CHROME_VERSION_PATCH;
 
     info["LIBCEF_VERSION"] = cef_ver_codec.str();
-//#else
-//  info["LIBCEF_VERSION"] = "Undefined";
-//#endif
+#else
+    info["LIBCEF_VERSION"] = "Undefined";
+#endif
 
 #if !LL_LINUX
     std::ostringstream vlc_ver_codec;

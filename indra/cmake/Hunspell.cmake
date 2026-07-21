@@ -3,7 +3,11 @@ include(Linking)
 include(Prebuilt)
 
 include_guard()
-use_prebuilt_binary(dictionaries)
+if (FREEBSD)
+  use_prebuilt_common(dictionaries)   # spell-check data, platform-independent
+else ()
+  use_prebuilt_binary(dictionaries)
+endif ()
 
 add_library( ll::hunspell INTERFACE IMPORTED )
 use_system_binary(hunspell)

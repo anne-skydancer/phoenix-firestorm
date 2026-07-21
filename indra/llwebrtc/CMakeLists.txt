@@ -10,9 +10,17 @@ include(WebRTC)
 
 project(llwebrtc)
 
-set(llwebrtc_SOURCE_FILES
-    llwebrtc.cpp
-    )
+if (FREEBSD)
+  # No native libwebrtc for FreeBSD yet (see WebRTC.cmake); build the facade
+  # from an inert stub so the viewer links and runs with voice disabled.
+  set(llwebrtc_SOURCE_FILES
+      llwebrtc_stub.cpp
+      )
+else ()
+  set(llwebrtc_SOURCE_FILES
+      llwebrtc.cpp
+      )
+endif ()
 
 set(llwebrtc_HEADER_FILES
     CMakeLists.txt

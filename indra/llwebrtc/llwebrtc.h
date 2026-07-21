@@ -49,7 +49,7 @@
 #ifdef LL_MAKEDLL
 #ifdef WEBRTC_WIN
 #define LLSYMEXPORT __declspec(dllexport)
-#elif WEBRTC_LINUX
+#elif WEBRTC_LINUX || defined(__FreeBSD__)
 #define LLSYMEXPORT __attribute__((visibility("default")))
 #else
 #define LLSYMEXPORT /**/

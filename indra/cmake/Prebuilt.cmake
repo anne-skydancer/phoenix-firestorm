@@ -144,3 +144,33 @@ macro (use_system_binary name)
   # USESYSTEMLIBS OFF: intentional no-op; caller proceeds to use_prebuilt_binary().
 endmacro ()
 
+# use_prebuilt_common(<name>)
+#   Fetch a platform-independent ("common") autobuild package directly from the
+#   URL in autobuild.xml and unpack it into the prebuilt dir. Used on FreeBSD
+#   (which has no autobuild) for header/font/data packages that are identical on
+#   every platform, so they need no per-package build arm.
+function (use_prebuilt_common name)
+  set(_stamp ${PREBUILD_TRACKING_DIR}/${name}_common_installed)
+  if (EXISTS ${_stamp})
+    return()
+  endif ()
+  execute_process(
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/cmake/fetch_autobuild.py
+            ${name} ${CMAKE_SOURCE_DIR}/../autobuild.xml common
+    OUTPUT_VARIABLE _url OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if (NOT _url)
+    message(FATAL_ERROR "use_prebuilt_common(${name}): no 'common' archive in autobuild.xml")
+  endif ()
+  get_filename_component(_fn ${_url} NAME)
+  if (NOT EXISTS ${CMAKE_BINARY_DIR}/${_fn})
+    file(DOWNLOAD ${_url} ${CMAKE_BINARY_DIR}/${_fn} STATUS _st)
+    list(GET _st 0 _rc)
+    if (NOT _rc EQUAL 0)
+      message(FATAL_ERROR "use_prebuilt_common(${name}): download failed (${_st})")
+    endif ()
+  endif ()
+  file(ARCHIVE_EXTRACT INPUT ${CMAKE_BINARY_DIR}/${_fn} DESTINATION ${LIBS_PREBUILT_DIR})
+  file(WRITE ${_stamp} "0")
+  message(STATUS "use_prebuilt_common(${name}): unpacked ${_fn}")
+endfunction ()
+

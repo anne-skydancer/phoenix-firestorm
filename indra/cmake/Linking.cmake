@@ -26,7 +26,7 @@ if (WINDOWS OR DARWIN )
     set( SHARED_LIB_STAGING_DIR ${SHARED_LIB_STAGING_DIR}/Resources)
   endif()
   set(EXE_STAGING_DIR ${CMAKE_BINARY_DIR}/sharedlibs/$<IF:$<BOOL:${LL_GENERATOR_IS_MULTI_CONFIG}>,$<CONFIG>,>)
-elseif (LINUX)
+elseif (LINUX OR FREEBSD)
   set(SHARED_LIB_STAGING_DIR ${CMAKE_BINARY_DIR}/sharedlibs/lib)
   set(EXE_STAGING_DIR ${CMAKE_BINARY_DIR}/sharedlibs/bin)
 endif ()
@@ -46,7 +46,7 @@ endif(NOT DARWIN)
 
 add_library( ll::oslibraries INTERFACE IMPORTED )
 
-if (LINUX)
+if (LINUX OR FREEBSD)
   target_link_libraries( ll::oslibraries INTERFACE
           dl
           pthread

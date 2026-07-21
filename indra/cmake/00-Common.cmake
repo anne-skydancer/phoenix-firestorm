@@ -276,6 +276,8 @@ if (FREEBSD)
       APPID=secondlife
       LL_IGNORE_SIGCHLD
       EXTERNAL_TOS            # no CEF on BSD -> TOS opens in an external browser
+      LL_USESYSTEMLIBS=1      # pull expat/jpeg/zlib etc. from OS packages, not
+                             # the (absent) bundled autobuild headers
       )
 
   add_compile_options(

@@ -38,7 +38,13 @@
 #include "lljoint.h"
 
 class daeElement;
+#if defined(__FreeBSD__)
+// System collada-dom 2.5 namespaces the versioned dom types (see lldaeloader.h).
+namespace ColladaDOM141 { class domMesh; }
+using ColladaDOM141::domMesh;
+#else
 class domMesh;
+#endif
 
 #define MAX_MODEL_FACES 8
 

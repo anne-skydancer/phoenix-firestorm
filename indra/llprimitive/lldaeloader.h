@@ -32,6 +32,29 @@
 
 class DAE;
 class daeElement;
+#if defined(__FreeBSD__)
+// FreeBSD links the system collada-dom 2.5, whose types live in the
+// ColladaDOM141 namespace. Forward-declare them there, then alias each into
+// the global scope with a using-declaration (a synonym for the same entity,
+// so unqualified use stays unambiguous even where dae.h's using-directive is
+// also in effect). Other platforms link a global-namespace collada-dom build.
+namespace ColladaDOM141 {
+    class domProfile_COMMON;
+    class domInstance_geometry;
+    class domNode;
+    class domTranslate;
+    class domController;
+    class domSkin;
+    class domMesh;
+}
+using ColladaDOM141::domProfile_COMMON;
+using ColladaDOM141::domInstance_geometry;
+using ColladaDOM141::domNode;
+using ColladaDOM141::domTranslate;
+using ColladaDOM141::domController;
+using ColladaDOM141::domSkin;
+using ColladaDOM141::domMesh;
+#else
 class domProfile_COMMON;
 class domInstance_geometry;
 class domNode;
@@ -39,6 +62,7 @@ class domTranslate;
 class domController;
 class domSkin;
 class domMesh;
+#endif
 
 using LODSuffixArray = std::array<std::string,LLModel::NUM_LODS>; // <FS:Beq/> configurable lod suffixes
 class LLDAELoader : public LLModelLoader

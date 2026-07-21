@@ -1,5 +1,7 @@
 # -*- cmake -*-
-use_prebuilt_binary(threejs)
+if (NOT FREEBSD)  # JS asset; the copy step below is disabled, so it is unused
+  use_prebuilt_binary(threejs)
+endif ()
 
 # Main three.js file
 #configure_file("${AUTOBUILD_INSTALL_DIR}/js/three.min.js" "${CMAKE_SOURCE_DIR}/newview/skins/default/html/common/equirectangular/js/three.min.js" COPYONLY)

@@ -1,5 +1,9 @@
 # -*- cmake -*-
 include(Prebuilt)
 
-use_prebuilt_binary(vulkan_gltf)
+if (FREEBSD)
+  use_prebuilt_common(vulkan_gltf)
+else ()
+  use_prebuilt_binary(vulkan_gltf)
+endif ()
 

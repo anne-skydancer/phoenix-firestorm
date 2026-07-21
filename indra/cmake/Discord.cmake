@@ -17,6 +17,12 @@
 include_guard()
 add_library(fs::discord INTERFACE IMPORTED)
 
+if (FREEBSD)
+  # No FreeBSD discord-rpc. Empty target so configure completes; resolved at
+  # build time (build the small discord-rpc from source, or gate fs::discord).
+  return()
+endif ()
+
 include(Prebuilt)
 use_prebuilt_binary(discord-rpc)
 

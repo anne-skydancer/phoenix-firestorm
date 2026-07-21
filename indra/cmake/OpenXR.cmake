@@ -10,6 +10,13 @@ if(USE_CONAN )
   return()
 endif()
 
+if (FREEBSD)
+  include(FindPkgConfig)
+  pkg_check_modules(OPENXR REQUIRED IMPORTED_TARGET openxr)
+  target_link_libraries(ll::openxr INTERFACE PkgConfig::OPENXR)
+  return()
+endif ()
+
 use_prebuilt_binary(openxr)
 if (WINDOWS)
   target_link_libraries( ll::openxr INTERFACE ${ARCH_PREBUILT_DIRS_RELEASE}/openxr_loader.lib )

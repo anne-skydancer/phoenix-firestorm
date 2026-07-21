@@ -1,7 +1,12 @@
 # -*- cmake -*-
 include(Prebuilt)
 
-set(NDOF ON CACHE BOOL "Use NDOF space navigator joystick library.")
+if (FREEBSD)
+  # No libndofdev on FreeBSD; disable 3D-mouse support (code gates on LIB_NDOF).
+  set(NDOF OFF CACHE BOOL "Use NDOF space navigator joystick library.")
+else ()
+  set(NDOF ON CACHE BOOL "Use NDOF space navigator joystick library.")
+endif ()
 
 include_guard()
 add_library( ll::ndof INTERFACE IMPORTED )

@@ -3,6 +3,13 @@
 include_guard()
 add_library( fs::glod INTERFACE IMPORTED )
 
+if (FREEBSD)
+  # GLOD has no FreeBSD prebuilt/port. Empty target so configure completes;
+  # resolved at build time (build libGLOD from source to keep the GLOD LOD
+  # feature, or gate that path -- meshoptimizer is the alternative).
+  return()
+endif ()
+
 include(Prebuilt)
 use_prebuilt_binary(glod)
 

@@ -54,8 +54,8 @@
 const char LL_UNKNOWN_CHAR = '?';
 class LLSD;
 
-#if LL_DARWIN || LL_LINUX
-// Template specialization of char_traits for U16s. Only necessary on Mac and Linux (exists on Windows already)
+#if LL_DARWIN || LL_LINUX || defined(__FreeBSD__)
+// Template specialization of char_traits for U16s. Only necessary on Mac, Linux and FreeBSD (exists on Windows already)
 #include <cstring>
 
 namespace std

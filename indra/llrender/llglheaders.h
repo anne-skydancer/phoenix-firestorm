@@ -27,9 +27,9 @@
 #ifndef LL_LLGLHEADERS_H
 #define LL_LLGLHEADERS_H
 
-#if LL_MESA
+#if LL_MESA || defined(__FreeBSD__)
 //----------------------------------------------------------------------------
-// MESA headers
+// MESA headers (also used for FreeBSD: portable Mesa GL headers from pkg)
 // quotes so we get libraries/.../GL/ version
 #define GL_GLEXT_PROTOTYPES 1
 #include "GL/gl.h"

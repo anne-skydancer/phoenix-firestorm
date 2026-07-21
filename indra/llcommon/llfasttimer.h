@@ -157,7 +157,7 @@ public:
     }
 #endif // LL_DARWIN && LL_ARM64
 
-#if (LL_LINUX || LL_DARWIN) && (LL_X86 || LL_X86_64)
+#if (LL_LINUX || LL_DARWIN || defined(__FreeBSD__)) && (LL_X86 || LL_X86_64)
     //
     // Mac+Linux FAST x86 implementation of CPU clock
     //

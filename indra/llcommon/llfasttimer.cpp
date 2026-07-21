@@ -43,7 +43,7 @@
 
 #if LL_WINDOWS
 #include "lltimer.h"
-#elif LL_LINUX
+#elif LL_LINUX || defined(__FreeBSD__)
 #include <sys/time.h>
 #include <sched.h>
 #include "lltimer.h"

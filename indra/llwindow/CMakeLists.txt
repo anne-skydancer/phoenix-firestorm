@@ -61,13 +61,13 @@ set(llwindow_LINK_LIBRARIES
         ll::SDL
         )
 
-if(LINUX)
+if(LINUX OR FREEBSD)
   set(llwindow_LINK_LIBRARIES ${llwindow_LINK_LIBRARIES} ll::fontconfig)
 endif()
 
 # Libraries on which this library depends, needed for Linux builds
 # Sort by high-level to low-level
-if (LINUX)
+if (LINUX OR FREEBSD)
   if (USE_SDL1)
     list(APPEND viewer_SOURCE_FILES
             llkeyboardsdl.cpp
@@ -100,7 +100,7 @@ if (LINUX)
         )
   endif (BUILD_HEADLESS)
 
-endif (LINUX)
+endif (LINUX OR FREEBSD)
 
 if (DARWIN)
   list(APPEND llwindow_SOURCE_FILES

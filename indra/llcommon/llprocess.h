@@ -36,7 +36,7 @@
 
 #if LL_WINDOWS
 #include "llwin32headers.h" // for HANDLE
-#elif LL_LINUX
+#elif LL_LINUX || defined(__FreeBSD__)
 #if defined(Status)
 #undef Status
 #endif

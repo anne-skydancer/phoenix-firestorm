@@ -32,9 +32,11 @@
 #ifdef LL_LINUX
 #define __ENABLE_WSTRING
 #include <endian.h>
+#elif defined(__FreeBSD__)
+#include <sys/endian.h>
 #endif  //  LL_LINUX
 
-#if (defined(LL_WINDOWS) || (defined(LL_LINUX) && (__BYTE_ORDER == __LITTLE_ENDIAN)) || (defined(LL_DARWIN) && defined(__LITTLE_ENDIAN__)))
+#if (defined(LL_WINDOWS) || (defined(LL_LINUX) && (__BYTE_ORDER == __LITTLE_ENDIAN)) || (defined(LL_DARWIN) && defined(__LITTLE_ENDIAN__)) || (defined(__FreeBSD__) && (_BYTE_ORDER == _LITTLE_ENDIAN)))
 #define LL_LITTLE_ENDIAN 1
 #else
 #define LL_BIG_ENDIAN 1
@@ -121,7 +123,7 @@
 #endif
 
 // Deal with minor differences on Unixy OSes.
-#if LL_DARWIN || LL_LINUX
+#if LL_DARWIN || LL_LINUX || defined(__FreeBSD__)
     // Different name, same functionality.
     #define stricmp strcasecmp
     #define strnicmp strncasecmp

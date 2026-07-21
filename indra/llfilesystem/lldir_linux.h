@@ -24,7 +24,7 @@
  * $/LicenseInfo$
  */
 
-#if !LL_LINUX
+#if !LL_LINUX && !defined(__FreeBSD__)
 #error This header must not be included when compiling for any target other than Linux. Consider including lldir.h instead.
 #endif // !LL_LINUX
 

@@ -35,7 +35,7 @@
 
 #if LL_WINDOWS
 #   include "llwin32headers.h"
-#elif LL_LINUX || LL_DARWIN
+#elif LL_LINUX || LL_DARWIN || defined(__FreeBSD__)
 #   include <errno.h>
 #   include <sys/time.h>
 #else
@@ -115,7 +115,7 @@ void ms_sleep(U32 ms)
 
 #endif
 
-#elif LL_LINUX || LL_DARWIN
+#elif LL_LINUX || LL_DARWIN || defined(__FreeBSD__)
 static void _sleep_loop(struct timespec& thiswait)
 {
     struct timespec nextwait;
@@ -233,7 +233,7 @@ F64 calc_clock_frequency()
 #endif // LL_WINDOWS
 
 
-#if LL_LINUX || LL_DARWIN
+#if LL_LINUX || LL_DARWIN || defined(__FreeBSD__)
 // Both Linux and Mac use gettimeofday for accurate time
 F64 calc_clock_frequency()
 {

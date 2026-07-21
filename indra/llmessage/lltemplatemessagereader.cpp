@@ -27,6 +27,10 @@
 #include "linden_common.h"
 #include "lltemplatemessagereader.h"
 
+#if defined(__FreeBSD__)
+#include <arpa/inet.h> // ntohs/htons
+#endif
+
 #include "llfasttimer.h"
 #include "llmessagebuilder.h"
 #include "llmessagetemplate.h"

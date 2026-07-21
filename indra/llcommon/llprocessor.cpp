@@ -782,6 +782,99 @@ private:
     }
 };
 
+#elif __FreeBSD__
+
+#include <sys/sysctl.h>
+class LLProcessorInfoFreeBSDImpl : public LLProcessorInfoImpl
+{
+public:
+    LLProcessorInfoFreeBSDImpl()
+    {
+        size_t len = 0;
+        using std::string;
+
+        char cpu_brand_string[0x40];
+        len = sizeof cpu_brand_string;
+        memset(cpu_brand_string, '\0', len);
+        sysctlbyname("hw.model", (void *)cpu_brand_string, &len, NULL, 0);
+        cpu_brand_string[0x3f] = '\0';
+        setInfo(eBrandName, cpu_brand_string);
+
+        uint64_t cpu_frequency = 0;
+        len = sizeof cpu_frequency;
+        sysctlbyname("hw.clockrate", (void *)&cpu_frequency, &len, NULL, 0);
+        setInfo(eFrequency, (F64)cpu_frequency);
+
+        auto dmesgboot = LLFile::fopen("/var/run/dmesg.boot", "rb");
+        std::ostringstream s;
+        if (dmesgboot)
+        {
+            char line[MAX_STRING];
+            memset(line, 0, MAX_STRING);
+            while (fgets(line, MAX_STRING, dmesgboot))
+            {
+                line[strlen(line) - 1] = ' ';
+                s << line;
+                s << std::endl;
+            }
+            fclose(dmesgboot);
+            s << std::endl;
+        }
+
+        auto dmesgboot_str = s.str();
+        int decimal;
+
+        auto idx1 = dmesgboot_str.find_first_of("\"") + 1;
+        auto idx2 = (idx1 != string::npos)
+            ? dmesgboot_str.find_first_of("\"", idx1)
+            : string::npos;
+        auto vendor = dmesgboot_str.substr(idx1, idx2 - idx1);
+        if (vendor.length() > 0) setInfo(eVendor, vendor.c_str());
+
+        idx1 = dmesgboot_str.find_first_of("=", idx2);
+        idx1 = dmesgboot_str.find_first_of("=", idx1 + 1) + 3;
+        idx2 = dmesgboot_str.find_first_of(" ", idx1);
+        auto family = dmesgboot_str.substr(idx1, idx2 - idx1);
+        std::istringstream(family) >> std::hex >> decimal;
+        setInfo(eFamily, decimal);
+        setInfo(eFamilyName, compute_CPUFamilyName(vendor.c_str(), decimal, 0));
+
+        idx1 = dmesgboot_str.find_first_of("=", idx2) + 3;
+        idx2 = dmesgboot_str.find_first_of(" ", idx1);
+        auto model = dmesgboot_str.substr(idx1, idx2 - idx1);
+        std::istringstream(model) >> std::hex >> decimal;
+        setInfo(eModel, decimal);
+
+        idx1 = dmesgboot_str.find_first_of("=", idx2) + 1;
+        idx2 = dmesgboot_str.find_first_of("\n", idx1);
+        auto stepping = dmesgboot_str.substr(idx1, idx2 - idx1);
+        setInfo(eStepping, std::stoi(stepping));
+
+        if (dmesgboot_str.find(",SSE,") != string::npos)
+            setExtension(cpu_feature_names[eSSE_Ext]);
+
+        if (dmesgboot_str.find(",SSE2,") != string::npos)
+            setExtension(cpu_feature_names[eSSE2_Ext]);
+
+        if (dmesgboot_str.find("<SSE3,") != string::npos)
+            setExtension(cpu_feature_names[eSSE3_Features]);
+
+        if (dmesgboot_str.find(",SSSE3,") != string::npos)
+            setExtension(cpu_feature_names[eSSE3S_Features]);
+
+        if (dmesgboot_str.find(",SSE4.1,") != string::npos)
+            setExtension(cpu_feature_names[eSSE4_1_Features]);
+
+        if (dmesgboot_str.find(",SSE4.2,") != string::npos)
+            setExtension(cpu_feature_names[eSSE4_2_Features]);
+
+        if (dmesgboot_str.find(",SSE4A,") != string::npos)
+            setExtension(cpu_feature_names[eSSE4a_Features]);
+    }
+
+    virtual ~LLProcessorInfoFreeBSDImpl() {}
+};
+
 #elif LL_LINUX
 const char CPUINFO_FILE[] = "/proc/cpuinfo";
 
@@ -957,6 +1050,9 @@ LLProcessorInfo::LLProcessorInfo() : mImpl(NULL)
         mImpl = &the_impl;
 #elif LL_DARWIN
         static LLProcessorInfoDarwinImpl the_impl;
+        mImpl = &the_impl;
+#elif defined(__FreeBSD__)
+        static LLProcessorInfoFreeBSDImpl the_impl;
         mImpl = &the_impl;
 #else
         static LLProcessorInfoLinuxImpl the_impl;

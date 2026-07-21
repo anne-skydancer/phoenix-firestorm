@@ -34,9 +34,17 @@
 #endif
 
 #define NANOSVG_IMPLEMENTATION
+#if defined(__FreeBSD__)
+#include <nanosvg.h> // system nanosvg pkg (flat include)
+#else
 #include <nanosvg/nanosvg.h>
+#endif
 #define NANOSVGRAST_IMPLEMENTATION
+#if defined(__FreeBSD__)
+#include <nanosvgrast.h>
+#else
 #include <nanosvg/nanosvgrast.h>
+#endif
 
 #if LL_WINDOWS
 #pragma warning (pop)

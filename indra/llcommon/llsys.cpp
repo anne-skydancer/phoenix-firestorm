@@ -81,6 +81,9 @@ using namespace llsd;
 #   include <stdexcept>
 const char MEMINFO_FILE[] = "/proc/meminfo";
 #   include <gnu/libc-version.h>
+#elif defined(__FreeBSD__)
+#   include <sys/sysctl.h>
+#   include <sys/utsname.h>
 #endif
 
 LLCPUInfo gSysCPU;
@@ -774,13 +777,17 @@ static U32Kilobytes LLMemoryAdjustKBResult(U32Kilobytes inKB)
 }
 #endif
 
-#if LL_DARWIN
+#if LL_DARWIN || defined(__FreeBSD__)
 // static
 U32Kilobytes LLMemoryInfo::getHardwareMemSize()
 {
     // This might work on Linux as well.  Someone check...
     uint64_t phys = 0;
+#if LL_DARWIN
     int mib[2] = { CTL_HW, HW_MEMSIZE };
+#else
+    int mib[2] = { CTL_HW, HW_PHYSMEM };
+#endif
 
     size_t len = sizeof(phys);
     sysctl(mib, 2, &phys, &len, NULL, 0);
@@ -794,7 +801,7 @@ U32Kilobytes LLMemoryInfo::getPhysicalMemoryKB() const
 #if LL_WINDOWS
     return LLMemoryAdjustKBResult(U32Kilobytes(mStatsMap["Total Physical KB"].asInteger()));
 
-#elif LL_DARWIN
+#elif LL_DARWIN || defined(__FreeBSD__)
     return getHardwareMemSize();
 
 #elif LL_LINUX

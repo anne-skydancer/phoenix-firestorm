@@ -29,6 +29,22 @@ if (LINUX)
             ${GLIB_INCLUDE_DIRS}
             )
 endif (LINUX)
+if (FREEBSD)
+  # Mirror the Linux UI stack from OS packages: fltk (native file dialogs),
+  # X11/Xinerama, and glib. LL_X11 gates the X11 clipboard/display code in
+  # llwindowsdl2; LL_FLTK gates the fltk file/dir pickers.
+  include(FindPkgConfig)
+  pkg_check_modules(Glib REQUIRED glib-2.0 gmodule-2.0 gobject-2.0 gthread-2.0)
+  target_compile_definitions(ll::uilibraries INTERFACE LL_FLTK=1 LL_X11=1 )
+  target_include_directories( ll::uilibraries SYSTEM INTERFACE ${Glib_INCLUDE_DIRS} )
+  target_link_libraries( ll::uilibraries INTERFACE
+          fltk
+          X11
+          Xinerama
+          ${Glib_LIBRARIES}
+          ll::freetype
+          )
+endif (FREEBSD)
 if( WINDOWS )
   target_link_libraries( ll::uilibraries INTERFACE
           opengl32

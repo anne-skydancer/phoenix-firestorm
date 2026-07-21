@@ -264,6 +264,11 @@ if (FREEBSD)
   include_directories(SYSTEM /usr/local/include)
   link_directories(/usr/local/lib)
 
+  # Header-only third-party libs that other platforms get from autobuild but
+  # FreeBSD has no prebuilt for: mikktspace (Apache-2.0) and the nVidia glh
+  # GL-extension helpers. Vendored in-tree so a fresh clone builds unaided.
+  include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/freebsd-vendored-include)
+
   find_program(CCACHE_EXE ccache)
   if (CCACHE_EXE AND NOT DISABLE_CCACHE)
     set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_EXE})

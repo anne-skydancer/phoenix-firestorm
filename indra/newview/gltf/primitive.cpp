@@ -32,7 +32,11 @@
 
 #include "mikktspace/mikktspace.hh"
 
+#if defined(__FreeBSD__)
+#include <meshoptimizer.h> // system meshoptimizer pkg (flat include)
+#else
 #include "meshoptimizer/meshoptimizer.h"
+#endif
 
 
 using namespace LL::GLTF;

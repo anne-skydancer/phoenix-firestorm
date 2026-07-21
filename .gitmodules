@@ -1,0 +1,4 @@
+[submodule "indra/grok"]
+	path = indra/grok
+	url = https://github.com/GrokImageCompression/grok.git
+	branch = master

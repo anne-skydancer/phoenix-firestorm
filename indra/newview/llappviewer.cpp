@@ -1146,8 +1146,12 @@ bool LLAppViewer::init()
     std::string mime_types_name;
 #if LL_DARWIN
     mime_types_name = "mime_types_mac.xml";
-#elif LL_LINUX || __FreeBSD__
+#elif LL_LINUX
     mime_types_name = "mime_types_linux.xml";
+#elif __FreeBSD__
+    // FreeBSD ships the libvlc media plugin (not the Linux gstreamer one), so it
+    // uses the default MIME map, which routes streaming media to media_plugin_libvlc.
+    mime_types_name = "mime_types.xml";
 #else
     mime_types_name = "mime_types.xml";
 #endif

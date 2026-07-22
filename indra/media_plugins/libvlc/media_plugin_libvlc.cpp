@@ -174,6 +174,12 @@ void MediaPluginLibVLC::initVLC()
     {
         "--no-xlib",
         "--video-filter=transform{type=vflip}",  // MAINT-6578 Y flip textures in plugin vs client
+#if defined(__FreeBSD__)
+        // FreeBSD's VLC build ships only the OSS audio output (no PulseAudio
+        // module), so pin it explicitly; it coexists with the viewer's own OSS
+        // audio engine via the kernel's vchan mixing.
+        "--aout=oss",
+#endif
     };
 
 #if LL_DARWIN

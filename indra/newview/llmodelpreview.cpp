@@ -97,7 +97,9 @@ bool LLModelPreview::sIgnoreLoadedCallback = false;
 static const std::string DEFAULT_PHYSICS_MESH_NAME = "default_physics_shape";
 const F32 SKIN_WEIGHT_CAMERA_DISTANCE = 16.f;
 
+#if !defined(__FreeBSD__)
 #include "glod/glod.h" // <FS:Beq/> More flexible LOD generation
+#endif
 // <FS:Beq> mesh loader suffix configuration
 //static
 const std::array<std::string,5> LLModelPreview::sSuffixVarNames
@@ -111,6 +113,11 @@ const std::array<std::string,5> LLModelPreview::sSuffixVarNames
 // </FS:Beq>
 
 // <FS:Beq> More flexible LOD generation
+#if defined(__FreeBSD__)
+// No GLOD on FreeBSD; LOD generation uses the meshoptimizer path, so the GLOD
+// error check is a no-op stub here.
+bool stop_gloderror() { return false; }
+#else
 bool stop_gloderror()
 {
     GLuint error = glodGetError();
@@ -126,6 +133,7 @@ bool stop_gloderror()
 
     return false;
 }
+#endif
 // </FS:Beq>
 
 LLViewerFetchedTexture* bindMaterialDiffuseTexture(const LLImportMaterial& material)
@@ -244,9 +252,15 @@ LLModelPreview::LLModelPreview(S32 width, S32 height, LLFloater* fmp)
     mLODFrozen = false;
     // <FS:Beq> Improved LOD generation
     mBuildShareTolerance = 0.f;
+#if defined(__FreeBSD__)
+    mBuildQueueMode = 0;
+    mBuildBorderMode = 0;
+    mBuildOperator = 0;
+#else
     mBuildQueueMode = GLOD_QUEUE_GREEDY;
     mBuildBorderMode = GLOD_BORDER_UNLOCK;
     mBuildOperator = GLOD_OPERATOR_EDGE_COLLAPSE;
+#endif
     // </FS:Beq>
     mUVGuideTexture = LLViewerTextureManager::getFetchedTextureFromFile(gSavedSettings.getString("FSMeshPreviewUVGuideFile"), FTT_LOCAL_FILE, true, LLGLTexture::BOOST_PREVIEW); // <FS:Beq> - Add UV guide overlay to pmesh preview
 
@@ -261,7 +275,9 @@ LLModelPreview::LLModelPreview(S32 width, S32 height, LLFloater* fmp)
     mViewOption["show_textures"] = false;
 
     mFMP = fmp;
+#if !defined(__FreeBSD__)
     glodInit(); // <FS:Beq/> Improved LOD generation
+#endif
     mHasPivot = false;
     mModelPivot = LLVector3(0.0f, 0.0f, 0.0f);
 
@@ -1255,6 +1271,7 @@ void LLModelPreview::clearGLODGroup()
 {
     if (mGroup)
     {
+#if !defined(__FreeBSD__)
         for (std::map<LLPointer<LLModel>, U32>::iterator iter = mObject.begin(); iter != mObject.end(); ++iter)
         {
             glodDeleteObject(iter->second);
@@ -1265,6 +1282,7 @@ void LLModelPreview::clearGLODGroup()
         glodDeleteGroup(mGroup);
         stop_gloderror();
         mGroup = 0;
+#endif
     }
 }
 // </FS:Beq>
@@ -1702,6 +1720,11 @@ void LLModelPreview::restoreNormals()
 // LL are still playing with Mesh Optimiser code.
 void LLModelPreview::genGlodLODs(S32 which_lod, U32 decimation, bool enforce_tri_limit)
 {
+#if defined(__FreeBSD__)
+    // No GLOD on FreeBSD -- delegate to the meshoptimizer LOD generator so any
+    // caller that would have used the GLOD path still gets LODs.
+    genMeshOptimizerLODs(which_lod, MESH_OPTIMIZER_AUTO, decimation, enforce_tri_limit);
+#else
     // Allow LoD from -1 to LLModel::LOD_PHYSICS
     if (which_lod < -1 || which_lod > LLModel::NUM_LODS - 1)
     {
@@ -2129,6 +2152,7 @@ void LLModelPreview::genGlodLODs(S32 which_lod, U32 decimation, bool enforce_tri
         shader->bind();
     }
     refresh(); // <FS:ND/> refresh once to make sure render gets called with the updated vbos
+#endif // !__FreeBSD__
 }
 // </FS:Beq>
 

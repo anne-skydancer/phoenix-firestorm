@@ -39,6 +39,7 @@
 
 /* dae headers*/
 #include <dae.h>
+#include <dom/domCOLLADA.h> // complete domCOLLADA type (daeSafeCast on FreeBSD)
 #include <dom/domConstants.h>
 #include <dom/domSkin.h>
 #include <dom/domGeometry.h>

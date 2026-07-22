@@ -2147,7 +2147,7 @@ bool LLFilePicker::getSaveFile( ESaveFilter filter, const std::string& filename,
     return false;
 }
 
-bool LLFilePicker::getOpenFile( ELoadFilter filter )
+bool LLFilePicker::getOpenFile( ELoadFilter filter, bool blocking )
 {
     reset();
     return false;

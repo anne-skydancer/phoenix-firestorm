@@ -38,7 +38,9 @@
 #include "rlvactions.h"
 #include "rlvhandler.h"
 
-#include <discord-rpc/discord_rpc.h>
+#if !defined(__FreeBSD__)
+#include <discord-rpc/discord_rpc.h> // no discord-rpc prebuilt for FreeBSD
+#endif
 #include <boost/algorithm/string/case_conv.hpp>
 
 #include "fsdiscordkey.h"
@@ -87,6 +89,7 @@ void FSDiscordConnect::clearMarkerFile()
     LLFile::remove(mMarkerFilename);
 }
 
+#if !defined(__FreeBSD__)
 static void handleDiscordReady(const DiscordUser *request)
 {
     LLSD info;
@@ -105,11 +108,13 @@ static void handleDiscordDisconnected(int errorCode, const char* message)
     LL_INFOS("DiscordConnect") << "Discord disconnected, errorCode: \"" << errorCode << "\", message: \"" << message << "\"" << LL_ENDL;
     FSDiscordConnect::getInstance()->setConnectionState(FSDiscordConnect::DISCORD_NOT_CONNECTED);
 }
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 //
 void FSDiscordConnect::discordConnectCoro()
 {
+#if !defined(__FreeBSD__)
     DiscordEventHandlers handlers;
     memset(&handlers, 0, sizeof(handlers));
     handlers.ready = handleDiscordReady;
@@ -121,13 +126,16 @@ void FSDiscordConnect::discordConnectCoro()
     handlers.joinRequest = handleDiscordJoinRequest;*/
 
     Discord_Initialize(DISCORD_API_KEY, &handlers, 1, "");
+#endif
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 //
 void FSDiscordConnect::discordDisconnectCoro()
 {
+#if !defined(__FreeBSD__)
     Discord_Shutdown();
+#endif
     setConnectionState(FSDiscordConnect::DISCORD_NOT_CONNECTED);
 }
 
@@ -197,6 +205,7 @@ void FSDiscordConnect::updateRichPresence() const
         region_name = "Hidden Region";
     }
 
+#if !defined(__FreeBSD__)
     DiscordRichPresence discordPresence;
     memset(&discordPresence, 0, sizeof(discordPresence));
     discordPresence.state = region_name.c_str();
@@ -242,6 +251,7 @@ void FSDiscordConnect::updateRichPresence() const
     discordPresence.partySize = static_cast<int>(gAgent.getRegion()->mMapAvatars.size());
     discordPresence.partyMax = LLRegionInfoModel::instance().mAgentLimit;
     Discord_UpdatePresence(&discordPresence);
+#endif
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -284,7 +294,9 @@ void FSDiscordConnect::checkConnectionToDiscord(bool auto_connect)
 
 bool FSDiscordConnect::Tick(const LLSD&)
 {
+#if !defined(__FreeBSD__)
     Discord_RunCallbacks();
+#endif
     updateRichPresence();
 
     return false;

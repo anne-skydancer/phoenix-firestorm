@@ -241,6 +241,11 @@ const std::string LLLocale::SYSTEM_LOCALE("English_United States.1252");
 #elif LL_DARWIN
 const std::string LLLocale::USER_LOCALE("en_US.iso8859-1");// = LLStringUtil::null;
 const std::string LLLocale::SYSTEM_LOCALE("en_US.iso8859-1");
+#elif defined(__FreeBSD__)
+// FreeBSD spells the UTF-8 modifier uppercase; "en_US.utf8" is not a valid
+// locale name here, so setlocale() would fail on every LLLocale construction.
+const std::string LLLocale::USER_LOCALE("en_US.UTF-8");
+const std::string LLLocale::SYSTEM_LOCALE("C");
 #else // LL_LINUX likes this
 const std::string LLLocale::USER_LOCALE("en_US.utf8");
 const std::string LLLocale::SYSTEM_LOCALE("C");

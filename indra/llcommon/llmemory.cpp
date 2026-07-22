@@ -40,6 +40,10 @@
 # include <unistd.h>
 # include <sys/resource.h>
 # include <sys/sysinfo.h>
+#elif defined(__FreeBSD__)
+// no <sys/sysinfo.h> on FreeBSD; getrusage() covers RSS
+# include <unistd.h>
+# include <sys/resource.h>
 #endif
 
 #include "llmemory.h"
@@ -145,6 +149,12 @@ void LLMemory::updateMemoryInfo()
     {
         LL_WARNS() << "task_info failed" << LL_ENDL;
     }
+#elif defined(__FreeBSD__)
+    // FreeBSD: resident set size via getrusage() (see getCurrentRSS()). No Linux
+    // <sys/sysinfo.h>/sysinfo() here -- and, crucially, no per-frame "not
+    // implemented" LL_WARNS: updateMemoryInfo() runs every frame, so that
+    // warning was flooding the log mutex + disk I/O on the main thread.
+    sAllocatedMemInKB = U32Kilobytes::convert(U64Bytes(LLMemory::getCurrentRSS()));
 #elif defined(LL_LINUX)
     // Use sysinfo() to get the total physical memory.
     struct sysinfo info;
@@ -267,7 +277,7 @@ U64 LLMemory::getCurrentRSS()
     return residentSize;
 }
 
-#elif defined(LL_LINUX)
+#elif defined(LL_LINUX) || defined(__FreeBSD__)
 
 U64 LLMemory::getCurrentRSS()
 {
@@ -278,8 +288,8 @@ U64 LLMemory::getCurrentRSS()
         return 0;
     }
 
-    // ru_maxrss (since Linux 2.6.32)
-    // This is the maximum resident set size used (in kilobytes).
+    // ru_maxrss is the maximum resident set size, in kilobytes on both
+    // Linux (since 2.6.32) and FreeBSD.
     return usage.ru_maxrss * 1024;
 }
 

@@ -709,6 +709,16 @@ bool idle_startup()
     system = osString.substr (begIdx, endIdx - begIdx);
     system += "Locale";
 
+#if defined(__FreeBSD__)
+    // FreeBSD's getOSStringSimple() yields "FreeBSD", so the key becomes
+    // "FreeBSDLocale" -- which no language_settings.xml defines. Every failed
+    // lookup returns a "MissingString" sentinel that then fails to set as a C
+    // locale, and the burst of these during startup UI construction stalls the
+    // main thread. FreeBSD uses the same locale-name format as Linux, so reuse
+    // the LinuxLocale key (defined for every language).
+    system = "LinuxLocale";
+#endif
+
     std::string locale = LLTrans::getString(system);
     if (locale != LLStringUtil::getLocale()) // is there a reason to do this on repeat?
     {

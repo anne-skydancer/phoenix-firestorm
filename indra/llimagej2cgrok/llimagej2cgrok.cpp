@@ -62,7 +62,11 @@ static void grok_error_callback(const char* msg, void*)
 
 static void grok_warning_callback(const char* msg, void*)
 {
-    LL_WARNS() << "LLImageJ2CGrok: " << msg << LL_ENDL;
+    // Grok is stricter than KDU/OpenJPEG about partial streams and emits a
+    // warning for every truncated/progressive packet during texture streaming.
+    // These are benign but, at LL_WARNS, flooded the log and added locked I/O on
+    // the image-decode path (visible as render stutter). Gate behind a debug tag.
+    LL_DEBUGS("Texture") << "LLImageJ2CGrok: " << msg << LL_ENDL;
 }
 
 std::string LLImageJ2CGrok::getEngineInfo() const

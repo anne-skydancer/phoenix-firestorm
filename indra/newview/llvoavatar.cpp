@@ -13334,7 +13334,9 @@ bool LLVOAvatar::isUsingServerBakes() const
     F32 expect_wt = mUseServerBakes ? 1.0f : 0.0f;
     if (!is_approx_equal(wt,expect_wt))
     {
-        LL_WARNS() << "wt " << wt << " differs from expected " << expect_wt << LL_ENDL;
+        // This sanity check runs on every avatar update; when it trips it
+        // trips every frame, flooding the log mutex. Once is enough to notice.
+        LL_WARNS_ONCE() << "wt " << wt << " differs from expected " << expect_wt << LL_ENDL;
     }
 #endif
 

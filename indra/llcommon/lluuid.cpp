@@ -494,8 +494,11 @@ S32 LLUUID::getNodeID(unsigned char* node_id)
     return retval;
 }
 
-#elif LL_DARWIN
-// macOS version of the UUID generation code...
+#elif LL_DARWIN || defined(__FreeBSD__)
+// macOS/FreeBSD version of the UUID generation code (BSD getifaddrs/AF_LINK).
+// FreeBSD lacks SIOCGIFHWADDR/SIOCGENADDR, so the Linux ioctl path below returns
+// no MAC -> an empty machine id -> saved passwords can't be sealed. Read the MAC
+// the BSD way instead so LLMachineID has a stable unique id.
 /*
  * Get an ethernet hardware address, if we can find it...
  */

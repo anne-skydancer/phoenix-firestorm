@@ -1948,7 +1948,9 @@ if (LINUX OR FREEBSD)
     # </FS:ND>
 
     # <FS:ND> Get rid of memory limit exceeded for -fvar-tracking-assignments.
-    if (NOT CMAKE_CXX_COMPILER MATCHES ".*clang")
+    # Match the compiler ID, not the binary name: FreeBSD's clang is /usr/bin/c++
+    # (no "clang" in the path), and this is a GCC-only flag clang rejects.
+    if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
       SET_SOURCE_FILES_PROPERTIES(llviewermenu.cpp PROPERTIES COMPILE_FLAGS -fno-var-tracking-assignments)
     endif()
     # </FS:ND>

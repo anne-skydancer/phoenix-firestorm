@@ -50,7 +50,17 @@ static void ensure_grok_initialized()
     static bool s_initialized = false;
     if (!s_initialized)
     {
-        grk_initialize(nullptr, 0, nullptr);
+        // Second arg is grok's GLOBAL taskflow worker-pool size; 0 means
+        // "one worker per hardware thread". Those workers busy-wait on
+        // sched_yield (taskflow's NonblockingNotifier) whenever idle, so a
+        // full-width pool pins every core. The viewer already decodes many
+        // textures concurrently on its own LLImageDecodeThread pool, and each
+        // of those threads calls into this one global grok pool -- the product
+        // is massive thread oversubscription that starves the main render
+        // thread (multi-second frame spikes while moving, confirmed by DTrace
+        // on-CPU profiling). Cap grok to a single global worker and let the
+        // viewer's decode pool provide cross-texture parallelism instead.
+        grk_initialize(nullptr, 1, nullptr);
         s_initialized = true;
     }
 }
@@ -87,7 +97,10 @@ public:
         stream_params.is_read_stream = true;
 
         params.core.reduce = static_cast<uint8_t>(llclamp(discard_level, 0, (S32)MAX_DISCARD_LEVEL));
-        params.num_threads = 2;
+        // Decode each image on the calling decode-thread. Per-image parallelism
+        // here only multiplies the global-pool oversubscription described in
+        // ensure_grok_initialized(); the viewer parallelizes across textures.
+        params.num_threads = 1;
 
         grk_msg_handlers handlers = {};
         handlers.error_callback = grok_error_callback;

@@ -51,9 +51,9 @@
 #include "llwindow.h"
 
 // Platform-specific includes
-#ifndef LL_LINUX
+#if !LL_LINUX && !defined(__FreeBSD__)
 #include "growlnotifierwin.h"
-#elif LL_LINUX
+#elif LL_LINUX || defined(__FreeBSD__)
 #include "desktopnotifierlinux.h"
 #endif
 
@@ -69,10 +69,10 @@ GrowlManager::GrowlManager()
     mChatMessageConnection()
 {
     // Create a notifier appropriate to the platform.
-#ifndef LL_LINUX
+#if !LL_LINUX && !defined(__FreeBSD__)
     mNotifier = new GrowlNotifierWin();
     LL_INFOS("GrowlManagerInit") << "Created GrowlNotifierWin." << LL_ENDL;
-#elif LL_LINUX
+#elif LL_LINUX || defined(__FreeBSD__)
     mNotifier = new DesktopNotifierLinux();
     LL_INFOS("GrowlManagerInit") << "Created DesktopNotifierLinux." << LL_ENDL;
 #else
@@ -80,7 +80,7 @@ GrowlManager::GrowlManager()
     LL_INFOS("GrowlManagerInit") << "Created generic GrowlNotifier." << LL_ENDL;
 #endif
 
-#ifndef LL_LINUX
+#if !LL_LINUX && !defined(__FreeBSD__)
     if (mNotifier)
     {
         // Need to call loadConfig for Windows first before we know if

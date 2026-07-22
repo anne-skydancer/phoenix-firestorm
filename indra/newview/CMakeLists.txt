@@ -1918,7 +1918,7 @@ if (DARWIN)
   list(APPEND viewer_SOURCE_FILES ${viewer_RESOURCE_FILES})
 endif (DARWIN)
 
-if (LINUX)
+if (LINUX OR FREEBSD)
     LIST(APPEND viewer_SOURCE_FILES llappviewerlinux.cpp)
     set_source_files_properties(
       llappviewerlinux.cpp

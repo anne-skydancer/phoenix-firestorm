@@ -30,7 +30,7 @@ if (DARWIN)
   LIST(APPEND llfilesystem_HEADER_FILES lldir_mac.h)
 endif (DARWIN)
 
-if (LINUX)
+if (LINUX OR FREEBSD)
   LIST(APPEND llfilesystem_SOURCE_FILES lldir_linux.cpp)
   LIST(APPEND llfilesystem_HEADER_FILES lldir_linux.h)
 
@@ -40,7 +40,7 @@ if (LINUX)
                                 "-DAPP_RO_DATA_DIR=\\\"${APP_SHARE_DIR}\\\""
                                 )
   endif (INSTALL)
-endif (LINUX)
+endif (LINUX OR FREEBSD)
 
 if (WINDOWS)
   LIST(APPEND llfilesystem_SOURCE_FILES lldir_win32.cpp)

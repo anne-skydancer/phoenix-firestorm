@@ -45,7 +45,7 @@
     #define USE_WIN32_SHARED_MEMORY 1
 #elif LL_DARWIN
     #define USE_SHM_OPEN_SHARED_MEMORY 1
-#elif LL_LINUX
+#elif LL_LINUX || defined(__FreeBSD__)
     #define USE_SHM_OPEN_SHARED_MEMORY 1
 #endif
 

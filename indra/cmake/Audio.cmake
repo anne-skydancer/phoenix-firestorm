@@ -5,6 +5,17 @@ include(Prebuilt)
 include_guard()
 add_library( ll::vorbis INTERFACE IMPORTED )
 
+if (FREEBSD)
+  # use_system_binary(vorbis) only resolves the 'vorbis' module; the viewer also
+  # needs vorbisenc/vorbisfile (encoder/file) and ogg. Pull the full set + ogg
+  # from pkg so ogg_*/vorbis_encode_* symbols resolve at link.
+  include(FindPkgConfig)
+  pkg_check_modules(Vorbis REQUIRED vorbis vorbisenc vorbisfile ogg)
+  target_include_directories( ll::vorbis SYSTEM INTERFACE ${Vorbis_INCLUDE_DIRS} )
+  target_link_libraries( ll::vorbis INTERFACE ${Vorbis_LIBRARIES} )
+  return()
+endif ()
+
 use_system_binary(vorbis)
 use_prebuilt_binary(ogg_vorbis)
 target_include_directories( ll::vorbis SYSTEM INTERFACE ${LIBS_PREBUILT_DIR}/include )

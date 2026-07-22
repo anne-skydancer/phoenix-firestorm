@@ -318,8 +318,13 @@ if (FREEBSD)
   # plugin links); keep the link line lld-safe and minimal.
   add_link_options(
       -Wl,--build-id
-      -Wl,--exclude-libs,ALL
       )
+  # --exclude-libs,ALL must apply to EXECUTABLES ONLY, not shared libraries:
+  # the media plugins are .so's that have to export LLPluginInitEntryPoint for
+  # SLPlugin's apr_dso_sym() to find. Putting it in add_link_options() (all
+  # targets) localized that symbol and broke every media plugin. This mirrors
+  # the Linux block, which scopes it to CMAKE_EXE_LINKER_FLAGS.
+  string(APPEND CMAKE_EXE_LINKER_FLAGS " -Wl,--exclude-libs,ALL")
 
   set(CMAKE_CXX_FLAGS_DEBUG "-fno-inline ${CMAKE_CXX_FLAGS_DEBUG}")
   set(CMAKE_FIND_LIBRARY_SUFFIXES ".so;.a")

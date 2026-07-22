@@ -1487,7 +1487,12 @@ void LLStringUtil::setLocale(std::string inLocale)
         // it seems this hasn't been working for some time, and I'm not sure how it is intentded to
         // properly discover the correct locale.  early out now to avoid failures later in
         // formatNumber()
-        LL_WARNS() << "Failed attempting to set invalid locale: " << inLocale << LL_ENDL;
+        // NOTE: setLocale() is called from the LLLocale RAII wrapper on every
+        // number-format operation (many per frame). At LL_WARNS this flooded the
+        // log with locked I/O on the main thread -> multi-hundred-ms frame stalls.
+        // Log once; the underlying MissingString locale lookup is a separate,
+        // long-standing issue.
+        LL_WARNS_ONCE() << "Failed attempting to set invalid locale: " << inLocale << LL_ENDL;
         return;
     }
     sLocale = inLocale;

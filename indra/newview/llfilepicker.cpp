@@ -1201,7 +1201,7 @@ bool LLFilePicker::getSaveFileModeless(ESaveFilter filter,
 }
 //END LL_DARWIN
 
-#elif LL_LINUX
+#elif LL_LINUX || defined(__FreeBSD__)
 
 # if LL_GTK
 

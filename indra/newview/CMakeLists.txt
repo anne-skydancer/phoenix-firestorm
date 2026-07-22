@@ -1977,7 +1977,7 @@ if (LINUX OR FREEBSD)
         "${CMAKE_CURRENT_SOURCE_DIR}/icons/${ICON_PATH}/firestorm_256.bmp"
         "${CMAKE_CURRENT_SOURCE_DIR}/res-sdl/firestorm_icon.BMP"
       )
-endif (LINUX)
+endif (LINUX OR FREEBSD)
 
 if (WINDOWS)
 

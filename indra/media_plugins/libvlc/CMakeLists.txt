@@ -50,6 +50,6 @@ if (DARWIN)
 
 endif (DARWIN)
 
-if( LINUX )
+if( LINUX OR FREEBSD )
   set(CMAKE_SHARED_LINKER_FLAGS  "-Wl,--build-id -Wl,-rpath,'$ORIGIN:$ORIGIN/../../lib'")
 endif()

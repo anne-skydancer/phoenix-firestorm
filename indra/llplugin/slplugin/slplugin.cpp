@@ -46,7 +46,7 @@ using namespace std;
     #include "slplugin-objc.h"
 #endif
 
-#if LL_DARWIN || LL_LINUX
+#if LL_DARWIN || LL_LINUX || defined(__FreeBSD__)
     #include <signal.h>
 #endif
 
@@ -64,7 +64,7 @@ using namespace std;
     Now that SLPlugin is a bundled app on the Mac, this is no longer necessary (it can just use a regular Info.plist file), but I'm leaving this comment in for posterity.
 */
 
-#if LL_DARWIN || LL_LINUX
+#if LL_DARWIN || LL_LINUX || defined(__FreeBSD__)
 // Signal handlers to make crashes not show an OS dialog...
 static void crash_handler(int sig)
 {
@@ -163,7 +163,7 @@ int main(int argc, char **argv)
     // display a crash message if something bad happens. The host app will
     // see the missing heartbeat and log appropriately.
     initExceptionHandler();
-#elif LL_DARWIN || LL_LINUX
+#elif LL_DARWIN || LL_LINUX || defined(__FreeBSD__)
     if(argc < 2)
     {
         LL_ERRS("slplugin") << "usage: " << argv[0] << " launcher_port" << LL_ENDL;

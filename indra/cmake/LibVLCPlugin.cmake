@@ -5,6 +5,16 @@ include(Prebuilt)
 include_guard()
 add_library( ll::libvlc INTERFACE IMPORTED )
 
+if (FREEBSD)
+  # System VLC (multimedia/vlc pkg provides libvlc.so + libvlccore.so).
+  set(LIBVLCPLUGIN ON CACHE BOOL "LIBVLCPLUGIN support for the llplugin/llmedia apps.")
+  find_library(VLC_LIBRARY     NAMES vlc     PATHS /usr/local/lib REQUIRED)
+  find_library(VLCCORE_LIBRARY NAMES vlccore PATHS /usr/local/lib REQUIRED)
+  target_link_libraries( ll::libvlc INTERFACE ${VLC_LIBRARY} ${VLCCORE_LIBRARY} )
+  target_include_directories( ll::libvlc SYSTEM INTERFACE /usr/local/include )
+  return()
+endif ()
+
 use_prebuilt_binary(vlc-bin)
 set(LIBVLCPLUGIN ON CACHE BOOL
         "LIBVLCPLUGIN support for the llplugin/llmedia test apps.")

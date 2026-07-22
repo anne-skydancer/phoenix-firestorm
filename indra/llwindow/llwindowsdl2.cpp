@@ -949,6 +949,14 @@ bool LLWindowSDL::switchContext(bool fullscreen, const LLCoordScreen &size, bool
 
 void LLWindowSDL::destroyContext()
 {
+    if (!mWindow)
+    {
+        // Already torn down. destroyContext() is called from both close() and
+        // ~LLWindowSDL(); running gGLManager.shutdownGL() and
+        // SDL_QuitSubSystem(VIDEO) a second time corrupts SDL/GL state and
+        // segfaults during final process teardown (seen on FreeBSD).
+        return;
+    }
     LL_INFOS() << "destroyContext begins" << LL_ENDL;
 
     SDL_StopTextInput();

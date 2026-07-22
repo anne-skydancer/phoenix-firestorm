@@ -46,6 +46,9 @@
 #include <openssl/asn1.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#if defined(__FreeBSD__)
+#include <openssl/provider.h>
+#endif
 #include <iostream>
 #include <iomanip>
 #include <time.h>
@@ -1312,6 +1315,18 @@ void LLSecAPIBasicHandler::init()
         }
 
     }
+#if defined(__FreeBSD__)
+    // FreeBSD links system OpenSSL 3.x, which keeps RC4 -- used to seal the
+    // protected credential store below (EVP_rc4) -- in the legacy provider.
+    // Load it (plus default, since explicitly loading any provider suppresses
+    // the implicit default) so saved logins can be sealed/unsealed instead of
+    // producing an undecryptable store. Handles are intentionally leaked: the
+    // providers must remain loaded for the process lifetime.
+    static OSSL_PROVIDER* sLegacyProvider = OSSL_PROVIDER_load(nullptr, "legacy");
+    static OSSL_PROVIDER* sDefaultProvider = OSSL_PROVIDER_load(nullptr, "default");
+    (void)sLegacyProvider;
+    (void)sDefaultProvider;
+#endif
     _readProtectedData(); // initialize mProtectedDataMap
                           // may throw LLProtectedDataException if saved datamap is not decryptable
 }

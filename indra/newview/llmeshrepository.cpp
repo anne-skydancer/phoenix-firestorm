@@ -4840,23 +4840,48 @@ void LLMeshRepository::notifyLoadedMeshes()
 
             if (mPendingRequests.size() > push_count)
             {
-                LL_PROFILE_ZONE_NAMED("Mesh score update");
-                // More requests than the high-water limit allows so
-                // sort and forward the most important.
-
-                // update "score" for pending requests
-                for (std::shared_ptr<PendingRequestBase>& req_p : mPendingRequests)
+                // More requests than the high-water limit allows so keep the queue
+                // ordered by "score" and forward the most important.
+                //
+                // Per-request scores change on an ~8s timescale (checkScore's
+                // EXPIRE_TIME_SECS), so re-scoring and re-sorting the ENTIRE pending
+                // queue every frame is almost pure waste -- and it is O(n) in the
+                // queue depth, which right after a teleport is huge and drains only
+                // push_count-per-frame, so this ran every frame for the minutes the
+                // backlog took to clear: a sustained multi-frame main-thread stall
+                // (the dominant cost measured in notifyLoadedMeshes). Refresh the
+                // ordering only a few times per second instead; between refreshes we
+                // keep consuming from the already-ordered front. Use a full sort
+                // (not partial_sort of just push_count) so the whole queue stays
+                // ordered and many frames of consumption between refreshes still pull
+                // the highest-scoring requests first.
+                static LLTimer sScoreSortTimer;
+                constexpr F32 SCORE_SORT_INTERVAL_SECS = 0.25f;
+                if (sScoreSortTimer.getElapsedTimeF32() > SCORE_SORT_INTERVAL_SECS)
                 {
-                    req_p->checkScore();
-                }
+                    LL_PROFILE_ZONE_NAMED("Mesh score update");
+                    sScoreSortTimer.reset();
 
-                //sort by "score"
-                std::partial_sort(mPendingRequests.begin(), mPendingRequests.begin() + push_count,
-                                  mPendingRequests.end(), PendingRequestBase::CompareScoreGreater());
+                    for (std::shared_ptr<PendingRequestBase>& req_p : mPendingRequests)
+                    {
+                        req_p->checkScore();
+                    }
+
+                    std::sort(mPendingRequests.begin(), mPendingRequests.end(),
+                              PendingRequestBase::CompareScoreGreater());
+                }
             }
-            while (!mPendingRequests.empty() && push_count > 0)
+
+            // Consume up to push_count from the (score-ordered) front, then erase the
+            // consumed range in a single pass. Erasing element-by-element from the
+            // front is O(n) per element -> O(n^2) on a deep post-teleport queue.
+            S32 consumed = 0;
+            S32 avail = (S32)mPendingRequests.size();
+            while (consumed < push_count && consumed < avail)
             {
-                std::shared_ptr<PendingRequestBase>& req_p = mPendingRequests.front();
+                // Copy the shared_ptr (cheap) rather than hold a reference into the
+                // vector across the load call below.
+                std::shared_ptr<PendingRequestBase> req_p = mPendingRequests[consumed];
                 // todo: check hasTrackedData here and erase request if none
                 // since this is supposed to mean that request was removed
                 switch (req_p->getRequestType())
@@ -4879,8 +4904,11 @@ void LLMeshRepository::notifyLoadedMeshes()
                     LL_ERRS() << "Unknown request type in LLMeshRepository::notifyLoadedMeshes" << LL_ENDL;
                     break;
                 }
-                mPendingRequests.erase(mPendingRequests.begin());
-                push_count--;
+                consumed++;
+            }
+            if (consumed > 0)
+            {
+                mPendingRequests.erase(mPendingRequests.begin(), mPendingRequests.begin() + consumed);
             }
         }
 

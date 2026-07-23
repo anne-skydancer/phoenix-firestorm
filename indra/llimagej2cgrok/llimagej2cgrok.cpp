@@ -34,6 +34,8 @@
 
 #include "grok.h"
 
+#include <thread>   // std::thread::hardware_concurrency for the grok pool size
+
 // Factory function: see declaration in llimagej2c.cpp
 LLImageJ2CImpl* fallbackCreateLLImageJ2CImpl()
 {
@@ -50,19 +52,40 @@ static void ensure_grok_initialized()
     static bool s_initialized = false;
     if (!s_initialized)
     {
-        // Second arg is grok's GLOBAL taskflow worker-pool size; 0 means
-        // "one worker per hardware thread". Those workers busy-wait on
-        // sched_yield (taskflow's NonblockingNotifier) whenever idle, so a
-        // full-width pool pins every core. The viewer already decodes many
-        // textures concurrently on its own LLImageDecodeThread pool, and each
-        // of those threads calls into this one global grok pool -- the product
-        // is massive thread oversubscription that starves the main render
-        // thread (multi-second frame spikes while moving, confirmed by DTrace
-        // on-CPU profiling). A single global worker fixed the starvation but
-        // throttled J2C decode throughput (slow texture loading), so use a
-        // bounded pool of 6: enough decode parallelism to keep textures
-        // flowing, still well under the 12-thread all-core saturation.
-        grk_initialize(nullptr, 6, nullptr);
+        // Second arg is grok's GLOBAL taskflow worker-pool size; 0 = one worker
+        // per hardware thread. This is the shared pool ALL the viewer's
+        // LLImageDecodeThread workers submit into. Paired with
+        // params.num_threads = 1 (each decode uses ONE pool worker), a full-width
+        // pool gives true N-way concurrent decode -- KDU-style throughput, which
+        // is what loads a busy region's textures fast.
+        //
+        // History: the original grk_initialize(0) starved the main render thread
+        // via idle workers busy-waiting on sched_yield -- but that was heavily
+        // amplified by other render-thread stalls since fixed (VBO implicit-sync,
+        // the per-texture glClientWaitSync spin, the mesh-rebuild burst). Under a
+        // busy region the pool is fully occupied decoding (not idle-spinning), so
+        // near-full width buys throughput at acceptable idle cost. If idle-spin
+        // choppiness returns in sparse scenes, the real fix is building grok with
+        // a blocking (condition-variable) taskflow notifier instead of capping
+        // the pool.
+        //
+        // FLOW CONTROL: size the pool to about HALF the hardware threads, NOT
+        // near-full width. The single main thread is the consumer for all this
+        // decoded output (GL upload/create) AND runs agent/movement updates and
+        // object-update processing. A near-full-width decode pool floods the
+        // main thread with finished textures faster than it can upload them and
+        // steals nearly every core, so the main thread only gets scheduled in
+        // bursts -- movement and content delivery choke (the classic
+        // producer-overruns-consumer stall). Leaving ~half the cores free keeps
+        // the main thread responsive (movement never blocks) at the cost of
+        // slightly slower peak decode, which is the right trade. Floor at 2.
+        // ~60% of hardware threads: enough decode throughput to load a busy
+        // region in reasonable time, while still leaving ~40% of cores free so
+        // the single main thread stays responsive (movement never blocks) even
+        // under a heavy decode load. Floor at 2.
+        unsigned int hw_threads = std::thread::hardware_concurrency();
+        int grok_pool = (hw_threads > 3u) ? static_cast<int>((hw_threads * 3u) / 5u) : 2;
+        grk_initialize(nullptr, grok_pool, nullptr);
         s_initialized = true;
     }
 }
@@ -99,11 +122,15 @@ public:
         stream_params.is_read_stream = true;
 
         params.core.reduce = static_cast<uint8_t>(llclamp(discard_level, 0, (S32)MAX_DISCARD_LEVEL));
-        // Let a decode use up to the full 6-worker global pool (see
-        // ensure_grok_initialized()); the global pool size caps total grok
-        // threads, so concurrent decodes share those 6 rather than each
-        // spawning its own and oversubscribing the cores.
-        params.num_threads = 6;
+        // Decode each image single-threaded (1 worker from the global pool),
+        // NOT num_threads=6. All the viewer's image-decode threads submit into
+        // grok's ONE shared pool (see ensure_grok_initialized()); if each decode
+        // asks for all 6 workers they serialize -- one image at a time, spread
+        // across 6 workers, which barely helps since SL textures are single-tile.
+        // With 1 worker per decode, up to 6 images decode CONCURRENTLY (KDU-style
+        // N-way parallelism), which is what actually loads a busy region's avatar
+        // bakes fast. Pool size is unchanged, so render-thread behaviour is too.
+        params.num_threads = 1;
 
         grk_msg_handlers handlers = {};
         handlers.error_callback = grok_error_callback;

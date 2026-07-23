@@ -49,6 +49,7 @@
 #include "llsdutil_math.h"
 #include "llsdserialize.h"
 #include "llthread.h"
+#include <thread>   // std::thread::hardware_concurrency for the mesh LOD pool size
 #include "llfilesystem.h"
 #include "llviewercontrol.h"
 #include "llviewerinventory.h"
@@ -980,8 +981,14 @@ LLMeshRepoThread::LLMeshRepoThread()
     mHttpLargePolicyClass = app_core_http.getPolicy(LLAppCoreHttp::AP_LARGE_MESH);
 
     // Lod processing is expensive due to the number of requests
-    // and a need to do expensive cacheOptimize().
-    mMeshThreadPool = std::make_unique<LL::ThreadPool>("MeshLodProcessing", 2);
+    // and a need to do expensive cacheOptimize(). Each posted task
+    // (processLod/processSkin) decompresses + builds one mesh's LLVolume
+    // independently, so it parallelizes cleanly. The hardcoded 2 serialized
+    // mesh loading in busy regions; scale with the CPU but stay conservative
+    // (hw/3, capped 2..6) so it shares cores with the grok decode pool rather
+    // than oversubscribing and starving the render thread.
+    S32 mesh_pool = llclamp((S32)std::thread::hardware_concurrency() / 3, 2, 6);
+    mMeshThreadPool = std::make_unique<LL::ThreadPool>("MeshLodProcessing", mesh_pool);
     mMeshThreadPool->start();
 }
 

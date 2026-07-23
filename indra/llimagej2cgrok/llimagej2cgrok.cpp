@@ -58,9 +58,11 @@ static void ensure_grok_initialized()
         // of those threads calls into this one global grok pool -- the product
         // is massive thread oversubscription that starves the main render
         // thread (multi-second frame spikes while moving, confirmed by DTrace
-        // on-CPU profiling). Cap grok to a single global worker and let the
-        // viewer's decode pool provide cross-texture parallelism instead.
-        grk_initialize(nullptr, 1, nullptr);
+        // on-CPU profiling). A single global worker fixed the starvation but
+        // throttled J2C decode throughput (slow texture loading), so use a
+        // bounded pool of 6: enough decode parallelism to keep textures
+        // flowing, still well under the 12-thread all-core saturation.
+        grk_initialize(nullptr, 6, nullptr);
         s_initialized = true;
     }
 }
@@ -97,10 +99,11 @@ public:
         stream_params.is_read_stream = true;
 
         params.core.reduce = static_cast<uint8_t>(llclamp(discard_level, 0, (S32)MAX_DISCARD_LEVEL));
-        // Decode each image on the calling decode-thread. Per-image parallelism
-        // here only multiplies the global-pool oversubscription described in
-        // ensure_grok_initialized(); the viewer parallelizes across textures.
-        params.num_threads = 1;
+        // Let a decode use up to the full 6-worker global pool (see
+        // ensure_grok_initialized()); the global pool size caps total grok
+        // threads, so concurrent decodes share those 6 rather than each
+        // spawning its own and oversubscribing the cores.
+        params.num_threads = 6;
 
         grk_msg_handlers handlers = {};
         handlers.error_callback = grok_error_callback;

@@ -38,6 +38,7 @@
 #include <set>
 #include <vector>
 #include <list>
+#include <utility>   // <FS:FreeBSD> per-buffer VAO cache (std::pair)
 #include <glm/gtc/matrix_transform.hpp>
 
 #define LL_MAX_VERTEX_ATTRIB_LOCATION 64
@@ -171,6 +172,17 @@ protected:
     ~LLVertexBuffer(); // use unref()
 
     void setupVertexBuffer();
+
+#if defined(__FreeBSD__)
+    // Return (creating+populating on first use) the VAO that captures this
+    // buffer's attribute pointers/enables/element binding for the given shader
+    // attribute mask. Leaves the returned VAO bound on a miss.
+    U32     getVertexArray(U32 data_mask);
+    // Delete every cached VAO and reset the fast-path fields. Called whenever
+    // the underlying VBO/IBO name or offsets change (destroyGLBuffer/Indices)
+    // or the buffer is destroyed.
+    void    clearVAOCache();
+#endif
 
     void    genBuffer(U32 size);
     void    genIndices(U32 size);
@@ -325,6 +337,15 @@ private:
     void _mapBuffer();
     bool mMapped = false;
 
+#if defined(__FreeBSD__)
+    // data_mask -> VAO name. One entry per distinct shader attribute mask this
+    // buffer is drawn under (usually 1-2). Invalidated when the VBO/IBO names
+    // or offsets change.
+    std::vector<std::pair<U32, U32>> mVAOs;
+    U32 mLastVAO = 0;       // fast path: last VAO returned by getVertexArray
+    U32 mLastVAOMask = 0;   // fast path: mask that produced mLastVAO
+#endif
+
 public:
 
     static U64 getBytesAllocated();
@@ -333,6 +354,12 @@ public:
     static U32 sGLRenderBuffer;
     static U32 sGLRenderIndices;
     static U32 sLastMask;
+#if defined(__FreeBSD__)
+    // Process-wide core-profile dummy VAO (created in LLRender::init), reused as
+    // the scratch/upload VAO so buffer uploads never disturb a populated
+    // per-buffer VAO.
+    static U32 sScratchVAO;
+#endif
     static U32 sVertexCount;
 };
 

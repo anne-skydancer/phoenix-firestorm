@@ -704,6 +704,9 @@ U64 LLVertexBuffer::getBytesAllocated()
 U32 LLVertexBuffer::sGLRenderBuffer = 0;
 U32 LLVertexBuffer::sGLRenderIndices = 0;
 U32 LLVertexBuffer::sLastMask = 0;
+#if defined(__FreeBSD__)
+U32 LLVertexBuffer::sScratchVAO = 0;
+#endif
 U32 LLVertexBuffer::sVertexCount = 0;
 
 
@@ -760,6 +763,12 @@ const U32 LLVertexBuffer::sGLMode[LLRender::NUM_MODES] =
 //static
 void LLVertexBuffer::setupClientArrays(U32 data_mask)
 {
+#if defined(__FreeBSD__)
+    // Enable/disable state lives inside each per-buffer VAO on FreeBSD; the
+    // global enable model must not touch whatever VAO is currently bound.
+    (void)data_mask;
+    return;
+#endif
     if (sLastMask != data_mask)
     {
         for (U32 i = 0; i < TYPE_MAX; ++i)
@@ -935,6 +944,13 @@ void LLVertexBuffer::clone(LLVertexBuffer& target) const
     {
         target.allocateBuffer(getNumVerts(), getNumIndices());
     }
+#if defined(__FreeBSD__)
+    // If counts already matched, allocateBuffer() was skipped and mOffsets[] were
+    // NOT recomputed for the (possibly changed) type mask -- any VAO cached on
+    // target now holds attribute pointers for the old layout. Invalidate so it is
+    // rebuilt with target's current mOffsets/mTypeMask.
+    target.clearVAOCache();
+#endif
 }
 
 void LLVertexBuffer::drawRange(U32 mode, U32 start, U32 end, U32 count, U32 indices_offset) const
@@ -1005,11 +1021,27 @@ void LLVertexBuffer::initClass(LLWindow* window)
 void LLVertexBuffer::unbind()
 {
     STOP_GLERROR;
+#if defined(__FreeBSD__)
+    // Leave no per-buffer VAO bound: switch to the scratch VAO and clear its
+    // buffer bindings so later uploads / immediate-mode GL can't corrupt a
+    // populated per-buffer VAO.
+    if (sScratchVAO)
+    {
+        glBindVertexArray(sScratchVAO);
+    }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     STOP_GLERROR;
     sGLRenderBuffer = 0;
     sGLRenderIndices = 0;
+    sLastMask = 0;
+#else
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    STOP_GLERROR;
+    sGLRenderBuffer = 0;
+    sGLRenderIndices = 0;
+#endif
 }
 
 //static
@@ -1055,6 +1087,17 @@ static std::vector<LLVertexBuffer*> sMappedBuffers;
 void LLVertexBuffer::flushBuffers()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_VERTEX;
+#if defined(__FreeBSD__)
+    // The uploads below rebind GL_ELEMENT_ARRAY_BUFFER, which is VAO state. Do
+    // them on the scratch VAO and force _unmapBuffer to re-bind both targets by
+    // clearing the trackers, so no populated per-buffer VAO is disturbed.
+    if (!sMappedBuffers.empty() && sScratchVAO)
+    {
+        glBindVertexArray(sScratchVAO);
+        sGLRenderBuffer = 0;
+        sGLRenderIndices = 0;
+    }
+#endif
     // must only be called from main thread
     for (auto& buffer : sMappedBuffers)
     {
@@ -1166,6 +1209,16 @@ bool LLVertexBuffer::createGLBuffer(U32 size)
     {
         destroyGLBuffer();
     }
+#if defined(__FreeBSD__)
+    // destroyGLBuffer() clears the VAO cache only when a *previous* buffer
+    // existed. On the 0 -> N transition its guard is skipped, so genBuffer()
+    // below installs a new VBO name (and updateNumVerts() has just rewritten
+    // mOffsets[]) while any VAO cached earlier -- e.g. from a drawArrays() pass
+    // that captured attribute pointers against buffer 0 -- would survive with
+    // stale pointers (deformed geometry until the next resize). Invalidate
+    // unconditionally; the empty-cache guard makes a redundant call a no-op.
+    clearVAOCache();
+#endif
 
     if (size == 0)
     {
@@ -1189,6 +1242,15 @@ bool LLVertexBuffer::createGLIndices(U32 size)
     {
         destroyGLIndices();
     }
+#if defined(__FreeBSD__)
+    // Mirror createGLBuffer(): the 0 -> N index transition (a buffer first drawn
+    // non-indexed via drawArrays(), then given an IBO on a later rebuild) does
+    // NOT pass through destroyGLIndices(), so a cached VAO that captured
+    // element-array binding 0 would be reused by a later indexed drawRange() and
+    // read indices from buffer 0 -> missing / partial geometry. Invalidate here
+    // so the VAO is rebuilt against the real mGLIndices.
+    clearVAOCache();
+#endif
 
     if (size == 0)
     {
@@ -1220,6 +1282,10 @@ void LLVertexBuffer::destroyGLBuffer()
         mSize = 0;
         mGLBuffer = 0;
         mMappedData = nullptr;
+#if defined(__FreeBSD__)
+        // VBO name/offsets are changing: every cached VAO is now stale.
+        clearVAOCache();
+#endif
     }
 }
 
@@ -1237,6 +1303,10 @@ void LLVertexBuffer::destroyGLIndices()
         mIndicesSize = 0;
         mGLIndices = 0;
         mMappedIndexData = nullptr;
+#if defined(__FreeBSD__)
+        // IBO name is changing: cached VAOs captured the old element binding.
+        clearVAOCache();
+#endif
     }
 }
 
@@ -1703,6 +1773,49 @@ void LLVertexBuffer::setBuffer()
 {
     STOP_GLERROR;
 
+#if defined(__FreeBSD__)
+    if (mMapped)
+    {
+        LL_WARNS_ONCE() << "Missing call to unmapBuffer or flushBuffers" << LL_ENDL;
+        // Flush this buffer on the scratch VAO so the element-array rebind inside
+        // _unmapBuffer does not clobber a populated per-buffer VAO. Clearing the
+        // trackers forces _unmapBuffer to (re)bind both targets.
+        if (sScratchVAO)
+        {
+            glBindVertexArray(sScratchVAO);
+            sGLRenderBuffer = 0;
+            sGLRenderIndices = 0;
+        }
+        _unmapBuffer();
+    }
+
+    // no data may be pending
+    llassert(mMappedVertexRegions.empty());
+    llassert(mMappedIndexRegions.empty());
+
+    // a shader must be bound
+    llassert(LLGLSLShader::sCurBoundShaderPtr);
+
+    U32 data_mask = LLGLSLShader::sCurBoundShaderPtr->mAttributeMask;
+
+    // this Vertex Buffer must provide all necessary attributes for currently bound shader
+    llassert_msg((data_mask & mTypeMask) == data_mask,
+        "Attribute mask mismatch! mTypeMask should be a superset of data_mask.  data_mask: 0x"
+                << std::hex << data_mask << " mTypeMask: 0x" << mTypeMask << " Missing: 0x" << (data_mask & ~mTypeMask) <<  std::dec);
+
+    // Common case collapses to a single glBindVertexArray. The VAO already
+    // captures the attribute pointers, enables, and element-array binding for
+    // this exact data_mask, so no per-attribute GL calls are needed.
+    U32 vao = getVertexArray(data_mask);
+    glBindVertexArray(vao);
+
+    sGLRenderBuffer = mGLBuffer;
+    sGLRenderIndices = mGLIndices;
+    sLastMask = data_mask;
+
+    STOP_GLERROR;
+    return;
+#else
     if (mMapped)
     {
         LL_WARNS_ONCE() << "Missing call to unmapBuffer or flushBuffers" << LL_ENDL;
@@ -1743,6 +1856,7 @@ void LLVertexBuffer::setBuffer()
     }
 
     STOP_GLERROR;
+#endif
 }
 
 
@@ -1847,6 +1961,82 @@ void LLVertexBuffer::setupVertexBuffer()
     }
     STOP_GLERROR;
 }
+
+#if defined(__FreeBSD__)
+U32 LLVertexBuffer::getVertexArray(U32 data_mask)
+{
+    // Fast path: same mask as last draw of this buffer.
+    if (mLastVAO != 0 && mLastVAOMask == data_mask)
+    {
+        return mLastVAO;
+    }
+
+    // Cache lookup.
+    for (auto& entry : mVAOs)
+    {
+        if (entry.first == data_mask)
+        {
+            mLastVAOMask = data_mask;
+            mLastVAO = entry.second;
+            return entry.second;
+        }
+    }
+
+    // Miss: create and populate a VAO that records exactly the GL state the
+    // non-VAO path would set for this data_mask (enables + attribute pointers +
+    // element-array binding), then cache it.
+    LL_PROFILE_ZONE_SCOPED_CATEGORY_VERTEX;
+    STOP_GLERROR;
+
+    U32 vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    // Source VBO must be bound so glVertexAttribPointer captures it per-attrib.
+    glBindBuffer(GL_ARRAY_BUFFER, mGLBuffer);
+    sGLRenderBuffer = mGLBuffer;
+
+    // Element-array binding is VAO state; capture it here.
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mGLIndices);
+    sGLRenderIndices = mGLIndices;
+
+    // Enable exactly the attributes in data_mask (a fresh VAO starts all
+    // disabled), mirroring setupClientArrays.
+    for (U32 i = 0; i < TYPE_MAX; ++i)
+    {
+        if (data_mask & (1u << i))
+        {
+            glEnableVertexAttribArray(i);
+        }
+    }
+
+    // Reuse the unmodified pointer-setup ladder. It reads the same data_mask via
+    // LLGLSLShader::sCurBoundShaderPtr->mAttributeMask, so the emissive->color
+    // remap and texture_index cases are reproduced verbatim.
+    setupVertexBuffer();
+
+    mVAOs.emplace_back(data_mask, vao);
+    mLastVAOMask = data_mask;
+    mLastVAO = vao;
+
+    STOP_GLERROR;
+    return vao;
+}
+
+void LLVertexBuffer::clearVAOCache()
+{
+    if (!mVAOs.empty())
+    {
+        for (auto& entry : mVAOs)
+        {
+            glDeleteVertexArrays(1, &entry.second);
+        }
+        mVAOs.clear();
+    }
+    mLastVAO = 0;
+    mLastVAOMask = 0;
+}
+#endif
 
 void LLVertexBuffer::setPositionData(const LLVector4a* data)
 {

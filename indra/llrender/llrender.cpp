@@ -888,6 +888,13 @@ bool LLRender::init(bool needs_vertex_buffer)
         U32 ret;
         glGenVertexArrays(1, &ret);
         glBindVertexArray(ret);
+#if defined(__FreeBSD__)
+        // Reuse the core-profile dummy VAO as the scratch/upload VAO for the
+        // per-buffer VAO cache in LLVertexBuffer: all buffer uploads happen
+        // while this VAO is current so they never disturb a populated
+        // per-buffer VAO.
+        LLVertexBuffer::sScratchVAO = ret;
+#endif
     }
 
     if (needs_vertex_buffer)

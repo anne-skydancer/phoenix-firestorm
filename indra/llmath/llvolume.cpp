@@ -55,6 +55,10 @@
 
 #include "mikktspace/mikktspace.hh"
 
+#ifdef HAVE_LLRUST
+#include "llrust.h" // cbindgen-generated; Rust mesh-decode bridge
+#endif
+
 #if defined(__FreeBSD__)
 #include <meshoptimizer.h> // system meshoptimizer pkg (flat include)
 #else
@@ -2344,6 +2348,17 @@ bool LLVolume::unpackVolumeFaces(U8* in_data, S32 size)
 
 bool LLVolume::unpackVolumeFacesInternal(const LLSD& mdl)
 {
+#ifdef HAVE_LLRUST
+    // One-time bridge proof: confirm the linked Rust code links AND executes.
+    // Remove once a real Rust decode path lands here.
+    static bool s_llrust_checked = false;
+    if (!s_llrust_checked)
+    {
+        s_llrust_checked = true;
+        LL_INFOS() << "llrust bridge OK: " << ll_rust_version()
+                   << " selftest(40,2)=" << ll_rust_selftest(40, 2) << LL_ENDL;
+    }
+#endif
     {
         auto face_count = mdl.size();
 

@@ -1,0 +1,22 @@
+[package]
+name = "llrust"
+version = "0.1.0"
+edition = "2021"
+description = "Rust components linked into the Firestorm viewer via a C ABI. First target: SL mesh asset decode (untrusted zlib + quantized vertex data)."
+license = "LGPL-2.1"
+publish = false
+
+[lib]
+name = "llrust"
+# staticlib -> a single libllrust.a the C++ viewer links directly.
+crate-type = ["staticlib"]
+
+[dependencies]
+# flate2 (zlib inflate for mesh blocks) will be added when the parse moves into Rust.
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Never unwind a Rust panic across the C ABI into C++ -- abort instead.
+panic = "abort"

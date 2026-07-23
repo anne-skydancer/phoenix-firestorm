@@ -7,6 +7,7 @@ include(LLCommon)
 include(bugsplat)
 include(Boost)
 include(SSE2NEON)
+include(LLRust)
 
 set(llmath_SOURCE_FILES
     llbbox.cpp
@@ -104,8 +105,14 @@ list(APPEND llmath_SOURCE_FILES ${llmath_HEADER_FILES})
 
 add_library (llmath ${llmath_SOURCE_FILES})
 
-target_link_libraries(llmath llcommon llmeshoptimizer ll::sse2neon)
+target_link_libraries(llmath llcommon llmeshoptimizer ll::sse2neon ll::rust)
 target_include_directories( llmath  INTERFACE   ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Ensure the Rust staticlib + cbindgen header are built before llmath compiles.
+# The target only exists when the Rust bridge is enabled (cargo/cbindgen found).
+if (TARGET llrust_build)
+  add_dependencies(llmath llrust_build)
+endif ()
 
 # Add tests
 if (LL_TESTS)

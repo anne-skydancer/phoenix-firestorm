@@ -1749,7 +1749,18 @@ void LLImageGL::syncToMainThread(LLGLuint new_tex_name)
 
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_TEXTURE("cglt - sync");
+#if defined(__FreeBSD__)
+        // On the FreeBSD NVIDIA driver, glClientWaitSync(GL_TIMEOUT_IGNORED)
+        // busy-spins a CPU core once per uploaded texture on the texture thread,
+        // contending with the main render thread and causing lag while textures
+        // stream in during movement. Route FreeBSD (incl. NVIDIA) through the
+        // GPU-side glWaitSync path below instead: it enforces the same
+        // upload-before-draw ordering on the GPU without burning a CPU core.
+        // (Same class of NVIDIA-driver CPU-spin as the VBO implicit-sync stall.)
+        if (false)
+#else
         if (gGLManager.mIsNVIDIA)
+#endif
         {
             // wait for texture upload to finish before notifying main thread
             // upload is complete

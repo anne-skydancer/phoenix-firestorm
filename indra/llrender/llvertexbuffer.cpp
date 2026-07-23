@@ -481,6 +481,29 @@ public:
             {
                 pool.erase(iter);
             }
+
+#if defined(__FreeBSD__)
+            // The recycled buffer's GL storage may still be referenced by
+            // in-flight GPU draws. On the FreeBSD NVIDIA driver, glBufferSubData
+            // into it followed by an immediate draw in the same frame makes the
+            // driver CPU-spin inside libnvidia-glcore doing an implicit
+            // synchronization -- the multi-second stall observed the instant a
+            // new mesh loads. Orphan the buffer here (glBufferData(NULL) at the
+            // same size = storage rename) so the fresh storage has no pending
+            // dependency. Safe because the caller fully repopulates the buffer
+            // before it is drawn, so the old contents are irrelevant. The
+            // cache-miss branch above already gets fresh storage for free.
+            glBindBuffer(type, name);
+            glBufferData(type, size, nullptr, GL_DYNAMIC_DRAW);
+            if (type == GL_ELEMENT_ARRAY_BUFFER)
+            {
+                LLVertexBuffer::sGLRenderIndices = name;
+            }
+            else
+            {
+                LLVertexBuffer::sGLRenderBuffer = name;
+            }
+#endif
         }
 
         clean();

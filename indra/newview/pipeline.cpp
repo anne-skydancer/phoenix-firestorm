@@ -2780,26 +2780,9 @@ void LLPipeline::doOcclusion(LLCamera& camera)
 
         gGL.setColorMask(true, true);
     }
-
-    if (sReflectionProbesEnabled && sUseOcclusion > 1 && !LLPipeline::sShadowRender && !gCubeSnapshot)
-    {
-        gGL.setColorMask(false, false);
-        LLGLDepthTest depth(GL_TRUE, GL_FALSE);
-        LLGLDisable cull(GL_CULL_FACE);
-
-        gOcclusionCubeProgram.bind();
-
-        if (mCubeVB.isNull())
-        { //cube VB will be used for issuing occlusion queries
-            mCubeVB = ll_create_cube_vb(LLVertexBuffer::MAP_VERTEX);
-        }
-        mCubeVB->setBuffer();
-
-        mHeroProbeManager.doOcclusion();
-        gOcclusionCubeProgram.unbind();
-
-        gGL.setColorMask(true, true);
-    }
+    // (A duplicate block that re-ran mHeroProbeManager.doOcclusion() a second
+    // time per frame was removed here -- it doubled hero-probe occlusion query
+    // traffic. The block above already runs both reflection and hero occlusion.)
 
     if (LLPipeline::sUseOcclusion > 1 &&
         (sCull->hasOcclusionGroups() || LLVOCachePartition::sNeedsOcclusionCheck))
@@ -2995,6 +2978,21 @@ void LLPipeline::updateGeom(F32 max_dtime)
     for (LLDrawable::drawable_list_t::iterator iter = mBuildQ1.begin();
          iter != mBuildQ1.end();)
     {
+#if defined(__FreeBSD__)
+        // Cap geometry rebuild per frame. The passed-in max_dtime scales with
+        // the frame interval, so it balloons during a stall -- useless as a
+        // throttle on the very frames we care about. Use a fixed budget so a
+        // region crossing (which floods mBuildQ1 with a whole region's
+        // drawables) spreads its VBO alloc/upload work across frames instead of
+        // hitting the FreeBSD NVIDIA driver with a single-frame storm that
+        // stalls the main thread (other avatars visibly dead-reckon). Unprocessed
+        // drawables stay in mBuildQ1 (they keep IN_REBUILD_Q) and roll over.
+        static const F32 FREEBSD_GEOM_BUDGET = 0.003f; // 3 ms/frame
+        if (update_timer.getElapsedTimeF32() > FREEBSD_GEOM_BUDGET)
+        {
+            break;
+        }
+#endif
         LLDrawable::drawable_list_t::iterator curiter = iter++;
         LLDrawable* drawablep = *curiter;
         if (drawablep && !drawablep->isDead())
@@ -3859,10 +3857,33 @@ void LLPipeline::postSort(LLCamera &camera)
     // pack vertex buffers for groups that chose to delay their updates
     {
         LL_PROFILE_GPU_ZONE("rebuildMesh");
+#if defined(__FreeBSD__)
+        // Budget the deferred mesh-VBO rebuild: a region crossing dirties a
+        // whole region's groups at once, and packing them all in one frame hits
+        // the FreeBSD NVIDIA driver with a VBO alloc/upload storm that stalls the
+        // main thread. Rebuild until a fixed budget is spent, then leave the
+        // remaining groups in mMeshDirtyGroup so they roll to the next frame
+        // (they keep MESH_DIRTY, so a later rebuildMesh() picks them up).
+        static const F32 FREEBSD_MESH_DIRTY_BUDGET = 0.003f; // 3 ms/frame
+        LLTimer mesh_dirty_timer;
+        LLSpatialGroup::sg_vector_t::iterator iter = mMeshDirtyGroup.begin();
+        for (; iter != mMeshDirtyGroup.end(); ++iter)
+        {
+            (*iter)->rebuildMesh();
+            if (mesh_dirty_timer.getElapsedTimeF32() > FREEBSD_MESH_DIRTY_BUDGET)
+            {
+                ++iter;
+                break;
+            }
+        }
+        // Drop the processed prefix; the rest carry over to the next frame.
+        mMeshDirtyGroup.erase(mMeshDirtyGroup.begin(), iter);
+#else
         for (LLSpatialGroup::sg_vector_t::iterator iter = mMeshDirtyGroup.begin(); iter != mMeshDirtyGroup.end(); ++iter)
         {
             (*iter)->rebuildMesh();
         }
+#endif
     }
     }
 
@@ -3871,7 +3892,11 @@ void LLPipeline::postSort(LLCamera &camera)
         glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
     }*/
 
+#if !defined(__FreeBSD__)
+    // FreeBSD already erased the processed prefix above and intentionally keeps
+    // any budget overflow for the next frame -- don't wipe it here.
     mMeshDirtyGroup.clear();
+#endif
 
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_PIPELINE("sort alpha groups");

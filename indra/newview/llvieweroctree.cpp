@@ -1137,7 +1137,19 @@ void LLOcclusionCullingGroup::checkOcclusion()
 
             static LLCachedControl<U32> occlusion_timeout(gSavedSettings, "RenderOcclusionTimeout", 4);
 
+#if defined(__FreeBSD__)
+            // On FreeBSD/NVIDIA the timeout force-read is a blocking
+            // glGetQueryObjectuiv(GL_QUERY_RESULT) that CPU-stalls the main
+            // thread under GPU backpressure (many groups timing out in the same
+            // frame during crossings / heavy streaming). Never force it: read
+            // only when the result is genuinely available, otherwise carry the
+            // group's prior occlusion state and re-poll AVAILABLE next frame.
+            // The occlusion scheme already tolerates a stale frame of visibility.
+            (void)occlusion_timeout;
+            if (available)
+#else
             if (available || mOcclusionCheckCount[LLViewerCamera::sCurCameraID] > occlusion_timeout)
+#endif
             {
                 mOcclusionCheckCount[LLViewerCamera::sCurCameraID] = 0;
                 GLuint query_result;    // Will be # samples drawn, or a boolean depending on mHasOcclusionQuery2 (both are type GLuint)

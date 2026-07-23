@@ -1160,11 +1160,11 @@ bool LLGLManager::initGL()
         mIsNVIDIA = true;
     }
     else if (mGLVendor.find("INTEL") != std::string::npos
-#if LL_LINUX
+#if LL_LINUX || defined(__FreeBSD__)
          // The Mesa-based drivers put this in the Renderer string,
-         // not the Vendor string.
+         // not the Vendor string (FreeBSD uses the same Mesa stack).
          || mGLRenderer.find("INTEL") != std::string::npos
-#endif //LL_LINUX
+#endif //LL_LINUX || __FreeBSD__
          )
     {
         mGLVendorShort = "INTEL";
@@ -1443,7 +1443,10 @@ void LLGLManager::shutdownGL()
 void LLGLManager::initExtensions()
 {
 // <FS:Zi> Linux support
-#if LL_LINUX
+#if LL_LINUX || defined(__FreeBSD__)
+    // FreeBSD uses the same glh extension path as Linux; without this,
+    // gGLHExts.mSysExts stays empty and every ExtensionExists() query returns
+    // false, silently disabling extension-gated features on FreeBSD.
     glh_init_extensions("");
 #endif
 // </FS:Zi>
@@ -1489,7 +1492,10 @@ void LLGLManager::initExtensions()
 
     LL_DEBUGS("RenderInit") << "GL Probe: Getting symbols" << LL_ENDL;
 // FIRE-34655 - VRAM detection failing on Linux. Load all the GL functions we need.
-#if LL_LINUX && !LL_MESA_HEADLESS    
+// FreeBSD runs the same NVIDIA/AMD GL stack as Linux; without this it never sets
+// mHasNVXGpuMemoryInfo, so the NVX VRAM fallback (below) can't recover mVRAM when
+// the Xorg.log parser misses -- leaving mVRAM=0 and a 1GB texture budget.
+#if (LL_LINUX || defined(__FreeBSD__)) && !LL_MESA_HEADLESS
     mHasNVXGpuMemoryInfo = ExtensionExists("GL_NVX_gpu_memory_info", gGLHExts.mSysExts);
     mHasAMDAssociations = ExtensionExists("WGL_AMD_gpu_association", gGLHExts.mSysExts);
 #endif

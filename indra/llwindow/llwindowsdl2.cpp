@@ -529,7 +529,7 @@ static int x11_detect_VRAM_kb()
     FILE *fp;
     char *display_env = getenv("DISPLAY"); // e.g. :0 or :0.0 or :1.0 etc
     // parse DISPLAY number so we can go grab the right log file
-    if (display_env[0] == ':' &&
+    if (display_env && display_env[0] == ':' &&
         display_env[1] >= '0' && display_env[1] <= '9')
     {
         display_num = display_env[1] - '0';
@@ -2456,7 +2456,7 @@ LLSD LLWindowSDL::getNativeKeyData()
     return result;
 }
 
-#if LL_LINUX || LL_SOLARIS
+#if LL_LINUX || LL_SOLARIS || defined(__FreeBSD__)
 // extracted from spawnWebBrowser for clarity and to eliminate
 //  compiler confusion regarding close(int fd) vs. LLWindow::close()
 void exec_cmd(const std::string& cmd, const std::string& arg)
@@ -2535,7 +2535,7 @@ void LLWindowSDL::spawnWebBrowser(const std::string& escaped_url, bool async)
 
     LL_INFOS() << "spawn_web_browser: " << escaped_url << LL_ENDL;
 
-#if LL_LINUX
+#if LL_LINUX || defined(__FreeBSD__)
 # if LL_X11
     if (mSDL_Display)
     {

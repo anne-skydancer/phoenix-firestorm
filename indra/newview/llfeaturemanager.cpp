@@ -66,7 +66,9 @@
 
 #if LL_DARWIN
 const char FEATURE_TABLE_FILENAME[] = "featuretable_mac.txt";
-#elif LL_LINUX
+#elif LL_LINUX || defined(__FreeBSD__)
+// FreeBSD runs the same Mesa/GLX + proprietary-driver GL stack as Linux, so it
+// needs the Linux per-GPU feature masks, not the Windows-oriented default table.
 const char FEATURE_TABLE_FILENAME[] = "featuretable_linux.txt";
 #else
 const char FEATURE_TABLE_FILENAME[] = "featuretable.txt";

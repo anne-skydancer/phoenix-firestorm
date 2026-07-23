@@ -194,8 +194,15 @@ void LLTexUnit::bindFast(LLTexture* texture)
 {
     LLImageGL* gl_tex = texture->getGLTexture();
     texture->setActive();
-    glActiveTexture(GL_TEXTURE0 + mIndex);
-    gGL.mCurrTextureUnitIndex = mIndex;
+    // Elide the redundant active-unit switch when we're already on this unit
+    // (matches LLTexUnit::activate()); adjacent batches on the same unit are
+    // common, and each glActiveTexture is a real driver call. Safe -- no effect
+    // on which texture is bound.
+    if ((S32)gGL.mCurrTextureUnitIndex != mIndex)
+    {
+        glActiveTexture(GL_TEXTURE0 + mIndex);
+        gGL.mCurrTextureUnitIndex = mIndex;
+    }
     mCurrTexture = gl_tex->getTexName();
     if (!mCurrTexture)
     {

@@ -6654,8 +6654,17 @@ void LLAppViewer::idleNameCache()
 //
 
 
+#if defined(__FreeBSD__)
+// FreeBSD: bias inbound-message processing toward streaming rather than bursting.
+// A flood of updates (busy-region TP, avatar clumps) must never grow the per-frame
+// message budget into a movement-freezing stall, even at the cost of slower catch-up
+// -- movement stays responsive; content simply streams in over more frames.
+constexpr F32 CHECK_MESSAGES_DEFAULT_MAX_TIME = 0.010f; // 10 ms base budget
+#define CHECK_MESSAGES_MAX_TIME_LIMIT 0.050f // 50 ms hard ceiling (>=20 fps floor under flood)
+#else
 constexpr F32 CHECK_MESSAGES_DEFAULT_MAX_TIME = 0.020f; // 50 ms = 50 fps (just for messages!)
 #define CHECK_MESSAGES_MAX_TIME_LIMIT 1.0f // 1 second, a long time but still able to stay connected
+#endif
 static F32 CheckMessagesMaxTime = CHECK_MESSAGES_DEFAULT_MAX_TIME;
 
 static LLTrace::BlockTimerStatHandle FTM_IDLE_NETWORK("Idle Network");
@@ -6724,6 +6733,13 @@ void LLAppViewer::idleNetwork()
                 {
                     // Increase CheckMessagesMaxTime so that we will eventually catch up
                     CheckMessagesMaxTime *= 1.035f; // 3.5% ~= 2x in 20 frames, ~8x in 60 frames
+                    // Clamp the escalation. Without this the budget grows unbounded
+                    // under a sustained backlog (the LIMIT constant was defined but
+                    // never applied), turning a burst into an ever-growing frame stall.
+                    if (CheckMessagesMaxTime > CHECK_MESSAGES_MAX_TIME_LIMIT)
+                    {
+                        CheckMessagesMaxTime = CHECK_MESSAGES_MAX_TIME_LIMIT;
+                    }
                 }
             }
             else

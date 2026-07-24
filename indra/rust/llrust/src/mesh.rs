@@ -13,10 +13,6 @@
 //! (validated at 48k+ meshes, 0 divergence, before this flip).
 
 use crate::llsd::{self, Value};
-use flate2::read::ZlibDecoder;
-use std::io::Read;
-
-const MAX_INFLATED: u64 = 64 * 1024 * 1024;
 
 pub struct FaceOut {
     pub no_geometry: bool,
@@ -56,13 +52,7 @@ fn domain_vec<const N: usize>(face: &Value, key: &str, sub: &str) -> [f32; N] {
 /// (bad zlib / LLSD / shape) -- never panics, never reads out of bounds; the
 /// C++ caller then falls back to its own decoder.
 pub fn decode(compressed: &[u8]) -> Option<DecodedMesh> {
-    let mut out = Vec::new();
-    ZlibDecoder::new(compressed)
-        .take(MAX_INFLATED)
-        .read_to_end(&mut out)
-        .ok()?;
-
-    let root = llsd::parse(&out)?;
+    let root = llsd::unzip_parse(compressed)?;
     let faces_sd = root.as_array()?;
 
     let empty: &[u8] = &[];

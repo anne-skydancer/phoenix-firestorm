@@ -15,6 +15,7 @@
 //!  - Never panic across the boundary (crate is built with panic = "abort").
 //!  - Treat every incoming pointer/length as untrusted: bounds-check before use.
 
+mod decomp;
 mod llsd;
 mod mesh;
 
@@ -121,4 +122,256 @@ pub extern "C" fn ll_mesh_free(handle: *mut c_void) {
     if !handle.is_null() {
         unsafe { drop(Box::from_raw(handle as *mut mesh::DecodedMesh)) };
     }
+}
+
+// --- Mesh physics decomposition (convex hulls) -------------------------------
+// zlib + binary-LLSD parse + dequant of the decomposition sub-block into flat
+// hull point lists. Same clean shape as the geometry decode (no derived state);
+// C++ copies the points into LLModel::Decomposition::mHull / mBaseHull.
+
+/// Decode a decomposition block. Opaque handle (free with ll_decomp_free) or
+/// null if it did not decode (caller falls back to the C++ parser).
+#[no_mangle]
+pub extern "C" fn ll_decomp_decode(data: *const u8, size: usize) -> *mut c_void {
+    if data.is_null() || size == 0 {
+        return std::ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, size) };
+    match decomp::decode(bytes) {
+        Some(d) => Box::into_raw(Box::new(d)) as *mut c_void,
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Number of convex hulls.
+#[no_mangle]
+pub extern "C" fn ll_decomp_hull_count(handle: *const c_void) -> u32 {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe { &*(handle as *const decomp::DecompOut) }.hulls.len() as u32
+}
+
+/// Points of hull `index`: returns a pointer to `*out_num_points` * 3 f32
+/// (x,y,z interleaved), or null. Buffer owned by the handle.
+#[no_mangle]
+pub extern "C" fn ll_decomp_hull(handle: *const c_void, index: u32, out_num_points: *mut u32) -> *const f32 {
+    if !out_num_points.is_null() {
+        unsafe { *out_num_points = 0 };
+    }
+    if handle.is_null() {
+        return std::ptr::null();
+    }
+    let d = unsafe { &*(handle as *const decomp::DecompOut) };
+    match d.hulls.get(index as usize) {
+        Some(h) => {
+            if !out_num_points.is_null() {
+                unsafe { *out_num_points = (h.len() / 3) as u32 };
+            }
+            if h.is_empty() { std::ptr::null() } else { h.as_ptr() }
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// Base-hull points: pointer to `*out_num_points` * 3 f32, or null.
+#[no_mangle]
+pub extern "C" fn ll_decomp_base_hull(handle: *const c_void, out_num_points: *mut u32) -> *const f32 {
+    if !out_num_points.is_null() {
+        unsafe { *out_num_points = 0 };
+    }
+    if handle.is_null() {
+        return std::ptr::null();
+    }
+    let d = unsafe { &*(handle as *const decomp::DecompOut) };
+    if !out_num_points.is_null() {
+        unsafe { *out_num_points = (d.base_hull.len() / 3) as u32 };
+    }
+    if d.base_hull.is_empty() { std::ptr::null() } else { d.base_hull.as_ptr() }
+}
+
+/// Free a decomposition handle. Null ignored.
+#[no_mangle]
+pub extern "C" fn ll_decomp_free(handle: *mut c_void) {
+    if !handle.is_null() {
+        unsafe { drop(Box::from_raw(handle as *mut decomp::DecompOut)) };
+    }
+}
+
+// --- Generic binary-LLSD document access -------------------------------------
+// The untrusted zlib inflate + binary-LLSD parse happens in Rust; C++ then walks
+// the validated tree through these accessors instead of parsing bytes itself.
+// Node pointers are borrowed from the document and stay valid until
+// `ll_llsd_free()`. This is the reusable primitive for every LLSD-shaped asset
+// sub-block: mesh skin, physics convex/decomposition, animations, and so on.
+
+pub const LL_LLSD_UNDEF: i32 = 0;
+pub const LL_LLSD_BOOL: i32 = 1;
+pub const LL_LLSD_INT: i32 = 2;
+pub const LL_LLSD_REAL: i32 = 3;
+pub const LL_LLSD_UUID: i32 = 4;
+pub const LL_LLSD_STRING: i32 = 5;
+pub const LL_LLSD_BINARY: i32 = 6;
+pub const LL_LLSD_ARRAY: i32 = 7;
+pub const LL_LLSD_MAP: i32 = 8;
+
+#[inline]
+fn as_node<'a>(p: *const c_void) -> Option<&'a llsd::Value> {
+    if p.is_null() {
+        None
+    } else {
+        Some(unsafe { &*(p as *const llsd::Value) })
+    }
+}
+
+/// Inflate + parse a zlib-compressed binary-LLSD block (the exact bytes C++
+/// hands to LLUZipHelper::unzip_llsd). Returns an opaque document handle, or
+/// null if it did not decode -- caller then falls back to the C++ parser.
+#[no_mangle]
+pub extern "C" fn ll_llsd_unzip_parse(data: *const u8, size: usize) -> *mut c_void {
+    if data.is_null() || size == 0 {
+        return std::ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, size) };
+    match llsd::unzip_parse(bytes) {
+        Some(v) => Box::into_raw(Box::new(v)) as *mut c_void,
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Free a document handle from `ll_llsd_unzip_parse`. Null is ignored.
+#[no_mangle]
+pub extern "C" fn ll_llsd_free(handle: *mut c_void) {
+    if !handle.is_null() {
+        unsafe { drop(Box::from_raw(handle as *mut llsd::Value)) };
+    }
+}
+
+/// Root node of a document (borrowed; valid until `ll_llsd_free`).
+#[no_mangle]
+pub extern "C" fn ll_llsd_root(handle: *const c_void) -> *const c_void {
+    handle
+}
+
+/// One of the LL_LLSD_* kind constants; UNDEF for null/unknown.
+#[no_mangle]
+pub extern "C" fn ll_llsd_type(node: *const c_void) -> i32 {
+    match as_node(node) {
+        None => LL_LLSD_UNDEF,
+        Some(v) => match v {
+            llsd::Value::Undef => LL_LLSD_UNDEF,
+            llsd::Value::Bool(_) => LL_LLSD_BOOL,
+            llsd::Value::Int(_) => LL_LLSD_INT,
+            llsd::Value::Real(_) => LL_LLSD_REAL,
+            llsd::Value::Uuid(_) => LL_LLSD_UUID,
+            llsd::Value::Str(_) => LL_LLSD_STRING,
+            llsd::Value::Binary(_) => LL_LLSD_BINARY,
+            llsd::Value::Array(_) => LL_LLSD_ARRAY,
+            llsd::Value::Map(_) => LL_LLSD_MAP,
+        },
+    }
+}
+
+/// Element count for arrays and maps; 0 for anything else.
+#[no_mangle]
+pub extern "C" fn ll_llsd_size(node: *const c_void) -> u32 {
+    match as_node(node) {
+        Some(llsd::Value::Array(a)) => a.len() as u32,
+        Some(llsd::Value::Map(m)) => m.len() as u32,
+        _ => 0,
+    }
+}
+
+/// Array element `i` (borrowed), or null if not an array / out of range.
+#[no_mangle]
+pub extern "C" fn ll_llsd_array_get(node: *const c_void, index: u32) -> *const c_void {
+    match as_node(node) {
+        Some(llsd::Value::Array(a)) => match a.get(index as usize) {
+            Some(v) => v as *const llsd::Value as *const c_void,
+            None => std::ptr::null(),
+        },
+        _ => std::ptr::null(),
+    }
+}
+
+/// Map value for NUL-terminated `key` (borrowed), or null if absent.
+#[no_mangle]
+pub extern "C" fn ll_llsd_map_get(node: *const c_void, key: *const c_char) -> *const c_void {
+    if key.is_null() {
+        return std::ptr::null();
+    }
+    let k = unsafe { std::ffi::CStr::from_ptr(key) };
+    let k = match k.to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null(),
+    };
+    match as_node(node).and_then(|v| v.get(k)) {
+        Some(v) => v as *const llsd::Value as *const c_void,
+        None => std::ptr::null(),
+    }
+}
+
+/// 1 if the map contains `key`, else 0.
+#[no_mangle]
+pub extern "C" fn ll_llsd_map_has(node: *const c_void, key: *const c_char) -> i32 {
+    if ll_llsd_map_get(node, key).is_null() {
+        0
+    } else {
+        1
+    }
+}
+
+/// Numeric value (ints promote to real); 0.0 for non-numeric.
+#[no_mangle]
+pub extern "C" fn ll_llsd_as_real(node: *const c_void) -> f64 {
+    as_node(node).and_then(llsd::Value::as_real).unwrap_or(0.0)
+}
+
+/// Integer value (reals truncate); 0 for non-numeric.
+#[no_mangle]
+pub extern "C" fn ll_llsd_as_int(node: *const c_void) -> i32 {
+    match as_node(node) {
+        Some(llsd::Value::Int(i)) => *i,
+        Some(llsd::Value::Real(r)) => *r as i32,
+        Some(llsd::Value::Bool(b)) => *b as i32,
+        _ => 0,
+    }
+}
+
+/// 1/0; non-bools follow LLSD-ish truthiness (non-zero number, non-empty string).
+#[no_mangle]
+pub extern "C" fn ll_llsd_as_bool(node: *const c_void) -> i32 {
+    match as_node(node) {
+        Some(llsd::Value::Bool(b)) => *b as i32,
+        Some(llsd::Value::Int(i)) => (*i != 0) as i32,
+        Some(llsd::Value::Real(r)) => (*r != 0.0) as i32,
+        Some(llsd::Value::Str(s)) => (!s.is_empty()) as i32,
+        _ => 0,
+    }
+}
+
+/// String bytes (NOT NUL-terminated) + length via `out_len`; null if not a string.
+#[no_mangle]
+pub extern "C" fn ll_llsd_as_string(node: *const c_void, out_len: *mut usize) -> *const u8 {
+    let (ptr, len) = match as_node(node) {
+        Some(llsd::Value::Str(s)) => (s.as_ptr(), s.len()),
+        _ => (std::ptr::null(), 0usize),
+    };
+    if !out_len.is_null() {
+        unsafe { *out_len = len };
+    }
+    ptr
+}
+
+/// Binary blob + length via `out_len`; null if not binary.
+#[no_mangle]
+pub extern "C" fn ll_llsd_as_binary(node: *const c_void, out_len: *mut usize) -> *const u8 {
+    let (ptr, len) = match as_node(node) {
+        Some(llsd::Value::Binary(b)) => (b.as_ptr(), b.len()),
+        _ => (std::ptr::null(), 0usize),
+    };
+    if !out_len.is_null() {
+        unsafe { *out_len = len };
+    }
+    ptr
 }

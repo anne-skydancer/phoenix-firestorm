@@ -123,6 +123,23 @@ pub fn parse(buf: &[u8]) -> Option<Value> {
     parse_value(&mut c, MAX_DEPTH)
 }
 
+/// Sanity cap on inflated size (zip-bomb guard).
+const MAX_INFLATED: u64 = 64 * 1024 * 1024;
+
+/// Inflate a zlib-compressed binary-LLSD block and parse it -- the exact job of
+/// the C++ `LLUZipHelper::unzip_llsd`. Used for every mesh-asset sub-block
+/// (LOD, skin, physics convex/decomposition). `None` on any malformed input.
+pub fn unzip_parse(compressed: &[u8]) -> Option<Value> {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+    let mut out = Vec::new();
+    ZlibDecoder::new(compressed)
+        .take(MAX_INFLATED)
+        .read_to_end(&mut out)
+        .ok()?;
+    parse(&out)
+}
+
 /// Mirror of C++ `strip_deprecated_header`: skip a literal "<? LLSD/Binary ?>"
 /// (17 bytes) if present. Also tolerate a modern "<?llsd/binary?>\n"-style line
 /// (skip through the first newline) if the block leads with '<'.

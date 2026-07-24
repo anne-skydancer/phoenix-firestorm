@@ -81,6 +81,10 @@
 #include "llvoavatarself.h"
 #include "llskinningutil.h"
 
+#ifdef HAVE_LLRUST
+#include "llrust.h" // memory-safe zlib + binary-LLSD decode for mesh sub-blocks
+#endif
+
 #include "boost/iostreams/device/array.hpp"
 #include "boost/iostreams/stream.hpp"
 #include "boost/lexical_cast.hpp"
@@ -2599,38 +2603,90 @@ bool LLMeshRepoThread::skinInfoReceived(const LLUUID& mesh_id, U8* data, S32 dat
     return true;
 }
 
-bool LLMeshRepoThread::decompositionReceived(const LLUUID& mesh_id, U8* data, S32 data_size)
+#ifdef HAVE_LLRUST
+// Fill an LLModel::Decomposition's mHull / mBaseHull from a Rust-decoded handle.
+// Decomposition::fromLLSD has NO derived-state tail (verified: llmodel.cpp
+// 1881-1980 ends at the dequant), so these two lists ARE the complete output --
+// nothing further to compute. The absent-BoundingVerts case in fromLLSD only
+// clear()s mBaseHullMesh, which is already empty on a fresh object.
+static void llrust_fill_decomp(const void* h, LLModel::Decomposition* d)
 {
-    LL_PROFILE_ZONE_SCOPED;
-    LLSD decomp;
-
-    if (data_size > 0)
+    U32 nh = ll_decomp_hull_count(h);
+    d->mHull.resize(nh);
+    for (U32 i = 0; i < nh; ++i)
     {
-        try
+        U32 np = 0;
+        const F32* pts = ll_decomp_hull(h, i, &np);
+        d->mHull[i].reserve(np);
+        for (U32 j = 0; j < np; ++j)
         {
-            U32 uzip_result = LLUZipHelper::unzip_llsd(decomp, data, data_size);
-            if (uzip_result != LLUZipHelper::ZR_OK)
-            {
-                LL_WARNS(LOG_MESH) << "Mesh decomposition parse error.  Not a valid mesh asset!  ID:  " << mesh_id
-                    << " uzip result: " << uzip_result
-                    << LL_ENDL;
-                return false;
-            }
-        }
-        catch (const std::bad_alloc&)
-        {
-            LL_WARNS(LOG_MESH) << "Out of memory for mesh ID " << mesh_id << " of size: " << data_size << LL_ENDL;
-            return false;
+            d->mHull[i].push_back(LLVector3(pts + j * 3));
         }
     }
 
+    U32 nb = 0;
+    const F32* bpts = ll_decomp_base_hull(h, &nb);
+    d->mBaseHull.reserve(nb);
+    for (U32 j = 0; j < nb; ++j)
     {
-        LLModel::Decomposition* d = new LLModel::Decomposition(decomp);
-        d->mMeshID = mesh_id;
+        d->mBaseHull.push_back(LLVector3(bpts + j * 3));
+    }
+}
+#endif // HAVE_LLRUST
+
+bool LLMeshRepoThread::decompositionReceived(const LLUUID& mesh_id, U8* data, S32 data_size)
+{
+    LL_PROFILE_ZONE_SCOPED;
+
+    LLModel::Decomposition* d = nullptr;
+
+#ifdef HAVE_LLRUST
+    // Primary: memory-safe Rust zlib + binary-LLSD parse + dequant of this
+    // untrusted physics block (closes the unchecked Positions walk in the C++
+    // path). Validated bit-identical to fromLLSD (edge-case tests + live match +
+    // the 48k-proven dequant formula). Any failure falls through to C++ below.
+    if (data_size > 0)
+    {
+        if (void* handle = ll_decomp_decode(data, (size_t)data_size))
         {
-            LLMutexLock lock(mLoadedMutex);
-            mDecompositionQ.push_back(d);
+            d = new LLModel::Decomposition();
+            d->mMeshID = mesh_id;
+            llrust_fill_decomp(handle, d);
+            ll_decomp_free(handle);
         }
+    }
+#endif
+
+    if (!d)
+    {
+        LLSD decomp;
+        if (data_size > 0)
+        {
+            try
+            {
+                U32 uzip_result = LLUZipHelper::unzip_llsd(decomp, data, data_size);
+                if (uzip_result != LLUZipHelper::ZR_OK)
+                {
+                    LL_WARNS(LOG_MESH) << "Mesh decomposition parse error.  Not a valid mesh asset!  ID:  " << mesh_id
+                        << " uzip result: " << uzip_result
+                        << LL_ENDL;
+                    return false;
+                }
+            }
+            catch (const std::bad_alloc&)
+            {
+                LL_WARNS(LOG_MESH) << "Out of memory for mesh ID " << mesh_id << " of size: " << data_size << LL_ENDL;
+                return false;
+            }
+        }
+
+        d = new LLModel::Decomposition(decomp);
+        d->mMeshID = mesh_id;
+    }
+
+    {
+        LLMutexLock lock(mLoadedMutex);
+        mDecompositionQ.push_back(d);
     }
 
     return true;

@@ -26,6 +26,53 @@ set(LLRUST_LIB        "${LLRUST_TARGET_DIR}/release/libllrust.a")
 set(LLRUST_INCLUDE    "${LLRUST_TARGET_DIR}/include")
 set(LLRUST_HEADER     "${LLRUST_INCLUDE}/llrust.h")
 
+# --- libexecinfo stub (FreeBSD 15) -------------------------------------------
+# rustc's FreeBSD target spec links `-lexecinfo`, but FreeBSD 15 folded
+# libexecinfo into libc and dropped the standalone library. That breaks the link
+# of anything cargo builds as an *executable* -- notably dependency build scripts
+# (flate2 -> crc32fast) and `cargo test` binaries -- with:
+#     ld: error: unable to find library -lexecinfo
+# The backtrace symbols themselves resolve fine from libc, so an *empty* archive
+# is enough to satisfy the linker. Synthesize one into the build tree and put it
+# on cargo's search path so a fresh checkout builds with no manual steps.
+set(LLRUST_STUB_DIR "${LLRUST_TARGET_DIR}/stub")
+set(LLRUST_CARGO_ENV)
+find_library(LLRUST_LIBEXECINFO execinfo)
+if (NOT LLRUST_LIBEXECINFO)
+  if (NOT EXISTS "${LLRUST_STUB_DIR}/libexecinfo.a")
+    message(STATUS "LLRust: libexecinfo not found (FreeBSD 15+) -> synthesizing empty stub")
+    file(MAKE_DIRECTORY "${LLRUST_STUB_DIR}")
+    file(WRITE "${LLRUST_STUB_DIR}/execinfo_stub.c"
+         "/* Intentionally empty. Satisfies rustc's -lexecinfo on FreeBSD 15+;\n"
+         "   the real backtrace symbols are provided by libc. */\n")
+    set(_llrust_ar "${CMAKE_AR}")
+    if (NOT _llrust_ar)
+      set(_llrust_ar "ar")
+    endif ()
+    execute_process(
+        COMMAND "${CMAKE_C_COMPILER}" -c "${LLRUST_STUB_DIR}/execinfo_stub.c"
+                -o "${LLRUST_STUB_DIR}/execinfo_stub.o"
+        RESULT_VARIABLE _llrust_cc_rc ERROR_VARIABLE _llrust_cc_err OUTPUT_QUIET)
+    if (_llrust_cc_rc EQUAL 0)
+      execute_process(
+          COMMAND "${_llrust_ar}" rcs "${LLRUST_STUB_DIR}/libexecinfo.a"
+                  "${LLRUST_STUB_DIR}/execinfo_stub.o"
+          RESULT_VARIABLE _llrust_ar_rc ERROR_VARIABLE _llrust_ar_err OUTPUT_QUIET)
+      if (NOT _llrust_ar_rc EQUAL 0)
+        message(WARNING "LLRust: could not archive libexecinfo stub: ${_llrust_ar_err}")
+      endif ()
+    else ()
+      message(WARNING "LLRust: could not compile libexecinfo stub: ${_llrust_cc_err}")
+    endif ()
+  endif ()
+  if (EXISTS "${LLRUST_STUB_DIR}/libexecinfo.a")
+    # RUSTFLAGS reaches every rustc invocation cargo makes -- including the
+    # dependency build scripts that actually hit this link error.
+    set(LLRUST_CARGO_ENV "${CMAKE_COMMAND}" -E env "RUSTFLAGS=-L native=${LLRUST_STUB_DIR}")
+    message(STATUS "LLRust: using libexecinfo stub at ${LLRUST_STUB_DIR}")
+  endif ()
+endif ()
+
 file(GLOB_RECURSE LLRUST_SOURCES
      "${LLRUST_CRATE_DIR}/src/*.rs"
      "${LLRUST_CRATE_DIR}/Cargo.toml"
@@ -34,7 +81,7 @@ file(GLOB_RECURSE LLRUST_SOURCES
 # Build the staticlib.
 add_custom_command(
     OUTPUT "${LLRUST_LIB}"
-    COMMAND "${CARGO_EXECUTABLE}" build --release
+    COMMAND ${LLRUST_CARGO_ENV} "${CARGO_EXECUTABLE}" build --release
             --manifest-path "${LLRUST_CRATE_DIR}/Cargo.toml"
             --target-dir "${LLRUST_TARGET_DIR}"
     DEPENDS ${LLRUST_SOURCES}

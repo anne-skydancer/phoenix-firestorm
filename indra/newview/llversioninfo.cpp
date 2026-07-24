@@ -279,6 +279,10 @@ const char* getBuildPlatformString()
     #else
             return "Win64";
     #endif // _WIN64
+#elif defined(__FreeBSD__)
+            // Must come before LL_SDL: FreeBSD builds also define LL_SDL, and
+            // would otherwise be mislabeled "Linux64" (the group/About-box "L").
+            return "FreeBSD64";
 #elif LL_SDL
             return "Linux64";
 #elif LL_DARWIN

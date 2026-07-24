@@ -12,11 +12,34 @@ include_guard()
 
 add_library( ll::rust INTERFACE IMPORTED )
 
+# How the Rust mesh-asset decoders (geometry, decomposition, ...) are used:
+#   off        pure C++ -- no Rust built or linked
+#   cfallback  Rust primary, C++ decoder kept as fallback on any Rust failure
+#   on         Rust only -- the C++ decode path is compiled OUT (removes its
+#              unchecked/OOB-prone parsing from the binary entirely)
+# Default cfallback while the Rust path soaks in production; flip to on once it
+# is bombproof. Maps to LL_RUSTMESH_MODE = 0 | 1 | 2 for the C++ #if guards.
+set(LL_RUSTMESH "cfallback" CACHE STRING "Rust mesh decode: off | cfallback | on")
+set_property(CACHE LL_RUSTMESH PROPERTY STRINGS off cfallback on)
+
+if (LL_RUSTMESH STREQUAL "off")
+  message(STATUS "LLRust: LL_RUSTMESH=off -> pure C++ mesh decode (no Rust)")
+  return()
+endif ()
+
+if (LL_RUSTMESH STREQUAL "on")
+  set(LLRUST_MODE 2)
+elseif (LL_RUSTMESH STREQUAL "cfallback")
+  set(LLRUST_MODE 1)
+else ()
+  message(FATAL_ERROR "LL_RUSTMESH must be one of: off, cfallback, on (got '${LL_RUSTMESH}')")
+endif ()
+
 find_program(CARGO_EXECUTABLE cargo)
 find_program(CBINDGEN_EXECUTABLE cbindgen)
 
 if (NOT CARGO_EXECUTABLE OR NOT CBINDGEN_EXECUTABLE)
-  message(STATUS "LLRust: cargo/cbindgen not found -> Rust bridge disabled (HAVE_LLRUST unset)")
+  message(WARNING "LLRust: LL_RUSTMESH=${LL_RUSTMESH} but cargo/cbindgen not found -> falling back to pure C++")
   return()
 endif ()
 
@@ -132,7 +155,7 @@ endif ()
 set_target_properties(ll::rust PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LLRUST_INCLUDE}"
     INTERFACE_LINK_LIBRARIES      "${LLRUST_LIB};${LLRUST_NATIVE_LIBS}"
-    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1")
+    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MODE}")
 
 # Consumers must `add_dependencies(<their_target> llrust_build)` so the .a/.h
 # exist before they compile/link.

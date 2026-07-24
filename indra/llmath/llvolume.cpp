@@ -2523,9 +2523,7 @@ bool LLVolume::unpackVolumeFaces(U8* in_data, S32 size)
 {
 #ifdef HAVE_LLRUST
     // Primary path: memory-safe Rust decode (zlib + binary-LLSD parse + dequant),
-    // validated bit-identical to the C++ path at 48k+ meshes. On any failure --
-    // bad decode, or an inconsistent face build -- fall through to the pure-C++
-    // decoder below so a malformed asset can never leave us worse off.
+    // validated bit-identical to the C++ path at 48k+ meshes.
     if (void* rust_mesh = ll_mesh_decode(in_data, size))
     {
         bool ok = unpackVolumeFacesFromRust(rust_mesh);
@@ -2535,7 +2533,14 @@ bool LLVolume::unpackVolumeFaces(U8* in_data, S32 size)
             return true;
         }
     }
+#if LL_RUSTMESH_MODE >= 2
+    // LL_RUSTMESH=on: the C++ decoder is compiled out, so a block Rust could not
+    // decode is treated as a failed fetch (no unchecked fallback parse exists).
+    return false;
 #endif
+#endif
+#if !defined(HAVE_LLRUST) || LL_RUSTMESH_MODE < 2
+    // C++ decode path (LL_RUSTMESH = off or cfallback).
     //input data is now pointing at a zlib compressed block of LLSD
     //decompress block
     LLSD mdl;
@@ -2546,6 +2551,7 @@ bool LLVolume::unpackVolumeFaces(U8* in_data, S32 size)
         return false;
     }
     return unpackVolumeFacesInternal(mdl);
+#endif
 }
 
 bool LLVolume::unpackVolumeFacesInternal(const LLSD& mdl)

@@ -1748,6 +1748,14 @@ void LLMeshSkinInfo::fromLLSD(LLSD& skin)
         mLockScaleIfJointPosition = false;
     }
 
+    finalize();
+}
+
+// Derived state shared by fromLLSD() and the Rust decode path. Operates purely
+// on the already-populated raw fields (mBindShapeMatrix, mInvBindMatrix), so it
+// is safe to call from either after the fields are set.
+void LLMeshSkinInfo::finalize()
+{
     // combine mBindShapeMatrix and mInvBindMatrix into mBindPoseMatrix
     mBindPoseMatrix.resize(mInvBindMatrix.size());
     for (U32 i = 0; i < mInvBindMatrix.size(); ++i)

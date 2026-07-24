@@ -57,6 +57,10 @@ public:
     LLMeshSkinInfo(LLSD& data);
     LLMeshSkinInfo(const LLUUID& mesh_id, LLSD& data);
     void fromLLSD(LLSD& data);
+    // Derived-state finalization shared by fromLLSD and the Rust decode path:
+    // build mBindPoseMatrix (= mBindShapeMatrix * mInvBindMatrix[i]) and the
+    // hash. MUST run after the raw fields are populated, by every code path.
+    void finalize();
     LLSD asLLSD(bool include_joints, bool lock_scale_if_joint_position) const;
     void updateHash();
     U32 sizeBytes() const;

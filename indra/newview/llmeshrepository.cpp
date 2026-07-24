@@ -2550,34 +2550,123 @@ EMeshProcessingResult LLMeshRepoThread::lodReceived(const LLVolumeParams& mesh_p
     return MESH_UNKNOWN;
 }
 
+#ifdef HAVE_LLRUST
+// Populate an LLMeshSkinInfo from a Rust-decoded skin handle, mirroring the
+// EXTRACTION in LLMeshSkinInfo::fromLLSD, then call the shared finalize() for
+// the derived bind-pose/hash. The `info` starts default-constructed (identity
+// bind-shape, pelvis 0, lock false), exactly like fromLLSD's delegating ctor.
+static void llrust_fill_skin(const void* h, LLMeshSkinInfo* info)
+{
+    U32 nj = ll_skin_joint_count(h);
+    for (U32 i = 0; i < nj; ++i)
+    {
+        size_t len = 0;
+        const U8* s = ll_skin_joint_name(h, i, &len);
+        info->mJointNames.push_back(s ? std::string((const char*)s, len) : std::string());
+        info->mJointNums.push_back(-1);
+    }
+
+    U32 nib = ll_skin_inv_bind_count(h);
+    for (U32 i = 0; i < nib; ++i)
+    {
+        const F32* m = ll_skin_inv_bind(h, i);
+        LLMatrix4 mat;
+        if (m) for (U32 j = 0; j < 4; ++j) for (U32 k = 0; k < 4; ++k) mat.mMatrix[j][k] = m[j * 4 + k];
+        info->mInvBindMatrix.push_back(LLMatrix4a(mat));
+    }
+    // Same guard as fromLLSD: only when the key was present.
+    if (ll_skin_has_inv_bind(h) && info->mJointNames.size() != info->mInvBindMatrix.size())
+    {
+        LL_WARNS("MESHSKININFO") << "Joints vs bind matrix count mismatch. Dropping joint bindings." << LL_ENDL;
+        info->mJointNames.clear();
+        info->mJointNums.clear();
+        info->mInvBindMatrix.clear();
+    }
+
+    if (const F32* bs = ll_skin_bind_shape(h))
+    {
+        LLMatrix4 mat;
+        for (U32 j = 0; j < 4; ++j) for (U32 k = 0; k < 4; ++k) mat.mMatrix[j][k] = bs[j * 4 + k];
+        info->mBindShapeMatrix.loadu(mat);
+    }
+
+    U32 na = ll_skin_alt_count(h);
+    for (U32 i = 0; i < na; ++i)
+    {
+        const F32* m = ll_skin_alt(h, i);
+        LLMatrix4 mat;
+        if (m) for (U32 j = 0; j < 4; ++j) for (U32 k = 0; k < 4; ++k) mat.mMatrix[j][k] = m[j * 4 + k];
+        info->mAlternateBindMatrix.push_back(LLMatrix4a(mat));
+    }
+
+    int has = 0;
+    F32 po = ll_skin_pelvis_offset(h, &has);
+    if (has) info->mPelvisOffset = po;
+
+    int has_lock = 0;
+    int lock = ll_skin_lock_scale(h, &has_lock);
+    info->mLockScaleIfJointPosition = has_lock ? (lock != 0) : false;
+
+    info->finalize();
+}
+#endif // HAVE_LLRUST
+
 bool LLMeshRepoThread::skinInfoReceived(const LLUUID& mesh_id, U8* data, S32 data_size)
 {
     LL_PROFILE_ZONE_SCOPED;
-    LLSD skin;
-
-    if (data_size > 0)
-    {
-        try
-        {
-            U32 uzip_result = LLUZipHelper::unzip_llsd(skin, data, data_size);
-            if (uzip_result != LLUZipHelper::ZR_OK)
-            {
-                LL_WARNS(LOG_MESH) << "Mesh skin info parse error.  Not a valid mesh asset!  ID:  " << mesh_id
-                    << " uzip result" << uzip_result
-                    << LL_ENDL;
-                return false;
-            }
-        }
-        catch (std::bad_alloc&)
-        {
-            LL_WARNS(LOG_MESH) << "Out of memory for mesh ID " << mesh_id << " of size: " << data_size << LL_ENDL;
-            return false;
-        }
-    }
 
     {
         LLPointer<LLMeshSkinInfo> info = nullptr;
-        info = new LLMeshSkinInfo(mesh_id, skin);
+
+#ifdef HAVE_LLRUST
+        // Primary: memory-safe Rust extract + the shared LLMeshSkinInfo::finalize()
+        // for bind-pose/hash. Validated bit-identical (incl. bind-pose) across 700+
+        // live skins, 2..55 joints. On failure, falls through to C++ (cfallback).
+        if (data_size > 0)
+        {
+            if (void* h = ll_skin_decode(data, (size_t)data_size))
+            {
+                info = new LLMeshSkinInfo();
+                info->mMeshID = mesh_id;
+                llrust_fill_skin(h, info.get());
+                ll_skin_free(h);
+            }
+        }
+#endif
+
+#if !defined(HAVE_LLRUST) || LL_RUSTMESH_MODE < 2
+        // C++ decode path (LL_RUSTMESH = off or cfallback).
+        if (info.isNull())
+        {
+            LLSD skin;
+            if (data_size > 0)
+            {
+                try
+                {
+                    U32 uzip_result = LLUZipHelper::unzip_llsd(skin, data, data_size);
+                    if (uzip_result != LLUZipHelper::ZR_OK)
+                    {
+                        LL_WARNS(LOG_MESH) << "Mesh skin info parse error.  Not a valid mesh asset!  ID:  " << mesh_id
+                            << " uzip result" << uzip_result
+                            << LL_ENDL;
+                        return false;
+                    }
+                }
+                catch (std::bad_alloc&)
+                {
+                    LL_WARNS(LOG_MESH) << "Out of memory for mesh ID " << mesh_id << " of size: " << data_size << LL_ENDL;
+                    return false;
+                }
+            }
+            info = new LLMeshSkinInfo(mesh_id, skin);
+        }
+#endif
+
+        if (info.isNull())
+        {
+            // LL_RUSTMESH=on and Rust could not decode: no fallback, failed fetch.
+            return false;
+        }
 
         if (isAgentAvatarValid() && gAgentAvatarp->mInitFlags != 0)
         { // joint numbers are consistent inside LLVOAvatar and animations, but inconsistent inside meshes,
@@ -2644,7 +2733,7 @@ bool LLMeshRepoThread::decompositionReceived(const LLUUID& mesh_id, U8* data, S3
     // Primary: memory-safe Rust zlib + binary-LLSD parse + dequant of this
     // untrusted physics block (closes the unchecked Positions walk in the C++
     // path). Validated bit-identical to fromLLSD (edge-case tests + live match +
-    // the 48k-proven dequant formula). Any failure falls through to C++ below.
+    // the 48k-proven dequant formula).
     if (data_size > 0)
     {
         if (void* handle = ll_decomp_decode(data, (size_t)data_size))
@@ -2655,8 +2744,19 @@ bool LLMeshRepoThread::decompositionReceived(const LLUUID& mesh_id, U8* data, S3
             ll_decomp_free(handle);
         }
     }
+#if LL_RUSTMESH_MODE >= 2
+    // LL_RUSTMESH=on: no C++ fallback. A block Rust could not decode gets an
+    // empty decomposition rather than the unchecked C++ parser.
+    if (!d)
+    {
+        d = new LLModel::Decomposition();
+        d->mMeshID = mesh_id;
+    }
+#endif
 #endif
 
+#if !defined(HAVE_LLRUST) || LL_RUSTMESH_MODE < 2
+    // C++ decode path (LL_RUSTMESH = off or cfallback).
     if (!d)
     {
         LLSD decomp;
@@ -2683,6 +2783,7 @@ bool LLMeshRepoThread::decompositionReceived(const LLUUID& mesh_id, U8* data, S3
         d = new LLModel::Decomposition(decomp);
         d->mMeshID = mesh_id;
     }
+#endif
 
     {
         LLMutexLock lock(mLoadedMutex);

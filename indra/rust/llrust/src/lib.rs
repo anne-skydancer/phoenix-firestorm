@@ -18,6 +18,7 @@
 mod decomp;
 mod llsd;
 mod mesh;
+mod skin;
 
 use std::os::raw::{c_char, c_void};
 
@@ -195,6 +196,125 @@ pub extern "C" fn ll_decomp_base_hull(handle: *const c_void, out_num_points: *mu
 pub extern "C" fn ll_decomp_free(handle: *mut c_void) {
     if !handle.is_null() {
         unsafe { drop(Box::from_raw(handle as *mut decomp::DecompOut)) };
+    }
+}
+
+// --- Mesh skin info ----------------------------------------------------------
+// Extraction of the untrusted skin block into raw fields. C++ copies them onto
+// an LLMeshSkinInfo and calls the shared LLMeshSkinInfo::finalize() for the
+// derived bind-pose/hash -- so the derived state cannot be missed.
+
+/// Decode a skin block. Opaque handle (free with ll_skin_free) or null.
+#[no_mangle]
+pub extern "C" fn ll_skin_decode(data: *const u8, size: usize) -> *mut c_void {
+    if data.is_null() || size == 0 {
+        return std::ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, size) };
+    match skin::decode(bytes) {
+        Some(s) => Box::into_raw(Box::new(s)) as *mut c_void,
+        None => std::ptr::null_mut(),
+    }
+}
+
+#[inline]
+fn skin_ref<'a>(h: *const c_void) -> Option<&'a skin::SkinOut> {
+    if h.is_null() { None } else { Some(unsafe { &*(h as *const skin::SkinOut) }) }
+}
+
+#[no_mangle]
+pub extern "C" fn ll_skin_joint_count(h: *const c_void) -> u32 {
+    skin_ref(h).map_or(0, |s| s.joint_names.len() as u32)
+}
+
+/// Joint name `i` as (ptr,len) via out_len; NOT NUL-terminated. Null if absent.
+#[no_mangle]
+pub extern "C" fn ll_skin_joint_name(h: *const c_void, i: u32, out_len: *mut usize) -> *const u8 {
+    if !out_len.is_null() {
+        unsafe { *out_len = 0 };
+    }
+    let s = match skin_ref(h) {
+        Some(s) => s,
+        None => return std::ptr::null(),
+    };
+    match s.joint_names.get(i as usize) {
+        Some(n) => {
+            if !out_len.is_null() {
+                unsafe { *out_len = n.len() };
+            }
+            if n.is_empty() { std::ptr::null() } else { n.as_ptr() }
+        }
+        None => std::ptr::null(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ll_skin_inv_bind_count(h: *const c_void) -> u32 {
+    skin_ref(h).map_or(0, |s| s.inv_bind.len() as u32)
+}
+
+/// 1 if the inverse_bind_matrix KEY was present (for the mismatch-clear rule).
+#[no_mangle]
+pub extern "C" fn ll_skin_has_inv_bind(h: *const c_void) -> i32 {
+    skin_ref(h).map_or(0, |s| s.inv_bind_present as i32)
+}
+
+/// Inverse-bind matrix `i`: pointer to 16 f32 (array order), or null.
+#[no_mangle]
+pub extern "C" fn ll_skin_inv_bind(h: *const c_void, i: u32) -> *const f32 {
+    match skin_ref(h).and_then(|s| s.inv_bind.get(i as usize)) {
+        Some(m) => m.as_ptr(),
+        None => std::ptr::null(),
+    }
+}
+
+/// Bind-shape matrix: pointer to 16 f32, or null if absent (C++ keeps identity).
+#[no_mangle]
+pub extern "C" fn ll_skin_bind_shape(h: *const c_void) -> *const f32 {
+    match skin_ref(h).and_then(|s| s.bind_shape.as_ref()) {
+        Some(m) => m.as_ptr(),
+        None => std::ptr::null(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ll_skin_alt_count(h: *const c_void) -> u32 {
+    skin_ref(h).map_or(0, |s| s.alt_inv_bind.len() as u32)
+}
+
+/// Alternate inverse-bind matrix `i`: pointer to 16 f32, or null.
+#[no_mangle]
+pub extern "C" fn ll_skin_alt(h: *const c_void, i: u32) -> *const f32 {
+    match skin_ref(h).and_then(|s| s.alt_inv_bind.get(i as usize)) {
+        Some(m) => m.as_ptr(),
+        None => std::ptr::null(),
+    }
+}
+
+/// Pelvis offset; *out_present set to 1 if the field was present, else 0.
+#[no_mangle]
+pub extern "C" fn ll_skin_pelvis_offset(h: *const c_void, out_present: *mut i32) -> f32 {
+    let v = skin_ref(h).and_then(|s| s.pelvis_offset);
+    if !out_present.is_null() {
+        unsafe { *out_present = v.is_some() as i32 };
+    }
+    v.unwrap_or(0.0)
+}
+
+/// lock_scale_if_joint_position; *out_present set to 1 if present, else 0.
+#[no_mangle]
+pub extern "C" fn ll_skin_lock_scale(h: *const c_void, out_present: *mut i32) -> i32 {
+    let v = skin_ref(h).and_then(|s| s.lock_scale);
+    if !out_present.is_null() {
+        unsafe { *out_present = v.is_some() as i32 };
+    }
+    v.unwrap_or(false) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn ll_skin_free(h: *mut c_void) {
+    if !h.is_null() {
+        unsafe { drop(Box::from_raw(h as *mut skin::SkinOut)) };
     }
 }
 

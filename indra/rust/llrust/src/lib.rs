@@ -83,6 +83,69 @@ pub extern "C" fn ll_zero_code_expand(
     }
 }
 
+/// Phase 1 of appended-ack handling: compute the stripped body size from the
+/// current receive size and the trailing count byte. Returns 1 and fills the
+/// outputs on success, 0 on the malformed case the C++ path rejects.
+///
+/// Safety: the three out pointers must be writable `i32`s (may be null).
+#[no_mangle]
+pub extern "C" fn ll_ack_strip_size(
+    receive_size: i32,
+    count_byte: u8,
+    new_size: *mut i32,
+    acks: *mut i32,
+    true_rcv_size: *mut i32,
+) -> i32 {
+    if new_size.is_null() || acks.is_null() || true_rcv_size.is_null() {
+        return 0;
+    }
+    match msg::ack_strip_size(receive_size, count_byte) {
+        Some(s) => {
+            unsafe {
+                *new_size = s.new_size;
+                *acks = s.acks;
+                *true_rcv_size = s.true_rcv_size;
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Phase 2 of appended-ack handling: extract the `acks` big-endian packet ids
+/// from `buf`, walking backwards from `true_rcv_size`, into the caller array
+/// `out_ids` (capacity `out_cap`). Returns the number of ids written (== acks)
+/// on success, or -1 if the reads would fall outside the buffer / fail the C++
+/// guard / not fit in `out_cap`.
+///
+/// Safety: `buf` must point to `buf_len` readable bytes; `out_ids` to `out_cap`
+/// writable `u32`s. Either may be null (handled). Never panics.
+#[no_mangle]
+pub extern "C" fn ll_extract_ack_ids(
+    buf: *const u8,
+    buf_len: i32,
+    true_rcv_size: i32,
+    acks: i32,
+    out_ids: *mut u32,
+    out_cap: i32,
+) -> i32 {
+    if buf.is_null() || out_ids.is_null() || buf_len < 0 || out_cap < 0 {
+        return -1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buf, buf_len as usize) };
+    match msg::extract_ack_ids(bytes, true_rcv_size, acks) {
+        Some(ids) => {
+            if ids.len() > out_cap as usize {
+                return -1;
+            }
+            let out = unsafe { std::slice::from_raw_parts_mut(out_ids, out_cap as usize) };
+            out[..ids.len()].copy_from_slice(&ids);
+            ids.len() as i32
+        }
+        None => -1,
+    }
+}
+
 /// A view into one decoded face's dequantized geometry. All pointers are owned
 /// by the mesh handle and stay valid until `ll_mesh_free()`; the C++ side copies
 /// out of them. Arrays: positions = 4*num_verts (x,y,z,0), normals = 4*num_verts

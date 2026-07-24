@@ -108,6 +108,96 @@ pub fn zero_code_expand(input: &[u8]) -> Expand {
     Expand::Expanded(out)
 }
 
+// --- appended packet acknowledgements ------------------------------------
+//
+// A received packet may carry ACKs of previously-sent reliable packets appended
+// after the (possibly zero-coded) body: `... body | id0 | id1 | ... | idN | N`,
+// where each id is a big-endian TPACKETID (u32) and the trailing byte is the
+// count N. The C++ path (LLMessageSystem::checkMessages) reads the count from
+// the last byte, shrinks the working size by `N * sizeof(TPACKETID)`, and later
+// walks the ids backwards straight out of the raw receive buffer -- signed/
+// unsigned size math plus hand-indexed pointer reads. These two helpers do that
+// arithmetic and those reads with checked bounds; the actual state mutation
+// (LLCircuitData::ackReliablePacket) stays in C++.
+
+/// Width of a packet id on the wire. C++: `sizeof(TPACKETID)` (TPACKETID = U32).
+const TPACKETID_SIZE: i32 = 4;
+
+/// C++: `LL_MINIMUM_VALID_PACKET_SIZE` ( = LL_PACKET_ID_SIZE + 1 ).
+const LL_MINIMUM_VALID_PACKET_SIZE: i32 = 7;
+
+/// Result of the ack size-strip (phase 1). Sizes are byte offsets into the raw
+/// receive buffer, matching the C++ `receive_size` / `true_rcv_size` locals.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AckStrip {
+    /// Working size after removing the count byte AND the ack-id bytes -- i.e.
+    /// the size of the message body that goes on to zeroCodeExpand.
+    pub new_size: i32,
+    /// Number of appended acks (the trailing count byte).
+    pub acks: i32,
+    /// Size after removing only the count byte -- i.e. body + ack ids. The ack
+    /// ids live in `[new_size, true_rcv_size)`.
+    pub true_rcv_size: i32,
+}
+
+/// Phase 1: given the current receive size and the trailing count byte, compute
+/// the stripped body size. Mirrors the C++
+/// `acks += buffer[--receive_size]; if (receive_size >= acks*4 + MIN) receive_size -= acks*4`.
+/// Returns `None` for the malformed case the C++ rejects (`valid_packet=false`).
+/// The caller guarantees `LL_ACK_FLAG` was set.
+pub fn ack_strip_size(receive_size: i32, count_byte: u8) -> Option<AckStrip> {
+    if receive_size < 1 {
+        return None;
+    }
+    let acks = count_byte as i32;
+    // C++ `--receive_size` consumes the trailing count byte.
+    let true_rcv_size = receive_size - 1;
+    // acks <= 255 so acks*4+7 <= 1027: no i32 overflow, but stay explicit.
+    let need = acks
+        .checked_mul(TPACKETID_SIZE)
+        .and_then(|v| v.checked_add(LL_MINIMUM_VALID_PACKET_SIZE))?;
+    if true_rcv_size >= need {
+        Some(AckStrip {
+            new_size: true_rcv_size - acks * TPACKETID_SIZE,
+            acks,
+            true_rcv_size,
+        })
+    } else {
+        None
+    }
+}
+
+/// Phase 2: extract the `acks` appended packet ids from the raw buffer, walking
+/// backwards from `true_rcv_size` in `TPACKETID_SIZE` steps, each a big-endian
+/// u32 -- mirroring the C++ `true_rcv_size -= 4; memcpy(&id, &buf[true_rcv_size], 4); ntohl(id)`
+/// loop, in the same order. Returns `None` if the reads would fall outside the
+/// buffer or the C++ guard `acks*4 < true_rcv_size` fails. `acks == 0` -> empty.
+pub fn extract_ack_ids(buf: &[u8], true_rcv_size: i32, acks: i32) -> Option<Vec<u32>> {
+    if acks < 0 || true_rcv_size < 0 {
+        return None;
+    }
+    if acks == 0 {
+        return Some(Vec::new());
+    }
+    let span = acks.checked_mul(TPACKETID_SIZE)?;
+    // C++ guard: acks*4 < true_rcv_size (strict).
+    if span >= true_rcv_size {
+        return None;
+    }
+    // The whole ack region must lie within the received bytes.
+    if (true_rcv_size as usize) > buf.len() {
+        return None;
+    }
+    let mut ids = Vec::with_capacity(acks as usize);
+    let mut pos = true_rcv_size;
+    for _ in 0..acks {
+        pos -= TPACKETID_SIZE;
+        let p = pos as usize; // pos > 0 here: lowest is true_rcv_size - span > 0
+        ids.push(u32::from_be_bytes([buf[p], buf[p + 1], buf[p + 2], buf[p + 3]]));
+    }
+    Some(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +309,72 @@ mod tests {
     fn too_short_for_header_is_rejected() {
         let p = vec![0x80, 0x11, 0x22]; // flag set but < 6 bytes
         assert_eq!(zero_code_expand(&p), Expand::Bad);
+    }
+
+    // --- ack strip (phase 1) ---
+
+    #[test]
+    fn ack_strip_two_acks() {
+        // receive_size = 20, count byte = 2 -> strip 1 count + 2*4 = 9 bytes.
+        let s = ack_strip_size(20, 2).unwrap();
+        assert_eq!(s.acks, 2);
+        assert_eq!(s.true_rcv_size, 19); // after count byte
+        assert_eq!(s.new_size, 19 - 8); // minus 2*4 ack ids
+    }
+
+    #[test]
+    fn ack_strip_zero_acks() {
+        // count byte 0: nothing stripped beyond the count byte itself.
+        let s = ack_strip_size(20, 0).unwrap();
+        assert_eq!(s.acks, 0);
+        assert_eq!(s.true_rcv_size, 19);
+        assert_eq!(s.new_size, 19);
+    }
+
+    #[test]
+    fn ack_strip_rejects_when_too_many_acks() {
+        // 10 acks claim 40 bytes but only ~19 remain -> malformed.
+        assert_eq!(ack_strip_size(20, 10), None);
+    }
+
+    #[test]
+    fn ack_strip_rejects_at_min_boundary() {
+        // true_rcv_size must be >= acks*4 + 7. With 1 ack: need >= 11.
+        assert!(ack_strip_size(12, 1).is_some()); // true=11, need=11 -> ok
+        assert_eq!(ack_strip_size(11, 1), None); // true=10, need=11 -> reject
+    }
+
+    // --- ack id extraction (phase 2) ---
+
+    #[test]
+    fn extract_two_ids_big_endian_backwards() {
+        // body(4) | id0=0x00000001 | id1=0x02030405 ; true_rcv_size = 12
+        let buf: Vec<u8> = vec![
+            0xAA, 0xBB, 0xCC, 0xDD, // body
+            0x00, 0x00, 0x00, 0x01, // id at offset 4
+            0x02, 0x03, 0x04, 0x05, // id at offset 8
+        ];
+        // C++ reads backwards: first the one at offset 8, then offset 4.
+        let ids = extract_ack_ids(&buf, 12, 2).unwrap();
+        assert_eq!(ids, vec![0x02030405, 0x00000001]);
+    }
+
+    #[test]
+    fn extract_zero_acks_is_empty() {
+        let buf = vec![0u8; 8];
+        assert_eq!(extract_ack_ids(&buf, 8, 0), Some(vec![]));
+    }
+
+    #[test]
+    fn extract_rejects_when_span_exceeds_true_size() {
+        // 3 acks -> 12 bytes, but true_rcv_size = 12 (not strictly greater) -> reject.
+        let buf = vec![0u8; 16];
+        assert_eq!(extract_ack_ids(&buf, 12, 3), None);
+    }
+
+    #[test]
+    fn extract_rejects_when_true_size_past_buffer() {
+        let buf = vec![0u8; 8];
+        assert_eq!(extract_ack_ids(&buf, 12, 1), None); // true_rcv_size > buf.len()
     }
 }

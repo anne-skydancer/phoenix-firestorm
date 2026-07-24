@@ -15,27 +15,39 @@ include_guard(GLOBAL)
 # with include_guard(GLOBAL), the body below runs exactly once per configure.
 add_library( ll::rust INTERFACE IMPORTED GLOBAL )
 
-# How the Rust mesh-asset decoders (geometry, decomposition, ...) are used:
-#   off        pure C++ -- no Rust built or linked
+# How the Rust decoders are used, per subsystem:
+#   off        pure C++ -- Rust decoder not called for this subsystem
 #   cfallback  Rust primary, C++ decoder kept as fallback on any Rust failure
 #   on         Rust only -- the C++ decode path is compiled OUT (removes its
 #              unchecked/OOB-prone parsing from the binary entirely)
-# Default cfallback while the Rust path soaks in production; flip to on once it
-# is bombproof. Maps to LL_RUSTMESH_MODE = 0 | 1 | 2 for the C++ #if guards.
+# Default cfallback while the Rust paths soak in production; flip to on once each
+# is bombproof. Each maps to LL_RUST<X>_MODE = 0 | 1 | 2 for the C++ #if guards.
+#   LL_RUSTMESH -> mesh asset decode (geometry, decomposition, skin)
+#   LL_RUSTMSG  -> UDP message decode (zeroCodeExpand, ...) -- newer, own knob
 set(LL_RUSTMESH "cfallback" CACHE STRING "Rust mesh decode: off | cfallback | on")
+set(LL_RUSTMSG  "cfallback" CACHE STRING "Rust UDP message decode: off | cfallback | on")
 set_property(CACHE LL_RUSTMESH PROPERTY STRINGS off cfallback on)
+set_property(CACHE LL_RUSTMSG  PROPERTY STRINGS off cfallback on)
 
-if (LL_RUSTMESH STREQUAL "off")
-  message(STATUS "LLRust: LL_RUSTMESH=off -> pure C++ mesh decode (no Rust)")
+# Map off|cfallback|on -> 0|1|2.
+macro(_llrust_mode _var _out)
+  if ("${${_var}}" STREQUAL "off")
+    set(${_out} 0)
+  elseif ("${${_var}}" STREQUAL "cfallback")
+    set(${_out} 1)
+  elseif ("${${_var}}" STREQUAL "on")
+    set(${_out} 2)
+  else ()
+    message(FATAL_ERROR "${_var} must be one of: off, cfallback, on (got '${${_var}}')")
+  endif ()
+endmacro()
+_llrust_mode(LL_RUSTMESH LLRUST_MESH_MODE)
+_llrust_mode(LL_RUSTMSG  LLRUST_MSG_MODE)
+
+# Build/link the Rust bridge only if at least one subsystem actually uses it.
+if (LLRUST_MESH_MODE EQUAL 0 AND LLRUST_MSG_MODE EQUAL 0)
+  message(STATUS "LLRust: all subsystems off -> pure C++ (no Rust)")
   return()
-endif ()
-
-if (LL_RUSTMESH STREQUAL "on")
-  set(LLRUST_MODE 2)
-elseif (LL_RUSTMESH STREQUAL "cfallback")
-  set(LLRUST_MODE 1)
-else ()
-  message(FATAL_ERROR "LL_RUSTMESH must be one of: off, cfallback, on (got '${LL_RUSTMESH}')")
 endif ()
 
 find_program(CARGO_EXECUTABLE cargo)
@@ -158,7 +170,7 @@ endif ()
 set_target_properties(ll::rust PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LLRUST_INCLUDE}"
     INTERFACE_LINK_LIBRARIES      "${LLRUST_LIB};${LLRUST_NATIVE_LIBS}"
-    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MODE}")
+    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MESH_MODE};LL_RUSTMSG_MODE=${LLRUST_MSG_MODE}")
 
 # Consumers must `add_dependencies(<their_target> llrust_build)` so the .a/.h
 # exist before they compile/link.

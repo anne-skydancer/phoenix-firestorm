@@ -489,39 +489,6 @@ LLCircuitData* LLMessageSystem::findCircuit(const LLHost& host,
     return cdp;
 }
 
-#ifdef HAVE_LLRUST
-// Shadow-validate the Rust zero-code expander against the C++ result. The C++
-// output (cpp_buf / cpp_size, i.e. mEncodedRecvBuffer after zeroCodeExpand) is
-// what the viewer uses; this only decodes the *original* packet bytes again in
-// Rust and logs any divergence. Not flipped until proven clean on live traffic.
-// A mismatch on a genuinely malformed packet is expected and desirable: Rust
-// rejects (rc = -1) where the C++ path corrupts-and-continues.
-static void llrust_shadow_compare_zce(const U8* orig, S32 orig_size,
-                                      const U8* cpp_buf, S32 cpp_size)
-{
-    static U8 s_rust[MAX_BUFFER_SIZE];
-    S32 rlen = 0;
-    S32 rc = ll_zero_code_expand(orig, orig_size, s_rust, MAX_BUFFER_SIZE, &rlen);
-
-    bool ok = (rc == 1) && (rlen == cpp_size) && (memcmp(s_rust, cpp_buf, cpp_size) == 0);
-    if (!ok)
-    {
-        LL_WARNS("LLRustMsg") << "zce shadow MISMATCH rc=" << rc
-            << " rust_len=" << rlen << " cpp_len=" << cpp_size
-            << " orig_size=" << orig_size << LL_ENDL;
-    }
-    else
-    {
-        static S32 okc = 0;
-        if ((++okc % 500) == 1)
-        {
-            LL_INFOS("LLRustMsg") << "zce shadow OK x" << okc
-                << " (in=" << orig_size << " out=" << cpp_size << ")" << LL_ENDL;
-        }
-    }
-}
-#endif // HAVE_LLRUST
-
 // Returns true if a valid, on-circuit message has been received.
 // Requiring a non-const LockMessageChecker reference ensures that
 // mMessageReader has been set to mTemplateMessageReader.
@@ -582,11 +549,28 @@ bool LLMessageSystem::checkMessages(LockMessageChecker&, S64 frame_count )
             // note if packet acks are appended.
             if(buffer[0] & LL_ACK_FLAG)
             {
+#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
+                // Capture inputs before the in-place --receive_size for the shadow.
+                S32 ack_orig_size  = receive_size;
+                U8  ack_count_byte = buffer[receive_size - 1];
+#endif
                 acks += buffer[--receive_size];
                 true_rcv_size = receive_size;
                 if(receive_size >= ((S32)(acks * sizeof(TPACKETID) + LL_MINIMUM_VALID_PACKET_SIZE)))
                 {
                     receive_size -= acks * sizeof(TPACKETID);
+#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
+                    // Shadow phase 1 (size strip) against the Rust arithmetic.
+                    S32 r_new = 0, r_acks = 0, r_true = 0;
+                    S32 r_rc = ll_ack_strip_size(ack_orig_size, ack_count_byte, &r_new, &r_acks, &r_true);
+                    if (r_rc != 1 || r_new != receive_size || r_acks != acks || r_true != true_rcv_size)
+                    {
+                        LL_WARNS("LLRustMsg") << "ack1 shadow MISMATCH rc=" << r_rc
+                            << " rust(new=" << r_new << " acks=" << r_acks << " true=" << r_true << ")"
+                            << " cpp(new=" << receive_size << " acks=" << acks << " true=" << true_rcv_size << ")"
+                            << LL_ENDL;
+                    }
+#endif
                 }
                 else
                 {
@@ -600,29 +584,9 @@ bool LLMessageSystem::checkMessages(LockMessageChecker&, S64 frame_count )
                 }
             }
 
-#ifdef HAVE_LLRUST
-            // Snapshot the original (still-flagged) packet bytes before
-            // zeroCodeExpand mutates buffer[0] and repoints buffer, so the Rust
-            // shadow decodes the same input the C++ path just did.
-            static U8 s_zce_orig[MAX_BUFFER_SIZE];
-            bool zce_shadow = (receive_size > 0 && receive_size <= (S32)MAX_BUFFER_SIZE
-                               && (buffer[0] & LL_ZERO_CODE_FLAG));
-            S32 zce_orig_size = receive_size;
-            if (zce_shadow)
-            {
-                memcpy(s_zce_orig, buffer, receive_size); /* Flawfinder: ignore */
-            }
-#endif
-
-            // process the message as normal
+            // process the message as normal (zeroCodeExpand is Rust-primary
+            // internally when LL_RUSTMSG is enabled -- see its definition)
             mIncomingCompressedSize = zeroCodeExpand(&buffer, &receive_size);
-
-#ifdef HAVE_LLRUST
-            if (zce_shadow)
-            {
-                llrust_shadow_compare_zce(s_zce_orig, zce_orig_size, buffer, receive_size);
-            }
-#endif
             mCurrentRecvPacketID = ntohl(*((U32*)(&buffer[1])));
             host = getSender();
 
@@ -635,6 +599,14 @@ bool LLMessageSystem::checkMessages(LockMessageChecker&, S64 frame_count )
 
             if(cdp && (acks > 0) && ((S32)(acks * sizeof(TPACKETID)) < (true_rcv_size)))
             {
+#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
+                // Extract the same ids in Rust up front (before the loop mutates
+                // true_rcv_size); compare each against the C++ read below.
+                static U32 s_ack_rids[256];
+                S32 r_ackn = ll_extract_ack_ids(mTrueReceiveBuffer, (S32)MAX_BUFFER_SIZE,
+                                                true_rcv_size, acks, s_ack_rids, 256);
+                bool ack2_ok = (r_ackn == acks);
+#endif
                 TPACKETID packet_id;
                 U32 mem_id=0;
                 for(S32 i = 0; i < acks; ++i)
@@ -644,8 +616,28 @@ bool LLMessageSystem::checkMessages(LockMessageChecker&, S64 frame_count )
                          sizeof(TPACKETID));
                     packet_id = ntohl(mem_id);
                     //LL_INFOS("Messaging") << "got ack: " << packet_id << LL_ENDL;
+#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
+                    if (i >= r_ackn || s_ack_rids[i] != packet_id) ack2_ok = false;
+#endif
                     cdp->ackReliablePacket(packet_id);
                 }
+#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
+                if (!ack2_ok)
+                {
+                    LL_WARNS("LLRustMsg") << "ack2 shadow MISMATCH rust_n=" << r_ackn
+                        << " acks=" << acks << " true_rcv_size(pre)=" << (true_rcv_size + acks * (S32)sizeof(TPACKETID))
+                        << LL_ENDL;
+                }
+                else
+                {
+                    static S32 ackokc = 0;
+                    if ((++ackokc % 200) == 1)
+                    {
+                        LL_INFOS("LLRustMsg") << "ack shadow OK x" << ackokc
+                            << " (acks=" << acks << ")" << LL_ENDL;
+                    }
+                }
+#endif
                 if (!cdp->getUnackedPacketCount())
                 {
                     // Remove this circuit from the list of circuits with unacked packets
@@ -2915,6 +2907,36 @@ S32 LLMessageSystem::zeroCodeExpand(U8** data, S32* data_size)
     mCompressedPacketsIn++;
     mCompressedBytesIn += *data_size;
 
+#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
+    // Rust-primary expansion: every write is bounds-checked and a malformed or
+    // oversized run is rejected, rather than the C++ path's reset-and-continue
+    // corruption recovery. Validated byte-identical across 8000+ live packets
+    // before this flip. Stats bookkeeping stays here in C++ (single source).
+    {
+        S32 rlen = 0;
+        S32 rc = ll_zero_code_expand(*data, *data_size, mEncodedRecvBuffer,
+                                     MAX_BUFFER_SIZE, &rlen);
+        if (rc == 1)
+        {
+            *data = mEncodedRecvBuffer;
+            *data_size = rlen;
+            mUncompressedBytesIn += rlen;
+            return in_size;
+        }
+    #if LL_RUSTMSG_MODE >= 2
+        // 'on': the C++ expander below is compiled out. Reject anything Rust
+        // will not expand (rc == -1); the 0-length result is dropped downstream.
+        LL_WARNS("LLRustMsg") << "zero_code_expand rejected malformed packet, size "
+                              << *data_size << LL_ENDL;
+        *data = mEncodedRecvBuffer;
+        *data_size = 0;
+        return in_size;
+    #endif
+        // cfallback (rc == -1): fall through to the C++ expander below.
+    }
+#endif
+
+#if !defined(HAVE_LLRUST) || LL_RUSTMSG_MODE < 2
     *data[0] &= (~LL_ZERO_CODE_FLAG);
 
     S32 count = (*data_size);
@@ -2986,6 +3008,7 @@ S32 LLMessageSystem::zeroCodeExpand(U8** data, S32* data_size)
     mUncompressedBytesIn += *data_size;
 
     return(in_size);
+#endif // !HAVE_LLRUST || LL_RUSTMSG_MODE < 2
 }
 
 

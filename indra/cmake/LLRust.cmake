@@ -8,9 +8,12 @@
 # cargo wired up yet, so the bridge is only defined when cargo is available; C++
 # call sites guard on HAVE_LLRUST so a build without cargo still links.
 
-include_guard()
+include_guard(GLOBAL)
 
-add_library( ll::rust INTERFACE IMPORTED )
+# GLOBAL so the target is visible in every consuming directory (llmath,
+# llmessage, ...), not just the one that first include()s this module. Combined
+# with include_guard(GLOBAL), the body below runs exactly once per configure.
+add_library( ll::rust INTERFACE IMPORTED GLOBAL )
 
 # How the Rust mesh-asset decoders (geometry, decomposition, ...) are used:
 #   off        pure C++ -- no Rust built or linked

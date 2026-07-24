@@ -81,6 +81,10 @@
 
 #include "nd/ndexceptions.h" // <FS:ND/> For ndxran
 
+#ifdef HAVE_LLRUST
+#include "llrust.h" // memory-safe UDP packet decoders (zeroCodeExpand, ...)
+#endif
+
 // Constants
 //const char* MESSAGE_LOG_FILENAME = "message.log";
 static const F32Seconds CIRCUIT_DUMP_TIMEOUT(30.f);
@@ -485,6 +489,39 @@ LLCircuitData* LLMessageSystem::findCircuit(const LLHost& host,
     return cdp;
 }
 
+#ifdef HAVE_LLRUST
+// Shadow-validate the Rust zero-code expander against the C++ result. The C++
+// output (cpp_buf / cpp_size, i.e. mEncodedRecvBuffer after zeroCodeExpand) is
+// what the viewer uses; this only decodes the *original* packet bytes again in
+// Rust and logs any divergence. Not flipped until proven clean on live traffic.
+// A mismatch on a genuinely malformed packet is expected and desirable: Rust
+// rejects (rc = -1) where the C++ path corrupts-and-continues.
+static void llrust_shadow_compare_zce(const U8* orig, S32 orig_size,
+                                      const U8* cpp_buf, S32 cpp_size)
+{
+    static U8 s_rust[MAX_BUFFER_SIZE];
+    S32 rlen = 0;
+    S32 rc = ll_zero_code_expand(orig, orig_size, s_rust, MAX_BUFFER_SIZE, &rlen);
+
+    bool ok = (rc == 1) && (rlen == cpp_size) && (memcmp(s_rust, cpp_buf, cpp_size) == 0);
+    if (!ok)
+    {
+        LL_WARNS("LLRustMsg") << "zce shadow MISMATCH rc=" << rc
+            << " rust_len=" << rlen << " cpp_len=" << cpp_size
+            << " orig_size=" << orig_size << LL_ENDL;
+    }
+    else
+    {
+        static S32 okc = 0;
+        if ((++okc % 500) == 1)
+        {
+            LL_INFOS("LLRustMsg") << "zce shadow OK x" << okc
+                << " (in=" << orig_size << " out=" << cpp_size << ")" << LL_ENDL;
+        }
+    }
+}
+#endif // HAVE_LLRUST
+
 // Returns true if a valid, on-circuit message has been received.
 // Requiring a non-const LockMessageChecker reference ensures that
 // mMessageReader has been set to mTemplateMessageReader.
@@ -563,8 +600,29 @@ bool LLMessageSystem::checkMessages(LockMessageChecker&, S64 frame_count )
                 }
             }
 
+#ifdef HAVE_LLRUST
+            // Snapshot the original (still-flagged) packet bytes before
+            // zeroCodeExpand mutates buffer[0] and repoints buffer, so the Rust
+            // shadow decodes the same input the C++ path just did.
+            static U8 s_zce_orig[MAX_BUFFER_SIZE];
+            bool zce_shadow = (receive_size > 0 && receive_size <= (S32)MAX_BUFFER_SIZE
+                               && (buffer[0] & LL_ZERO_CODE_FLAG));
+            S32 zce_orig_size = receive_size;
+            if (zce_shadow)
+            {
+                memcpy(s_zce_orig, buffer, receive_size); /* Flawfinder: ignore */
+            }
+#endif
+
             // process the message as normal
             mIncomingCompressedSize = zeroCodeExpand(&buffer, &receive_size);
+
+#ifdef HAVE_LLRUST
+            if (zce_shadow)
+            {
+                llrust_shadow_compare_zce(s_zce_orig, zce_orig_size, buffer, receive_size);
+            }
+#endif
             mCurrentRecvPacketID = ntohl(*((U32*)(&buffer[1])));
             host = getSender();
 

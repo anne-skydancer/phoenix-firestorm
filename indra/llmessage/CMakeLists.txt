@@ -7,6 +7,7 @@ include(LLAddBuildTest)
 include(LLCommon)
 include(LLCoreHttp)
 include(LLAddBuildTest)
+include(LLRust)
 include(Python)
 include(Tut)
 include(Python)
@@ -190,8 +191,15 @@ target_link_libraries(
         llmath
         llcorehttp
         llxml #<FS:Ansariel> For accessing settings
+        ll::rust # memory-safe UDP packet decoders (zeroCodeExpand shadow, ...)
 )
 target_include_directories( llmessage  INTERFACE   ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Ensure the Rust staticlib + cbindgen header are built before message.cpp
+# compiles. The target only exists when the Rust bridge is enabled.
+if (TARGET llrust_build)
+  add_dependencies(llmessage llrust_build)
+endif ()
 
 # tests
 if (LL_TESTS)

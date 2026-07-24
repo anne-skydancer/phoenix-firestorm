@@ -18,6 +18,7 @@
 mod decomp;
 mod llsd;
 mod mesh;
+mod msg;
 mod skin;
 
 use std::os::raw::{c_char, c_void};
@@ -36,6 +37,50 @@ pub extern "C" fn ll_rust_version() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn ll_rust_selftest(a: i32, b: i32) -> i32 {
     a.wrapping_add(b)
+}
+
+// --- UDP message system ------------------------------------------------------
+
+/// Expand a possibly zero-coded received packet into a caller-owned buffer.
+///
+/// The C++ call site already owns an 8 KiB decode buffer (`mEncodedRecvBuffer`);
+/// rather than allocate + hand back a handle, we write straight into it, matching
+/// the shape of `LLMessageSystem::zeroCodeExpand`.
+///
+/// Returns:
+///  *  1 -- expanded; `*out_len` set to the number of bytes written to `out`.
+///  *  0 -- packet was not zero-coded (flag clear); `out` untouched, use the
+///          original buffer (mirrors the C++ `return 0` no-op).
+///  * -1 -- malformed input, or expansion would not fit in `out_cap`: reject.
+///
+/// Safety: `in_ptr` must point to `in_len` readable bytes; `out_ptr` to `out_cap`
+/// writable bytes; `out_len` to a writable `i32`. Any may be null (handled).
+/// Never panics (crate is `panic = "abort"`).
+#[no_mangle]
+pub extern "C" fn ll_zero_code_expand(
+    in_ptr: *const u8,
+    in_len: i32,
+    out_ptr: *mut u8,
+    out_cap: i32,
+    out_len: *mut i32,
+) -> i32 {
+    if in_ptr.is_null() || out_ptr.is_null() || out_len.is_null() || in_len <= 0 || out_cap <= 0 {
+        return -1;
+    }
+    let input = unsafe { std::slice::from_raw_parts(in_ptr, in_len as usize) };
+    match msg::zero_code_expand(input) {
+        msg::Expand::NotCompressed => 0,
+        msg::Expand::Bad => -1,
+        msg::Expand::Expanded(bytes) => {
+            if bytes.len() > out_cap as usize {
+                return -1;
+            }
+            let out = unsafe { std::slice::from_raw_parts_mut(out_ptr, out_cap as usize) };
+            out[..bytes.len()].copy_from_slice(&bytes);
+            unsafe { *out_len = bytes.len() as i32 };
+            1
+        }
+    }
 }
 
 /// A view into one decoded face's dequantized geometry. All pointers are owned

@@ -1776,7 +1776,17 @@ bool LLAppViewer::doFrame()
 
             // Render scene.
             // *TODO: Should we run display() even during gHeadlessClient?  DK 2011-02-18
-            if (!LLApp::isExiting() && !gHeadlessClient && gViewerWindow)
+#if defined(__FreeBSD__)
+            // FreeBSD/NVIDIA: rendering + swapBuffers() to a minimized (unmapped)
+            // drawable can wedge the GL driver and stall the main loop, leaving a
+            // dead viewport (and a hung process needing xkill) on restore. Skip
+            // rendering while minimized -- idle()/network above still run, so the
+            // viewer stays connected and keeps processing window events.
+            const bool fs_skip_render = gViewerWindow && gViewerWindow->getWindow()->getMinimized();
+#else
+            const bool fs_skip_render = false;
+#endif
+            if (!LLApp::isExiting() && !gHeadlessClient && gViewerWindow && !fs_skip_render)
             {
                 LL_PROFILE_ZONE_NAMED_CATEGORY_APP("df Display");
                 pingMainloopTimeout("Main:Display");

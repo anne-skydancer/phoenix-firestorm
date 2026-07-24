@@ -44,6 +44,10 @@
 
 #include "nd/ndexceptions.h" // <FS:ND/> For ndxran
 
+#ifdef HAVE_LLRUST
+#include "llrust.h" // memory-safe message-number decode
+#endif
+
 LLTemplateMessageReader::LLTemplateMessageReader(message_template_number_map_t&
                                                  number_template_map) :
     mReceiveSize(0),
@@ -497,6 +501,30 @@ bool LLTemplateMessageReader::decodeTemplate(
                 << buffer_size << LL_ENDL;
         return(false);
     }
+
+#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
+    // Shadow-validate the message-number decode against Rust. C++ result (num)
+    // is used; this only logs divergence. Runs on every packet, so it validates
+    // fast. Not flipped until proven clean on live traffic.
+    {
+        U32 r_num = 0;
+        S32 r_rc = ll_decode_template_number(buffer, buffer_size, &r_num);
+        if (r_rc != 1 || r_num != num)
+        {
+            LL_WARNS("LLRustMsg") << "template# shadow MISMATCH rc=" << r_rc
+                << " rust=" << r_num << " cpp=" << num << " size=" << buffer_size << LL_ENDL;
+        }
+        else
+        {
+            static S32 tnokc = 0;
+            if ((++tnokc % 2000) == 1)
+            {
+                LL_INFOS("LLRustMsg") << "template# shadow OK x" << tnokc
+                    << " (num=" << num << ")" << LL_ENDL;
+            }
+        }
+    }
+#endif
 
     LLMessageTemplate* temp = get_ptr_in_map(mMessageNumbers,num);
     if (temp)

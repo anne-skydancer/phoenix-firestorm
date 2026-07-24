@@ -198,6 +198,40 @@ pub fn extract_ack_ids(buf: &[u8], true_rcv_size: i32, acks: i32) -> Option<Vec<
     Some(ids)
 }
 
+// --- message-number (template) decode ------------------------------------
+//
+// Every received packet is routed by a message number encoded in the header
+// (the bytes right after the LL_PACKET_ID_SIZE packet-id). Three frequency
+// classes: high = 1 byte (< 255); medium = 0xFF then 1 byte; low = 0xFF 0xFF
+// then a big-endian u16. Mirrors LLTemplateMessageReader::decodeTemplate's
+// number decode -- the classification/read, not the template-map lookup.
+
+/// Resolve the message number from the first `buffer_size` bytes of a packet
+/// (`buf`). Returns `None` if the packet is too short to classify -- including
+/// the case C++ leaves unguarded (a body shorter than one header byte, which it
+/// reads past; here it is rejected). The map lookup stays in C++.
+pub fn decode_template_number(buf: &[u8]) -> Option<u32> {
+    // Need the packet id plus at least one header byte (header[0]).
+    if buf.len() < LL_PACKET_ID_SIZE + 1 {
+        return None;
+    }
+    let header = &buf[LL_PACKET_ID_SIZE..];
+    let buffer_size = buf.len();
+
+    if header[0] != 255 {
+        // high frequency
+        Some(header[0] as u32)
+    } else if buffer_size >= (LL_MINIMUM_VALID_PACKET_SIZE as usize + 1) && header[1] != 255 {
+        // medium frequency
+        Some((255u32 << 8) | header[1] as u32)
+    } else if buffer_size >= (LL_MINIMUM_VALID_PACKET_SIZE as usize + 3) && header[1] == 255 {
+        // low frequency: header[2..4] big-endian u16
+        Some(0xFFFF_0000u32 | u16::from_be_bytes([header[2], header[3]]) as u32)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +239,13 @@ mod tests {
     // Helper: a 6-byte header with the zero-code flag set on byte 0.
     fn hdr() -> Vec<u8> {
         vec![0x80, 0x11, 0x22, 0x33, 0x44, 0x55]
+    }
+
+    // Helper: 6 packet-id bytes then the given header bytes.
+    fn pkt(header: &[u8]) -> Vec<u8> {
+        let mut v = vec![0u8; LL_PACKET_ID_SIZE];
+        v.extend_from_slice(header);
+        v
     }
 
     #[test]
@@ -376,5 +417,55 @@ mod tests {
     fn extract_rejects_when_true_size_past_buffer() {
         let buf = vec![0u8; 8];
         assert_eq!(extract_ack_ids(&buf, 12, 1), None); // true_rcv_size > buf.len()
+    }
+
+    // --- template (message number) decode ---
+
+    #[test]
+    fn template_high_frequency() {
+        // header[0] < 255 -> the number itself.
+        let p = pkt(&[0x07, 0x00]);
+        assert_eq!(decode_template_number(&p), Some(7));
+    }
+
+    #[test]
+    fn template_medium_frequency() {
+        // header = 0xFF, 0x0A ; needs buffer_size >= 8.
+        let p = pkt(&[0xFF, 0x0A]); // total len = 8
+        assert_eq!(decode_template_number(&p), Some((255 << 8) | 0x0A));
+    }
+
+    #[test]
+    fn template_low_frequency() {
+        // header = 0xFF, 0xFF, then big-endian u16 0x002A ; needs len >= 10.
+        let p = pkt(&[0xFF, 0xFF, 0x00, 0x2A]); // total len = 10
+        assert_eq!(decode_template_number(&p), Some(0xFFFF_0000 | 0x002A));
+    }
+
+    #[test]
+    fn template_low_frequency_high_u16() {
+        let p = pkt(&[0xFF, 0xFF, 0x12, 0x34]);
+        assert_eq!(decode_template_number(&p), Some(0xFFFF_1234));
+    }
+
+    #[test]
+    fn template_too_short_for_header() {
+        let p = vec![0u8; LL_PACKET_ID_SIZE]; // no header byte at all
+        assert_eq!(decode_template_number(&p), None);
+    }
+
+    #[test]
+    fn template_medium_marker_but_too_short_is_none() {
+        // header[0]=0xFF but only 7 bytes total: cannot be medium (needs 8) or
+        // low (needs 10), and header[1] must not be read.
+        let p = pkt(&[0xFF]); // total len = 7
+        assert_eq!(decode_template_number(&p), None);
+    }
+
+    #[test]
+    fn template_low_marker_but_too_short_is_none() {
+        // 0xFF 0xFF but only 8 bytes: low needs 10 -> None (no OOB read).
+        let p = pkt(&[0xFF, 0xFF]); // total len = 8
+        assert_eq!(decode_template_number(&p), None);
     }
 }

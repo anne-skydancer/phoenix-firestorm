@@ -146,6 +146,31 @@ pub extern "C" fn ll_extract_ack_ids(
     }
 }
 
+/// Resolve the routing message number from the first `buffer_size` bytes of a
+/// received packet. Returns 1 and sets `*out_num` on success, 0 if the packet is
+/// too short to classify.
+///
+/// Safety: `buffer` must point to `buffer_size` readable bytes; `out_num` to a
+/// writable `u32`. Either may be null (handled). Never panics.
+#[no_mangle]
+pub extern "C" fn ll_decode_template_number(
+    buffer: *const u8,
+    buffer_size: i32,
+    out_num: *mut u32,
+) -> i32 {
+    if buffer.is_null() || out_num.is_null() || buffer_size <= 0 {
+        return 0;
+    }
+    let buf = unsafe { std::slice::from_raw_parts(buffer, buffer_size as usize) };
+    match msg::decode_template_number(buf) {
+        Some(n) => {
+            unsafe { *out_num = n };
+            1
+        }
+        None => 0,
+    }
+}
+
 /// A view into one decoded face's dequantized geometry. All pointers are owned
 /// by the mesh handle and stay valid until `ll_mesh_free()`; the C++ side copies
 /// out of them. Arrays: positions = 4*num_verts (x,y,z,0), normals = 4*num_verts

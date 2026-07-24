@@ -37,6 +37,10 @@ set(LLRUST_HEADER     "${LLRUST_INCLUDE}/llrust.h")
 # on cargo's search path so a fresh checkout builds with no manual steps.
 set(LLRUST_STUB_DIR "${LLRUST_TARGET_DIR}/stub")
 set(LLRUST_CARGO_ENV)
+# FreeBSD-only: this whole dance exists because FreeBSD 15 dropped the standalone
+# libexecinfo. Elsewhere (Windows/macOS/Linux) rustc does not ask for it, and the
+# cc/ar invocation below is not valid for e.g. MSVC -- so don't even look.
+if (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
 find_library(LLRUST_LIBEXECINFO execinfo)
 if (NOT LLRUST_LIBEXECINFO)
   if (NOT EXISTS "${LLRUST_STUB_DIR}/libexecinfo.a")
@@ -72,6 +76,7 @@ if (NOT LLRUST_LIBEXECINFO)
     message(STATUS "LLRust: using libexecinfo stub at ${LLRUST_STUB_DIR}")
   endif ()
 endif ()
+endif () # FreeBSD-only libexecinfo workaround
 
 file(GLOB_RECURSE LLRUST_SOURCES
      "${LLRUST_CRATE_DIR}/src/*.rs"
@@ -101,13 +106,28 @@ add_custom_command(
 
 add_custom_target(llrust_build DEPENDS "${LLRUST_LIB}" "${LLRUST_HEADER}")
 
-# native-static-libs a Rust staticlib pulls in on FreeBSD (libstd deps), from
-# `rustc --print native-static-libs`: libstd touches procstat/kvm/memstat/devstat
-# (system stats), rt (clock), util, gcc_s. libc is already linked by C++.
-# NOTE: rustc also lists `execinfo`, but on FreeBSD 15 libexecinfo was folded
-# into libc -- the standalone lib is gone and its backtrace symbols resolve via
-# libc, so linking -lexecinfo fails ("unable to find library"). Omit it.
-set(LLRUST_NATIVE_LIBS pthread gcc_s m rt util kvm memstat procstat devstat)
+# System libraries a Rust staticlib drags in (libstd's own deps). These are
+# per-target and MUST come from `rustc --print native-static-libs` on that
+# platform -- guessing produces link errors.
+#
+# Only the FreeBSD list below is verified (that is where this bridge is built
+# and tested). The others are best-effort starting points for whoever enables
+# the bridge there; confirm them before trusting them. Note that on Windows you
+# must also match CRT linkage between Rust's MSVC target and the viewer's C++,
+# and the artifact is llrust.lib rather than libllrust.a.
+if (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+  # VERIFIED. libstd touches procstat/kvm/memstat/devstat (system stats), rt
+  # (clock), util, gcc_s. libc is already linked by C++. rustc also lists
+  # `execinfo`, but FreeBSD 15 folded it into libc and dropped the standalone
+  # library, so linking -lexecinfo fails; omit it (see the stub logic above).
+  set(LLRUST_NATIVE_LIBS pthread gcc_s m rt util kvm memstat procstat devstat)
+elseif (WINDOWS)
+  set(LLRUST_NATIVE_LIBS ws2_32 bcrypt userenv ntdll advapi32)   # UNVERIFIED
+elseif (DARWIN)
+  set(LLRUST_NATIVE_LIBS System resolv c m)                      # UNVERIFIED
+else ()
+  set(LLRUST_NATIVE_LIBS dl rt pthread gcc_s c m util)           # UNVERIFIED (Linux)
+endif ()
 
 set_target_properties(ll::rust PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LLRUST_INCLUDE}"

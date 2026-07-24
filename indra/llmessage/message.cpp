@@ -549,38 +549,52 @@ bool LLMessageSystem::checkMessages(LockMessageChecker&, S64 frame_count )
             // note if packet acks are appended.
             if(buffer[0] & LL_ACK_FLAG)
             {
+                bool ack_strip_done = false;
 #if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
-                // Capture inputs before the in-place --receive_size for the shadow.
-                S32 ack_orig_size  = receive_size;
-                U8  ack_count_byte = buffer[receive_size - 1];
-#endif
-                acks += buffer[--receive_size];
-                true_rcv_size = receive_size;
-                if(receive_size >= ((S32)(acks * sizeof(TPACKETID) + LL_MINIMUM_VALID_PACKET_SIZE)))
+                // Rust-primary: the ack size strip with checked arithmetic. Rust
+                // and C++ share the identical guard, so they agree on every
+                // well-formed packet and both reject the same malformed ones.
                 {
-                    receive_size -= acks * sizeof(TPACKETID);
-#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
-                    // Shadow phase 1 (size strip) against the Rust arithmetic.
                     S32 r_new = 0, r_acks = 0, r_true = 0;
-                    S32 r_rc = ll_ack_strip_size(ack_orig_size, ack_count_byte, &r_new, &r_acks, &r_true);
-                    if (r_rc != 1 || r_new != receive_size || r_acks != acks || r_true != true_rcv_size)
+                    S32 r_rc = ll_ack_strip_size(receive_size, buffer[receive_size - 1],
+                                                 &r_new, &r_acks, &r_true);
+                    if (r_rc == 1)
                     {
-                        LL_WARNS("LLRustMsg") << "ack1 shadow MISMATCH rc=" << r_rc
-                            << " rust(new=" << r_new << " acks=" << r_acks << " true=" << r_true << ")"
-                            << " cpp(new=" << receive_size << " acks=" << acks << " true=" << true_rcv_size << ")"
-                            << LL_ENDL;
+                        acks          = r_acks;
+                        true_rcv_size = r_true;
+                        receive_size  = r_new;
+                        ack_strip_done = true;
                     }
-#endif
+                #if LL_RUSTMSG_MODE >= 2
+                    else
+                    {
+                        // on: no C++ fallback. Drop the malformed packet.
+                        LL_WARNS("Messaging") << "Malformed packet (ack strip rejected by Rust)" << LL_ENDL;
+                        valid_packet = false;
+                        continue;
+                    }
+                #endif
+                    // cfallback: r_rc != 1 falls through to the C++ arithmetic.
                 }
-                else
+#endif
+                if (!ack_strip_done)
                 {
-                    // mal-formed packet. ignore it and continue with
-                    // the next one
-                    LL_WARNS("Messaging") << "Malformed packet received. Packet size "
-                        << receive_size << " with invalid no. of acks " << acks
-                        << LL_ENDL;
-                    valid_packet = false;
-                    continue;
+                    acks += buffer[--receive_size];
+                    true_rcv_size = receive_size;
+                    if(receive_size >= ((S32)(acks * sizeof(TPACKETID) + LL_MINIMUM_VALID_PACKET_SIZE)))
+                    {
+                        receive_size -= acks * sizeof(TPACKETID);
+                    }
+                    else
+                    {
+                        // mal-formed packet. ignore it and continue with
+                        // the next one
+                        LL_WARNS("Messaging") << "Malformed packet received. Packet size "
+                            << receive_size << " with invalid no. of acks " << acks
+                            << LL_ENDL;
+                        valid_packet = false;
+                        continue;
+                    }
                 }
             }
 
@@ -599,45 +613,49 @@ bool LLMessageSystem::checkMessages(LockMessageChecker&, S64 frame_count )
 
             if(cdp && (acks > 0) && ((S32)(acks * sizeof(TPACKETID)) < (true_rcv_size)))
             {
+                bool ack_ids_done = false;
 #if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
-                // Extract the same ids in Rust up front (before the loop mutates
-                // true_rcv_size); compare each against the C++ read below.
-                static U32 s_ack_rids[256];
-                S32 r_ackn = ll_extract_ack_ids(mTrueReceiveBuffer, (S32)MAX_BUFFER_SIZE,
-                                                true_rcv_size, acks, s_ack_rids, 256);
-                bool ack2_ok = (r_ackn == acks);
-#endif
-                TPACKETID packet_id;
-                U32 mem_id=0;
-                for(S32 i = 0; i < acks; ++i)
+                // Rust-primary: extract the appended ids (bounds-checked, big-
+                // endian) and ack them. Under the same guard as C++ above, Rust
+                // always returns exactly `acks` ids here.
                 {
-                    true_rcv_size -= sizeof(TPACKETID);
-                    memcpy(&mem_id, &mTrueReceiveBuffer[true_rcv_size], /* Flawfinder: ignore*/
-                         sizeof(TPACKETID));
-                    packet_id = ntohl(mem_id);
-                    //LL_INFOS("Messaging") << "got ack: " << packet_id << LL_ENDL;
-#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
-                    if (i >= r_ackn || s_ack_rids[i] != packet_id) ack2_ok = false;
-#endif
-                    cdp->ackReliablePacket(packet_id);
-                }
-#if defined(HAVE_LLRUST) && LL_RUSTMSG_MODE >= 1
-                if (!ack2_ok)
-                {
-                    LL_WARNS("LLRustMsg") << "ack2 shadow MISMATCH rust_n=" << r_ackn
-                        << " acks=" << acks << " true_rcv_size(pre)=" << (true_rcv_size + acks * (S32)sizeof(TPACKETID))
-                        << LL_ENDL;
-                }
-                else
-                {
-                    static S32 ackokc = 0;
-                    if ((++ackokc % 200) == 1)
+                    static U32 s_ack_ids[256];
+                    S32 r_ackn = ll_extract_ack_ids(mTrueReceiveBuffer, (S32)MAX_BUFFER_SIZE,
+                                                    true_rcv_size, acks, s_ack_ids, 256);
+                    if (r_ackn == acks)
                     {
-                        LL_INFOS("LLRustMsg") << "ack shadow OK x" << ackokc
-                            << " (acks=" << acks << ")" << LL_ENDL;
+                        for (S32 i = 0; i < acks; ++i)
+                        {
+                            cdp->ackReliablePacket(s_ack_ids[i]);
+                        }
+                        ack_ids_done = true;
+                    }
+                #if LL_RUSTMSG_MODE >= 2
+                    else
+                    {
+                        // on: no C++ fallback. Skip the (rejected) ack list.
+                        LL_WARNS("Messaging") << "ack id extraction rejected by Rust (n="
+                            << r_ackn << " acks=" << acks << ")" << LL_ENDL;
+                        ack_ids_done = true;
+                    }
+                #endif
+                    // cfallback: r_ackn != acks falls through to the C++ walk.
+                }
+#endif
+                if (!ack_ids_done)
+                {
+                    TPACKETID packet_id;
+                    U32 mem_id=0;
+                    for(S32 i = 0; i < acks; ++i)
+                    {
+                        true_rcv_size -= sizeof(TPACKETID);
+                        memcpy(&mem_id, &mTrueReceiveBuffer[true_rcv_size], /* Flawfinder: ignore*/
+                             sizeof(TPACKETID));
+                        packet_id = ntohl(mem_id);
+                        //LL_INFOS("Messaging") << "got ack: " << packet_id << LL_ENDL;
+                        cdp->ackReliablePacket(packet_id);
                     }
                 }
-#endif
                 if (!cdp->getUnackedPacketCount())
                 {
                     // Remove this circuit from the list of circuits with unacked packets

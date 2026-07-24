@@ -2332,8 +2332,210 @@ bool LLVolume::unpackVolumeFaces(std::istream& is, S32 size)
     return unpackVolumeFacesInternal(mdl);
 }
 
+#ifdef HAVE_LLRUST
+// Build mVolumeFaces from geometry decoded by the Rust ll::rust decoder (zlib +
+// binary-LLSD parse + dequant, validated bit-identical to the C++ path at 48k+
+// meshes). Rust lays positions/normals/texcoords/indices out to match
+// LLVolumeFace exactly, so geometry is a bulk memcpy; skin-weight decode,
+// mirror/invert and extents stay here (they need mParams / operate on the
+// filled face). Returns false on any inconsistency so the caller can fall back
+// to the pure-C++ decoder. Mirrors unpackVolumeFacesInternal's post-geometry
+// logic deliberately (kept separate so the C++ fallback stays byte-for-byte).
+bool LLVolume::unpackVolumeFacesFromRust(const void* handle)
+{
+    U32 face_count = ll_mesh_face_count(handle);
+    if (face_count == 0)
+    {
+        return false;
+    }
+    mVolumeFaces.resize(face_count);
+
+    for (U32 i = 0; i < face_count; ++i)
+    {
+        LLVolumeFace& face = mVolumeFaces[i];
+
+        LlMeshFaceView fv;
+        if (ll_mesh_get_face(handle, i, &fv) != 0)
+        {
+            return false;
+        }
+
+        if (fv.no_geometry)
+        {
+            face.resizeIndices(3);
+            face.resizeVertices(1);
+            face.mPositions->clear();
+            face.mNormals->clear();
+            face.mTexCoords->setZero();
+            memset(face.mIndices, 0, sizeof(U16) * 3);
+            continue;
+        }
+
+        U32 num_verts = fv.num_verts;
+        U32 num_indices = fv.num_indices;
+
+        face.resizeIndices((S32)num_indices);
+        face.resizeVertices((S32)num_verts);
+        if ((num_verts > 0 && !face.mPositions) || (num_indices > 2 && !face.mIndices))
+        {
+            LL_WARNS() << "Failed to allocate mesh face " << i << " of " << face_count << LL_ENDL;
+            face.resizeIndices(0);
+            face.resizeVertices(0);
+            continue;
+        }
+
+        // Geometry: Rust already dequantized into LLVolumeFace's exact layout
+        // (pos/norm = 4 f32 == LLVector4a, tc = 2 f32 == LLVector2, idx = u16).
+        if (fv.positions && num_verts)  memcpy(face.mPositions, fv.positions, sizeof(F32) * 4 * num_verts);
+        if (fv.normals   && num_verts)  memcpy(face.mNormals,   fv.normals,   sizeof(F32) * 4 * num_verts);
+        if (fv.texcoords && num_verts)  memcpy((F32*)face.mTexCoords, fv.texcoords, sizeof(F32) * 2 * num_verts);
+        if (fv.indices   && num_indices) memcpy(face.mIndices,  fv.indices,   sizeof(U16) * num_indices);
+
+        if (fv.has_normalized_scale)
+            face.mNormalizedScale.set(fv.normalized_scale[0], fv.normalized_scale[1], fv.normalized_scale[2]);
+        else
+            face.mNormalizedScale.set(1, 1, 1);
+
+        // --- skin weights (decode the raw asset blob, same as the LLSD path) ---
+        if (fv.weights && fv.weights_len)
+        {
+            face.allocateWeights((S32)num_verts);
+            if (!face.mWeights && num_verts)
+            {
+                LL_WARNS() << "Failed to allocate " << num_verts << " weights for face " << i << LL_ENDL;
+                face.resizeIndices(0);
+                face.resizeVertices(0);
+                continue;
+            }
+
+            const U8* weights = fv.weights;
+            const size_t weights_size = fv.weights_len;
+            size_t widx = 0;
+            U32 cur_vertex = 0;
+            while (widx < weights_size && cur_vertex < num_verts)
+            {
+                const U8 END_INFLUENCES = 0xFF;
+                U8 joint = weights[widx++];
+                U32 cur_influence = 0;
+                LLVector4 wght(0, 0, 0, 0);
+                U32 joints[4] = { 0, 0, 0, 0 };
+                LLVector4 joints_with_weights(0, 0, 0, 0);
+
+                while (joint != END_INFLUENCES && widx < weights_size)
+                {
+                    U16 influence = weights[widx++];
+                    influence |= ((U16)weights[widx++] << 8);
+                    F32 w = llclamp((F32)influence / 65535.f, 0.001f, 0.999f);
+                    wght.mV[cur_influence] = w;
+                    joints[cur_influence] = joint;
+                    cur_influence++;
+                    if (cur_influence >= 4) { joint = END_INFLUENCES; }
+                    else { joint = weights[widx++]; }
+                }
+                F32 wsum = wght.mV[VX] + wght.mV[VY] + wght.mV[VZ] + wght.mV[VW];
+                if (wsum <= 0.f) { wght = LLVector4(0.999f, 0.f, 0.f, 0.f); }
+                for (U32 k = 0; k < 4; k++)
+                {
+                    joints_with_weights[k] = (F32)joints[k] + wght[k];
+                }
+                face.mWeights[cur_vertex].loadua(joints_with_weights.mV);
+                cur_vertex++;
+            }
+        }
+
+        // --- mirror / invert (sculpt modifier flags), same as the LLSD path ---
+        bool do_mirror = (mParams.getSculptType() & LL_SCULPT_FLAG_MIRROR);
+        bool do_invert = (mParams.getSculptType() & LL_SCULPT_FLAG_INVERT);
+        bool do_reflect_x = false, do_reverse_triangles = false, do_invert_normals = false;
+        if (do_mirror) { do_reflect_x = true; do_reverse_triangles = !do_reverse_triangles; }
+        if (do_invert) { do_invert_normals = true; do_reverse_triangles = !do_reverse_triangles; }
+
+        if (do_reflect_x)
+        {
+            LLVector4a* p = (LLVector4a*)face.mPositions;
+            LLVector4a* n = (LLVector4a*)face.mNormals;
+            for (S32 j = 0; j < face.mNumVertices; j++) { p[j].mul(-1.0f); n[j].mul(-1.0f); }
+        }
+        if (do_invert_normals)
+        {
+            LLVector4a* n = (LLVector4a*)face.mNormals;
+            for (S32 j = 0; j < face.mNumVertices; j++) { n[j].mul(-1.0f); }
+        }
+        if (do_reverse_triangles)
+        {
+            for (S32 j = 0; j < face.mNumIndices; j += 3)
+            {
+                S32 swap = face.mIndices[j + 1];
+                face.mIndices[j + 1] = face.mIndices[j + 2];
+                face.mIndices[j + 2] = swap;
+            }
+        }
+
+        // --- bounding box / tex-coord extents ---
+        LLVector4a& fmin = face.mExtents[0];
+        LLVector4a& fmax = face.mExtents[1];
+        if (face.mNumVertices < 3)
+        {
+            fmin.splat(-0.005f);
+            fmax.splat(0.005f);
+        }
+        else
+        {
+            fmin = fmax = face.mPositions[0];
+            for (S32 j = 1; j < face.mNumVertices; ++j)
+            {
+                fmin.setMin(fmin, face.mPositions[j]);
+                fmax.setMax(fmax, face.mPositions[j]);
+            }
+            if (face.mTexCoords)
+            {
+                LLVector2& min_tc = face.mTexCoordExtents[0];
+                LLVector2& max_tc = face.mTexCoordExtents[1];
+                min_tc = face.mTexCoords[0];
+                max_tc = face.mTexCoords[0];
+                for (S32 j = 1; j < face.mNumVertices; ++j)
+                {
+                    update_min_max(min_tc, max_tc, face.mTexCoords[j]);
+                }
+            }
+            else
+            {
+                face.mTexCoordExtents[0].set(0, 0);
+                face.mTexCoordExtents[1].set(1, 1);
+            }
+        }
+    }
+
+    if (!cacheOptimize(true))
+    {
+        LL_WARNS() << "Failed to optimize Rust-decoded mesh!" << LL_ENDL;
+        mVolumeFaces.clear();
+        return false;
+    }
+    mSculptLevel = 0;
+    return true;
+}
+
+// (obsolete shadow validator removed; Rust decode is now primary with C++ fallback)
+#endif // HAVE_LLRUST
+
 bool LLVolume::unpackVolumeFaces(U8* in_data, S32 size)
 {
+#ifdef HAVE_LLRUST
+    // Primary path: memory-safe Rust decode (zlib + binary-LLSD parse + dequant),
+    // validated bit-identical to the C++ path at 48k+ meshes. On any failure --
+    // bad decode, or an inconsistent face build -- fall through to the pure-C++
+    // decoder below so a malformed asset can never leave us worse off.
+    if (void* rust_mesh = ll_mesh_decode(in_data, size))
+    {
+        bool ok = unpackVolumeFacesFromRust(rust_mesh);
+        ll_mesh_free(rust_mesh);
+        if (ok)
+        {
+            return true;
+        }
+    }
+#endif
     //input data is now pointing at a zlib compressed block of LLSD
     //decompress block
     LLSD mdl;
@@ -2348,17 +2550,6 @@ bool LLVolume::unpackVolumeFaces(U8* in_data, S32 size)
 
 bool LLVolume::unpackVolumeFacesInternal(const LLSD& mdl)
 {
-#ifdef HAVE_LLRUST
-    // One-time bridge proof: confirm the linked Rust code links AND executes.
-    // Remove once a real Rust decode path lands here.
-    static bool s_llrust_checked = false;
-    if (!s_llrust_checked)
-    {
-        s_llrust_checked = true;
-        LL_INFOS() << "llrust bridge OK: " << ll_rust_version()
-                   << " selftest(40,2)=" << ll_rust_selftest(40, 2) << LL_ENDL;
-    }
-#endif
     {
         auto face_count = mdl.size();
 

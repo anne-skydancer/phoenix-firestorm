@@ -12,7 +12,9 @@ name = "llrust"
 crate-type = ["staticlib"]
 
 [dependencies]
-# flate2 (zlib inflate for mesh blocks) will be added when the parse moves into Rust.
+# zlib inflate for mesh LOD blocks. Pure-Rust miniz_oxide backend -> no C dep,
+# nothing new to link on FreeBSD.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [profile.release]
 opt-level = 3

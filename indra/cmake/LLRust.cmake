@@ -60,7 +60,13 @@ endif ()
 
 set(LLRUST_CRATE_DIR  "${CMAKE_SOURCE_DIR}/rust/llrust")   # indra/rust/llrust (indra = CMake source root)
 set(LLRUST_TARGET_DIR "${CMAKE_BINARY_DIR}/rust")
-set(LLRUST_LIB        "${LLRUST_TARGET_DIR}/release/libllrust.a")
+# The staticlib artifact name is toolchain-specific: MSVC emits llrust.lib,
+# everyone else libllrust.a.
+if (WINDOWS)
+  set(LLRUST_LIB      "${LLRUST_TARGET_DIR}/release/llrust.lib")
+else ()
+  set(LLRUST_LIB      "${LLRUST_TARGET_DIR}/release/libllrust.a")
+endif ()
 set(LLRUST_INCLUDE    "${LLRUST_TARGET_DIR}/include")
 set(LLRUST_HEADER     "${LLRUST_INCLUDE}/llrust.h")
 
@@ -160,7 +166,11 @@ if (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
   # library, so linking -lexecinfo fails; omit it (see the stub logic above).
   set(LLRUST_NATIVE_LIBS pthread gcc_s m rt util kvm memstat procstat devstat)
 elseif (WINDOWS)
-  set(LLRUST_NATIVE_LIBS ws2_32 bcrypt userenv ntdll advapi32)   # UNVERIFIED
+  # VERIFIED via `cargo rustc --release -- --print native-static-libs` on the
+  # x86_64-pc-windows-msvc target (rustc 1.97). The staticlib also emits a
+  # `/defaultlib:msvcrt` directive (the dynamic /MD CRT) -- which matches the
+  # viewer's /MD, so build a Release-type config (Debug is /MDd and would clash).
+  set(LLRUST_NATIVE_LIBS kernel32 ntdll userenv ws2_32 dbghelp)
 elseif (DARWIN)
   set(LLRUST_NATIVE_LIBS System resolv c m)                      # UNVERIFIED
 else ()

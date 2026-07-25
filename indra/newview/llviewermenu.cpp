@@ -107,6 +107,8 @@
 #include "llrootview.h"
 #include "llsceneview.h"
 #include "llscenemonitor.h"
+#include "hbxxh.h"     // render-regression frame hash (xxHash)
+#include "llimage.h"   // LLImageRaw for offscreen frame capture
 #include "llselectmgr.h"
 #include "llsidepanelappearance.h"
 #include "llspellcheckmenuhandler.h"
@@ -1528,6 +1530,53 @@ class LLAdvancedCheckWireframe : public view_listener_t
     bool handleEvent(const LLSD& userdata)
     {
         return gUseWireframe;
+    }
+};
+
+
+///////////////////////////////////////
+// FRAME HASH  (render-regression v1) //
+///////////////////////////////////////
+// Renders the current scene into an offscreen target at a fixed resolution
+// and xxHashes the raw pixels, so a render-pipeline refactor can be proven
+// pixel-identical (hash unchanged) instead of eyeballed. Determinism is the
+// operator's setup responsibility -- freeze time-of-day and hold the camera
+// still. The two back-to-back captures report whether the scene is currently
+// stable enough for the hash to be a trustworthy A/B baseline.
+static bool capture_frame_hash(U64& out_hash)
+{
+    const S32 dim = 1024;
+    LLPointer<LLImageRaw> raw = new LLImageRaw(dim, dim, 3);
+    if (!gViewerWindow || !gViewerWindow->simpleSnapshot(raw, dim, dim, 3))
+    {
+        return false;
+    }
+    out_hash = HBXXH64::digest(raw->getData(), raw->getDataSize());
+    return true;
+}
+
+class LLAdvancedHashFrame : public view_listener_t
+{
+    bool handleEvent(const LLSD& userdata)
+    {
+        U64 h1 = 0;
+        U64 h2 = 0;
+        if (capture_frame_hash(h1) && capture_frame_hash(h2))
+        {
+            std::string msg = llformat(
+                "Frame hash 1024x1024: 0x%016llx / 0x%016llx  [%s]",
+                (unsigned long long)h1, (unsigned long long)h2,
+                (h1 == h2) ? "STABLE" : "UNSTABLE - freeze the scene");
+            LL_INFOS("FrameHash") << msg << LL_ENDL;
+            LLSD args;
+            args["MESSAGE"] = msg;
+            LLNotificationsUtil::add("SystemMessageTip", args);
+        }
+        else
+        {
+            LL_WARNS("FrameHash") << "frame capture failed" << LL_ENDL;
+        }
+        return true;
     }
 };
 
@@ -13018,6 +13067,7 @@ void initialize_menus()
     commit.add("Advanced.SelectedMaterialInfo", boost::bind(&handle_selected_material_info));
     view_listener_t::addMenu(new LLAdvancedToggleWireframe(), "Advanced.ToggleWireframe");
     view_listener_t::addMenu(new LLAdvancedCheckWireframe(), "Advanced.CheckWireframe");
+    view_listener_t::addMenu(new LLAdvancedHashFrame(), "Advanced.HashFrame");
     // Develop > Render
     view_listener_t::addMenu(new LLAdvancedToggleRandomizeFramerate(), "Advanced.ToggleRandomizeFramerate");
     view_listener_t::addMenu(new LLAdvancedCheckRandomizeFramerate(), "Advanced.CheckRandomizeFramerate");

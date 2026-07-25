@@ -4809,6 +4809,12 @@
                 <menu_item_check.on_click
                  function="Advanced.ToggleWireframe" />
             </menu_item_check>
+            <menu_item_call
+             label="Hash Frame (regression)"
+             name="HashFrame">
+                <menu_item_call.on_click
+                 function="Advanced.HashFrame" />
+            </menu_item_call>
             <menu_item_check
              label="Object-Object Occlusion"
              name="Object-Object Occlusion">

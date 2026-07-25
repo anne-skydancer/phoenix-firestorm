@@ -1620,8 +1620,20 @@ static bool capture_synthetic_hash(U64& out_hash)
     }
     scratch.bindTarget();
 
-    glClearColor(0.10f, 0.12f, 0.15f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // Fully self-contained: pin every state glClear and the draws would
+    // otherwise inherit from the frame -- scissor (glClear obeys it, so a stray
+    // scissor would clip the clear!), stencil, blend, color mask, depth-write.
+    // Without this the hash depends on WHERE in-world the capture was triggered.
+    LLGLDisable no_scissor(GL_SCISSOR_TEST);
+    LLGLDisable no_stencil(GL_STENCIL_TEST);
+    LLGLDisable no_blend(GL_BLEND);
+    gGL.setColorMask(true, true, true, true);
+
+    {
+        LLGLDepthTest clear_depth(GL_FALSE, GL_TRUE);   // depth-write on for the clear
+        gGL.setClearColor(0.10f, 0.12f, 0.15f, 1.0f);
+        gGL.clear(LLRender::CLEAR_COLOR | LLRender::CLEAR_DEPTH);
+    }
 
     // Fixed 2D projection over the whole target.
     gGL.matrixMode(LLRender::MM_PROJECTION);

@@ -507,6 +507,21 @@ public:
     };
     void setCullFace(eCullFace face);
 
+    // Framebuffer clear color, recorded and routed through LLRender. NOT
+    // deduped: window-init code (below llrender) sets glClearColor directly,
+    // so a skip-if-unchanged cache could desync -- always apply.
+    void setClearColor(F32 r, F32 g, F32 b, F32 a);
+
+    // Framebuffer clear with engine-neutral flags (no GLbitfield in the
+    // public signature). Uses the current clear color / depth / stencil.
+    enum eClearFlags
+    {
+        CLEAR_COLOR   = 0x1,
+        CLEAR_DEPTH   = 0x2,
+        CLEAR_STENCIL = 0x4
+    };
+    void clear(U32 flags);
+
     LLTexUnit* getTexUnit(U32 index);
 
     U32 getCurrentTexUnitIndex(void) const { return mCurrTextureUnitIndex; }
@@ -563,6 +578,7 @@ private:
     F32             mPolygonOffsetUnits;
     F32             mPointSize;
     eCullFace       mCullFace;
+    LLColor4        mClearColor;
 
     LLPointer<LLVertexBuffer>   mBuffer;
     LLStrider<LLVector4a>       mVerticesp;

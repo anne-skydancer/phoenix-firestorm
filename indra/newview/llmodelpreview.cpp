@@ -4718,7 +4718,7 @@ bool LLModelPreview::render()
 
             if (show_physics)
             {
-                glClear(GL_DEPTH_BUFFER_BIT);
+                gGL.clear(LLRender::CLEAR_DEPTH);
 
                 for (U32 pass = 0; pass < 2; pass++)
                 {

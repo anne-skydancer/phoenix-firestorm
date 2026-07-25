@@ -817,7 +817,8 @@ LLRender::LLRender()
     mPolygonOffsetFactor(0.f),
     mPolygonOffsetUnits(0.f),
     mPointSize(1.f),
-    mCullFace(CF_BACK)
+    mCullFace(CF_BACK),
+    mClearColor(0.f, 0.f, 0.f, 0.f)
 {
     for (U32 i = 0; i < LL_NUM_TEXTURE_LAYERS; i++)
     {
@@ -1614,6 +1615,21 @@ void LLRender::setCullFace(eCullFace face)
         }
         glCullFace(gl_face);
     }
+}
+
+void LLRender::setClearColor(F32 r, F32 g, F32 b, F32 a)
+{
+    mClearColor.set(r, g, b, a);
+    glClearColor(r, g, b, a);
+}
+
+void LLRender::clear(U32 flags)
+{
+    GLbitfield mask = 0;
+    if (flags & CLEAR_COLOR)   mask |= GL_COLOR_BUFFER_BIT;
+    if (flags & CLEAR_DEPTH)   mask |= GL_DEPTH_BUFFER_BIT;
+    if (flags & CLEAR_STENCIL) mask |= GL_STENCIL_BUFFER_BIT;
+    glClear(mask);
 }
 
 bool LLRender::verifyTexUnitActive(U32 unitToVerify)

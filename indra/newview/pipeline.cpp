@@ -1650,9 +1650,9 @@ void LLPipeline::createLUTBuffers()
 
     mExposureMap.allocate(1, 1, GL_R16F);
     mExposureMap.bindTarget();
-    glClearColor(1, 1, 1, 0);
+    gGL.setClearColor(1, 1, 1, 0);
     mExposureMap.clear();
-    glClearColor(0, 0, 0, 0);
+    gGL.setClearColor(0, 0, 0, 0);
     mExposureMap.flush();
 
     mLuminanceMap.allocate(256, 256, GL_R16F, false, LLTexUnit::TT_TEXTURE, LLTexUnit::TMG_AUTO);
@@ -3130,7 +3130,7 @@ void LLPipeline::shiftObjects(const LLVector3 &offset)
     LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;
     assertInitialized();
 
-    glClear(GL_DEPTH_BUFFER_BIT);
+    gGL.clear(LLRender::CLEAR_DEPTH);
     gDepthDirty = true;
 
     LLVector4a offseta;
@@ -5099,7 +5099,7 @@ void LLPipeline::renderDebug()
                     {
                         const LLColor4 clearColor = gSavedSettings.getColor4("PathfindingNavMeshClear");
                         gGL.setColorMask(true, true);
-                        glClearColor(clearColor.mV[0],clearColor.mV[1],clearColor.mV[2],0);
+                        gGL.setClearColor(clearColor.mV[0],clearColor.mV[1],clearColor.mV[2],0);
                         glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // no stencil -- deprecated | GL_STENCIL_BUFFER_BIT);
                         gGL.setColorMask(true, false);
                         gGL.setPolygonMode(LLRender::PM_FILL);
@@ -8935,7 +8935,7 @@ void LLPipeline::renderFinalize()
     enableLightsFullbright();
 
     gGL.setColorMask(true, true);
-    glClearColor(0, 0, 0, 0);
+    gGL.setClearColor(0, 0, 0, 0);
 
     static LLCachedControl<bool> has_hdr(gSavedSettings, "RenderHDREnabled", true);
     bool hdr = gGLManager.mGLVersion > 4.05f && has_hdr();
@@ -9456,9 +9456,9 @@ void LLPipeline::renderDeferredLighting()
                 LLGLSLShader& sun_shader = gCubeSnapshot ? gDeferredSunProbeProgram : gDeferredSunProgram;
                 bindDeferredShader(sun_shader, deferred_light_target);
                 mScreenTriangleVB->setBuffer();
-                glClearColor(1, 1, 1, 1);
+                gGL.setClearColor(1, 1, 1, 1);
                 deferred_light_target->clear(GL_COLOR_BUFFER_BIT);
-                glClearColor(0, 0, 0, 0);
+                gGL.setClearColor(0, 0, 0, 0);
 
                 sun_shader.uniform2f(LLShaderMgr::DEFERRED_SCREEN_RES,
                                               (GLfloat)deferred_light_target->getWidth(),
@@ -9482,9 +9482,9 @@ void LLPipeline::renderDeferredLighting()
             LL_PROFILE_GPU_ZONE("soften shadow");
             // blur lightmap
             screen_target->bindTarget();
-            glClearColor(1, 1, 1, 1);
+            gGL.setClearColor(1, 1, 1, 1);
             screen_target->clear(GL_COLOR_BUFFER_BIT);
-            glClearColor(0, 0, 0, 0);
+            gGL.setClearColor(0, 0, 0, 0);
 
             bindDeferredShader(gDeferredBlurLightProgram);
 
@@ -9539,7 +9539,7 @@ void LLPipeline::renderDeferredLighting()
 
         screen_target->bindTarget();
         // clear color buffer here - zeroing alpha (glow) is important or it will accumulate against sky
-        glClearColor(0, 0, 0, 0);
+        gGL.setClearColor(0, 0, 0, 0);
         screen_target->clear(GL_COLOR_BUFFER_BIT);
 
         if (RenderDeferredAtmospheric)
@@ -10046,12 +10046,12 @@ void LLPipeline::doWaterHaze()
 void LLPipeline::doWaterExclusionMask()
 {
     mWaterExclusionMask.bindTarget();
-    glClearColor(1, 1, 1, 1);
+    gGL.setClearColor(1, 1, 1, 1);
     mWaterExclusionMask.clear();
     mWaterExclusionPool->render();
 
     mWaterExclusionMask.flush();
-    glClearColor(0, 0, 0, 0);
+    gGL.setClearColor(0, 0, 0, 0);
 }
 
 void LLPipeline::setupSpotLight(LLGLSLShader& shader, LLDrawable* drawablep)
@@ -11936,7 +11936,7 @@ void LLPipeline::generateImpostor(LLVOAvatar* avatar, bool preview_avatar, bool 
         gGL.loadMatrix(glm::value_ptr(mat));
         set_current_modelview(mat);
 
-        glClearColor(0.0f,0.0f,0.0f,0.0f);
+        gGL.setClearColor(0.0f,0.0f,0.0f,0.0f);
         gGL.setColorMask(true, true);
 
         // get the number of pixels per angle

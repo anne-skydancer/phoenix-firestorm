@@ -6665,17 +6665,21 @@ void LLAppViewer::idleNameCache()
 //
 
 
-#if defined(__FreeBSD__)
-// FreeBSD: bias inbound-message processing toward streaming rather than bursting.
-// A flood of updates (busy-region TP, avatar clumps) must never grow the per-frame
-// message budget into a movement-freezing stall, even at the cost of slower catch-up
-// -- movement stays responsive; content simply streams in over more frames.
+// Bias inbound-message processing toward streaming rather than bursting.
+// A flood of updates (busy-region TP, avatar clumps) must never grow the
+// per-frame message budget into a movement-freezing -- or, on a fragile GPU
+// driver, watchdog-tripping -- stall, even at the cost of slower catch-up:
+// movement stays responsive and content simply streams in over more frames.
+//
+// This was first applied on the FreeBSD port; the rationale is platform-
+// agnostic, so it now governs every build. The old Windows ceiling was 1.0s
+// -- long enough on its own to blow past a ~2s GPU TDR watchdog once the
+// frame's GPU submit is stacked on top of the message-decode stall.
 constexpr F32 CHECK_MESSAGES_DEFAULT_MAX_TIME = 0.010f; // 10 ms base budget
-#define CHECK_MESSAGES_MAX_TIME_LIMIT 0.050f // 50 ms hard ceiling (>=20 fps floor under flood)
-#else
-constexpr F32 CHECK_MESSAGES_DEFAULT_MAX_TIME = 0.020f; // 50 ms = 50 fps (just for messages!)
-#define CHECK_MESSAGES_MAX_TIME_LIMIT 1.0f // 1 second, a long time but still able to stay connected
-#endif
+#define CHECK_MESSAGES_MAX_TIME_LIMIT 0.080f // 80 ms hard ceiling: a worst-case
+// backlog frame dips to ~12 fps but never near the ~2s TDR watchdog, while
+// leaving enough per-frame catch-up that avatar/object streaming stays snappy
+// after a busy-region TP. (50 ms felt like it throttled avatar resolve too hard.)
 static F32 CheckMessagesMaxTime = CHECK_MESSAGES_DEFAULT_MAX_TIME;
 
 static LLTrace::BlockTimerStatHandle FTM_IDLE_NETWORK("Idle Network");

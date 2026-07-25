@@ -4570,7 +4570,7 @@ const float offset_factor = -3.0;
 void renderMeshBaseHullPhysics(LLVOVolume* volume, U32 data_mask, LLColor4& color, LLColor4& line_color)
 {
             LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(LLRender::PM_FILL);
             glPolygonOffset(offset_factor, offset_units);
             gGL.diffuseColor4fv(color.mV);
             renderMeshBaseHullWithOutline(volume, data_mask, color, line_color);
@@ -4580,7 +4580,7 @@ void renderMeshBaseHullPhysics(LLVOVolume* volume, U32 data_mask, LLColor4& colo
 void renderHullPhysics(LLModel::PhysicsMesh& mesh, const LLColor4& color, const LLColor4& line_color)
 {
     LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    gGL.setPolygonMode(LLRender::PM_FILL);
     glPolygonOffset(offset_factor, offset_units);
     render_hull_with_outline(mesh, color, line_color);
 }
@@ -4613,12 +4613,12 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
                 glPolygonOffset(offset_factor, offset_units);
                 gGL.diffuseColor4fv(color.mV);
                 //decomp has physics mesh, render that mesh
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                gGL.setPolygonMode(LLRender::PM_FILL);
                 LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
             }
             {
                 LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                gGL.setPolygonMode(LLRender::PM_LINE);
                 glPolygonOffset(offset_factor, offset_units);
                 gGL.diffuseColor4fv(line_color.mV);
                 LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
@@ -4628,11 +4628,11 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
         {
             gGL.flush();
             {
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                gGL.setPolygonMode(LLRender::PM_FILL);
                 gGL.diffuseColor4fv(color.mV);
                 //decomp has physics mesh, render that mesh
                 LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                gGL.setPolygonMode(LLRender::PM_LINE);
                 gGL.diffuseColor4fv(line_color.mV);
                 LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
             }
@@ -4646,7 +4646,7 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
         {
             gGL.diffuseColor4fv(color.mV);
             LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(LLRender::PM_FILL);
             glPolygonOffset(offset_factor, offset_units);
             gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
@@ -4654,7 +4654,7 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
         {
             gGL.diffuseColor4fv(line_color.mV);
             LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonMode(LLRender::PM_LINE);
             glPolygonOffset(offset_factor, offset_units);
             gGL.setLineWidth(3.f); // <FS> Line width OGL core profile fix by Rye Mutt
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
@@ -4664,11 +4664,11 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
     {
         gGL.flush();
         {
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(LLRender::PM_FILL);
             gGL.diffuseColor4fv(color.mV);
             //decomp has physics mesh, render that mesh
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonMode(LLRender::PM_LINE);
             gGL.diffuseColor4fv(line_color.mV);
             gGL.setLineWidth(3.f); // <FS> Line width OGL core profile fix by Rye Mutt
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mPhysicsShapeMesh.mPositions);
@@ -4676,7 +4676,7 @@ void renderMeshPhysicsTriangles(const LLColor4& color, const LLColor4& line_colo
     }
 
     gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    gGL.setPolygonMode(LLRender::PM_FILL);
     gGL.popMatrix();
 
     //restore the previous shader
@@ -4792,7 +4792,7 @@ void renderNonMeshHullPhysics(LLVOVolume* vovolume, LLVolume* volume, LLColor4 c
         //render hull
         // TODO: (BEQ) Find out why is this not a call to render_hull? it probably could be if the data is in the right form
 
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        gGL.setPolygonMode(LLRender::PM_LINE);
 
         gGL.diffuseColor4fv(line_color.mV);
         LLVertexBuffer::unbind();
@@ -4802,7 +4802,7 @@ void renderNonMeshHullPhysics(LLVOVolume* vovolume, LLVolume* volume, LLColor4 c
         LLVertexBuffer::drawElements(LLRender::TRIANGLES, phys_volume->mHullPoints, NULL, phys_volume->mNumHullIndices, phys_volume->mHullIndices);
 
         gGL.diffuseColor4fv(color.mV);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonMode(LLRender::PM_FILL);
         LLVertexBuffer::drawElements(LLRender::TRIANGLES, phys_volume->mHullPoints, NULL, phys_volume->mNumHullIndices, phys_volume->mHullIndices);
     }
     else
@@ -4986,7 +4986,7 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
     else if (physicsShapeType == LLPhysicsShapeBuilderUtil::PhysicsShapeSpecification::BOX)
     {
         LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonMode(LLRender::PM_FILL);
         glPolygonOffset(offset_factor, offset_units);
         LLVector3 center = physics_spec.getCenter();
         LLVector3 scale = physics_spec.getScale();
@@ -4999,7 +4999,7 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
     else if (physicsShapeType == LLPhysicsShapeBuilderUtil::PhysicsShapeSpecification::SPHERE)
     {
         LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonMode(LLRender::PM_FILL);
         glPolygonOffset(offset_factor, offset_units);
 
         LLVolumeParams volume_params;
@@ -5017,7 +5017,7 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
     else if (physicsShapeType == LLPhysicsShapeBuilderUtil::PhysicsShapeSpecification::CYLINDER)
     {
         LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gGL.setPolygonMode(LLRender::PM_FILL);
         glPolygonOffset(offset_factor, offset_units);
 
         LLVolumeParams volume_params;
@@ -5045,7 +5045,7 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
 
         {
             LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonMode(LLRender::PM_LINE);
 
             gGL.diffuseColor4fv(line_color.mV);
             pushVerts(phys_volume); // draw the outlines
@@ -5053,7 +5053,7 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
         {
             LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
             gGL.diffuseColor4fv(color.mV);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(LLRender::PM_FILL);
             pushVerts(phys_volume); // draw the filled boxes
         }
         LLPrimitive::sVolumeManager->unrefVolume(phys_volume);
@@ -5071,7 +5071,7 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
         {
             // TODO: (Beq) refactor this!! yet another flavour of drawing the same crap. Can we ratioanlise the arguments
             // <FS:Ansariel> Use a vbo for the static LLVertexBuffer::drawArray/Element functions; by Drake Arconis/Shyotl Kuhr
-            //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            //gGL.setPolygonMode(LLRender::PM_LINE);
             //llassert(LLGLSLShader::sCurBoundShader != 0);
             //LLVertexBuffer::unbind();
             //glVertexPointer(3, GL_FLOAT, 16, phys_volume->mHullPoints);
@@ -5080,14 +5080,14 @@ void renderOnePhysicsShape(LLViewerObject* objectp)
             //glDrawElements(GL_TRIANGLES, phys_volume->mNumHullIndices, GL_UNSIGNED_SHORT, phys_volume->mHullIndices);
 
             //gGL.diffuseColor4fv(color.mV);
-            //glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            //gGL.setPolygonMode(LLRender::PM_FILL);
             //glDrawElements(GL_TRIANGLES, phys_volume->mNumHullIndices, GL_UNSIGNED_SHORT, phys_volume->mHullIndices);
             gGL.diffuseColor4fv(line_color.mV);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            gGL.setPolygonMode(LLRender::PM_LINE);
             LLVertexBuffer::drawElements(LLRender::TRIANGLES, phys_volume->mHullPoints, NULL, phys_volume->mNumHullIndices, phys_volume->mHullIndices);
 
             gGL.diffuseColor4fv(color.mV);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gGL.setPolygonMode(LLRender::PM_FILL);
             LLVertexBuffer::drawElements(LLRender::TRIANGLES, phys_volume->mHullPoints, NULL, phys_volume->mNumHullIndices, phys_volume->mHullIndices);
             // </FS:Ansariel>
         }

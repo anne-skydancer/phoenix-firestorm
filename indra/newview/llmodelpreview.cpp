@@ -4706,9 +4706,9 @@ bool LLModelPreview::render()
                     if (show_edges)
                     {
                         gGL.setLineWidth(edge_width()); // <FS:Beq/> restore changes removed by the lab
-                        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                        gGL.setPolygonMode(LLRender::PM_LINE);
                         buffer->drawRange(LLRender::TRIANGLES, 0, buffer->getNumVerts() - 1, buffer->getNumIndices(), 0);
-                        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                        gGL.setPolygonMode(LLRender::PM_FILL);
                         gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
                     }
                     buffer->unmapBuffer();
@@ -4836,10 +4836,10 @@ bool LLModelPreview::render()
                                     gGL.diffuseColor4fv(phys_edge_col().mV);
                                     gGL.setLineWidth(phys_edge_width());
                                     // </FS:Beq>
-                                    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                                    gGL.setPolygonMode(LLRender::PM_LINE);
                                     buffer->drawRange(LLRender::TRIANGLES, 0, buffer->getNumVerts() - 1, buffer->getNumIndices(), 0);
 
-                                    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                                    gGL.setPolygonMode(LLRender::PM_FILL);
                                     gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
 
                                     buffer->unmapBuffer();
@@ -4917,10 +4917,10 @@ bool LLModelPreview::render()
                                             if (ll_is_degenerate(v1, v2, v3))
                                             {
                                                 // <FS:Beq> restore (configurable) coloured overlay
-                                                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                                                gGL.setPolygonMode(LLRender::PM_FILL);
                                                 gGL.diffuseColor4fv(deg_fill_col().mV);
                                                 buffer->draw(LLRender::TRIANGLES, 3, i);
-                                                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                                                gGL.setPolygonMode(LLRender::PM_LINE);
                                                 gGL.diffuseColor3fv(deg_edge_col().mV);
                                                 gGL.color3fv(deg_edge_col().mV);
                                                 // </FS:Beq>
@@ -5065,9 +5065,9 @@ bool LLModelPreview::render()
                                 gGL.diffuseColor4fv(edge_col().mV);
                                 gGL.setLineWidth(edge_width());
                                 // </FS:Beq>
-                                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                                gGL.setPolygonMode(LLRender::PM_LINE);
                                 buffer->draw(LLRender::TRIANGLES, buffer->getNumIndices(), 0);
-                                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                                gGL.setPolygonMode(LLRender::PM_FILL);
                                 gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
                             }
                         }

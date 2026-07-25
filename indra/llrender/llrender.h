@@ -469,6 +469,19 @@ public:
 
     void setLineWidth(F32 line_width); // <FS> Line width OGL core profile fix by Rye Mutt
 
+    // Rasterizer polygon fill mode, routed through LLRender so redundant
+    // changes are elided (cached) and the core-profile requirement that the
+    // face be GL_FRONT_AND_BACK is enforced in one place -- a raw
+    // glPolygonMode() naming GL_FRONT or GL_BACK alone is illegal in a core
+    // context. The face is always GL_FRONT_AND_BACK; callers pick the fill.
+    enum ePolygonMode
+    {
+        PM_POINT,
+        PM_LINE,
+        PM_FILL
+    };
+    void setPolygonMode(ePolygonMode mode);
+
     LLTexUnit* getTexUnit(U32 index);
 
     U32 getCurrentTexUnitIndex(void) const { return mCurrTextureUnitIndex; }
@@ -520,6 +533,7 @@ private:
     F32             mMaxLineWidthSmooth;
     F32             mMaxLineWidthAliased;
     // </FS:Ansariel>
+    ePolygonMode    mPolygonMode;
 
     LLPointer<LLVertexBuffer>   mBuffer;
     LLStrider<LLVector4a>       mVerticesp;

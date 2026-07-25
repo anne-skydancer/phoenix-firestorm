@@ -811,8 +811,9 @@ LLRender::LLRender()
     mLineWidth(1.f), // <FS> Line width OGL core profile fix by Rye Mutt
     // <FS:Ansariel> Don't ignore OpenGL max line width
     mMaxLineWidthSmooth(1.f),
-    mMaxLineWidthAliased(1.f)
+    mMaxLineWidthAliased(1.f),
     // </FS:Ansariel>
+    mPolygonMode(PM_FILL)
 {
     for (U32 i = 0; i < LL_NUM_TEXTURE_LAYERS; i++)
     {
@@ -1537,6 +1538,28 @@ void LLRender::setLineWidth(F32 line_width)
     }
 }
 // </FS>
+
+void LLRender::setPolygonMode(ePolygonMode mode)
+{
+    if (mPolygonMode != mode || mDirty)
+    {
+        // Flush any pending immediate-mode geometry so it rasterizes under the
+        // mode it was queued with, not the one we are switching to (flush is a
+        // no-op when nothing is buffered).
+        flush();
+        mPolygonMode = mode;
+        GLenum gl_mode = GL_FILL;
+        if (mode == PM_LINE)
+        {
+            gl_mode = GL_LINE;
+        }
+        else if (mode == PM_POINT)
+        {
+            gl_mode = GL_POINT;
+        }
+        glPolygonMode(GL_FRONT_AND_BACK, gl_mode);
+    }
+}
 
 bool LLRender::verifyTexUnitActive(U32 unitToVerify)
 {

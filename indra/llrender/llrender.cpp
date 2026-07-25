@@ -1632,6 +1632,31 @@ void LLRender::clear(U32 flags)
     glClear(mask);
 }
 
+void LLRender::setStencilFunc(eStencilFunc func, S32 ref, U32 mask)
+{
+    static const GLenum gl_func[] =
+    {
+        GL_NEVER, GL_LESS, GL_EQUAL, GL_LEQUAL,
+        GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS
+    };
+    glStencilFunc(gl_func[func], ref, mask);
+}
+
+void LLRender::setStencilOp(eStencilOp sfail, eStencilOp dpfail, eStencilOp dppass)
+{
+    static const GLenum gl_op[] =
+    {
+        GL_KEEP, GL_ZERO, GL_REPLACE, GL_INCR,
+        GL_DECR, GL_INVERT, GL_INCR_WRAP, GL_DECR_WRAP
+    };
+    glStencilOp(gl_op[sfail], gl_op[dpfail], gl_op[dppass]);
+}
+
+void LLRender::setStencilMask(U32 mask)
+{
+    glStencilMask(mask);
+}
+
 bool LLRender::verifyTexUnitActive(U32 unitToVerify)
 {
     if (mCurrTextureUnitIndex == unitToVerify)

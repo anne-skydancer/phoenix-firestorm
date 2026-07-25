@@ -1775,14 +1775,14 @@ void LLManipTranslate::highlightIntersection(LLVector3 normal,
         gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
         LLGLDepthTest depth(GL_FALSE);
         //LLGLEnable stencil(GL_STENCIL_TEST);
-        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-        glStencilFunc(GL_EQUAL, 0, stencil_mask);
+        gGL.setStencilOp(LLRender::SO_KEEP, LLRender::SO_KEEP, LLRender::SO_KEEP);
+        gGL.setStencilFunc(LLRender::SF_EQUAL, 0, stencil_mask);
         renderGrid(0,0,tiles,inner_color.mV[0], inner_color.mV[1], inner_color.mV[2], 0.25f);
     }
 
-    glStencilFunc(GL_ALWAYS, 255, 0xFFFFFFFF);
-    glStencilMask(0xFFFFFFFF);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    gGL.setStencilFunc(LLRender::SF_ALWAYS, 255, 0xFFFFFFFF);
+    gGL.setStencilMask(0xFFFFFFFF);
+    gGL.setStencilOp(LLRender::SO_KEEP, LLRender::SO_KEEP, LLRender::SO_REPLACE);
 
     gGL.popMatrix();
 #endif

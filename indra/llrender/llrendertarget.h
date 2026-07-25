@@ -101,7 +101,7 @@ public:
     // use_name -- optional texture name to target instead of attachment->getTexName()
     // NOTE: setColorAttachment and releaseColorAttachment cannot be used in conjuction with
     // addColorAttachment, allocateDepth, resize, etc.
-    void setColorAttachment(LLImageGL* attachment, LLGLuint use_name = 0);
+    void setColorAttachment(LLImageGL* attachment, U32 use_name = 0);
 
     // detach from current color attachment
     void releaseColorAttachment();

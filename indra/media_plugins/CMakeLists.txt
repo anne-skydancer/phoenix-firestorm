@@ -23,4 +23,9 @@ if (FREEBSD)
     # No CEF on FreeBSD (EXTERNAL_TOS); use the libvlc media plugin for
     # streaming audio/video (parcel music, internet radio, media-on-a-prim).
     add_subdirectory(libvlc)
+
+    # WebKit2GTK (webkit2gtk-4.0 / GTK3) provides web + image MOAP rendering
+    # (text/html, image/*) in place of CEF/dullahan, which is unavailable on
+    # FreeBSD. Needed for the collar script dashboard.
+    add_subdirectory(webkit)
 endif (FREEBSD)

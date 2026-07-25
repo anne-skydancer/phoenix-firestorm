@@ -1149,9 +1149,10 @@ bool LLAppViewer::init()
 #elif LL_LINUX
     mime_types_name = "mime_types_linux.xml";
 #elif __FreeBSD__
-    // FreeBSD ships the libvlc media plugin (not the Linux gstreamer one), so it
-    // uses the default MIME map, which routes streaming media to media_plugin_libvlc.
-    mime_types_name = "mime_types.xml";
+    // FreeBSD: streaming A/V -> media_plugin_libvlc, web/image -> media_plugin_webkit
+    // (WebKit2GTK; no CEF here). Its own MIME map so the shared mime_types.xml
+    // (also the Windows fallback) keeps routing web/image to media_plugin_cef.
+    mime_types_name = "mime_types_freebsd.xml";
 #else
     mime_types_name = "mime_types.xml";
 #endif

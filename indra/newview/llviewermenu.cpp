@@ -1593,8 +1593,23 @@ class LLAdvancedHashFrame : public view_listener_t
 // restarts (same GPU) -- the restart-stable cross-build gate v1 lacked. This
 // is the effortless A/B: hash before a render change, hash after, compare; a
 // byte-exact refactor leaves the hash unchanged with zero in-world setup.
-// The scene deliberately drives the paths the GL cleanup touches (a wireframe
-// quad via setPolygonMode; the offscreen viewport via LLRenderTarget bind).
+// The scene deliberately drives every state path the GL cleanup touches, so a
+// regression in any of them changes the hash: setPolygonMode (wireframe quad),
+// setPointSize (fat points), setColorMask (masked quad), setPolygonOffset (a
+// GL_LESS coplanar pair the offset must win), setCullFace (a quad drawn twice
+// with the cull face flipped), plus the LLGLDepthTest/LLGLEnable state RAII.
+
+// A CCW-wound filled quad at z=0 (left/bottom/right/top), flushed immediately so
+// the current state applies to exactly this quad.
+static void synth_quad(S32 l, S32 b, S32 r, S32 t)
+{
+    gGL.begin(LLRender::TRIANGLES);
+        gGL.vertex2i(l, b); gGL.vertex2i(r, b); gGL.vertex2i(r, t);
+        gGL.vertex2i(l, b); gGL.vertex2i(r, t); gGL.vertex2i(l, t);
+    gGL.end();
+    gGL.flush();
+}
+
 static bool capture_synthetic_hash(U64& out_hash)
 {
     const S32 dim = 256;
@@ -1617,41 +1632,73 @@ static bool capture_synthetic_hash(U64& out_hash)
     gGL.pushMatrix();
     gGL.loadIdentity();
 
+    gUIProgram.bind();
+    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+
+    // --- Flat layer: painter's order, no depth, no cull ---
     {
-        LLGLDepthTest depth(GL_FALSE);   // painter's order, no depth fighting
+        LLGLDepthTest depth(GL_FALSE);
         LLGLDisable cull(GL_CULL_FACE);
-        gUIProgram.bind();
-        gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
 
-        // Red filled quad.
-        gGL.color4f(0.85f, 0.15f, 0.15f, 1.f);
-        gGL.begin(LLRender::TRIANGLES);
-            gGL.vertex2i( 24,  24); gGL.vertex2i(120,  24); gGL.vertex2i(120, 120);
-            gGL.vertex2i( 24,  24); gGL.vertex2i(120, 120); gGL.vertex2i( 24, 120);
-        gGL.end();
-        gGL.flush();
+        gGL.color4f(0.85f, 0.15f, 0.15f, 1.f);   // red
+        synth_quad(24, 24, 120, 120);
+        gGL.color4f(0.15f, 0.75f, 0.25f, 1.f);   // green, overlapping
+        synth_quad(80, 80, 176, 176);
 
-        // Green filled quad, overlapping the red (painter's order -> green on top).
-        gGL.color4f(0.15f, 0.75f, 0.25f, 1.f);
-        gGL.begin(LLRender::TRIANGLES);
-            gGL.vertex2i( 80,  80); gGL.vertex2i(176,  80); gGL.vertex2i(176, 176);
-            gGL.vertex2i( 80,  80); gGL.vertex2i(176, 176); gGL.vertex2i( 80, 176);
-        gGL.end();
-        gGL.flush();
-
-        // Blue quad rendered as a wireframe outline via polygon mode
-        // (makes the hash sensitive to setPolygonMode).
+        // Wireframe outline -> setPolygonMode.
         gGL.setPolygonMode(LLRender::PM_LINE);
-        gGL.color4f(0.30f, 0.45f, 0.95f, 1.f);
-        gGL.begin(LLRender::TRIANGLES);
-            gGL.vertex2i(140,  40); gGL.vertex2i(232,  40); gGL.vertex2i(232, 132);
-            gGL.vertex2i(140,  40); gGL.vertex2i(232, 132); gGL.vertex2i(140, 132);
-        gGL.end();
-        gGL.flush();
+        gGL.color4f(0.30f, 0.45f, 0.95f, 1.f);   // blue
+        synth_quad(140, 40, 232, 132);
         gGL.setPolygonMode(LLRender::PM_FILL);
 
-        gUIProgram.unbind();
+        // Fat points -> setPointSize (disable program-point-size so the fixed
+        // size applies).
+        {
+            LLGLDisable prog_pt(GL_PROGRAM_POINT_SIZE);
+            gGL.setPointSize(7.f);
+            gGL.color4f(0.95f, 0.85f, 0.10f, 1.f);   // yellow
+            gGL.begin(LLRender::POINTS);
+                gGL.vertex2i(40, 210); gGL.vertex2i(64, 210); gGL.vertex2i(88, 210);
+            gGL.end();
+            gGL.flush();
+            gGL.setPointSize(1.f);
+        }
+
+        // Masked white quad (write R+A only -> renders red-ish) -> setColorMask.
+        gGL.setColorMask(true, false, false, true);
+        gGL.color4f(1.f, 1.f, 1.f, 1.f);
+        synth_quad(180, 180, 232, 232);
+        gGL.setColorMask(true, true, true, true);
     }
+
+    // --- Depth layer: coplanar pair under GL_LESS; the offset must win -> setPolygonOffset ---
+    {
+        LLGLDepthTest depth(GL_TRUE, GL_TRUE, GL_LESS);
+        LLGLDisable cull(GL_CULL_FACE);
+
+        gGL.color4f(0.80f, 0.25f, 0.20f, 1.f);   // base, drawn first
+        synth_quad(10, 140, 74, 204);
+        gGL.setPolygonOffset(-1.f, -1.f);        // pull the coplanar quad forward
+        gGL.color4f(0.20f, 0.80f, 0.80f, 1.f);   // cyan wins iff offset works
+        synth_quad(10, 140, 74, 204);
+        gGL.setPolygonOffset(0.f, 0.f);
+    }
+
+    // --- Cull layer: same quad twice, cull face flipped -> setCullFace ---
+    {
+        LLGLDepthTest depth(GL_FALSE);
+        LLGLEnable cull(GL_CULL_FACE);
+
+        gGL.setCullFace(LLRender::CF_BACK);
+        gGL.color4f(0.55f, 0.30f, 0.90f, 1.f);   // purple
+        synth_quad(110, 180, 180, 245);
+        gGL.setCullFace(LLRender::CF_FRONT);     // flips which face survives
+        gGL.color4f(0.95f, 0.55f, 0.15f, 1.f);   // orange
+        synth_quad(110, 180, 180, 245);
+        gGL.setCullFace(LLRender::CF_BACK);      // restore default
+    }
+
+    gUIProgram.unbind();
 
     gGL.matrixMode(LLRender::MM_PROJECTION);
     gGL.popMatrix();

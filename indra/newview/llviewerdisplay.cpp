@@ -1806,9 +1806,9 @@ static void renderChatRangeSphere(const LLVector3& center, F32 radius, const LLC
         gGL.pushMatrix();
         {
             gGL.scalef(radius, radius, radius);
-            glCullFace(GL_FRONT);
+            gGL.setCullFace(LLRender::CF_FRONT);
             gSphere.render();
-            glCullFace(GL_BACK);
+            gGL.setCullFace(LLRender::CF_BACK);
             gSphere.render();
         }
         gGL.popMatrix();

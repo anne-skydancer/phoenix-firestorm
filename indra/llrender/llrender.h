@@ -494,6 +494,19 @@ public:
     // changes that must NOT be recorded keep calling glViewport directly.
     void setViewport(S32 x, S32 y, S32 width, S32 height);
 
+    // Point size for GL_POINTS, cached like setLineWidth.
+    void setPointSize(F32 size);
+
+    // Rasterizer cull face, cached & routed through LLRender. Enabling/disabling
+    // GL_CULL_FACE stays with the caller (LLGLEnable); this only picks the face.
+    enum eCullFace
+    {
+        CF_FRONT,
+        CF_BACK,
+        CF_FRONT_AND_BACK
+    };
+    void setCullFace(eCullFace face);
+
     LLTexUnit* getTexUnit(U32 index);
 
     U32 getCurrentTexUnitIndex(void) const { return mCurrTextureUnitIndex; }
@@ -548,6 +561,8 @@ private:
     ePolygonMode    mPolygonMode;
     F32             mPolygonOffsetFactor;
     F32             mPolygonOffsetUnits;
+    F32             mPointSize;
+    eCullFace       mCullFace;
 
     LLPointer<LLVertexBuffer>   mBuffer;
     LLStrider<LLVector4a>       mVerticesp;

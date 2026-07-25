@@ -1402,7 +1402,7 @@ void renderReflectionProbe(LLReflectionMap* probe, std::map<LLSpatialGroup*, int
         float pointSize = (dupByGroup || dupByObject || dupByLoc)
                             ? bigSize
                             : normalSize;
-        glPointSize(pointSize);
+        gGL.setPointSize(pointSize);
         gGL.begin(gGL.POINTS);
         gGL.vertex3fv(po);
         gGL.end();

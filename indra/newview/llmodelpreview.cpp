@@ -4854,10 +4854,10 @@ bool LLModelPreview::render()
                     {
                         // <FS:Beq> restore older functionality lost in lab importer
                         // gGL.setLineWidth(PREVIEW_DEG_EDGE_WIDTH); // <FS> Line width OGL core profile fix by Rye Mutt
-                        // glPointSize(PREVIEW_DEG_POINT_SIZE);
+                        // gGL.setPointSize(PREVIEW_DEG_POINT_SIZE);
                         // gPipeline.enableLightsFullbright();
                         gGL.setLineWidth(deg_edge_width());
-                        glPointSize(deg_point_size());
+                        gGL.setPointSize(deg_point_size());
                         // gPipeline.enableLightsFullbright(); // This may need to be restored when I fined the cause of the black rendering
                         // </FS:Beq>
                         //show degenerate triangles
@@ -4937,7 +4937,7 @@ bool LLModelPreview::render()
                             gGL.popMatrix();
                         }
                         gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
-                        glPointSize(1.f);
+                        gGL.setPointSize(1.f);
                         gPipeline.enableLightsPreview();
                         gGL.setSceneBlendType(LLRender::BT_ALPHA);
                     }

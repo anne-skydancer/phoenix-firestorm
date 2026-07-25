@@ -815,7 +815,9 @@ LLRender::LLRender()
     // </FS:Ansariel>
     mPolygonMode(PM_FILL),
     mPolygonOffsetFactor(0.f),
-    mPolygonOffsetUnits(0.f)
+    mPolygonOffsetUnits(0.f),
+    mPointSize(1.f),
+    mCullFace(CF_BACK)
 {
     for (U32 i = 0; i < LL_NUM_TEXTURE_LAYERS; i++)
     {
@@ -1583,6 +1585,35 @@ void LLRender::setViewport(S32 x, S32 y, S32 width, S32 height)
     gGLViewport[2] = width;
     gGLViewport[3] = height;
     glViewport(x, y, width, height);
+}
+
+void LLRender::setPointSize(F32 size)
+{
+    if (mPointSize != size || mDirty)
+    {
+        flush();
+        mPointSize = size;
+        glPointSize(size);
+    }
+}
+
+void LLRender::setCullFace(eCullFace face)
+{
+    if (mCullFace != face || mDirty)
+    {
+        flush();
+        mCullFace = face;
+        GLenum gl_face = GL_BACK;
+        if (face == CF_FRONT)
+        {
+            gl_face = GL_FRONT;
+        }
+        else if (face == CF_FRONT_AND_BACK)
+        {
+            gl_face = GL_FRONT_AND_BACK;
+        }
+        glCullFace(gl_face);
+    }
 }
 
 bool LLRender::verifyTexUnitActive(U32 unitToVerify)

@@ -1729,14 +1729,14 @@ void LLManipTranslate::highlightIntersection(LLVector3 normal,
 
         //stencil in volumes
         //glStencilOp(GL_INCR, GL_INCR, GL_INCR);
-        glCullFace(GL_FRONT);
+        gGL.setCullFace(LLRender::CF_FRONT);
         for (U32 i = 0; i < num_types; i++)
         {
             gPipeline.renderObjects(types[i], LLVertexBuffer::MAP_VERTEX, false);
         }
 
         //glStencilOp(GL_DECR, GL_DECR, GL_DECR);
-        glCullFace(GL_BACK);
+        gGL.setCullFace(LLRender::CF_BACK);
         for (U32 i = 0; i < num_types; i++)
         {
             gPipeline.renderObjects(types[i], LLVertexBuffer::MAP_VERTEX, false);

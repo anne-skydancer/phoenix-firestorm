@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llviewerobject.h"
+#include "llobjectupdatepod.h"
 
 #include "llaudioengine.h"
 #include "indra_constants.h"
@@ -1202,6 +1203,426 @@ U32 LLViewerObject::extractSpatialExtents(LLDataPackerBinaryBuffer *dp, LLVector
     return parent_id;
 }
 
+// Pure decode of a compressed / cached object update: reads the datapacker
+// blob into a plain POD and touches NO object state. Mirrors the read sequence
+// of processUpdateMessage()'s `else` branch (compressed terse + full) exactly,
+// so apply() can reproduce the original behavior byte-for-byte. See
+// llobjectupdatepod.h and the plan (atomic-yawning-badger.md).
+bool LLViewerObject::decodeCompressedUpdate(LLDataPackerBinaryBuffer& dp, EObjectUpdateType update_type, LLObjectUpdatePod& pod) const
+{
+    // = PS_SYS_DATA_BLOCK_SIZE (68) + PS_LEGACY_PART_DATA_BLOCK_SIZE (18); see
+    // llpartdata.cpp. The legacy particle block is a fixed field-by-field size
+    // with no length prefix, so we slice exactly this many bytes and let apply
+    // re-parse them through the untouched unpackParticleSource().
+    static const S32 LEGACY_PARTICLE_BLOCK_BYTES = 86;
+
+    pod.update_type = (S32)update_type;
+    pod.from_compressed = true;
+
+    bool ok = true;
+
+    U8 state = 0;
+    ok &= dp.unpackU8(state, "State");
+    pod.state = state;
+    pod.has_state = true;
+
+    if (update_type == OUT_TERSE_IMPROVED)
+    {
+        U8 value = 0;
+        ok &= dp.unpackU8(value, "agent");
+        if (value)
+        {
+            LLVector4 collision_plane;
+            ok &= dp.unpackVector4(collision_plane, "Plane");
+            pod.collision_plane = collision_plane;
+            pod.has_collision_plane = true;
+        }
+
+        LLVector3 v;
+        ok &= dp.unpackVector3(v, "Pos");
+        pod.pos = v;
+        pod.has_pos = true;
+
+        U16 val[4];
+        ok &= dp.unpackU16(val[VX], "VelX");
+        ok &= dp.unpackU16(val[VY], "VelY");
+        ok &= dp.unpackU16(val[VZ], "VelZ");
+        pod.vel.set(U16_to_F32(val[VX], -128.f, 128.f),
+                    U16_to_F32(val[VY], -128.f, 128.f),
+                    U16_to_F32(val[VZ], -128.f, 128.f));
+        pod.has_vel = true;
+
+        ok &= dp.unpackU16(val[VX], "AccX");
+        ok &= dp.unpackU16(val[VY], "AccY");
+        ok &= dp.unpackU16(val[VZ], "AccZ");
+        pod.accel.set(U16_to_F32(val[VX], -64.f, 64.f),
+                      U16_to_F32(val[VY], -64.f, 64.f),
+                      U16_to_F32(val[VZ], -64.f, 64.f));
+        pod.has_accel = true;
+
+        ok &= dp.unpackU16(val[VX], "ThetaX");
+        ok &= dp.unpackU16(val[VY], "ThetaY");
+        ok &= dp.unpackU16(val[VZ], "ThetaZ");
+        ok &= dp.unpackU16(val[VS], "ThetaS");
+        pod.rot_quat.mQ[VX] = U16_to_F32(val[VX], -1.f, 1.f);
+        pod.rot_quat.mQ[VY] = U16_to_F32(val[VY], -1.f, 1.f);
+        pod.rot_quat.mQ[VZ] = U16_to_F32(val[VZ], -1.f, 1.f);
+        pod.rot_quat.mQ[VS] = U16_to_F32(val[VS], -1.f, 1.f);
+        pod.has_rot = true;
+        pod.rot_from_vec3 = false;
+
+        ok &= dp.unpackU16(val[VX], "AccX");
+        ok &= dp.unpackU16(val[VY], "AccY");
+        ok &= dp.unpackU16(val[VZ], "AccZ");
+        pod.angv.set(U16_to_F32(val[VX], -64.f, 64.f),
+                     U16_to_F32(val[VY], -64.f, 64.f),
+                     U16_to_F32(val[VZ], -64.f, 64.f));
+        pod.has_angv = true;
+    }
+    else // OUT_FULL_COMPRESSED / OUT_FULL_CACHED
+    {
+        U32 crc = 0;
+        ok &= dp.unpackU32(crc, "CRC");
+        pod.crc = crc; pod.has_crc = true;
+
+        U8 material = 0;
+        ok &= dp.unpackU8(material, "Material");
+        pod.material = material; pod.has_material = true;
+
+        U8 click_action = 0;
+        ok &= dp.unpackU8(click_action, "ClickAction");
+        pod.click_action = click_action; pod.has_click_action = true;
+
+        LLVector3 v;
+        ok &= dp.unpackVector3(v, "Scale"); pod.scale = v; pod.has_scale = true;
+        ok &= dp.unpackVector3(v, "Pos");   pod.pos = v;   pod.has_pos = true;
+        ok &= dp.unpackVector3(v, "Rot");   pod.rot_vec = v;  // raw; apply does unpackFromVector3
+        pod.has_rot = true; pod.rot_from_vec3 = true;
+
+        U32 value = 0;
+        ok &= dp.unpackU32(value, "SpecialCode");
+        pod.pass_flags = value; // == the SpecialCode word; apply gates on these bits
+
+        LLUUID owner_id;
+        ok &= dp.unpackUUID(owner_id, "Owner");
+        pod.owner_id = owner_id; pod.has_owner_id = true;
+
+        if (value & 0x80)
+        {
+            ok &= dp.unpackVector3(v, "Omega");
+            pod.angv = v; pod.has_angv = true;
+        }
+
+        if (value & 0x20)
+        {
+            U32 parent_id = 0;
+            ok &= dp.unpackU32(parent_id, "ParentID");
+            pod.parent_id = parent_id; pod.has_parent = true;
+        }
+        else
+        {
+            pod.has_parent = false;
+        }
+
+        if (value & 0x2)
+        {
+            pod.gen_kind = 1;
+            U8 tree_byte = 0;
+            ok &= dp.unpackU8(tree_byte, "TreeData");
+            pod.tree_byte = tree_byte;
+        }
+        else if (value & 0x1)
+        {
+            pod.gen_kind = 2;
+            U32 alloc_size = 0;
+            ok &= dp.unpackU32(alloc_size, "ScratchPadSize");
+            pod.scratch_alloc_size = alloc_size;
+            // Read the length-prefixed payload into a bounded temp (the whole
+            // blob is <= buffer size), then keep the payload bytes. apply()
+            // reproduces the original new U8[alloc_size] + copy (bug preserved).
+            const S32 buf_size = dp.getBufferSize();
+            std::vector<U8> tmp(buf_size > 0 ? (size_t)buf_size : (size_t)1);
+            S32 sp_size = 0;
+            if (dp.unpackBinaryData(tmp.data(), sp_size, "PartData"))
+            {
+                if (sp_size > 0 && sp_size <= (S32)tmp.size())
+                {
+                    pod.scratch_blob.assign(tmp.data(), tmp.data() + sp_size);
+                }
+            }
+            else
+            {
+                ok = false;
+            }
+        }
+        else
+        {
+            pod.gen_kind = 0;
+        }
+
+        if (value & 0x4)
+        {
+            std::string text;
+            ok &= dp.unpackString(text, "Text");
+            pod.text_utf8 = text;
+            ok &= dp.unpackBinaryDataFixed(pod.text_color, 4, "Color"); // RAW; apply inverts alpha
+            pod.has_text = true;
+        }
+
+        if (value & 0x200)
+        {
+            std::string media_url;
+            ok &= dp.unpackString(media_url, "MediaURL");
+            pod.media_url = media_url;
+            pod.has_media_url = true;
+        }
+
+        if (value & 0x8)
+        {
+            U8 pblob[LEGACY_PARTICLE_BLOCK_BYTES];
+            ok &= dp.unpackBinaryDataFixed(pblob, LEGACY_PARTICLE_BLOCK_BYTES, "Particles");
+            pod.particle_legacy_blob.assign(pblob, pblob + LEGACY_PARTICLE_BLOCK_BYTES);
+            pod.has_legacy_particles = true;
+        }
+
+        // Extra params TLV list (always reads the count, even if zero).
+        U8 num_parameters = 0;
+        ok &= dp.unpackU8(num_parameters, "num_params");
+        pod.has_extra_params = true;
+        U8 param_block[MAX_OBJECT_PARAMS_SIZE];
+        for (U8 param = 0; param < num_parameters; ++param)
+        {
+            LLObjectUpdatePod::ExtraParam ep;
+            U16 param_type = 0;
+            ok &= dp.unpackU16(param_type, "param_type");
+            ep.type = param_type;
+            S32 param_size = 0;
+            if (dp.unpackBinaryData(param_block, param_size, "param_data"))
+            {
+                if (param_size > 0 && param_size <= (S32)MAX_OBJECT_PARAMS_SIZE)
+                {
+                    ep.data.assign(param_block, param_block + param_size);
+                }
+            }
+            else
+            {
+                ok = false;
+            }
+            pod.params.push_back(std::move(ep));
+        }
+
+        if (value & 0x10)
+        {
+            LLUUID sound_uuid;
+            F32 gain = 0.f;
+            U8 sound_flags = 0;
+            F32 cutoff = 0.f;
+            ok &= dp.unpackUUID(sound_uuid, "SoundUUID");
+            ok &= dp.unpackF32(gain, "SoundGain");
+            ok &= dp.unpackU8(sound_flags, "SoundFlags");
+            ok &= dp.unpackF32(cutoff, "SoundRadius");
+            pod.sound_uuid = sound_uuid;
+            pod.sound_gain = gain;
+            pod.sound_flags = sound_flags;
+            pod.sound_cutoff = cutoff;
+            pod.has_sound = true;
+        }
+        // Note: apply() calls setAttachedSound() unconditionally; when !has_sound
+        // the (null/zero) defaults reproduce the original's behavior.
+        pod.sound_owner_id = owner_id; // compressed: attached-sound owner == owner_id
+
+        if (value & 0x100)
+        {
+            std::string name_value_list;
+            ok &= dp.unpackString(name_value_list, "NV");
+            pod.name_value = name_value_list;
+            pod.has_name_value = true;
+        }
+    }
+
+    pod.final_cursor_offset = (U32)dp.getCurrentSize();
+    pod.decode_ok = ok;
+    return ok;
+}
+
+// Apply a decoded compressed/cached update. Reproduces the eager mutations of
+// processUpdateMessage()'s `else` branch, in the same order, reading from the
+// POD instead of the datapacker, and fills the motion temporaries the shared
+// tail consumes (new_pos_parent/new_rot/new_scale/new_angv, parent_id, retval).
+void LLViewerObject::applyCompressedUpdate(const LLObjectUpdatePod& pod, EObjectUpdateType update_type,
+                                           LLMessageSystem* mesgsys, U32 block_num, U32& retval, U32& parent_id,
+                                           LLVector3& new_pos_parent, LLQuaternion& new_rot,
+                                           LLVector3& new_scale, LLVector3& new_angv)
+{
+    mAttachmentState = pod.state;
+
+    if (update_type == OUT_TERSE_IMPROVED)
+    {
+        if (pod.has_collision_plane)
+        {
+            ((LLVOAvatar*)this)->setFootPlane(pod.collision_plane);
+        }
+        new_pos_parent = pod.pos;
+        setVelocity(pod.vel);
+        setAcceleration(pod.accel);
+        new_rot = pod.rot_quat;
+        new_angv = pod.angv;
+        setAngularVelocity(new_angv);
+        return;
+    }
+
+    // OUT_FULL_COMPRESSED / OUT_FULL_CACHED
+    const U32 value = pod.pass_flags;
+
+    setObjectCostStale();
+    if (isSelected() && gFloaterTools)
+    {
+        gFloaterTools->dirty();
+    }
+
+    mTotalCRC = pod.crc;
+
+    U8 old_material = getMaterial();
+    if (old_material != pod.material)
+    {
+        setMaterial(pod.material);
+        if (mDrawable.notNull())
+        {
+            gPipeline.markMoved(mDrawable, false); // undamped
+        }
+    }
+    setClickAction(pod.click_action);
+
+    new_scale = pod.scale;
+    new_pos_parent = pod.pos;
+    new_rot.unpackFromVector3(pod.rot_vec);
+    setAcceleration(LLVector3::zero);
+
+    mOwnerID = pod.owner_id;
+
+    if (pod.has_angv)
+    {
+        new_angv = pod.angv;
+        setAngularVelocity(new_angv);
+    }
+
+    if (pod.has_parent)
+    {
+        parent_id = pod.parent_id;
+    }
+    else
+    {
+        parent_id = 0;
+    }
+
+    if (pod.gen_kind == 1)
+    {
+        delete [] mData;
+        mData = new U8[1];
+        ((U8*)mData)[0] = pod.tree_byte;
+    }
+    else if (pod.gen_kind == 2)
+    {
+        delete [] mData;
+        mData = new U8[pod.scratch_alloc_size];
+        if (!pod.scratch_blob.empty())
+        {
+            memcpy(mData, pod.scratch_blob.data(), pod.scratch_blob.size()); /* Flawfinder: ignore */
+        }
+    }
+    else
+    {
+        mData = NULL;
+    }
+
+    // Setup object text
+    if (!mText && pod.has_text)
+    {
+        initHudText();
+    }
+    if (pod.has_text)
+    {
+        LLColor4U coloru;
+        memcpy(coloru.mV, pod.text_color, 4); /* Flawfinder: ignore */
+        coloru.mV[3] = 255 - coloru.mV[3];
+        mText->setColor(LLColor4(coloru));
+        mText->setString(pod.text_utf8);
+// [RLVa:KB]
+        if (RlvActions::isRlvEnabled())
+        {
+            mText->setObjectText(pod.text_utf8);
+        }
+// [/RLVa:KB]
+        mHudText = pod.text_utf8;
+        mHudTextColor = LLColor4(coloru);
+        setChanged(TEXTURE);
+    }
+    else
+    {
+        if (mText.notNull())
+        {
+            mText->markDead();
+            mText = NULL;
+        }
+        mHudText.clear();
+    }
+
+    std::string media_url;
+    if (pod.has_media_url)
+    {
+        media_url = pod.media_url;
+    }
+    retval |= checkMediaURL(media_url);
+
+    // Unpack particle system data (legacy)
+    if (pod.has_legacy_particles)
+    {
+        LLDataPackerBinaryBuffer sub(const_cast<U8*>(pod.particle_legacy_blob.data()), (S32)pod.particle_legacy_blob.size());
+        unpackParticleSource(sub, pod.owner_id, true);
+    }
+    else if (!(value & 0x400))
+    {
+        deleteParticleSource();
+    }
+
+    // Extra params: mark unused, apply present ones, then notify removals
+    for (auto& entry : mExtraParameterList)
+    {
+        if (entry.in_use) *entry.in_use = false;
+    }
+    for (const auto& p : pod.params)
+    {
+        LLDataPackerBinaryBuffer sub(const_cast<U8*>(p.data.data()), (S32)p.data.size());
+        unpackParameterEntry(p.type, &sub);
+    }
+    for (size_t i = 0; i < mExtraParameterList.size(); ++i)
+    {
+        auto& entry = mExtraParameterList[i];
+        if (entry.in_use && !*entry.in_use)
+        {
+            parameterChanged(((U16)i + 1) << 4, entry.data, false, false);
+        }
+    }
+
+    // Attached sound is set unconditionally; the (null/zero) defaults when the
+    // 0x10 flag is absent reproduce the original behavior.
+    mSoundCutOffRadius = pod.sound_cutoff;
+    setAttachedSound(pod.sound_uuid, pod.owner_id, pod.sound_gain, pod.sound_flags);
+
+    if (pod.has_name_value)
+    {
+        setNameValueList(pod.name_value);
+    }
+
+    // Only get these flags on updates from sim, not cached ones.
+    if (mesgsys != NULL)
+    {
+        U32 flags;
+        mesgsys->getU32Fast(_PREHASH_ObjectData, _PREHASH_UpdateFlags, flags, block_num);
+        loadFlags(flags);
+    }
+}
+
 U32 LLViewerObject::processUpdateMessage(LLMessageSystem *mesgsys,
                      void **user_data,
                      U32 block_num,
@@ -1718,270 +2139,14 @@ U32 LLViewerObject::processUpdateMessage(LLMessageSystem *mesgsys,
     }
     else
     {
-        // handle the compressed case - have dp datapacker
-        LLUUID sound_uuid;
-        LLUUID  owner_id;
-        F32    gain = 0;
-        U8     sound_flags = 0;
-        F32     cutoff = 0;
-
-        U16 val[4];
-
-        U8      state;
-
-        dp->unpackU8(state, "State");
-        mAttachmentState = state;
-
-        switch(update_type)
-        {
-            case OUT_TERSE_IMPROVED:
-            {
-#ifdef DEBUG_UPDATE_TYPE
-                LL_INFOS() << "CompTI:" << getID() << LL_ENDL;
-#endif
-                U8      value;
-                dp->unpackU8(value, "agent");
-                if (value)
-                {
-                    LLVector4 collision_plane;
-                    dp->unpackVector4(collision_plane, "Plane");
-                    ((LLVOAvatar*)this)->setFootPlane(collision_plane);
-                }
-                test_pos_parent = getPosition();
-                dp->unpackVector3(new_pos_parent, "Pos");
-                dp->unpackU16(val[VX], "VelX");
-                dp->unpackU16(val[VY], "VelY");
-                dp->unpackU16(val[VZ], "VelZ");
-                setVelocity(U16_to_F32(val[VX], -128.f, 128.f),
-                            U16_to_F32(val[VY], -128.f, 128.f),
-                            U16_to_F32(val[VZ], -128.f, 128.f));
-                dp->unpackU16(val[VX], "AccX");
-                dp->unpackU16(val[VY], "AccY");
-                dp->unpackU16(val[VZ], "AccZ");
-                setAcceleration(U16_to_F32(val[VX], -64.f, 64.f),
-                                U16_to_F32(val[VY], -64.f, 64.f),
-                                U16_to_F32(val[VZ], -64.f, 64.f));
-
-                dp->unpackU16(val[VX], "ThetaX");
-                dp->unpackU16(val[VY], "ThetaY");
-                dp->unpackU16(val[VZ], "ThetaZ");
-                dp->unpackU16(val[VS], "ThetaS");
-                new_rot.mQ[VX] = U16_to_F32(val[VX], -1.f, 1.f);
-                new_rot.mQ[VY] = U16_to_F32(val[VY], -1.f, 1.f);
-                new_rot.mQ[VZ] = U16_to_F32(val[VZ], -1.f, 1.f);
-                new_rot.mQ[VS] = U16_to_F32(val[VS], -1.f, 1.f);
-                dp->unpackU16(val[VX], "AccX");
-                dp->unpackU16(val[VY], "AccY");
-                dp->unpackU16(val[VZ], "AccZ");
-                new_angv.set(U16_to_F32(val[VX], -64.f, 64.f),
-                                    U16_to_F32(val[VY], -64.f, 64.f),
-                                    U16_to_F32(val[VZ], -64.f, 64.f));
-                setAngularVelocity(new_angv);
-            }
-            break;
-            case OUT_FULL_COMPRESSED:
-            case OUT_FULL_CACHED:
-            {
-#ifdef DEBUG_UPDATE_TYPE
-                LL_INFOS() << "CompFull:" << getID() << LL_ENDL;
-#endif
-                setObjectCostStale();
-
-                if (isSelected() && gFloaterTools)
-                {
-                    gFloaterTools->dirty();
-                }
-
-                dp->unpackU32(crc, "CRC");
-                mTotalCRC = crc;
-                dp->unpackU8(material, "Material");
-                U8 old_material = getMaterial();
-                if (old_material != material)
-                {
-                    setMaterial(material);
-                    if (mDrawable.notNull())
-                    {
-                        gPipeline.markMoved(mDrawable, false); // undamped
-                    }
-                }
-                dp->unpackU8(click_action, "ClickAction");
-                setClickAction(click_action);
-                dp->unpackVector3(new_scale, "Scale");
-                dp->unpackVector3(new_pos_parent, "Pos");
-                LLVector3 vec;
-                dp->unpackVector3(vec, "Rot");
-                new_rot.unpackFromVector3(vec);
-                setAcceleration(LLVector3::zero);
-
-                U32 value;
-                dp->unpackU32(value, "SpecialCode");
-                dp->setPassFlags(value);
-                dp->unpackUUID(owner_id, "Owner");
-
-                mOwnerID = owner_id;
-
-                if (value & 0x80)
-                {
-                    dp->unpackVector3(new_angv, "Omega");
-                    setAngularVelocity(new_angv);
-                }
-
-                if (value & 0x20)
-                {
-                    dp->unpackU32(parent_id, "ParentID");
-                }
-                else
-                {
-                    parent_id = 0;
-                }
-
-                S32 sp_size;
-                U32 size;
-                if (value & 0x2)
-                {
-                    sp_size = 1;
-                    delete [] mData;
-                    mData = new U8[1];
-                    dp->unpackU8(((U8*)mData)[0], "TreeData");
-                }
-                else if (value & 0x1)
-                {
-                    dp->unpackU32(size, "ScratchPadSize");
-                    delete [] mData;
-                    mData = new U8[size];
-                    dp->unpackBinaryData((U8 *)mData, sp_size, "PartData");
-                }
-                else
-                {
-                    mData = NULL;
-                }
-
-                // Setup object text
-                if (!mText && (value & 0x4))
-                {
-                    initHudText();
-                }
-
-                if (value & 0x4)
-                {
-                    std::string temp_string;
-                    dp->unpackString(temp_string, "Text");
-
-                    LLColor4U coloru;
-                    dp->unpackBinaryDataFixed(coloru.mV, 4, "Color");
-                    coloru.mV[3] = 255 - coloru.mV[3];
-                    mText->setColor(LLColor4(coloru));
-                    mText->setString(temp_string);
-// [RLVa:KB] - Checked: 2010-03-27 (RLVa-1.4.0a) | Added: RLVa-1.0.0f
-                    if (RlvActions::isRlvEnabled())
-                    {
-                        mText->setObjectText(temp_string);
-                    }
-// [/RLVa:KB]
-
-                    mHudText = temp_string;
-                    mHudTextColor = LLColor4(coloru);
-
-                    setChanged(TEXTURE);
-                }
-                else
-                {
-                    if (mText.notNull())
-                    {
-                        mText->markDead();
-                        mText = NULL;
-                    }
-                    mHudText.clear();
-                }
-
-                std::string media_url;
-                if (value & 0x200)
-                {
-                    dp->unpackString(media_url, "MediaURL");
-                }
-                retval |= checkMediaURL(media_url);
-
-                //
-                // Unpack particle system data (legacy)
-                //
-                if (value & 0x8)
-                {
-                    unpackParticleSource(*dp, owner_id, true);
-                }
-                else if (!(value & 0x400))
-                {
-                    deleteParticleSource();
-                }
-
-                // Mark all extra parameters not used
-                for (auto& entry : mExtraParameterList)
-                {
-                    if (entry.in_use) *entry.in_use = false;
-                }
-
-                // Unpack extra params
-                U8 num_parameters;
-                dp->unpackU8(num_parameters, "num_params");
-                U8 param_block[MAX_OBJECT_PARAMS_SIZE];
-                for (U8 param=0; param<num_parameters; ++param)
-                {
-                    U16 param_type;
-                    S32 param_size;
-                    dp->unpackU16(param_type, "param_type");
-                    dp->unpackBinaryData(param_block, param_size, "param_data");
-                    //LL_INFOS() << "Param type: " << param_type << ", Size: " << param_size << LL_ENDL;
-                    LLDataPackerBinaryBuffer dp2(param_block, param_size);
-                    unpackParameterEntry(param_type, &dp2);
-                }
-
-                for (size_t i = 0; i < mExtraParameterList.size(); ++i)
-                {
-                    auto& entry = mExtraParameterList[i];
-                    if (entry.in_use && !*entry.in_use)
-                    {
-                        // Send an update message in case it was formerly in use
-                        parameterChanged(((U16)i + 1) << 4, entry.data, false, false);
-                    }
-                }
-
-                if (value & 0x10)
-                {
-                    dp->unpackUUID(sound_uuid, "SoundUUID");
-                    dp->unpackF32(gain, "SoundGain");
-                    dp->unpackU8(sound_flags, "SoundFlags");
-                    dp->unpackF32(cutoff, "SoundRadius");
-                }
-
-                if (value & 0x100)
-                {
-                    std::string name_value_list;
-                    dp->unpackString(name_value_list, "NV");
-
-                    setNameValueList(name_value_list);
-                }
-
-                mTotalCRC = crc;
-                mSoundCutOffRadius = cutoff;
-
-                setAttachedSound(sound_uuid, owner_id, gain, sound_flags);
-
-                // only get these flags on updates from sim, not cached ones
-                // Preload these five flags for every object.
-                // Finer shades require the object to be selected, and the selection manager
-                // stores the extended permission info.
-                if(mesgsys != NULL)
-                {
-                U32 flags;
-                mesgsys->getU32Fast(_PREHASH_ObjectData, _PREHASH_UpdateFlags, flags, block_num);
-                loadFlags(flags);
-                }
-            }
-            break;
-
-        default:
-            LL_WARNS("UpdateFail") << "Unknown compressed update type " << update_type << " for " << getID() << LL_ENDL;
-            break;
-        }
+        // Decode the compressed / cached blob into a POD (pure, no object
+        // mutation), then apply. One decoder serves live compressed updates and
+        // cache replay (identical byte layout). See llobjectupdatepod.h.
+        LLObjectUpdatePod pod;
+        decodeCompressedUpdate(static_cast<LLDataPackerBinaryBuffer&>(*dp), update_type, pod);
+        dp->setPassFlags(pod.pass_flags); // LLVOVolume/LLVOAvatar overrides read these after us
+        applyCompressedUpdate(pod, update_type, mesgsys, block_num, retval, parent_id,
+                              new_pos_parent, new_rot, new_scale, new_angv);
     }
 
     //

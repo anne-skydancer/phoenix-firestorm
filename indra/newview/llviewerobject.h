@@ -65,6 +65,7 @@ class LLControlAvatar;
 class LLDataPacker;
 class LLDataPackerBinaryBuffer;
 class LLDrawable;
+struct LLObjectUpdatePod;
 class LLHUDText;
 class LLHost;
 class LLMessageSystem;
@@ -189,6 +190,19 @@ public:
                                         U32 block_num,
                                         const EObjectUpdateType update_type,
                                         LLDataPacker *dp);
+
+    // --- object-update decode/apply split (see llobjectupdatepod.h) ---
+    // Pure decoders: read the wire bytes into a plain POD, touch NO object
+    // state (const). One per update path. applyObjectUpdate() then does all the
+    // eager mutation from the POD. This is the seam the Rust decoder shadows.
+    bool            decodeCompressedUpdate(LLDataPackerBinaryBuffer& dp, EObjectUpdateType update_type, LLObjectUpdatePod& pod) const;
+    // Apply a decoded compressed/cached update: reproduces the original eager
+    // mutations from the POD, in the original order, and fills the motion
+    // temporaries the shared tail of processUpdateMessage() consumes.
+    void            applyCompressedUpdate(const LLObjectUpdatePod& pod, EObjectUpdateType update_type,
+                                          LLMessageSystem* mesgsys, U32 block_num, U32& retval, U32& parent_id,
+                                          LLVector3& new_pos_parent, LLQuaternion& new_rot,
+                                          LLVector3& new_scale, LLVector3& new_angv);
 
 
     virtual bool    isActive() const; // Whether this object needs to do an idleUpdate.

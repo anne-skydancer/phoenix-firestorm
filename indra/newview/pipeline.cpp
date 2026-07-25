@@ -4981,7 +4981,7 @@ void LLPipeline::renderPhysicsDisplay()
     gDebugProgram.bind();
 
     LLGLEnable polygon_offset_line(GL_POLYGON_OFFSET_LINE);
-    glPolygonOffset(3.f, 3.f);
+    gGL.setPolygonOffset(3.f, 3.f);
     gGL.setLineWidth(3.f);
     LLGLEnable blend(GL_BLEND);
     gGL.setSceneBlendType(LLRender::BT_ALPHA);
@@ -5193,7 +5193,7 @@ void LLPipeline::renderDebug()
 
                             //get rid of some z-fighting
                             LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
-                            glPolygonOffset(1.0f, 1.0f);
+                            gGL.setPolygonOffset(1.0f, 1.0f);
 
                             //render to depth first to avoid blending artifacts
                             gGL.setColorMask(false, false);
@@ -5201,7 +5201,7 @@ void LLPipeline::renderDebug()
                             gGL.setColorMask(true, false);
 
                             //get rid of some z-fighting
-                            glPolygonOffset(0.f, 0.f);
+                            gGL.setPolygonOffset(0.f, 0.f);
 
                             LLGLEnable blend(GL_BLEND);
 
@@ -5226,7 +5226,7 @@ void LLPipeline::renderDebug()
                                     LLGLEnable blend(GL_BLEND);
                                     LLGLDepthTest depth(GL_TRUE, GL_FALSE, GL_GREATER);
 
-                                    glPolygonOffset(offset, -offset);
+                                    gGL.setPolygonOffset(offset, -offset);
 
                                     if (gSavedSettings.getBOOL("PathfindingXRayWireframe"))
                                     { //draw hidden wireframe as darker and less opaque
@@ -5243,7 +5243,7 @@ void LLPipeline::renderDebug()
                                 }
 
                                 { //draw visible wireframe as brighter, thicker and more opaque
-                                    glPolygonOffset(offset, offset);
+                                    gGL.setPolygonOffset(offset, offset);
                                     gPathfindingProgram.uniform1f(sAmbiance, 1.f);
                                     gPathfindingProgram.uniform1f(sTint, 1.f);
                                     gPathfindingProgram.uniform1f(sAlphaScale, 1.f);
@@ -5260,7 +5260,7 @@ void LLPipeline::renderDebug()
                         }
                     }
 
-                    glPolygonOffset(0.f, 0.f);
+                    gGL.setPolygonOffset(0.f, 0.f);
 
                     if ( pathfindingConsole->isRenderNavMesh() && pathfindingConsole->isRenderXRay() )
                     {   //render navmesh xray
@@ -5270,7 +5270,7 @@ void LLPipeline::renderDebug()
                         LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
 
                         F32 offset = gSavedSettings.getF32("PathfindingLineOffset");
-                        glPolygonOffset(offset, -offset);
+                        gGL.setPolygonOffset(offset, -offset);
 
                         LLGLEnable blend(GL_BLEND);
                         LLGLDepthTest depth(GL_TRUE, GL_FALSE, GL_GREATER);
@@ -5305,7 +5305,7 @@ void LLPipeline::renderDebug()
                         gGL.setLineWidth(1.0f); // <FS> Line width OGL core profile fix by Rye Mutt
                     }
 
-                    glPolygonOffset(0.f, 0.f);
+                    gGL.setPolygonOffset(0.f, 0.f);
 
                     gGL.flush();
                     gPathfindingProgram.unbind();
@@ -8197,12 +8197,8 @@ void LLPipeline::applyFXAA(LLRenderTarget* src, LLRenderTarget* dst)
                 mFXAAMap.bindTexture(0, channel, LLTexUnit::TFO_BILINEAR);
             }
 
-            gGLViewport[0] = gViewerWindow->getWorldViewRectRaw().mLeft;
-            gGLViewport[1] = gViewerWindow->getWorldViewRectRaw().mBottom;
-            gGLViewport[2] = gViewerWindow->getWorldViewRectRaw().getWidth();
-            gGLViewport[3] = gViewerWindow->getWorldViewRectRaw().getHeight();
-
-            glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+            const LLRect& world_view = gViewerWindow->getWorldViewRectRaw();
+            gGL.setViewport(world_view.mLeft, world_view.mBottom, world_view.getWidth(), world_view.getHeight());
 
             F32 scale_x = (F32)width / mFXAAMap.getWidth();
             F32 scale_y = (F32)height / mFXAAMap.getHeight();
@@ -8977,11 +8973,8 @@ void LLPipeline::renderFinalize()
     combineGlow(sourceBuffer, targetBuffer);
     std::swap(sourceBuffer, targetBuffer);
 
-    gGLViewport[0] = gViewerWindow->getWorldViewRectRaw().mLeft;
-    gGLViewport[1] = gViewerWindow->getWorldViewRectRaw().mBottom;
-    gGLViewport[2] = gViewerWindow->getWorldViewRectRaw().getWidth();
-    gGLViewport[3] = gViewerWindow->getWorldViewRectRaw().getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    const LLRect& world_view = gViewerWindow->getWorldViewRectRaw();
+    gGL.setViewport(world_view.mLeft, world_view.mBottom, world_view.getWidth(), world_view.getHeight());
 
     if((RenderDepthOfFieldInEditMode || !LLToolMgr::getInstance()->inBuildMode()) &&
         RenderDepthOfField &&

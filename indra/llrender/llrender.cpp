@@ -813,7 +813,9 @@ LLRender::LLRender()
     mMaxLineWidthSmooth(1.f),
     mMaxLineWidthAliased(1.f),
     // </FS:Ansariel>
-    mPolygonMode(PM_FILL)
+    mPolygonMode(PM_FILL),
+    mPolygonOffsetFactor(0.f),
+    mPolygonOffsetUnits(0.f)
 {
     for (U32 i = 0; i < LL_NUM_TEXTURE_LAYERS; i++)
     {
@@ -1559,6 +1561,28 @@ void LLRender::setPolygonMode(ePolygonMode mode)
         }
         glPolygonMode(GL_FRONT_AND_BACK, gl_mode);
     }
+}
+
+void LLRender::setPolygonOffset(F32 factor, F32 units)
+{
+    if (mPolygonOffsetFactor != factor || mPolygonOffsetUnits != units || mDirty)
+    {
+        // Flush pending immediate-mode geometry so it rasterizes under the
+        // offset it was queued with (no-op when nothing is buffered).
+        flush();
+        mPolygonOffsetFactor = factor;
+        mPolygonOffsetUnits = units;
+        glPolygonOffset(factor, units);
+    }
+}
+
+void LLRender::setViewport(S32 x, S32 y, S32 width, S32 height)
+{
+    gGLViewport[0] = x;
+    gGLViewport[1] = y;
+    gGLViewport[2] = width;
+    gGLViewport[3] = height;
+    glViewport(x, y, width, height);
 }
 
 bool LLRender::verifyTexUnitActive(U32 unitToVerify)

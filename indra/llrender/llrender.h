@@ -482,6 +482,18 @@ public:
     };
     void setPolygonMode(ePolygonMode mode);
 
+    // Rasterizer polygon offset (depth bias), cached and routed through
+    // LLRender so redundant changes are elided. Enabling/disabling
+    // GL_POLYGON_OFFSET_FILL/LINE stays with the caller (LLGLEnable); this
+    // only sets the factor/units.
+    void setPolygonOffset(F32 factor, F32 units);
+
+    // Set the active viewport AND record it in gGLViewport -- the "screen
+    // viewport" that FBO-stack restore, unprojection, and the VIEWPORT shader
+    // uniform read back as source of truth. Offscreen/target-local viewport
+    // changes that must NOT be recorded keep calling glViewport directly.
+    void setViewport(S32 x, S32 y, S32 width, S32 height);
+
     LLTexUnit* getTexUnit(U32 index);
 
     U32 getCurrentTexUnitIndex(void) const { return mCurrTextureUnitIndex; }
@@ -534,6 +546,8 @@ private:
     F32             mMaxLineWidthAliased;
     // </FS:Ansariel>
     ePolygonMode    mPolygonMode;
+    F32             mPolygonOffsetFactor;
+    F32             mPolygonOffsetUnits;
 
     LLPointer<LLVertexBuffer>   mBuffer;
     LLStrider<LLVector4a>       mVerticesp;

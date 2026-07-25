@@ -24,10 +24,12 @@ add_library( ll::rust INTERFACE IMPORTED GLOBAL )
 # is bombproof. Each maps to LL_RUST<X>_MODE = 0 | 1 | 2 for the C++ #if guards.
 #   LL_RUSTMESH -> mesh asset decode (geometry, decomposition, skin)
 #   LL_RUSTMSG  -> UDP message decode (zeroCodeExpand, ...) -- newer, own knob
-set(LL_RUSTMESH "cfallback" CACHE STRING "Rust mesh decode: off | cfallback | on")
-set(LL_RUSTMSG  "cfallback" CACHE STRING "Rust UDP message decode: off | cfallback | on")
-set_property(CACHE LL_RUSTMESH PROPERTY STRINGS off cfallback on)
-set_property(CACHE LL_RUSTMSG  PROPERTY STRINGS off cfallback on)
+set(LL_RUSTMESH   "cfallback" CACHE STRING "Rust mesh decode: off | cfallback | on")
+set(LL_RUSTMSG    "cfallback" CACHE STRING "Rust UDP message decode: off | cfallback | on")
+set(LL_RUSTOBJUPD "cfallback" CACHE STRING "Rust object-update decode: off | cfallback | on")
+set_property(CACHE LL_RUSTMESH   PROPERTY STRINGS off cfallback on)
+set_property(CACHE LL_RUSTMSG    PROPERTY STRINGS off cfallback on)
+set_property(CACHE LL_RUSTOBJUPD PROPERTY STRINGS off cfallback on)
 
 # Map off|cfallback|on -> 0|1|2.
 macro(_llrust_mode _var _out)
@@ -41,11 +43,12 @@ macro(_llrust_mode _var _out)
     message(FATAL_ERROR "${_var} must be one of: off, cfallback, on (got '${${_var}}')")
   endif ()
 endmacro()
-_llrust_mode(LL_RUSTMESH LLRUST_MESH_MODE)
-_llrust_mode(LL_RUSTMSG  LLRUST_MSG_MODE)
+_llrust_mode(LL_RUSTMESH   LLRUST_MESH_MODE)
+_llrust_mode(LL_RUSTMSG    LLRUST_MSG_MODE)
+_llrust_mode(LL_RUSTOBJUPD LLRUST_OBJUPD_MODE)
 
 # Build/link the Rust bridge only if at least one subsystem actually uses it.
-if (LLRUST_MESH_MODE EQUAL 0 AND LLRUST_MSG_MODE EQUAL 0)
+if (LLRUST_MESH_MODE EQUAL 0 AND LLRUST_MSG_MODE EQUAL 0 AND LLRUST_OBJUPD_MODE EQUAL 0)
   message(STATUS "LLRust: all subsystems off -> pure C++ (no Rust)")
   return()
 endif ()
@@ -180,7 +183,7 @@ endif ()
 set_target_properties(ll::rust PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LLRUST_INCLUDE}"
     INTERFACE_LINK_LIBRARIES      "${LLRUST_LIB};${LLRUST_NATIVE_LIBS}"
-    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MESH_MODE};LL_RUSTMSG_MODE=${LLRUST_MSG_MODE}")
+    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MESH_MODE};LL_RUSTMSG_MODE=${LLRUST_MSG_MODE};LL_RUSTOBJUPD_MODE=${LLRUST_OBJUPD_MODE}")
 
 # Consumers must `add_dependencies(<their_target> llrust_build)` so the .a/.h
 # exist before they compile/link.

@@ -19,6 +19,7 @@ mod decomp;
 mod llsd;
 mod mesh;
 mod msg;
+mod objupd;
 mod skin;
 
 use std::os::raw::{c_char, c_void};
@@ -169,6 +170,41 @@ pub extern "C" fn ll_decode_template_number(
         }
         None => 0,
     }
+}
+
+// --- object-update decode (shadow) ------------------------------------------
+
+/// Shadow-decode a compressed/cached object update and return an FNV-1a checksum
+/// of the decoded fields, folded in the canonical order the C++ LLObjectUpdatePod
+/// folds. `bytes` is the datapacker contents from its current cursor; `len` its
+/// remaining length; `update_type` the EObjectUpdateType value. Sets
+/// `*out_final_cursor` (bytes this decode consumed) and `*out_decode_ok`.
+///
+/// Safety: `bytes` must point to `len` readable bytes; the out pointers to
+/// writable i32s (any may be null). Never panics.
+#[no_mangle]
+pub extern "C" fn ll_objupd_checksum_compressed(
+    bytes: *const u8,
+    len: i32,
+    update_type: i32,
+    out_final_cursor: *mut i32,
+    out_decode_ok: *mut i32,
+) -> u64 {
+    if bytes.is_null() || len < 0 {
+        if !out_decode_ok.is_null() {
+            unsafe { *out_decode_ok = 0 };
+        }
+        return 0;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(bytes, len as usize) };
+    let o = objupd::decode(slice, update_type);
+    if !out_final_cursor.is_null() {
+        unsafe { *out_final_cursor = o.final_cursor_offset as i32 };
+    }
+    if !out_decode_ok.is_null() {
+        unsafe { *out_decode_ok = if o.decode_ok { 1 } else { 0 } };
+    }
+    objupd::checksum(&o)
 }
 
 /// A view into one decoded face's dequantized geometry. All pointers are owned

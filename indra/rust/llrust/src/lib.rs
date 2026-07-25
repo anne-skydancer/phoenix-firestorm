@@ -207,6 +207,126 @@ pub extern "C" fn ll_objupd_checksum_compressed(
     objupd::checksum(&o)
 }
 
+/// A view of a decoded compressed object update. Scalars are copied; the
+/// variable-length fields are `ptr`+`len` into buffers owned by the handle and
+/// valid until `ll_objupd_free()`. Mirrors LLObjectUpdatePod. Bools are i32
+/// (0/1). Extra-params are fetched one at a time via `ll_objupd_param`.
+#[repr(C)]
+pub struct LlObjUpdView {
+    pub decode_ok: i32,
+    pub final_cursor: i32,
+    pub state: u8,
+    pub has_pos: i32,             pub pos: [f32; 3],
+    pub has_scale: i32,           pub scale: [f32; 3],
+    pub has_rot: i32,             pub rot_from_vec3: i32,
+    pub rot_vec: [f32; 3],        pub rot_quat: [f32; 4],
+    pub has_vel: i32,             pub vel: [f32; 3],
+    pub has_accel: i32,           pub accel: [f32; 3],
+    pub has_angv: i32,            pub angv: [f32; 3],
+    pub has_collision_plane: i32, pub collision_plane: [f32; 4],
+    pub has_crc: i32,             pub crc: u32,
+    pub has_material: i32,        pub material: u8,
+    pub has_click_action: i32,    pub click_action: u8,
+    pub pass_flags: u32,
+    pub has_owner_id: i32,        pub owner_id: [u8; 16],
+    pub has_parent: i32,          pub parent_id: u32,
+    pub gen_kind: u8,             pub tree_byte: u8,   pub scratch_alloc_size: u32,
+    pub scratch_ptr: *const u8,   pub scratch_len: usize,
+    pub has_text: i32,            pub text_ptr: *const u8,    pub text_len: usize, pub text_color: [u8; 4],
+    pub has_media_url: i32,       pub media_ptr: *const u8,   pub media_len: usize,
+    pub has_legacy_particles: i32, pub particle_ptr: *const u8, pub particle_len: usize,
+    pub has_extra_params: i32,    pub param_count: u32,
+    pub has_sound: i32,           pub sound_uuid: [u8; 16], pub sound_gain: f32, pub sound_flags: u8, pub sound_cutoff: f32,
+    pub has_name_value: i32,      pub nv_ptr: *const u8,     pub nv_len: usize,
+}
+
+/// Decode a compressed/cached object update into an owned handle (free with
+/// `ll_objupd_free`). Returns null on bad args. Never panics.
+/// Safety: `bytes` must point to `len` readable bytes (or be null).
+#[no_mangle]
+pub extern "C" fn ll_objupd_decode(bytes: *const u8, len: i32, update_type: i32) -> *mut c_void {
+    if bytes.is_null() || len < 0 {
+        return std::ptr::null_mut();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(bytes, len as usize) };
+    Box::into_raw(Box::new(objupd::decode(slice, update_type))) as *mut c_void
+}
+
+/// Fill `out` with a view of the decoded update. Returns 0 on success, -1 on
+/// bad args. Pointers in the view are valid until `ll_objupd_free(handle)`.
+#[no_mangle]
+pub extern "C" fn ll_objupd_view(handle: *const c_void, out: *mut LlObjUpdView) -> i32 {
+    if handle.is_null() || out.is_null() {
+        return -1;
+    }
+    let o = unsafe { &*(handle as *const objupd::ObjUpd) };
+    let b = |v: bool| if v { 1 } else { 0 };
+    let v = LlObjUpdView {
+        decode_ok: b(o.decode_ok),
+        final_cursor: o.final_cursor_offset as i32,
+        state: o.state,
+        has_pos: b(o.has_pos), pos: o.pos,
+        has_scale: b(o.has_scale), scale: o.scale,
+        has_rot: b(o.has_rot), rot_from_vec3: b(o.rot_from_vec3),
+        rot_vec: o.rot_vec, rot_quat: o.rot_quat,
+        has_vel: b(o.has_vel), vel: o.vel,
+        has_accel: b(o.has_accel), accel: o.accel,
+        has_angv: b(o.has_angv), angv: o.angv,
+        has_collision_plane: b(o.has_collision_plane), collision_plane: o.collision_plane,
+        has_crc: b(o.has_crc), crc: o.crc,
+        has_material: b(o.has_material), material: o.material,
+        has_click_action: b(o.has_click_action), click_action: o.click_action,
+        pass_flags: o.pass_flags,
+        has_owner_id: b(o.has_owner_id), owner_id: o.owner_id,
+        has_parent: b(o.has_parent), parent_id: o.parent_id,
+        gen_kind: o.gen_kind, tree_byte: o.tree_byte, scratch_alloc_size: o.scratch_alloc_size,
+        scratch_ptr: o.scratch_blob.as_ptr(), scratch_len: o.scratch_blob.len(),
+        has_text: b(o.has_text), text_ptr: o.text.as_ptr(), text_len: o.text.len(), text_color: o.text_color,
+        has_media_url: b(o.has_media_url), media_ptr: o.media_url.as_ptr(), media_len: o.media_url.len(),
+        has_legacy_particles: b(o.has_legacy_particles), particle_ptr: o.particle_blob.as_ptr(), particle_len: o.particle_blob.len(),
+        has_extra_params: b(o.has_extra_params), param_count: o.params.len() as u32,
+        has_sound: b(o.has_sound), sound_uuid: o.sound_uuid, sound_gain: o.sound_gain, sound_flags: o.sound_flags, sound_cutoff: o.sound_cutoff,
+        has_name_value: b(o.has_name_value), nv_ptr: o.name_value.as_ptr(), nv_len: o.name_value.len(),
+    };
+    unsafe { *out = v };
+    0
+}
+
+/// Fetch extra-param `index`: sets `*out_type` and `*out_ptr`/`*out_len` (into
+/// handle-owned memory). Returns 0 on success, -1 if index is out of range.
+#[no_mangle]
+pub extern "C" fn ll_objupd_param(
+    handle: *const c_void,
+    index: u32,
+    out_type: *mut u16,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    if handle.is_null() {
+        return -1;
+    }
+    let o = unsafe { &*(handle as *const objupd::ObjUpd) };
+    let i = index as usize;
+    if i >= o.params.len() {
+        return -1;
+    }
+    let (t, d) = &o.params[i];
+    unsafe {
+        if !out_type.is_null() { *out_type = *t };
+        if !out_ptr.is_null() { *out_ptr = d.as_ptr() };
+        if !out_len.is_null() { *out_len = d.len() };
+    }
+    0
+}
+
+/// Free a handle from `ll_objupd_decode`.
+#[no_mangle]
+pub extern "C" fn ll_objupd_free(handle: *mut c_void) {
+    if !handle.is_null() {
+        unsafe { drop(Box::from_raw(handle as *mut objupd::ObjUpd)) };
+    }
+}
+
 /// A view into one decoded face's dequantized geometry. All pointers are owned
 /// by the mesh handle and stay valid until `ll_mesh_free()`; the C++ side copies
 /// out of them. Arrays: positions = 4*num_verts (x,y,z,0), normals = 4*num_verts

@@ -1209,80 +1209,71 @@ U32 LLViewerObject::extractSpatialExtents(LLDataPackerBinaryBuffer *dp, LLVector
 #if defined(HAVE_LLRUST) && LL_RUSTOBJUPD_MODE >= 1
 namespace
 {
-// FNV-1a fold of the POD in the EXACT canonical order objupd::checksum() uses
-// on the Rust side. Any divergence in field/order/format here breaks the shadow.
-static U64 llrust_objupd_checksum(const LLObjectUpdatePod& pod)
+// Copy a Rust-decoded compressed update (LlObjUpdView + its handle for the
+// extra-params) into the C++ POD. Mirrors what decodeCompressedUpdate's C++ path
+// would have produced; proven byte-identical by the Phase-2 shadow before flip.
+static void llrust_fill_objupd_pod(LLObjectUpdatePod& pod, const LlObjUpdView& v,
+                                   const void* handle, EObjectUpdateType update_type)
 {
-    U64 h = 0xcbf29ce484222325ULL;
-    auto byte  = [&](U8 b) { h ^= (U64)b; h *= 0x100000001b3ULL; };
-    auto bytes = [&](const U8* p, size_t n) { for (size_t i = 0; i < n; ++i) byte(p[i]); };
-    auto bl    = [&](bool v) { byte(v ? 1 : 0); };
-    auto u16v  = [&](U16 v) { byte((U8)(v & 0xff)); byte((U8)(v >> 8)); };
-    auto u32v  = [&](U32 v) { byte((U8)(v & 0xff)); byte((U8)((v >> 8) & 0xff)); byte((U8)((v >> 16) & 0xff)); byte((U8)((v >> 24) & 0xff)); };
-    auto f32v  = [&](F32 v) { U32 b; memcpy(&b, &v, 4); u32v(b); };
-    auto f3    = [&](const F32* v) { f32v(v[0]); f32v(v[1]); f32v(v[2]); };
-    auto blob  = [&](const U8* p, size_t n) { u32v((U32)n); bytes(p, n); };
+    pod.update_type = (S32)update_type;
+    pod.from_compressed = true;
+    pod.decode_ok = (v.decode_ok != 0);
+    pod.final_cursor_offset = (U32)v.final_cursor;
 
-    byte(pod.state);
-    bl(pod.has_pos);   f3(pod.pos.mV);
-    bl(pod.has_scale); f3(pod.scale.mV);
-    bl(pod.has_rot);   bl(pod.rot_from_vec3); f3(pod.rot_vec.mV);
-    f32v(pod.rot_quat.mQ[0]); f32v(pod.rot_quat.mQ[1]); f32v(pod.rot_quat.mQ[2]); f32v(pod.rot_quat.mQ[3]);
-    bl(pod.has_vel);   f3(pod.vel.mV);
-    bl(pod.has_accel); f3(pod.accel.mV);
-    bl(pod.has_angv);  f3(pod.angv.mV);
-    bl(pod.has_collision_plane);
-    f32v(pod.collision_plane.mV[0]); f32v(pod.collision_plane.mV[1]); f32v(pod.collision_plane.mV[2]); f32v(pod.collision_plane.mV[3]);
-    bl(pod.has_crc);          u32v(pod.crc);
-    bl(pod.has_material);     byte(pod.material);
-    bl(pod.has_click_action); byte(pod.click_action);
-    u32v(pod.pass_flags);
-    bl(pod.has_owner_id); bytes(pod.owner_id.mData, 16);
-    bl(pod.has_parent);   u32v(pod.parent_id);
-    byte(pod.gen_kind); byte(pod.tree_byte); u32v(pod.scratch_alloc_size);
-    blob(pod.scratch_blob.data(), pod.scratch_blob.size());
-    bl(pod.has_text); blob((const U8*)pod.text_utf8.data(), pod.text_utf8.size()); bytes(pod.text_color, 4);
-    bl(pod.has_media_url); blob((const U8*)pod.media_url.data(), pod.media_url.size());
-    bl(pod.has_legacy_particles); blob(pod.particle_legacy_blob.data(), pod.particle_legacy_blob.size());
-    bl(pod.has_extra_params); u32v((U32)pod.params.size());
-    for (const auto& p : pod.params) { u16v(p.type); blob(p.data.data(), p.data.size()); }
-    bl(pod.has_sound); bytes(pod.sound_uuid.mData, 16); f32v(pod.sound_gain); byte(pod.sound_flags); f32v(pod.sound_cutoff);
-    bl(pod.has_name_value); blob((const U8*)pod.name_value.data(), pod.name_value.size());
-    return h;
-}
+    pod.state = v.state; pod.has_state = true;
 
-// Compare the Rust decode of the same bytes against the C++ POD (checksum +
-// bytes-consumed). Only well-formed (decode_ok) records count as OK/MISMATCH;
-// a malformed packet is an expected-divergence class.
-static void llrust_objupd_shadow(LLDataPackerBinaryBuffer& dp, S32 start,
-                                 EObjectUpdateType update_type, const LLObjectUpdatePod& pod)
-{
-    S32 rust_final = 0, rust_ok = 0;
-    U64 rust_sum = ll_objupd_checksum_compressed(dp.getBuffer() + start, dp.getBufferSize() - start,
-                                                 (S32)update_type, &rust_final, &rust_ok);
-    U64 cpp_sum = llrust_objupd_checksum(pod);
-    S32 cpp_consumed = (S32)pod.final_cursor_offset - start;
-    bool match = (rust_sum == cpp_sum) && (rust_final == cpp_consumed) && ((rust_ok != 0) == pod.decode_ok);
+    pod.has_pos = (v.has_pos != 0);     pod.pos.set(v.pos[0], v.pos[1], v.pos[2]);
+    pod.has_scale = (v.has_scale != 0); pod.scale.set(v.scale[0], v.scale[1], v.scale[2]);
+    pod.has_rot = (v.has_rot != 0);     pod.rot_from_vec3 = (v.rot_from_vec3 != 0);
+    pod.rot_vec.set(v.rot_vec[0], v.rot_vec[1], v.rot_vec[2]);
+    pod.rot_quat.mQ[0] = v.rot_quat[0]; pod.rot_quat.mQ[1] = v.rot_quat[1];
+    pod.rot_quat.mQ[2] = v.rot_quat[2]; pod.rot_quat.mQ[3] = v.rot_quat[3];
+    pod.has_vel = (v.has_vel != 0);     pod.vel.set(v.vel[0], v.vel[1], v.vel[2]);
+    pod.has_accel = (v.has_accel != 0); pod.accel.set(v.accel[0], v.accel[1], v.accel[2]);
+    pod.has_angv = (v.has_angv != 0);   pod.angv.set(v.angv[0], v.angv[1], v.angv[2]);
+    pod.has_collision_plane = (v.has_collision_plane != 0);
+    pod.collision_plane.set(v.collision_plane[0], v.collision_plane[1], v.collision_plane[2], v.collision_plane[3]);
 
-    if (!pod.decode_ok)
+    pod.has_crc = (v.has_crc != 0);                   pod.crc = v.crc;
+    pod.has_material = (v.has_material != 0);          pod.material = v.material;
+    pod.has_click_action = (v.has_click_action != 0); pod.click_action = v.click_action;
+    pod.pass_flags = v.pass_flags;
+    pod.has_owner_id = (v.has_owner_id != 0);          memcpy(pod.owner_id.mData, v.owner_id, 16);
+    pod.has_parent = (v.has_parent != 0);              pod.parent_id = v.parent_id;
+
+    pod.gen_kind = v.gen_kind; pod.tree_byte = v.tree_byte; pod.scratch_alloc_size = v.scratch_alloc_size;
+    if (v.scratch_len) pod.scratch_blob.assign(v.scratch_ptr, v.scratch_ptr + v.scratch_len);
+
+    pod.has_text = (v.has_text != 0);
+    if (v.text_len) pod.text_utf8.assign((const char*)v.text_ptr, v.text_len);
+    memcpy(pod.text_color, v.text_color, 4);
+
+    pod.has_media_url = (v.has_media_url != 0);
+    if (v.media_len) pod.media_url.assign((const char*)v.media_ptr, v.media_len);
+
+    pod.has_legacy_particles = (v.has_legacy_particles != 0);
+    if (v.particle_len) pod.particle_legacy_blob.assign(v.particle_ptr, v.particle_ptr + v.particle_len);
+
+    pod.has_extra_params = (v.has_extra_params != 0);
+    for (U32 i = 0; i < v.param_count; ++i)
     {
-        return;
-    }
-    if (!match)
-    {
-        LL_WARNS("LLRustObjUpd") << "objupd shadow MISMATCH type=" << (S32)update_type
-            << " cpp_sum=" << cpp_sum << " rust_sum=" << rust_sum
-            << " cpp_consumed=" << cpp_consumed << " rust_final=" << rust_final
-            << " rust_ok=" << rust_ok << " params=" << (U32)pod.params.size() << LL_ENDL;
-    }
-    else
-    {
-        static S32 okc = 0;
-        if ((++okc % 2000) == 1)
+        U16 t = 0; const U8* p = nullptr; size_t l = 0;
+        if (ll_objupd_param(handle, i, &t, &p, &l) == 0)
         {
-            LL_INFOS("LLRustObjUpd") << "objupd shadow OK x" << okc << " (type=" << (S32)update_type << ")" << LL_ENDL;
+            LLObjectUpdatePod::ExtraParam ep;
+            ep.type = t;
+            if (l) ep.data.assign(p, p + l);
+            pod.params.push_back(std::move(ep));
         }
     }
+
+    pod.has_sound = (v.has_sound != 0);
+    memcpy(pod.sound_uuid.mData, v.sound_uuid, 16);
+    pod.sound_gain = v.sound_gain; pod.sound_flags = v.sound_flags; pod.sound_cutoff = v.sound_cutoff;
+    pod.sound_owner_id = pod.owner_id;
+
+    pod.has_name_value = (v.has_name_value != 0);
+    if (v.nv_len) pod.name_value.assign((const char*)v.nv_ptr, v.nv_len);
 }
 } // namespace
 #endif // HAVE_LLRUST && LL_RUSTOBJUPD_MODE >= 1
@@ -1294,20 +1285,47 @@ static void llrust_objupd_shadow(LLDataPackerBinaryBuffer& dp, S32 start,
 // llobjectupdatepod.h and the plan (atomic-yawning-badger.md).
 bool LLViewerObject::decodeCompressedUpdate(LLDataPackerBinaryBuffer& dp, EObjectUpdateType update_type, LLObjectUpdatePod& pod) const
 {
-    // = PS_SYS_DATA_BLOCK_SIZE (68) + PS_LEGACY_PART_DATA_BLOCK_SIZE (18); see
-    // llpartdata.cpp. The legacy particle block is a fixed field-by-field size
-    // with no length prefix, so we slice exactly this many bytes and let apply
-    // re-parse them through the untouched unpackParticleSource().
-    static const S32 LEGACY_PARTICLE_BLOCK_BYTES = 86;
-
     pod.update_type = (S32)update_type;
     pod.from_compressed = true;
 
-    bool ok = true;
-
 #if defined(HAVE_LLRUST) && LL_RUSTOBJUPD_MODE >= 1
-    const S32 shadow_start = dp.getCurrentSize(); // cursor before any read, for the shadow
+    // Rust-primary decode: parse a copy of the bytes in memory-safe Rust, build
+    // the POD from the result, then advance the REAL datapacker cursor so the
+    // LLVOVolume / LLVOAvatar overrides (which keep reading dp after us) resume
+    // at the right spot. Proven byte-identical to the C++ path by the Phase-2
+    // shadow (38k+ live updates). cfallback keeps the C++ decoder as a fallback;
+    // 'on' compiles it out.
+    {
+        const S32 start = dp.getCurrentSize();
+        if (void* h = ll_objupd_decode(dp.getBuffer() + start, dp.getBufferSize() - start, (S32)update_type))
+        {
+            LlObjUpdView view;
+            if (ll_objupd_view(h, &view) == 0)
+            {
+                llrust_fill_objupd_pod(pod, view, h, update_type);
+                pod.final_cursor_offset = (U32)(start + view.final_cursor);
+                ll_objupd_free(h);
+                dp.shift(start + view.final_cursor);
+                return pod.decode_ok;
+            }
+            ll_objupd_free(h);
+        }
+    }
+  #if LL_RUSTOBJUPD_MODE >= 2
+    // 'on': no C++ fallback -- treat a failed Rust decode as a bad packet.
+    pod.decode_ok = false;
+    return false;
+  #endif
+    // cfallback: fall through to the C++ decoder below.
 #endif
+
+#if !defined(HAVE_LLRUST) || LL_RUSTOBJUPD_MODE < 2
+    // = PS_SYS_DATA_BLOCK_SIZE (68) + PS_LEGACY_PART_DATA_BLOCK_SIZE (18); see
+    // llpartdata.cpp. Fixed field-by-field size, no length prefix, so we slice
+    // exactly this many bytes and let apply re-parse via unpackParticleSource().
+    static const S32 LEGACY_PARTICLE_BLOCK_BYTES = 86;
+
+    bool ok = true;
 
     U8 state = 0;
     ok &= dp.unpackU8(state, "State");
@@ -1530,12 +1548,8 @@ bool LLViewerObject::decodeCompressedUpdate(LLDataPackerBinaryBuffer& dp, EObjec
 
     pod.final_cursor_offset = (U32)dp.getCurrentSize();
     pod.decode_ok = ok;
-
-#if defined(HAVE_LLRUST) && LL_RUSTOBJUPD_MODE >= 1
-    llrust_objupd_shadow(dp, shadow_start, update_type, pod);
-#endif
-
     return ok;
+#endif // !HAVE_LLRUST || LL_RUSTOBJUPD_MODE < 2
 }
 
 // Apply a decoded compressed/cached update. Reproduces the eager mutations of

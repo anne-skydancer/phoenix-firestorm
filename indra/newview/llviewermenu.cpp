@@ -109,6 +109,9 @@
 #include "llscenemonitor.h"
 #include "hbxxh.h"     // render-regression frame hash (xxHash)
 #include "llimage.h"   // LLImageRaw for offscreen frame capture
+#include "llrender.h"       // gGL for the synthetic-scene harness
+#include "llrendertarget.h" // offscreen target for the synthetic-scene harness
+#include "llgl.h"           // LLGLDepthTest/LLGLDisable for the synthetic-scene harness
 #include "llselectmgr.h"
 #include "llsidepanelappearance.h"
 #include "llspellcheckmenuhandler.h"
@@ -1575,6 +1578,117 @@ class LLAdvancedHashFrame : public view_listener_t
         else
         {
             LL_WARNS("FrameHash") << "frame capture failed" << LL_ENDL;
+        }
+        return true;
+    }
+};
+
+
+///////////////////////////////////////////////
+// FRAME HASH -- SYNTHETIC (render-regression v2)
+///////////////////////////////////////////////
+// Renders a FIXED, code-defined scene (no region, no assets, no wall-clock)
+// into an offscreen target and xxHashes it. Because every input is controlled
+// in code, the same build produces the same hash on every run AND across
+// restarts (same GPU) -- the restart-stable cross-build gate v1 lacked. This
+// is the effortless A/B: hash before a render change, hash after, compare; a
+// byte-exact refactor leaves the hash unchanged with zero in-world setup.
+// The scene deliberately drives the paths the GL cleanup touches (a wireframe
+// quad via setPolygonMode; the offscreen viewport via LLRenderTarget bind).
+static bool capture_synthetic_hash(U64& out_hash)
+{
+    const S32 dim = 256;
+    LLRenderTarget scratch;
+    if (!scratch.allocate(dim, dim, GL_RGBA, true))
+    {
+        return false;
+    }
+    scratch.bindTarget();
+
+    glClearColor(0.10f, 0.12f, 0.15f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Fixed 2D projection over the whole target.
+    gGL.matrixMode(LLRender::MM_PROJECTION);
+    gGL.pushMatrix();
+    gGL.loadIdentity();
+    gGL.ortho(0.f, (F32)dim, 0.f, (F32)dim, -1.f, 1.f);
+    gGL.matrixMode(LLRender::MM_MODELVIEW);
+    gGL.pushMatrix();
+    gGL.loadIdentity();
+
+    {
+        LLGLDepthTest depth(GL_FALSE);   // painter's order, no depth fighting
+        LLGLDisable cull(GL_CULL_FACE);
+        gUIProgram.bind();
+        gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+
+        // Red filled quad.
+        gGL.color4f(0.85f, 0.15f, 0.15f, 1.f);
+        gGL.begin(LLRender::TRIANGLES);
+            gGL.vertex2i( 24,  24); gGL.vertex2i(120,  24); gGL.vertex2i(120, 120);
+            gGL.vertex2i( 24,  24); gGL.vertex2i(120, 120); gGL.vertex2i( 24, 120);
+        gGL.end();
+        gGL.flush();
+
+        // Green filled quad, overlapping the red (painter's order -> green on top).
+        gGL.color4f(0.15f, 0.75f, 0.25f, 1.f);
+        gGL.begin(LLRender::TRIANGLES);
+            gGL.vertex2i( 80,  80); gGL.vertex2i(176,  80); gGL.vertex2i(176, 176);
+            gGL.vertex2i( 80,  80); gGL.vertex2i(176, 176); gGL.vertex2i( 80, 176);
+        gGL.end();
+        gGL.flush();
+
+        // Blue quad rendered as a wireframe outline via polygon mode
+        // (makes the hash sensitive to setPolygonMode).
+        gGL.setPolygonMode(LLRender::PM_LINE);
+        gGL.color4f(0.30f, 0.45f, 0.95f, 1.f);
+        gGL.begin(LLRender::TRIANGLES);
+            gGL.vertex2i(140,  40); gGL.vertex2i(232,  40); gGL.vertex2i(232, 132);
+            gGL.vertex2i(140,  40); gGL.vertex2i(232, 132); gGL.vertex2i(140, 132);
+        gGL.end();
+        gGL.flush();
+        gGL.setPolygonMode(LLRender::PM_FILL);
+
+        gUIProgram.unbind();
+    }
+
+    gGL.matrixMode(LLRender::MM_PROJECTION);
+    gGL.popMatrix();
+    gGL.matrixMode(LLRender::MM_MODELVIEW);
+    gGL.popMatrix();
+
+    LLPointer<LLImageRaw> raw = new LLImageRaw(dim, dim, 3);
+    glReadPixels(0, 0, dim, dim, GL_RGB, GL_UNSIGNED_BYTE, raw->getData());
+    stop_glerror();
+
+    scratch.flush();
+    scratch.release();
+
+    out_hash = HBXXH64::digest(raw->getData(), raw->getDataSize());
+    return true;
+}
+
+class LLAdvancedHashSyntheticFrame : public view_listener_t
+{
+    bool handleEvent(const LLSD& userdata)
+    {
+        U64 h1 = 0;
+        U64 h2 = 0;
+        if (capture_synthetic_hash(h1) && capture_synthetic_hash(h2))
+        {
+            std::string msg = llformat(
+                "Synthetic frame hash: 0x%016llx / 0x%016llx  [%s]",
+                (unsigned long long)h1, (unsigned long long)h2,
+                (h1 == h2) ? "STABLE" : "UNSTABLE");
+            LL_INFOS("FrameHash") << msg << LL_ENDL;
+            LLSD args;
+            args["MESSAGE"] = msg;
+            LLNotificationsUtil::add("SystemMessageTip", args);
+        }
+        else
+        {
+            LL_WARNS("FrameHash") << "synthetic frame capture failed (target alloc?)" << LL_ENDL;
         }
         return true;
     }
@@ -13068,6 +13182,7 @@ void initialize_menus()
     view_listener_t::addMenu(new LLAdvancedToggleWireframe(), "Advanced.ToggleWireframe");
     view_listener_t::addMenu(new LLAdvancedCheckWireframe(), "Advanced.CheckWireframe");
     view_listener_t::addMenu(new LLAdvancedHashFrame(), "Advanced.HashFrame");
+    view_listener_t::addMenu(new LLAdvancedHashSyntheticFrame(), "Advanced.HashSyntheticFrame");
     // Develop > Render
     view_listener_t::addMenu(new LLAdvancedToggleRandomizeFramerate(), "Advanced.ToggleRandomizeFramerate");
     view_listener_t::addMenu(new LLAdvancedCheckRandomizeFramerate(), "Advanced.CheckRandomizeFramerate");

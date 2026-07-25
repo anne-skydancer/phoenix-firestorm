@@ -4815,6 +4815,12 @@
                 <menu_item_call.on_click
                  function="Advanced.HashFrame" />
             </menu_item_call>
+            <menu_item_call
+             label="Hash Frame (synthetic)"
+             name="HashSyntheticFrame">
+                <menu_item_call.on_click
+                 function="Advanced.HashSyntheticFrame" />
+            </menu_item_call>
             <menu_item_check
              label="Object-Object Occlusion"
              name="Object-Object Occlusion">

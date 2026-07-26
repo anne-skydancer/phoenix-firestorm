@@ -571,6 +571,7 @@ StrCpy $INSTSHORTCUT "${SHORTCUT}"
 
 Call CheckIfAdministrator		# Make sure the user can install/uninstall
 Call CloseSecondLife			# Make sure Second Life not currently running
+Call CloseViewerProcesses		# <FS> Force-kill windowless/zombie viewer + helper processes still holding file locks
 Call CheckWillUninstallV2		# Check if Second Life is already installed
 
 StrCmp $DO_UNINSTALL_V2 "" PRESERVE_DONE
@@ -780,6 +781,7 @@ ${EndIf}
 
 # Make sure we're not running
 Call un.CloseSecondLife
+Call un.CloseViewerProcesses		# <FS> Force-kill windowless/zombie viewer + helper processes still holding file locks
 
 # Clean up registry keys and subkeys (these should all be !defines somewhere)
 DeleteRegKey SHELL_CONTEXT "${INSTNAME_KEY}"
@@ -883,6 +885,43 @@ Function CloseSecondLife
 FunctionEnd
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; <FS> Force-terminate any lingering viewer + helper processes.
+;;
+;; CloseSecondLife only reaches a viewer that still owns a top-level "Second
+;; Life"-class window (via FindWindow). A mid-shutdown or crashed viewer, or
+;; the child helper processes (slplugin/SLVoice/dullahan_host), can outlive
+;; that window while still holding open file handles on the exe and skins\.
+;; Those locks make the pre-install Delete/RMDir in RemoveProgFilesOnInst AND
+;; the SetOverwrite File commands fail silently -> a "new" install that still
+;; contains stale files (old exe, old menu_viewer.xml, etc). Force-kill the
+;; stragglers by image name so the upgrade is clean. taskkill ships with
+;; Windows; nsExec runs it hidden. A "process not running" result (exit 128)
+;; is expected and deliberately ignored.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Function CloseViewerProcesses
+  Push $0
+
+  DetailPrint "Closing any remaining viewer processes..."
+
+  # /F force-terminate, /T also terminate any child processes of the match.
+  nsExec::Exec 'taskkill /F /T /IM "$VIEWER_EXE"'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM "slplugin.exe"'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM "SLVoice.exe"'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM "dullahan_host.exe"'
+  Pop $0
+
+  # Give Windows a moment to release the file handles the killed processes held.
+  Sleep 1000
+
+  Pop $0
+  Return
+
+FunctionEnd
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Close the program, if running. Modifies no variables.
 ;; Allows user to bail out of uninstall process.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -908,6 +947,32 @@ Function un.CloseSecondLife
   DONE:
     Pop $0
     Return
+
+FunctionEnd
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; <FS> Uninstaller sibling of CloseViewerProcesses. Same rationale: force-kill
+;; any windowless/zombie viewer + helper processes so un.ProgramFiles' RMDir /r
+;; isn't defeated by open file handles, leaving a partial install dir behind.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+Function un.CloseViewerProcesses
+  Push $0
+
+  DetailPrint "Closing any remaining viewer processes..."
+
+  nsExec::Exec 'taskkill /F /T /IM "$VIEWER_EXE"'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM "slplugin.exe"'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM "SLVoice.exe"'
+  Pop $0
+  nsExec::Exec 'taskkill /F /T /IM "dullahan_host.exe"'
+  Pop $0
+
+  Sleep 1000
+
+  Pop $0
+  Return
 
 FunctionEnd
 

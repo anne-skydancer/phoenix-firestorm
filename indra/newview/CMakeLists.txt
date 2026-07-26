@@ -2528,6 +2528,15 @@ if (WINDOWS)
           ${CMAKE_CURRENT_SOURCE_DIR}/event_host_manifest.py
         )
 
+      # <FS> Track the NSIS installer scripts so editing the template or any
+      # language file invalidates the package stamp and forces a repackage.
+      # Without this, installer_template.nsi edits are silently skipped by the
+      # llpackage target (firestorm_setup_tmp.nsi is regenerated from the
+      # template only when this command re-runs), shipping an installer built
+      # from the stale script.
+      file(GLOB WINDOWS_INSTALLER_FILES
+          "${CMAKE_CURRENT_SOURCE_DIR}/installers/windows/*.nsi")
+
       add_custom_command(
         OUTPUT ${CMAKE_CFG_INTDIR}/touched.bat
         COMMAND ${PYTHON_EXECUTABLE}
@@ -2559,6 +2568,7 @@ if (WINDOWS)
             ${CMAKE_CURRENT_SOURCE_DIR}/viewer_manifest.py
             ${CMAKE_CURRENT_BINARY_DIR}/viewer_version.txt
             ${COPY_INPUT_DEPENDENCIES}
+            ${WINDOWS_INSTALLER_FILES}
         )
 
       add_custom_target(llpackage ALL DEPENDS

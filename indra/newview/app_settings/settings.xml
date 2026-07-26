@@ -12412,6 +12412,19 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderGLBackend</key>
+    <map>
+      <key>Comment</key>
+      <string>OpenGL backend: "native" (system GPU driver), "zink" (bundled Mesa Zink GL-over-Vulkan), or "auto" (zink if bundled, else native).  Requires restart.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string>auto</string>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

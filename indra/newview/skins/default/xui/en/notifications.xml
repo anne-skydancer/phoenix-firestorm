@@ -1726,6 +1726,18 @@ Would you like to shutdown the viewer and launch it manually again in order to a
 
   <notification
    icon="alertmodal.tga"
+   name="GraphicsBackendChanged"
+   type="alertmodal">
+The graphics backend change will take effect after you restart [APP_NAME].
+Would you like to shut down the viewer now so you can relaunch it?
+    <usetemplate
+     name="okcancelbuttons"
+     notext="Later"
+     yestext="Shutdown now"/>
+  </notification>
+
+  <notification
+   icon="alertmodal.tga"
    name="ChangeLanguage"
    type="alertmodal">
 The selected language or time format will be applied after restarting [APP_NAME].

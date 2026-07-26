@@ -732,10 +732,14 @@ class Windows_x86_64_Manifest(ViewerManifest):
             self.path("growl.dll")
             self.path("growl++.dll")
 
-            # Mesa Zink (opt-in)
+            # Mesa Zink (opt-in) -- staged into a mesa\ subdir so the exe dir has
+            # no opengl32.dll. The viewer preloads mesa\opengl32.dll at startup
+            # only when RenderGLBackend selects Zink (see
+            # LLAppViewerWin32::selectGLBackend); otherwise native GL is used.
             if self.args.get('mesazink') == 'ON':
-                self.path("libgallium_wgl.dll")
-                self.path("opengl32.dll")
+                with self.prefix(dst="mesa"):
+                    self.path("libgallium_wgl.dll")
+                    self.path("opengl32.dll")
 
             # Grok J2C decoder (opt-in, mutually exclusive with Kakadu)
             if self.args.get('usegrok') == 'ON':

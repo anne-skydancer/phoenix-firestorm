@@ -1160,6 +1160,56 @@ bool LLAppViewerWin32::reportCustomToBugsplat(const std::string &description)
     return false;
 }
 
+// <FS> Choose which opengl32.dll backs the delay-loaded GL imports, before the
+// GL context is created in initWindow():
+//   "native" -> system GPU driver (System32\opengl32.dll)
+//   "zink"   -> bundled Mesa Zink (GL-over-Vulkan) in the exe's mesa\ subdir
+//   "auto"   -> zink if bundled (mesa\opengl32.dll present), else native
+// opengl32 is /DELAYLOAD-ed, so preloading Mesa's opengl32.dll here makes the
+// delay-loaded imports bind to it by module base-name match; doing nothing lets
+// them fall through to System32 (native). LOAD_WITH_ALTERED_SEARCH_PATH lets
+// Mesa's own dependency (libgallium_wgl.dll) resolve from the same mesa\ dir.
+// Changing RenderGLBackend requires a restart (opengl32 binds once per process).
+void LLAppViewerWin32::selectGLBackend()
+{
+    std::string backend = gSavedSettings.getString("RenderGLBackend");
+    LLStringUtil::toLower(backend);
+
+    const std::string mesa_dll = gDirUtilp->getExecutableDir() + "\\mesa\\opengl32.dll";
+    const bool have_mesa = gDirUtilp->fileExists(mesa_dll);
+
+    bool want_zink;
+    if (backend == "native")    want_zink = false;
+    else if (backend == "zink") want_zink = true;
+    else                        want_zink = have_mesa; // "auto" / unrecognized
+
+    if (!want_zink)
+    {
+        LL_INFOS("RenderInit") << "GL backend: native opengl32 (system driver)." << LL_ENDL;
+        return;
+    }
+
+    if (!have_mesa)
+    {
+        LL_WARNS("RenderInit") << "GL backend: Zink requested but '" << mesa_dll
+                               << "' not found; using native opengl32." << LL_ENDL;
+        return;
+    }
+
+    std::wstring wpath = ll_convert<std::wstring>(mesa_dll);
+    HMODULE h = LoadLibraryExW(wpath.c_str(), NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (h)
+    {
+        LL_INFOS("RenderInit") << "GL backend: Mesa Zink preloaded from " << mesa_dll << LL_ENDL;
+    }
+    else
+    {
+        LL_WARNS("RenderInit") << "GL backend: LoadLibraryEx failed for '" << mesa_dll
+                               << "' (GetLastError=" << GetLastError()
+                               << "); falling back to native opengl32." << LL_ENDL;
+    }
+}
+
 bool LLAppViewerWin32::initWindow()
 {
     // This is a workaround/hotfix for a change in Windows 11 24H2 (and possibly later)

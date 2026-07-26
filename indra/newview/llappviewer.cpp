@@ -1208,6 +1208,7 @@ bool LLAppViewer::init()
     // Initialize the window
     //
     gGLActive = true;
+    selectGLBackend(); // <FS> choose native vs Mesa Zink opengl32 before GL init
     initWindow();
     LL_INFOS("InitInfo") << "Window is initialized." << LL_ENDL ;
     // <FS:Beq> allow detected hardware to be overridden.

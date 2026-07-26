@@ -103,6 +103,10 @@ public:
     virtual bool cleanup();         // Override to do application cleanup
     virtual bool frame(); // Override for application body logic
 
+    // <FS> Select the GL backend (native vs bundled Mesa Zink) before the GL
+    // context is created. No-op except where an alternate opengl32 is bundled.
+    virtual void selectGLBackend() {}
+
     // Application control
     void flushLFSIO(); // waits for lfs transfers to complete
     void forceQuit(); // Puts the viewer into 'shutting down without error' mode.

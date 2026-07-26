@@ -173,6 +173,7 @@ bool LLFloaterSettingsDebug::postBuild()
     mColorSwatch = getChild<LLColorSwatchCtrl>("val_color_swatch");
     mValText = getChild<LLLineEditor>("val_text");
     mBooleanCombo = getChild<LLRadioGroup>("boolean_combo");
+    mGLBackendRadio = getChild<LLRadioGroup>("gl_backend_radio");
     mCopyButton = getChild<LLButton>("copy_btn");
     mDefaultButton = getChild<LLButton>("default_btn");
     mSanityButton = getChild<LLButton>("sanity_warning_btn");
@@ -307,7 +308,14 @@ void LLFloaterSettingsDebug::onCommitSettings()
         mCurrentControlVariable->set(mBooleanCombo->getValue());
         break;
       case TYPE_STRING:
-        mCurrentControlVariable->set(LLSD(mValText->getValue().asString()));
+        if (mCurrentControlVariable->getName() == "RenderGLBackend")
+        {
+            mCurrentControlVariable->set(LLSD(mGLBackendRadio->getValue().asString()));
+        }
+        else
+        {
+            mCurrentControlVariable->set(LLSD(mValText->getValue().asString()));
+        }
         break;
       case TYPE_VEC3:
         vector.mV[VX] = (F32) mSpinner1->getValue().asReal();
@@ -395,6 +403,7 @@ void LLFloaterSettingsDebug::updateControl()
     mCopyButton->setEnabled(false);
     mDefaultButton->setEnabled(false);
     mBooleanCombo->setVisible(false);
+    mGLBackendRadio->setVisible(false);
     mSanityButton->setVisible(false);
 
     if (mCurrentControlVariable)
@@ -410,6 +419,7 @@ void LLFloaterSettingsDebug::updateControl()
         mColorSwatch->setEnabled(!mOldVisibility);
         mValText->setEnabled(!mOldVisibility);
         mBooleanCombo->setEnabled(!mOldVisibility);
+        mGLBackendRadio->setEnabled(!mOldVisibility);
         mDefaultButton->setEnabled(!mOldVisibility);
 // [/RLVa:KB]
 
@@ -496,10 +506,22 @@ void LLFloaterSettingsDebug::updateControl()
             }
             break;
           case TYPE_STRING:
-            mValText->setVisible( true);
-            if (!mValText->hasFocus())
+            if (mCurrentControlVariable->getName() == "RenderGLBackend")
             {
-                mValText->setValue(sd);
+                // <FS> radio selector instead of a free-typed text field for the GL backend
+                mGLBackendRadio->setVisible(true);
+                if (!mGLBackendRadio->hasFocus())
+                {
+                    mGLBackendRadio->setValue(sd);
+                }
+            }
+            else
+            {
+                mValText->setVisible( true);
+                if (!mValText->hasFocus())
+                {
+                    mValText->setValue(sd);
+                }
             }
             break;
           case TYPE_VEC3:

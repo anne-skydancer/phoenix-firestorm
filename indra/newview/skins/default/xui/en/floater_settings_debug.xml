@@ -125,10 +125,39 @@
 				name="TRUE"
 				value="true" />
 			<radio_item
-				top_pad="5" 
+				top_pad="5"
 				label="FALSE"
 				name="FALSE"
 				value="" />
+			<commit_callback
+				function="CommitSettings" />
+		</radio_group>
+
+		<radio_group
+			follows="left|right|bottom"
+			height="60"
+			layout="topleft"
+			left_delta="0"
+			name="gl_backend_radio"
+			right="-1"
+			top_pad="10"
+			visible="false"
+			tab_stop="true">
+			<radio_item
+				top_pad="5"
+				label="Automatic"
+				name="auto"
+				value="auto" />
+			<radio_item
+				top_pad="5"
+				label="Native OpenGL"
+				name="native"
+				value="native" />
+			<radio_item
+				top_pad="5"
+				label="Vulkan (Zink)"
+				name="zink"
+				value="zink" />
 			<commit_callback
 				function="CommitSettings" />
 		</radio_group>

@@ -289,6 +289,14 @@ public:
     static U32 sBindCount;                  // Tracks number of texture binds for current frame
     static U32 sUniqueCount;                // Tracks number of unique texture binds for current frame
     static bool sGlobalUseAnisotropic;
+    // <FS> Max texture handles to glDeleteTextures per frame (0 = unthrottled).
+    // Throttles bulk frees so a large discard event can't flood the driver in a
+    // single call (observed as a Zink->amdkmdag TDR). Deliberately NOT a user
+    // setting: too high (or 0) re-arms the very crash it prevents, so it is
+    // tuned in code only. 64 keeps worst-case per-frame free volume within
+    // routine texture-streaming territory (~3840 deletes/s at 60fps, far above
+    // inbound streaming) while draining any bulk purge in ~1-2s.
+    static U32 sMaxTexDeletesPerFrame;
     static LLImageGL* sDefaultGLTexture ;
     static bool sAutomatedTest;
     static bool sCompressTextures;          //use GL texture compression

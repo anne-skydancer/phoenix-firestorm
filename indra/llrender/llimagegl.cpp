@@ -139,6 +139,7 @@ U32 LLImageGL::sBindCount               = 0;
 S32 LLImageGL::sCount                   = 0;
 
 bool LLImageGL::sGlobalUseAnisotropic   = false;
+U32  LLImageGL::sMaxTexDeletesPerFrame   = 64;    // <FS> throttle bulk texture frees; 0 = unthrottled (see header for rationale)
 F32 LLImageGL::sLastFrameTime           = 0.f;
 LLImageGL* LLImageGL::sDefaultGLTexture = NULL ;
 bool LLImageGL::sCompressTextures = false;
@@ -1284,6 +1285,13 @@ void LLImageGL::generateTextures(S32 numTextures, U32 *textures)
 constexpr int DELETE_DELAY = 3; // number of frames to wait before deleting textures
 static std::vector<U32> sFreeList[DELETE_DELAY+1];
 
+// <FS> Overflow queue for throttled texture deletion. Names that have cleared
+// the DELETE_DELAY GPU-sync window but exceed sMaxTexDeletesPerFrame wait here
+// and are deleted over subsequent frames. Deferring a free further is always
+// GPU-sync-safe (the GPU is only more finished with it), so this never causes
+// use-after-free; it only bounds how many glDeleteTextures happen in one frame.
+static std::vector<U32> sPendingDelete;
+
 // static
 void LLImageGL::updateClass()
 {
@@ -1293,11 +1301,36 @@ void LLImageGL::updateClass()
     // synchronization issues with the GPU
     U32 idx = (sFrameCount+DELETE_DELAY) % (DELETE_DELAY+1);
 
+    // move this frame's ripe bucket onto the pending-delete queue
     if (!sFreeList[idx].empty())
     {
-        free_tex_images((GLsizei) sFreeList[idx].size(), sFreeList[idx].data());
-        glDeleteTextures((GLsizei)sFreeList[idx].size(), sFreeList[idx].data());
+        sPendingDelete.insert(sPendingDelete.end(), sFreeList[idx].begin(), sFreeList[idx].end());
         sFreeList[idx].resize(0);
+    }
+
+    if (!sPendingDelete.empty())
+    {
+        // Throttle: delete at most sMaxTexDeletesPerFrame textures this frame.
+        // A large discard event (the backgrounded discard-bias slam, a region
+        // cross, or a memory-pressure spike) can queue thousands of frees at
+        // once; flushing them in a single glDeleteTextures call floods the
+        // driver and can hang the GPU (observed as a Zink->amdkmdag TDR on the
+        // bulk vkFreeMemory). Spreading the frees across frames preserves the
+        // reclaim (vital for low-VRAM systems) while never bursting.
+        // sMaxTexDeletesPerFrame == 0 restores the old unthrottled behavior.
+        U32 pending = (U32) sPendingDelete.size();
+        U32 cap     = sMaxTexDeletesPerFrame;
+        GLsizei count = (GLsizei) pending;
+        if (cap != 0 && cap < pending)
+        {
+            count = (GLsizei) cap;
+        }
+
+        // delete from the back so the trim is O(1) (deletion order is irrelevant)
+        const U32* batch = sPendingDelete.data() + (pending - (U32) count);
+        free_tex_images((U32) count, batch);
+        glDeleteTextures(count, batch);
+        sPendingDelete.resize(pending - (U32) count);
     }
 }
 

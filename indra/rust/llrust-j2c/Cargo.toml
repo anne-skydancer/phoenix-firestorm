@@ -1,0 +1,25 @@
+[package]
+name = "llrust-j2c"
+version = "0.1.0"
+edition = "2021"
+description = "Memory-safe Rust J2C (JPEG2000) texture-decode processor for the Firestorm viewer. Wraps a C/C++ codec (Grok / OpenJPEG) behind a bounds-checked, fail-closed orchestration layer. Separate from llrust so the heavy codec link stays isolated."
+license = "LGPL-2.1"
+publish = false
+
+[lib]
+name = "llrust_j2c"
+# staticlib -> a single libllrust_j2c.a the C++ viewer's llimagej2crust backend links.
+crate-type = ["staticlib"]
+
+# Phase 0: NO codec dependencies yet -- pure-Rust FFI stub that returns "not
+# handled" so the C++ backend falls through to the existing decoder. The Grok /
+# OpenJPEG bindgen backends arrive in Phase 1/2 behind cargo features:
+#   [features] grok = [...]   openjpeg = [...]   (mirroring the C++ USE_GROK split)
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Never unwind a Rust panic across the C ABI into C++ -- abort instead (fail-closed).
+panic = "abort"

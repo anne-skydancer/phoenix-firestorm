@@ -5055,11 +5055,15 @@ void LLPipeline::drawOITTestScene()
     auto quad = [&](const LLVector3& c, const LLVector3& u, const LLVector3& v, const LLColor4& col)
     {
         const LLVector3 a = c - u - v, b = c + u - v, d = c + u + v, e = c - u + v;
-        gGL.color4fv(col.mV);
+        // gDebugProgram (debugF.glsl) reads a `color` UNIFORM, not vertex color;
+        // flush first so the prior quad draws with ITS colour before we change it.
+        gGL.flush();
+        gGL.diffuseColor4fv(col.mV);
         gGL.begin(LLRender::TRIANGLES);
         gGL.vertex3fv(a.mV); gGL.vertex3fv(b.mV); gGL.vertex3fv(d.mV);
         gGL.vertex3fv(a.mV); gGL.vertex3fv(d.mV); gGL.vertex3fv(e.mV);
         gGL.end();
+        gGL.flush(); // draw this quad before the next colour change
     };
 
     const LLVector3 X(1.f, 0.f, 0.f), Y(0.f, 1.f, 0.f), Z(0.f, 0.f, 1.f);

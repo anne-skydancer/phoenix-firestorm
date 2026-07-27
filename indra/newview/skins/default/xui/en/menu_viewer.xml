@@ -4685,6 +4685,16 @@
            function="Advanced.ToggleInfoDisplay"
            parameter="raycast" />
         </menu_item_check>
+        <menu_item_check
+         label="OIT Test Scene"
+         name="OIT Test Scene">
+          <menu_item_check.on_check
+           function="Advanced.CheckInfoDisplay"
+           parameter="oit test" />
+          <menu_item_check.on_click
+           function="Advanced.ToggleInfoDisplay"
+           parameter="oit test" />
+        </menu_item_check>
 		<menu_item_check
          label="Wind Vectors"
          name="Wind Vectors">

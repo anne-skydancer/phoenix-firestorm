@@ -5031,6 +5031,64 @@ void LLPipeline::renderPhysicsDisplay()
 
 extern std::set<LLSpatialGroup*> visible_selected_groups;
 
+// <FS> WBOIT step A: fixed synthetic transparent test geometry anchored in front
+// of the agent, exercising the cases the per-face alpha sort cannot order --
+// interpenetration, deep stacks, and mutually-overlapping separate surfaces.
+// Drawn with the CURRENT sorted-blend (SRC_ALPHA, ONE_MINUS_SRC_ALPHA; depth
+// test on / write off, matching LLDrawPoolAlpha) so the order-dependent
+// artifacts are visible now; the WBOIT path will render the SAME geometry
+// order-independently for A/B comparison. Toggle: Develop > Render Metadata >
+// OIT Test Scene. It is the reproducible validation baseline (no hash-test here).
+void LLPipeline::drawOITTestScene()
+{
+    gDebugProgram.bind();
+    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+    LLGLEnable blend(GL_BLEND);
+    gGL.setSceneBlendType(LLRender::BT_ALPHA);
+    LLGLDepthTest depth(GL_TRUE, GL_FALSE); // test on, write off -- like the alpha pass
+
+    // Anchor ~4 m in front of the agent at ~eye height; orbit the camera to inspect.
+    const LLVector3 base = gAgent.getPositionAgent()
+                         + gAgent.getAtAxis() * 4.f
+                         + LLVector3(0.f, 0.f, 1.f);
+
+    auto quad = [&](const LLVector3& c, const LLVector3& u, const LLVector3& v, const LLColor4& col)
+    {
+        const LLVector3 a = c - u - v, b = c + u - v, d = c + u + v, e = c - u + v;
+        gGL.color4fv(col.mV);
+        gGL.begin(LLRender::TRIANGLES);
+        gGL.vertex3fv(a.mV); gGL.vertex3fv(b.mV); gGL.vertex3fv(d.mV);
+        gGL.vertex3fv(a.mV); gGL.vertex3fv(d.mV); gGL.vertex3fv(e.mV);
+        gGL.end();
+    };
+
+    const LLVector3 X(1.f, 0.f, 0.f), Y(0.f, 1.f, 0.f), Z(0.f, 0.f, 1.f);
+
+    // 1) INTERPENETRATING -- two quads crossing through each other (left).
+    {
+        const LLVector3 c = base - Y * 2.5f;
+        quad(c, Y, Z, LLColor4(1.f,  0.25f, 0.25f, 0.5f)); // red   -- YZ plane
+        quad(c, X, Z, LLColor4(0.25f, 1.f,  0.25f, 0.5f)); // green -- XZ plane, intersects the red
+    }
+    // 2) STACKED -- parallel translucent planes front-to-back (centre).
+    {
+        for (S32 i = 0; i < 6; ++i)
+        {
+            const F32 t = (F32)i / 5.f;
+            const LLVector3 c = base + X * ((F32)i * 0.2f - 0.5f);
+            quad(c, Y * 0.9f, Z * 0.9f, LLColor4(t, 0.3f, 1.f - t, 0.3f));
+        }
+    }
+    // 3) MUTUAL OVERLAP -- two separate quads overlapping in screen space (right).
+    {
+        const LLVector3 c = base + Y * 2.5f;
+        quad(c + X * 0.3f - Z * 0.3f, Y * 0.8f, Z * 0.8f, LLColor4(0.3f, 0.5f, 1.f, 0.5f)); // blue
+        quad(c - X * 0.3f + Z * 0.3f, Y * 0.8f, Z * 0.8f, LLColor4(1.f,  0.9f, 0.2f, 0.5f)); // yellow
+    }
+
+    gDebugProgram.unbind();
+}
+
 void LLPipeline::renderDebug()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;
@@ -5038,6 +5096,14 @@ void LLPipeline::renderDebug()
     assertInitialized();
 
     bool hud_only = hasRenderType(LLPipeline::RENDER_TYPE_HUD);
+
+    // <FS> WBOIT: synthetic pathological-transparency test scene (Develop >
+    // Render Metadata > OIT Test Scene). The reproducible baseline for validating
+    // order-independent transparency.
+    if (!hud_only && hasRenderDebugMask(RENDER_DEBUG_OIT_TEST))
+    {
+        drawOITTestScene();
+    }
 
     if (!hud_only )
     {

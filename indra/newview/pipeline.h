@@ -356,6 +356,7 @@ public:
     bool renderSnapshotFrame(LLRenderTarget* src, LLRenderTarget* dst); // <FS:Beq/> Add snapshot frame rendering
     void renderSnapshotGuidesOverlay(); // <FS:Beq/> Add snapshot composition guide rendering
     void renderDebug();
+    void drawOITTestScene(); // <FS> WBOIT: synthetic pathological-transparency test geometry
     void renderPhysicsDisplay();
 
     void rebuildPools(); // Rebuild pools
@@ -646,7 +647,8 @@ public:
         RENDER_DEBUG_IMPOSTORS          = 0x100000000,
         RENDER_DEBUG_REFLECTION_PROBES  = 0x200000000,
         RENDER_DEBUG_PROBE_UPDATES      = 0x400000000,
-        RENDER_DEBUG_TEXTURE_SIZE       = 0x800000000
+        RENDER_DEBUG_TEXTURE_SIZE       = 0x800000000,
+        RENDER_DEBUG_OIT_TEST           = 0x1000000000  // <FS> WBOIT synthetic test-scene harness
     };
 
 public:

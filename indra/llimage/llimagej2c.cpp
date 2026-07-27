@@ -52,25 +52,10 @@ std::string LLImageJ2C::getEngineInfo()
     // All known LLImageJ2CImpl implementation subclasses are cheap to
     // construct.
     std::unique_ptr<LLImageJ2CImpl> impl(fallbackCreateLLImageJ2CImpl());
-    std::string info = impl->getEngineInfo();
-#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 1
-    // <FS> fs/rust-j2c Phase 0: prove the Rust J2C bridge links + is callable
-    // end-to-end into the viewer. It does NO decoding yet -- ll_j2c_decode returns
-    // "not handled" so the C++ codec above stays authoritative. This just appends
-    // the bridge's identity to the engine-info line logged at startup.
-    info += " + ";
-    info += ll_j2c_rust_version();
-    // Phase 1a: prove the Rust->Grok C-ABI link -- ll_j2c_grok_version() calls
-    // libgrok's grk_version() FROM RUST. Null if the crate was built without the
-    // grok feature (i.e. a non-Grok build).
-    if (const char* grok_ver = ll_j2c_grok_version())
-    {
-        info += " [rust->grok ";
-        info += grok_ver;
-        info += "]";
-    }
-#endif
-    return info;
+    // NOTE: this string is stamped into the FIXED-SIZE texture-cache header
+    // (LLTextureCache::sHeaderCacheEncoderVersion) -- keep it short. The Rust J2C
+    // bridge is validated via the shadow-compare in decodeChannels, not here.
+    return impl->getEngineInfo();
 }
 
 LLImageJ2C::LLImageJ2C() :  LLImageFormatted(IMG_CODEC_J2C),

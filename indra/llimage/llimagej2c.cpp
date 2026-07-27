@@ -198,6 +198,28 @@ bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 fir
         {
             mDecoding = false;
 #if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 1
+            // <FS> fs/rust-j2c ingress gate (LOG-ONLY): pure safe-Rust validation
+            // of the codestream header, no decode. The C++ decode above just
+            // SUCCEEDED, so any "would-reject" here is a candidate FALSE POSITIVE
+            // -- the metric we need before this ever enforces. Reason codes are the
+            // LL_J2C_REJECT_* values in llrust.h.
+            {
+                S32 iv_bytes = getMaxBytes() ? getMaxBytes() : getDataSize();
+                LlJ2cVerdict verdict = {};
+                ll_j2c_validate(getData(), (size_t)iv_bytes, &verdict);
+                if (!verdict.accept)
+                {
+                    static S32 sRejectCount = 0;
+                    S32 rn = ++sRejectCount;
+                    if (rn <= 50 || (rn % 200) == 0)
+                    {
+                        LL_INFOS("LLRustJ2C") << "ingress would-reject #" << rn
+                            << " reason=" << verdict.reason << " (" << verdict.width
+                            << "x" << verdict.height << "x" << verdict.components
+                            << ") -- C++ decoded OK (candidate false-positive)" << LL_ENDL;
+                    }
+                }
+            }
             // <FS> fs/rust-j2c Phase 1b shadow-compare: decode the SAME codestream
             // via Rust-Grok and check it byte-for-byte against the C++ result. C++
             // stays authoritative; this validates the Rust decode on real textures

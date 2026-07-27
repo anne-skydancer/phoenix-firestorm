@@ -229,6 +229,8 @@ LLGLSLShader            gDeferredSkinnedFullbrightAlphaMaskAlphaProgram;
 LLGLSLShader            gNormalMapGenProgram;
 LLGLSLShader            gDeferredGenBrdfLutProgram;
 LLGLSLShader            gDeferredBufferVisualProgram;
+LLGLSLShader            gOITAccumProgram;      // <FS> WBOIT accumulation pass
+LLGLSLShader            gOITCompositeProgram;  // <FS> WBOIT composite pass
 // [RLVa:KB] - @setsphere
 LLGLSLShader            gRlvSphereProgram;
 // [/RLVa:KB]
@@ -2854,6 +2856,31 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         gDeferredPostNoDoFProgram.mShaderFiles.push_back(make_pair("deferred/postDeferredNoDoFF.glsl", GL_FRAGMENT_SHADER));
         gDeferredPostNoDoFProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
         success = gDeferredPostNoDoFProgram.createShader();
+        llassert(success);
+    }
+
+    // <FS> WBOIT: accumulation + composite programs (step C).
+    if (success)
+    {
+        gOITAccumProgram.mName = "OIT Accumulation Shader";
+        gOITAccumProgram.mFeatures.isDeferred = true;
+        gOITAccumProgram.mShaderFiles.clear();
+        gOITAccumProgram.mShaderFiles.push_back(make_pair("deferred/oitAccumV.glsl", GL_VERTEX_SHADER));
+        gOITAccumProgram.mShaderFiles.push_back(make_pair("deferred/oitAccumF.glsl", GL_FRAGMENT_SHADER));
+        gOITAccumProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        success = gOITAccumProgram.createShader();
+        llassert(success);
+    }
+
+    if (success)
+    {
+        gOITCompositeProgram.mName = "OIT Composite Shader";
+        gOITCompositeProgram.mFeatures.isDeferred = true;
+        gOITCompositeProgram.mShaderFiles.clear();
+        gOITCompositeProgram.mShaderFiles.push_back(make_pair("deferred/postDeferredNoTCV.glsl", GL_VERTEX_SHADER));
+        gOITCompositeProgram.mShaderFiles.push_back(make_pair("deferred/oitCompositeF.glsl", GL_FRAGMENT_SHADER));
+        gOITCompositeProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        success = gOITCompositeProgram.createShader();
         llassert(success);
     }
 

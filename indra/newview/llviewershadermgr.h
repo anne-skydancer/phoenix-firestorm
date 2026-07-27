@@ -292,6 +292,8 @@ extern LLGLSLShader         gHUDFullbrightShinyProgram;
 extern LLGLSLShader         gNormalMapGenProgram;
 extern LLGLSLShader         gDeferredGenBrdfLutProgram;
 extern LLGLSLShader         gDeferredBufferVisualProgram;
+extern LLGLSLShader         gOITAccumProgram;      // <FS> WBOIT
+extern LLGLSLShader         gOITCompositeProgram;  // <FS> WBOIT
 // [RLVa:KB] - @setsphere
 extern LLGLSLShader         gRlvSphereProgram;
 // [/RLVa:KB]

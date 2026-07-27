@@ -356,7 +356,9 @@ public:
     bool renderSnapshotFrame(LLRenderTarget* src, LLRenderTarget* dst); // <FS:Beq/> Add snapshot frame rendering
     void renderSnapshotGuidesOverlay(); // <FS:Beq/> Add snapshot composition guide rendering
     void renderDebug();
-    void drawOITTestScene(); // <FS> WBOIT: synthetic pathological-transparency test geometry
+    void drawOITTestQuads();      // <FS> WBOIT: shared synthetic test geometry emitter
+    void drawOITTestScene();      // <FS> WBOIT: sorted-blend baseline path
+    void drawOITTestSceneWBOIT(); // <FS> WBOIT: order-independent path (accum + composite)
     void renderPhysicsDisplay();
 
     void rebuildPools(); // Rebuild pools
@@ -648,7 +650,8 @@ public:
         RENDER_DEBUG_REFLECTION_PROBES  = 0x200000000,
         RENDER_DEBUG_PROBE_UPDATES      = 0x400000000,
         RENDER_DEBUG_TEXTURE_SIZE       = 0x800000000,
-        RENDER_DEBUG_OIT_TEST           = 0x1000000000  // <FS> WBOIT synthetic test-scene harness
+        RENDER_DEBUG_OIT_TEST           = 0x1000000000, // <FS> WBOIT test scene -- sorted baseline
+        RENDER_DEBUG_OIT_WBOIT          = 0x2000000000  // <FS> WBOIT test scene -- order-independent
     };
 
 public:

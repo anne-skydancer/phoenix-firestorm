@@ -5053,15 +5053,12 @@ extern std::set<LLSpatialGroup*> visible_selected_groups;
 // artifacts are visible now; the WBOIT path will render the SAME geometry
 // order-independently for A/B comparison. Toggle: Develop > Render Metadata >
 // OIT Test Scene. It is the reproducible validation baseline (no hash-test here).
-void LLPipeline::drawOITTestScene()
+// Emits the test geometry; the CALLER binds the shader + GL state. Colour per
+// quad via gGL.diffuseColor4fv (the DIFFUSE_COLOR uniform `color` -- read by BOTH
+// gDebugProgram/debugF.glsl and gOITAccumProgram/oitAccumF.glsl), so the sorted
+// and WBOIT paths share one geometry emitter.
+void LLPipeline::drawOITTestQuads()
 {
-    gDebugProgram.bind();
-    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
-    LLGLEnable blend(GL_BLEND);
-    gGL.setSceneBlendType(LLRender::BT_ALPHA);
-    LLGLDepthTest depth(GL_TRUE, GL_FALSE); // test on, write off -- like the alpha pass
-    LLGLDisable cull(GL_CULL_FACE); // two-sided: visible when orbited to the reverse
-
     // Anchor ~4 m in front of the agent at ~eye height; orbit the camera to inspect.
     const LLVector3 base = gAgent.getPositionAgent()
                          + gAgent.getAtAxis() * 4.f
@@ -5070,15 +5067,13 @@ void LLPipeline::drawOITTestScene()
     auto quad = [&](const LLVector3& c, const LLVector3& u, const LLVector3& v, const LLColor4& col)
     {
         const LLVector3 a = c - u - v, b = c + u - v, d = c + u + v, e = c - u + v;
-        // gDebugProgram (debugF.glsl) reads a `color` UNIFORM, not vertex color;
-        // flush first so the prior quad draws with ITS colour before we change it.
-        gGL.flush();
+        gGL.flush();               // flush prior quad before changing the colour uniform
         gGL.diffuseColor4fv(col.mV);
         gGL.begin(LLRender::TRIANGLES);
         gGL.vertex3fv(a.mV); gGL.vertex3fv(b.mV); gGL.vertex3fv(d.mV);
         gGL.vertex3fv(a.mV); gGL.vertex3fv(d.mV); gGL.vertex3fv(e.mV);
         gGL.end();
-        gGL.flush(); // draw this quad before the next colour change
+        gGL.flush();
     };
 
     const LLVector3 X(1.f, 0.f, 0.f), Y(0.f, 1.f, 0.f), Z(0.f, 0.f, 1.f);
@@ -5104,8 +5099,70 @@ void LLPipeline::drawOITTestScene()
         quad(c + X * 0.3f - Z * 0.3f, Y * 0.8f, Z * 0.8f, LLColor4(0.3f, 0.5f, 1.f, 0.5f)); // blue
         quad(c - X * 0.3f + Z * 0.3f, Y * 0.8f, Z * 0.8f, LLColor4(1.f,  0.9f, 0.2f, 0.5f)); // yellow
     }
+}
 
+// Sorted-blend baseline (the "before"). Toggle: Render Metadata > OIT Test Scene.
+void LLPipeline::drawOITTestScene()
+{
+    gDebugProgram.bind();
+    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+    LLGLEnable blend(GL_BLEND);
+    gGL.setSceneBlendType(LLRender::BT_ALPHA); // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+    LLGLDepthTest depth(GL_TRUE, GL_FALSE);    // test on, write off -- like LLDrawPoolAlpha
+    LLGLDisable cull(GL_CULL_FACE);            // two-sided
+    drawOITTestQuads();
     gDebugProgram.unbind();
+}
+
+static LLStaticHashedString sOITAccum("accum");
+static LLStaticHashedString sOITRevealage("revealage");
+
+// WBOIT path (the "after"): accumulate the SAME geometry into the OIT MRT with
+// order-independent weights, then composite the resolved colour over the scene.
+// Toggle: Render Metadata > OIT Test (WBOIT). Correct from EVERY angle -- no sort.
+void LLPipeline::drawOITTestSceneWBOIT()
+{
+    // Remember the scene framebuffer so we can composite back into it.
+    GLint prev_fbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+
+    // --- accumulation pass into oit (attachment 0 = accum, 1 = revealage) ---
+    mRT->oit.bindTarget();
+    const GLfloat clear_accum[4]  = { 0.f, 0.f, 0.f, 0.f };
+    const GLfloat clear_reveal[4] = { 1.f, 0.f, 0.f, 0.f }; // revealage starts fully open
+    glClearBufferfv(GL_COLOR, 0, clear_accum);
+    glClearBufferfv(GL_COLOR, 1, clear_reveal);
+
+    gOITAccumProgram.bind();
+    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+    {
+        LLGLEnable blend(GL_BLEND);
+        LLGLDepthTest depth(GL_TRUE, GL_FALSE); // depth-test vs opaque, no write
+        LLGLDisable cull(GL_CULL_FACE);
+        gGL.blendFunci(0, LLRender::BF_ONE,  LLRender::BF_ONE);                    // accum: additive
+        gGL.blendFunci(1, LLRender::BF_ZERO, LLRender::BF_ONE_MINUS_SOURCE_COLOR); // revealage: *= (1-a)
+        drawOITTestQuads();
+        gGL.flush();
+    }
+    gOITAccumProgram.unbind();
+
+    // --- composite back into the scene framebuffer ---
+    glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+    gOITCompositeProgram.bind();
+    mRT->oit.bindTexture(0, 0, LLTexUnit::TFO_POINT); // accum     -> unit 0
+    mRT->oit.bindTexture(1, 1, LLTexUnit::TFO_POINT); // revealage -> unit 1
+    gOITCompositeProgram.uniform1i(sOITAccum, 0);
+    gOITCompositeProgram.uniform1i(sOITRevealage, 1);
+    {
+        LLGLEnable blend(GL_BLEND);
+        gGL.setSceneBlendType(LLRender::BT_ALPHA); // resolved colour blends over the scene
+        LLGLDepthTest depth(GL_FALSE);             // fullscreen
+        mScreenTriangleVB->setBuffer();
+        mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
+    }
+    gOITCompositeProgram.unbind();
+    gGL.getTexUnit(1)->unbind(LLTexUnit::TT_TEXTURE);
+    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
 }
 
 void LLPipeline::renderDebug()
@@ -5116,10 +5173,14 @@ void LLPipeline::renderDebug()
 
     bool hud_only = hasRenderType(LLPipeline::RENDER_TYPE_HUD);
 
-    // <FS> WBOIT: synthetic pathological-transparency test scene (Develop >
-    // Render Metadata > OIT Test Scene). The reproducible baseline for validating
-    // order-independent transparency.
-    if (!hud_only && hasRenderDebugMask(RENDER_DEBUG_OIT_TEST))
+    // <FS> WBOIT: synthetic pathological-transparency test scene. Two toggles
+    // (Develop > Render Metadata): "OIT Test Scene" = the current sorted-blend
+    // baseline; "OIT Test (WBOIT)" = the order-independent path. A/B by toggling.
+    if (!hud_only && hasRenderDebugMask(RENDER_DEBUG_OIT_WBOIT))
+    {
+        drawOITTestSceneWBOIT();
+    }
+    else if (!hud_only && hasRenderDebugMask(RENDER_DEBUG_OIT_TEST))
     {
         drawOITTestScene();
     }

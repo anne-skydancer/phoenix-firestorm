@@ -2894,6 +2894,19 @@ class LLAdvancedPurgeShaderCache : public view_listener_t
     }
 };
 
+// <FS> Recompile all shaders from disk (clears the binary cache so edited .glsl
+// source is re-read + recompiled). Dev iteration aid -- no relaunch needed.
+class LLAdvancedRecompileShaders : public view_listener_t
+{
+    bool handleEvent(const LLSD& userdata)
+    {
+        LLViewerShaderMgr::instance()->clearShaderCache();
+        LLViewerShaderMgr::instance()->setShaders();
+        return true;
+    }
+};
+// </FS>
+
 ////////////////////
 // EVENT Recorder //
 ///////////////////
@@ -13267,6 +13280,7 @@ void initialize_menus()
     view_listener_t::addMenu(new LLAdvancedClickGLTFEdit(), "Advanced.ClickGLTFEdit");
     view_listener_t::addMenu(new LLAdvancedClickResizeWindow(), "Advanced.ClickResizeWindow");
     view_listener_t::addMenu(new LLAdvancedPurgeShaderCache(), "Advanced.ClearShaderCache");
+    view_listener_t::addMenu(new LLAdvancedRecompileShaders(), "Advanced.RecompileShaders"); // <FS>
     //[FIX FIRE-1927 - enable DoubleClickTeleport shortcut : SJ]
     view_listener_t::addMenu(new FSAdvancedToggleDoubleClickAction, "Advanced.SetDoubleClickAction");
     view_listener_t::addMenu(new FSAdvancedCheckEnabledDoubleClickAction, "Advanced.CheckEnabledDoubleClickAction");

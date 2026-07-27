@@ -5013,6 +5013,13 @@
             <menu_item_call.on_click
              function="Advanced.ClearShaderCache" />
           </menu_item_call>
+          <menu_item_call
+            enabled="true"
+            label="Recompile Shaders"
+            name="Recompile Shaders">
+            <menu_item_call.on_click
+             function="Advanced.RecompileShaders" />
+          </menu_item_call>
         </menu>
 
         <menu

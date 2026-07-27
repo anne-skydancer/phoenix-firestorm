@@ -2863,11 +2863,14 @@ bool LLViewerShaderMgr::loadShadersDeferred()
     if (success)
     {
         gOITAccumProgram.mName = "OIT Accumulation Shader";
-        gOITAccumProgram.mFeatures.isDeferred = true;
+        // Interface-level (like gDebugProgram), NOT deferred: the deferred path
+        // includes deferredUtil.glsl which declares `uniform vec3 color`, clashing
+        // with our vec4 `color` (DIFFUSE_COLOR). We only transform + write the two
+        // OIT attachments, so no deferred features are needed.
         gOITAccumProgram.mShaderFiles.clear();
         gOITAccumProgram.mShaderFiles.push_back(make_pair("deferred/oitAccumV.glsl", GL_VERTEX_SHADER));
         gOITAccumProgram.mShaderFiles.push_back(make_pair("deferred/oitAccumF.glsl", GL_FRAGMENT_SHADER));
-        gOITAccumProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        gOITAccumProgram.mShaderLevel = mShaderLevel[SHADER_INTERFACE];
         success = gOITAccumProgram.createShader();
         llassert(success);
     }

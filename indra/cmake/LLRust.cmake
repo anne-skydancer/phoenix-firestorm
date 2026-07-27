@@ -142,6 +142,37 @@ set(LLRUST_CARGO_FEATURES)
 if (USE_GROK AND NOT LLRUST_J2C_MODE EQUAL 0)
   set(LLRUST_CARGO_FEATURES --features grok)
   message(STATUS "LLRust: enabling cargo feature `grok` (USE_GROK + LL_RUSTJ2C=${LL_RUSTJ2C})")
+
+  # bindgen (in build.rs) generates the Grok FFI from grok.h -- pass it the header,
+  # include dirs, and libclang location via env. GROK_ROOT is set by Grok.cmake.
+  if (NOT GROK_ROOT)
+    set(GROK_ROOT "C:/fs/grok")
+  endif ()
+  set(_grok_hdr  "${GROK_ROOT}/src/lib/core/grok.h")
+  # Comma-separated (NOT ';', which CMake splits into a stray command arg that
+  # `cmake -E env` would try to execute). build.rs splits on ',' or ';'.
+  set(_grok_incs "${GROK_ROOT}/src/lib/core,${GROK_ROOT}/build/src/lib/core")
+  find_file(LLRUST_LIBCLANG_DLL libclang.dll
+            PATHS "C:/Program Files/LLVM/bin" "$ENV{LIBCLANG_PATH}")
+  if (LLRUST_LIBCLANG_DLL)
+    get_filename_component(_libclang_dir "${LLRUST_LIBCLANG_DLL}" DIRECTORY)
+  else ()
+    set(_libclang_dir "C:/Program Files/LLVM/bin")
+    message(WARNING "LLRust: libclang.dll not found; bindgen for grok may fail. Install LLVM / set LIBCLANG_PATH.")
+  endif ()
+
+  # Prepend the grok bindgen env to the cargo invocation. On Windows LLRUST_CARGO_ENV
+  # is otherwise empty; on FreeBSD it already carries RUSTFLAGS, which would need
+  # merging (the Grok+Rust build is Windows for now).
+  if (NOT LLRUST_CARGO_ENV)
+    set(LLRUST_CARGO_ENV "${CMAKE_COMMAND}" -E env
+        "LLRUST_GROK_HEADER=${_grok_hdr}"
+        "LLRUST_GROK_INCLUDES=${_grok_incs}"
+        "LIBCLANG_PATH=${_libclang_dir}")
+    message(STATUS "LLRust: grok bindgen env -> header=${_grok_hdr}, libclang=${_libclang_dir}")
+  else ()
+    message(WARNING "LLRust: LLRUST_CARGO_ENV already set -- grok bindgen env not merged (FreeBSD?)")
+  endif ()
 endif ()
 
 # Build the staticlib.

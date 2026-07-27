@@ -68,27 +68,28 @@ pub extern "C" fn ll_j2c_free(_handle: *mut c_void) {
     // Phase 0: no handles are ever produced.
 }
 
-// --- Grok C-API bridge (Phase 1a: de-risk the Rust -> Grok link) --------------
-// bindgen is unavailable here (no libclang), so the Grok C API is declared BY
-// HAND. Phase 1a needs only grk_version() -- no structs -- to prove the Rust ->
-// Grok C symbol resolves at the final viewer link (grokj2k is already linked via
-// llimagej2cgrok). The `grok` cargo feature is enabled by LLRust.cmake only for
-// USE_GROK builds, so a non-Grok (e.g. OpenJPEG) build never references grk_*.
+// --- Grok C-API bridge -------------------------------------------------------
+// The Grok C API FFI is bindgen-generated from grok.h at build time (see build.rs)
+// -- compiler-verified struct layouts, no hand-written offsets. Present only under
+// the `grok` feature (enabled by LLRust.cmake for USE_GROK builds); a non-Grok
+// build never references grk_*. grokj2k resolves the symbols at the final viewer
+// link (it is already linked via llimagej2cgrok).
 #[cfg(feature = "grok")]
-extern "C" {
-    fn grk_version() -> *const c_char;
+#[allow(non_upper_case_globals, non_camel_case_types, non_snake_case, dead_code)]
+mod grok_sys {
+    include!(concat!(env!("OUT_DIR"), "/grok_sys.rs"));
 }
 
-/// Grok's own version string, obtained by calling into libgrok FROM RUST. Returns
-/// null when built without the `grok` feature. Proves the Rust->Grok C-ABI bridge
-/// links and executes.
+/// Grok's own version string, obtained by calling into libgrok FROM RUST via the
+/// bindgen-generated binding. Null when built without the `grok` feature. Proves
+/// the Rust->Grok C-ABI bridge links and executes.
 #[no_mangle]
 pub extern "C" fn ll_j2c_grok_version() -> *const c_char {
     #[cfg(feature = "grok")]
     {
-        // Safety: grk_version() takes no args and returns a static C string owned
-        // by libgrok; we only borrow it (never free).
-        unsafe { grk_version() }
+        // Safety: grk_version() takes no args, returns a static C string owned by
+        // libgrok; we only borrow it (never free).
+        unsafe { grok_sys::grk_version() }
     }
     #[cfg(not(feature = "grok"))]
     {

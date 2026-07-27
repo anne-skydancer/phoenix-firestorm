@@ -5128,6 +5128,11 @@ void LLPipeline::drawOITTestSceneWBOIT()
 
     // --- accumulation pass into oit (attachment 0 = accum, 1 = revealage) ---
     mRT->oit.bindTarget();
+    // The deferred pipeline leaves the alpha channel write-masked off (it protects
+    // the screen's alpha). Our accum buffer stores weighted alpha in .a -- the
+    // composite divisor -- so we MUST re-enable alpha writes or accum.a stays 0
+    // and the resolve divides by ~0 (blows to white). Restored at function exit.
+    gGL.setColorMask(true, true);
     const GLfloat clear_accum[4]  = { 0.f, 0.f, 0.f, 0.f };
     const GLfloat clear_reveal[4] = { 1.f, 0.f, 0.f, 0.f }; // revealage starts fully open
     glClearBufferfv(GL_COLOR, 0, clear_accum);
@@ -5145,6 +5150,11 @@ void LLPipeline::drawOITTestSceneWBOIT()
         gGL.flush();
     }
     gOITAccumProgram.unbind();
+
+    // Restore the deferred default (alpha writes off) before compositing so we
+    // don't scribble coverage into the screen's alpha channel (glow/FXAA read it).
+    // The composite blend still uses the fragment's SRC_ALPHA factor regardless.
+    gGL.setColorMask(true, false);
 
     // --- composite back into the scene framebuffer ---
     glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);

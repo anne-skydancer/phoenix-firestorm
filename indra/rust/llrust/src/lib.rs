@@ -16,6 +16,7 @@
 //!  - Treat every incoming pointer/length as untrusted: bounds-check before use.
 
 mod decomp;
+mod j2c;
 mod llsd;
 mod mesh;
 mod msg;

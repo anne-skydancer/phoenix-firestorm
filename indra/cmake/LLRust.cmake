@@ -27,9 +27,12 @@ add_library( ll::rust INTERFACE IMPORTED GLOBAL )
 set(LL_RUSTMESH   "cfallback" CACHE STRING "Rust mesh decode: off | cfallback | on")
 set(LL_RUSTMSG    "cfallback" CACHE STRING "Rust UDP message decode: off | cfallback | on")
 set(LL_RUSTOBJUPD "cfallback" CACHE STRING "Rust object-update decode: off | cfallback | on")
+#   LL_RUSTJ2C  -> J2C (JPEG2000) texture decode (untrusted codestream parse)
+set(LL_RUSTJ2C    "cfallback" CACHE STRING "Rust J2C texture decode: off | cfallback | on")
 set_property(CACHE LL_RUSTMESH   PROPERTY STRINGS off cfallback on)
 set_property(CACHE LL_RUSTMSG    PROPERTY STRINGS off cfallback on)
 set_property(CACHE LL_RUSTOBJUPD PROPERTY STRINGS off cfallback on)
+set_property(CACHE LL_RUSTJ2C    PROPERTY STRINGS off cfallback on)
 
 # Map off|cfallback|on -> 0|1|2.
 macro(_llrust_mode _var _out)
@@ -46,9 +49,10 @@ endmacro()
 _llrust_mode(LL_RUSTMESH   LLRUST_MESH_MODE)
 _llrust_mode(LL_RUSTMSG    LLRUST_MSG_MODE)
 _llrust_mode(LL_RUSTOBJUPD LLRUST_OBJUPD_MODE)
+_llrust_mode(LL_RUSTJ2C     LLRUST_J2C_MODE)
 
 # Build/link the Rust bridge only if at least one subsystem actually uses it.
-if (LLRUST_MESH_MODE EQUAL 0 AND LLRUST_MSG_MODE EQUAL 0 AND LLRUST_OBJUPD_MODE EQUAL 0)
+if (LLRUST_MESH_MODE EQUAL 0 AND LLRUST_MSG_MODE EQUAL 0 AND LLRUST_OBJUPD_MODE EQUAL 0 AND LLRUST_J2C_MODE EQUAL 0)
   message(STATUS "LLRust: all subsystems off -> pure C++ (no Rust)")
   return()
 endif ()
@@ -183,7 +187,7 @@ endif ()
 set_target_properties(ll::rust PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LLRUST_INCLUDE}"
     INTERFACE_LINK_LIBRARIES      "${LLRUST_LIB};${LLRUST_NATIVE_LIBS}"
-    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MESH_MODE};LL_RUSTMSG_MODE=${LLRUST_MSG_MODE};LL_RUSTOBJUPD_MODE=${LLRUST_OBJUPD_MODE}")
+    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MESH_MODE};LL_RUSTMSG_MODE=${LLRUST_MSG_MODE};LL_RUSTOBJUPD_MODE=${LLRUST_OBJUPD_MODE};LL_RUSTJ2C_MODE=${LLRUST_J2C_MODE}")
 
 # Consumers must `add_dependencies(<their_target> llrust_build)` so the .a/.h
 # exist before they compile/link.

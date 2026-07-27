@@ -56,8 +56,9 @@ LLImageJ2CRust : LLImageJ2CImpl          (new C++ backend, indra/llimagej2crust/
         │                                 provides fallbackCreateLLImageJ2CImpl)
         │  FFI  (llrust pattern: staticlib, #[no_mangle] extern "C", cbindgen)
         ▼
-   llrust-j2c crate  (indra/rust/llrust-j2c/ — SEPARATE from llrust to isolate the
-        │             heavy Grok/OpenJPEG C++ link)
+   j2c module of the llrust crate  (indra/rust/llrust/src/j2c.rs — a MODULE, not a
+        │             separate staticlib; see Open decisions. Grok/OpenJPEG are
+        │             feature-gated in llrust's Cargo.toml so the default stays lean)
         ├── untrusted-parse orchestration + validation (memory-safe, panic=abort)
         ├── decode -> POD {ptr,len view: pixels, w, h, components, discard_level,
         │             decode_ok} -> free   (handle-owned buffer, no per-field copy)
@@ -138,8 +139,13 @@ license configuration stays coherent end to end. Mode knob **`LL_RUSTJ2C` =
 
 ## Open decisions
 
-- **Separate crate vs module in `llrust`** → lean **separate** (`llrust-j2c`), to
-  isolate the heavy Grok/OpenJPEG C++ link (as wgpu is isolated in the harness).
+- **Separate crate vs module in `llrust`** → RESOLVED (Phase 0): **module in
+  `llrust`** (`src/j2c.rs`), NOT a separate crate. Two Rust `staticlib` crates
+  cannot co-link into one binary (duplicate libstd lang items: allocator, panic
+  handler, `eh_personality`), and the viewer already links `ll::rust`. The Grok/
+  OpenJPEG isolation the separate crate was for is instead achieved by
+  **feature-gating** those deps in `llrust`'s Cargo.toml (pulled only when
+  `LL_RUSTJ2C` is enabled), so the default build stays lean.
 - **bindgen vs hand-written FFI** for `grok.h` / `openjpeg.h` → **bindgen**
   (stable C APIs).
 - **Shadow baseline** — bit-exact requires validating against Grok, i.e. an

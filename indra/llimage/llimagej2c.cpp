@@ -32,6 +32,10 @@
 #include "llmemory.h"
 #include "llsd.h"
 
+#ifdef HAVE_LLRUST
+#include "llrust.h" // memory-safe J2C decode bridge (ll_j2c_* -- phase 0: identity probe)
+#endif
+
 // Declare the prototype for this factory function here. It is implemented in
 // other files which define a LLImageJ2CImpl subclass, but only ONE static
 // library which has the implementation for this function should ever be
@@ -48,7 +52,16 @@ std::string LLImageJ2C::getEngineInfo()
     // All known LLImageJ2CImpl implementation subclasses are cheap to
     // construct.
     std::unique_ptr<LLImageJ2CImpl> impl(fallbackCreateLLImageJ2CImpl());
-    return impl->getEngineInfo();
+    std::string info = impl->getEngineInfo();
+#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 1
+    // <FS> fs/rust-j2c Phase 0: prove the Rust J2C bridge links + is callable
+    // end-to-end into the viewer. It does NO decoding yet -- ll_j2c_decode returns
+    // "not handled" so the C++ codec above stays authoritative. This just appends
+    // the bridge's identity to the engine-info line logged at startup.
+    info += " + ";
+    info += ll_j2c_rust_version();
+#endif
+    return info;
 }
 
 LLImageJ2C::LLImageJ2C() :  LLImageFormatted(IMG_CODEC_J2C),

@@ -578,6 +578,81 @@ mod tests {
             let _ = validate_j2c(&full[..n]);
         }
     }
+
+    // Brute-force property fuzz of the ingress validator. This is the gate we will
+    // ENFORCE, so it must (a) NEVER panic on ANY input, and (b) only ever ACCEPT a
+    // stream that genuinely satisfies the policy -- an accept that violates the
+    // caps is a security hole. Deterministic xorshift PRNG => reproducible, no deps.
+    #[test]
+    fn fuzz_validate_panic_free_and_sound() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut rng = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        const ITERS: usize = 2_000_000;
+        for i in 0..ITERS {
+            // Three input distributions, weighted toward "near-valid" so the parse
+            // branches (not just the SOC reject) get hammered.
+            let buf: Vec<u8> = match rng() % 3 {
+                0 => {
+                    // Pure random bytes, random short length (stresses structural rejects).
+                    let len = (rng() % 96) as usize;
+                    (0..len).map(|_| (rng() & 0xFF) as u8).collect()
+                }
+                1 => {
+                    // Valid SIZ header, then flip/ truncate a few bytes (near-valid).
+                    let comps = (rng() % 6) as u16; // 0..5
+                    let w = (rng() % 5000) as u32; // spans <= and > MAX_DIM
+                    let h = (rng() % 5000) as u32;
+                    let mut b = siz(w.max(1), h.max(1), comps.max(1));
+                    for _ in 0..(rng() % 8) {
+                        let idx = (rng() as usize) % b.len();
+                        b[idx] = (rng() & 0xFF) as u8;
+                    }
+                    if rng() % 2 == 0 {
+                        b.truncate((rng() as usize) % b.len());
+                    }
+                    b
+                }
+                _ => {
+                    // Adversarial-but-well-formed: extreme dims/comps to exercise the
+                    // bomb budget, component ceiling, and overflow guards directly.
+                    let comps = (rng() % 80) as u16; // spans MAX_COMPONENTS(64)
+                    let w = (rng() % 70000) as u32; // spans the bomb range
+                    let h = (rng() % 70000) as u32;
+                    siz(w.max(1), h.max(1), comps.max(1))
+                }
+            };
+
+            // (a) Must not panic -- reaching here each iteration proves it.
+            let (reason, vw, vh, vc) = validate_j2c(&buf);
+
+            // (b) Soundness: an ACCEPT must satisfy every policy invariant.
+            if reason == LL_J2C_OK {
+                assert!(
+                    vw >= 1 && vw <= LL_J2C_MAX_DIM as i32,
+                    "accepted out-of-range width {vw} (iter {i})"
+                );
+                assert!(
+                    vh >= 1 && vh <= LL_J2C_MAX_DIM as i32,
+                    "accepted out-of-range height {vh} (iter {i})"
+                );
+                assert!(
+                    vc >= 1 && vc <= LL_J2C_MAX_COMPONENTS as i32,
+                    "accepted out-of-range components {vc} (iter {i})"
+                );
+                let samples = vw as u64 * vh as u64 * vc as u64;
+                assert!(
+                    samples <= LL_J2C_MAX_SAMPLES,
+                    "accepted over-budget stream ({samples} samples, iter {i})"
+                );
+            }
+        }
+    }
 }
 
 // --- Grok C-API bridge -------------------------------------------------------

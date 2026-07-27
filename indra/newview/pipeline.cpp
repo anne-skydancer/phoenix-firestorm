@@ -971,6 +971,17 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
 
     mRT->deferredScreen.shareDepthBuffer(mRT->screen);
 
+    // <FS> WBOIT: order-independent-transparency accumulation target.
+    //   attachment 0 (accum, RGBA16F) = sum of weighted premultiplied colour + weighted alpha
+    //   attachment 1 (revealage, R16F) = product of (1 - alpha)
+    // Shares the G-buffer depth so alpha depth-tests against opaque, exactly like
+    // mRT->screen. Infra only in step B -- nothing renders to it yet.
+    if (!mRT->oit.allocate(resX, resY, GL_RGBA16F)) return false;
+    if (!mRT->oit.addColorAttachment(GL_R16F)) return false;
+    mRT->deferredScreen.shareDepthBuffer(mRT->oit);
+    LL_INFOS("WBOIT") << "WBOIT target allocated " << resX << "x" << resY
+                      << " (accum RGBA16F + revealage R16F), depth shared with G-buffer" << LL_ENDL;
+
     // <FS:Beq> restore setSphere
     // if (hdr || shadow_detail > 0 || ssao || RenderDepthOfField))
     if (hdr || shadow_detail > 0 || ssao || RenderDepthOfField || RlvActions::hasPostProcess())
@@ -1380,14 +1391,17 @@ void LLPipeline::releaseScreenBuffers()
     mRT->screen.release();
     mRT->deferredScreen.release();
     mRT->deferredLight.release();
+    mRT->oit.release(); // <FS> WBOIT
 
     mAuxillaryRT.screen.release();
     mAuxillaryRT.deferredScreen.release();
     mAuxillaryRT.deferredLight.release();
+    mAuxillaryRT.oit.release(); // <FS> WBOIT
 
     mHeroProbeRT.screen.release();
     mHeroProbeRT.deferredScreen.release();
     mHeroProbeRT.deferredLight.release();
+    mHeroProbeRT.oit.release(); // <FS> WBOIT
 
     mPreviewScreen.release(); // <FS:Beq/> dedicated preview target
 }

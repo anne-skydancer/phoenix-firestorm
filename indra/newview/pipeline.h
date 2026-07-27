@@ -725,6 +725,7 @@ public:
         LLRenderTarget          screen;
         LLRenderTarget          deferredScreen;
         LLRenderTarget          deferredLight;
+        LLRenderTarget          oit;            // <FS> WBOIT: accum (RGBA16F) + revealage (R16F), shares scene depth
 
         //sun shadow map
         LLRenderTarget          shadow[4];

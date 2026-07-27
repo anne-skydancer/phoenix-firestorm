@@ -463,6 +463,11 @@ public:
     // applies separate blend functions to color and alpha
     void blendFunc(eBlendFactor color_sfactor, eBlendFactor color_dfactor,
                eBlendFactor alpha_sfactor, eBlendFactor alpha_dfactor);
+    // <FS> WBOIT: per-attachment blend (glBlendFunci) for MRT targets, e.g. the
+    // OIT accumulation buffer where attachment 0 accumulates and attachment 1
+    // multiplies revealage. NOT state-cached (per-draw-buffer state); it also
+    // invalidates the cached global blend so a later blendFunc() re-applies.
+    void blendFunci(U32 draw_buffer, eBlendFactor sfactor, eBlendFactor dfactor);
 
     LLLightState* getLight(U32 index);
     void setAmbientLightColor(const LLColor4& color);

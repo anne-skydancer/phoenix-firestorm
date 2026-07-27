@@ -1492,6 +1492,22 @@ void LLRender::blendFunc(eBlendFactor color_sfactor, eBlendFactor color_dfactor,
     }
 }
 
+// <FS> WBOIT: per-attachment blend for MRT targets (glBlendFunci). Not state-
+// cached -- each call flushes pending geometry and sets the blend for ONE draw
+// buffer; the caller sets each attachment then draws. Invalidates the cached
+// global blend so a later blendFunc() re-applies rather than assuming state.
+void LLRender::blendFunci(U32 draw_buffer, eBlendFactor sfactor, eBlendFactor dfactor)
+{
+    llassert(sfactor < BF_UNDEF);
+    llassert(dfactor < BF_UNDEF);
+    flush();
+    glBlendFunci(draw_buffer, sGLBlendFactor[sfactor], sGLBlendFactor[dfactor]);
+    mCurrBlendColorSFactor = BF_UNDEF;
+    mCurrBlendColorDFactor = BF_UNDEF;
+    mCurrBlendAlphaSFactor = BF_UNDEF;
+    mCurrBlendAlphaDFactor = BF_UNDEF;
+}
+
 LLTexUnit* LLRender::getTexUnit(U32 index)
 {
     if (index < mTexUnits.size())

@@ -28,7 +28,7 @@ set(LL_RUSTMESH   "cfallback" CACHE STRING "Rust mesh decode: off | cfallback | 
 set(LL_RUSTMSG    "cfallback" CACHE STRING "Rust UDP message decode: off | cfallback | on")
 set(LL_RUSTOBJUPD "cfallback" CACHE STRING "Rust object-update decode: off | cfallback | on")
 #   LL_RUSTJ2C  -> J2C (JPEG2000) texture decode (untrusted codestream parse)
-set(LL_RUSTJ2C    "cfallback" CACHE STRING "Rust J2C texture decode: off | cfallback | on")
+set(LL_RUSTJ2C    "on"        CACHE STRING "Rust J2C texture decode: off | cfallback | on")
 set_property(CACHE LL_RUSTMESH   PROPERTY STRINGS off cfallback on)
 set_property(CACHE LL_RUSTMSG    PROPERTY STRINGS off cfallback on)
 set_property(CACHE LL_RUSTOBJUPD PROPERTY STRINGS off cfallback on)

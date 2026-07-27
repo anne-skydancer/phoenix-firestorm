@@ -219,22 +219,19 @@ bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 fir
             // Update the raw discard level
             updateRawDiscardLevel();
 #if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 2
-            // <FS> fs/rust-j2c FLIP: Rust is the PRIMARY decoder. The C++ codec
-            // is the fallback only when Rust declines (null) or returns an
-            // unusable result -- fail-closed, so we never ship a bad texture.
-            // Bit-exactness vs the C++ codec was proven by the cfallback
-            // shadow-compare before this path was ever enabled.
+            // <FS> fs/rust-j2c: Rust is the SOLE decoder; the C++ decode path is
+            // compiled out (the #else below). FAIL-CLOSED -- a Rust decline (null,
+            // i.e. malformed/hostile input) fails the texture rather than falling
+            // back to the unhardened C++ decode; not falling back IS the point of
+            // the untrusted-parse hardening. (Encode stays C++: Grok compress for
+            // uploads/baking is a TRUSTED path over our own images, not an attack
+            // surface, and there is no Rust encoder.) Bit-exactness was proven by
+            // the cfallback shadow-compare + fuzzed before this became the default.
             res = rustDecodeChannels(*raw_imagep, first_channel, max_channel_count);
             if (!res)
             {
-                static S32 sFallbackCount = 0;
-                S32 fn = ++sFallbackCount;
-                if (fn <= 20 || (fn % 100) == 0)
-                {
-                    LL_INFOS("LLRustJ2C") << "flip: Rust declined -> C++ fallback #"
-                                          << fn << LL_ENDL;
-                }
-                res = mImpl->decodeImpl(*this, *raw_imagep, decode_time, first_channel, max_channel_count);
+                decodeFailed(); // mDecoding = false -> the block below fails it cleanly
+                res = true;     // "done"
             }
 #else
             res = mImpl->decodeImpl(*this, *raw_imagep, decode_time, first_channel, max_channel_count);

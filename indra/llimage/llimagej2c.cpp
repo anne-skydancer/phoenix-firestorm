@@ -219,8 +219,17 @@ bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 fir
                                     && (v.len == clen);
                         if (dims_ok && v.pixels && memcmp(v.pixels, raw_imagep->getData(), clen) == 0)
                         {
-                            LL_DEBUGS("LLRustJ2C") << "shadow OK " << v.width << "x" << v.height
-                                                   << "x" << v.components << LL_ENDL;
+                            // Throttled positive confirmation (decode runs on the
+                            // texture worker pool; this counter is a log throttle
+                            // only, a benign race is fine). First hit + every 500th
+                            // so a clean run is visibly non-zero without spamming.
+                            static S32 sOkCount = 0;
+                            S32 n = ++sOkCount;
+                            if (n == 1 || (n % 500) == 0)
+                            {
+                                LL_INFOS("LLRustJ2C") << "shadow OK x" << n << " (" << v.width
+                                    << "x" << v.height << "x" << v.components << ")" << LL_ENDL;
+                            }
                         }
                         else if (dims_ok)
                         {

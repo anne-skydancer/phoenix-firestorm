@@ -45,7 +45,9 @@ uniform vec3 sun_dir;
 uniform vec3 moon_dir;
 uniform int classic_mode;
 
-out vec4 frag_color;
+// <FS> WBOIT: dual output (see alphaF.glsl). oit_mode=0 -> normal blend into [0].
+out vec4 frag_data[2];
+uniform int oit_mode;
 
 in vec3 vary_fragcoord;
 
@@ -217,7 +219,19 @@ void main()
     float final_scale = 1;
     if (classic_mode > 0)
         final_scale = 1.1;
-    frag_color = max(vec4(color.rgb * final_scale,a), vec4(0));
+    // <FS> WBOIT output
+    vec4 oit_final = max(vec4(color.rgb * final_scale, a), vec4(0));
+    if (oit_mode != 0)
+    {
+        float oit_z = abs(vary_position.z);
+        float oit_w = oit_final.a * clamp(0.03 / (1e-5 + pow(oit_z / 200.0, 4.0)), 1e-2, 3e3); // WBOIT-WEIGHT
+        frag_data[0] = vec4(oit_final.rgb * oit_final.a, oit_final.a) * oit_w;
+        frag_data[1] = vec4(oit_final.a);
+    }
+    else
+    {
+        frag_data[0] = oit_final;
+    }
 }
 
 #else

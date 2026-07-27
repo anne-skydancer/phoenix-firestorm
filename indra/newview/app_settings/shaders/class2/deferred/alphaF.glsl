@@ -31,7 +31,12 @@
 #define NON_INDEXED 2
 #define NON_INDEXED_NO_COLOR 3
 
-out vec4 frag_color;
+// <FS> WBOIT: dual output. frag_data[0] = normal blended colour OR weighted premult
+// colour (OIT accumulate); frag_data[1] = revealage (OIT only). oit_mode flips at
+// runtime -- normal mode writes only [0] (== old frag_color, location 0); the second
+// attachment is unbound so [1] is discarded. See LLDrawPoolAlpha WBOIT accum pass.
+out vec4 frag_data[2];
+uniform int oit_mode;
 
 uniform mat3 env_mat;
 uniform vec3 sun_dir;
@@ -314,6 +319,18 @@ void main()
 #endif
 
     color.rgb *= final_scale;
-    frag_color = max(color, vec4(0));
+    // <FS> WBOIT output
+    vec4 oit_final = max(color, vec4(0));
+    if (oit_mode != 0)
+    {
+        float oit_z = abs(vary_position.z);
+        float oit_w = oit_final.a * clamp(0.03 / (1e-5 + pow(oit_z / 200.0, 4.0)), 1e-2, 3e3); // WBOIT-WEIGHT
+        frag_data[0] = vec4(oit_final.rgb * oit_final.a, oit_final.a) * oit_w;
+        frag_data[1] = vec4(oit_final.a);
+    }
+    else
+    {
+        frag_data[0] = oit_final;
+    }
 }
 

@@ -64,7 +64,14 @@ public:
     void renderDebugAlpha();
 
     void renderGroupAlpha(LLSpatialGroup* group, U32 type, U32 mask, bool texture = true);
-    void renderAlpha(U32 mask, bool depth_only = false, bool rigged = false);
+
+    // <FS> WBOIT (D2): which slice of the alpha draw lists a renderAlpha call emits.
+    //   NONE     = legacy: every draw, per-draw blend, emissive glow interleaved.
+    //   ACCUM    = source-over draws only, into the OIT accum target (no emissive).
+    //   RESIDUAL = custom-blend (particle) draws + all emissive glow, into screen.
+    enum EAlphaOITPhase { ALPHA_OIT_NONE = 0, ALPHA_OIT_ACCUM, ALPHA_OIT_RESIDUAL };
+    void renderAlpha(U32 mask, bool depth_only = false, bool rigged = false, EAlphaOITPhase oit_phase = ALPHA_OIT_NONE);
+    void setOITMode(S32 mode); // flip oit_mode uniform on the source-over alpha shaders
     void renderAlphaHighlight();
 
     static bool sShowDebugAlpha;

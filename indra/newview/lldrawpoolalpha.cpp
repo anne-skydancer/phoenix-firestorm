@@ -262,9 +262,46 @@ void LLDrawPoolAlpha::forwardRender(bool rigged)
         LL::GLTFSceneManager::instance().render(false, true, true);
     }
 
-    // If the face is more than 90% transparent, then don't update the Depth buffer for Dof
-    // We don't want the nearly invisible objects to cause of DoF effects
-    renderAlpha(getVertexDataMask() | LLVertexBuffer::MAP_TEXTURE_INDEX | LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD1 | LLVertexBuffer::MAP_TEXCOORD2, false, rigged);
+    U32 alpha_mask = getVertexDataMask() | LLVertexBuffer::MAP_TEXTURE_INDEX | LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD1 | LLVertexBuffer::MAP_TEXCOORD2;
+
+    // <FS> WBOIT (D2): when enabled, route POST_WATER source-over alpha (D2b: rigged AND
+    // non-rigged -- rigged is where avatar hair lives, the worst sort offender) through the
+    // order-independent accum+composite path; particles + emissive glow still render in-order
+    // into screen afterwards. Toggle: Develop > Render Metadata > "Alpha OIT (real)". Rigged
+    // and non-rigged each run their own accum+composite cycle here (cross-ordering between the
+    // two subsets is a known v1 approximation). HUD/impostor/cube snapshot stay legacy.
+    bool use_oit = getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER
+                && !LLPipeline::sRenderingHUDs
+                && !LLPipeline::sImpostorRender
+                && !gCubeSnapshot
+                && gPipeline.hasRenderDebugMask(LLPipeline::RENDER_DEBUG_OIT_ALPHA);
+
+    if (use_oit)
+    {
+        // phase 1: accumulate source-over alpha into the OIT target (oit_mode=1).
+        // Force depth-write OFF: rigged alpha normally writes depth (write_depth above),
+        // but the OIT target shares the G-buffer depth -- writing transparent hair depth
+        // there would corrupt occlusion for everything drawn afterwards.
+        gPipeline.beginAlphaOITAccum();
+        setOITMode(1);
+        {
+            LLGLDepthTest accum_depth(GL_TRUE, GL_FALSE);
+            renderAlpha(alpha_mask, false, rigged, ALPHA_OIT_ACCUM);
+        }
+        setOITMode(0);
+
+        // phase 2: resolve + composite OIT over the scene
+        gPipeline.endAlphaOITComposite();
+
+        // phase 3: residual (custom-blend particles + emissive glow) in-order into screen;
+        // emissive glow needs alpha writes back on.
+        gGL.setColorMask(true, true);
+        renderAlpha(alpha_mask, false, rigged, ALPHA_OIT_RESIDUAL);
+    }
+    else
+    {
+        renderAlpha(alpha_mask, false, rigged, ALPHA_OIT_NONE);
+    }
 
     gGL.setColorMask(true, false);
 
@@ -580,7 +617,44 @@ void LLDrawPoolAlpha::renderRiggedPbrEmissives(std::vector<LLDrawInfo*>& emissiv
     }
 }
 
-void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
+// <FS> WBOIT (D2): flip the oit_mode uniform on the source-over alpha shaders so their
+// D1 output path switches between normal blend (0) and accumulate (1). Additive emissive
+// shaders and the non-BLEND (deferred) material variants have no oit_mode uniform, so
+// uniform1i is a safe no-op there.
+static const LLStaticHashedString sOITModeUniform("oit_mode");
+
+void LLDrawPoolAlpha::setOITMode(S32 mode)
+{
+    // Sets oit_mode on a shader AND its rigged variant (a separate program object that
+    // compiles the same source, so it carries the same uniform). Rigged avatar alpha
+    // (hair!) draws through mRiggedVariant, so both must be flipped.
+    auto set_mode = [mode](LLGLSLShader* shader)
+    {
+        if (!shader) return;
+        shader->bind();
+        shader->uniform1i(sOITModeUniform, mode);
+        if (shader->mRiggedVariant)
+        {
+            shader->mRiggedVariant->bind();
+            shader->mRiggedVariant->uniform1i(sOITModeUniform, mode);
+        }
+    };
+    set_mode(simple_shader);
+    set_mode(fullbright_shader);
+    set_mode(pbr_shader);
+    // non-rigged alpha-blend material variants (mask&3 == BLEND==1); set_mode covers each
+    // one's rigged sibling via mRiggedVariant, so iterate only the non-rigged half.
+    for (int i = 0; i < LLMaterial::SHADER_COUNT; ++i)
+    {
+        if ((i & 0x3) == 1)
+        {
+            set_mode(&gDeferredMaterialProgram[i]);
+        }
+    }
+    LLGLSLShader::unbind();
+}
+
+void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged, EAlphaOITPhase oit_phase)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL;
     bool initialized_lighting = false;
@@ -680,6 +754,37 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                 if ((bool)params.mAvatar != rigged)
                 {
                     continue;
+                }
+
+                // <FS> WBOIT phase routing (D2). Collect emissive glow up-front so it
+                // still runs when the source-over main draw is skipped in the residual
+                // phase; the accum phase emits no glow at all. custom_blend == the
+                // particle/additive subset that must stay on the in-order screen pass.
+                bool custom_blend = (!LLPipeline::sImpostorRender &&
+                                     params.mBlendFuncDst != LLRender::BF_SOURCE_ALPHA &&
+                                     params.mBlendFuncSrc != LLRender::BF_SOURCE_ALPHA);
+                if (oit_phase != ALPHA_OIT_ACCUM &&
+                    getType() != LLDrawPool::POOL_ALPHA_PRE_WATER &&
+                    params.mVertexBuffer->hasDataType(LLVertexBuffer::TYPE_EMISSIVE))
+                {
+                    if (params.mAvatar != nullptr)
+                    {
+                        if (params.mGLTFMaterial.isNull()) rigged_emissives.push_back(&params);
+                        else                               pbr_rigged_emissives.push_back(&params);
+                    }
+                    else
+                    {
+                        if (params.mGLTFMaterial.isNull()) emissives.push_back(&params);
+                        else                               pbr_emissives.push_back(&params);
+                    }
+                }
+                if (oit_phase == ALPHA_OIT_ACCUM && custom_blend)
+                {
+                    continue; // particles/custom blend belong to the residual pass
+                }
+                if (oit_phase == ALPHA_OIT_RESIDUAL && !custom_blend)
+                {
+                    continue; // source-over already accumulated; only its glow (above) remains
                 }
 
                 LL_PROFILE_ZONE_NAMED_CATEGORY_DRAWPOOL("ra - push batch");
@@ -799,7 +904,10 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                 bool tex_setup = TexSetup(&params, (mat != nullptr));
 
                 {
-                    gGL.blendFunc((LLRender::eBlendFactor) params.mBlendFuncSrc, (LLRender::eBlendFactor) params.mBlendFuncDst, mAlphaSFactor, mAlphaDFactor);
+                    if (oit_phase != ALPHA_OIT_ACCUM)
+                    { // accum phase keeps the per-attachment WBOIT blend from beginAlphaOITAccum
+                        gGL.blendFunc((LLRender::eBlendFactor) params.mBlendFuncSrc, (LLRender::eBlendFactor) params.mBlendFuncDst, mAlphaSFactor, mAlphaDFactor);
+                    }
 
                     bool reset_minimum_alpha = false;
                     if (!LLPipeline::sImpostorRender &&
@@ -820,33 +928,8 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                     }
                 }
 
-                // If this alpha mesh has glow, then draw it a second time to add the destination-alpha (=glow).  Interleaving these state-changing calls is expensive, but glow must be drawn Z-sorted with alpha.
-                if (getType() != LLDrawPool::POOL_ALPHA_PRE_WATER &&
-                    params.mVertexBuffer->hasDataType(LLVertexBuffer::TYPE_EMISSIVE))
-                {
-                    if (params.mAvatar != nullptr)
-                    {
-                        if (params.mGLTFMaterial.isNull())
-                        {
-                            rigged_emissives.push_back(&params);
-                        }
-                        else
-                        {
-                            pbr_rigged_emissives.push_back(&params);
-                        }
-                    }
-                    else
-                    {
-                        if (params.mGLTFMaterial.isNull())
-                        {
-                            emissives.push_back(&params);
-                        }
-                        else
-                        {
-                            pbr_emissives.push_back(&params);
-                        }
-                    }
-                }
+                // <FS> WBOIT: emissive glow is now collected up-front (see phase routing
+                // at the top of this loop) so it survives the residual-phase main-draw skip.
 
                 if (tex_setup)
                 {
@@ -858,7 +941,8 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
             }
 
             // render emissive faces into alpha channel for bloom effects
-            if (!depth_only)
+            // (accum phase emits no glow -- it belongs to the residual pass)
+            if (!depth_only && oit_phase != ALPHA_OIT_ACCUM)
             {
                 gPipeline.enableLightsDynamic();
 

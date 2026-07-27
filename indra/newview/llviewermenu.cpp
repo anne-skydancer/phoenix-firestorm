@@ -1365,6 +1365,10 @@ U64 info_display_from_string(std::string_view info_display)
     {
         return LLPipeline::RENDER_DEBUG_OIT_WBOIT;
     }
+    else if ("oit alpha" == info_display)
+    {
+        return LLPipeline::RENDER_DEBUG_OIT_ALPHA;
+    }
     else if ("agent target" == info_display)
     {
         return LLPipeline::RENDER_DEBUG_AGENT_TARGET;

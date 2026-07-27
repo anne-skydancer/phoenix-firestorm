@@ -5175,6 +5175,51 @@ void LLPipeline::drawOITTestSceneWBOIT()
     gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
 }
 
+// <FS> WBOIT on the real alpha pool (D2). Production siblings of the test path above.
+// Caller guarantees mRT->screen is the currently bound target (post-deferred alpha).
+void LLPipeline::beginAlphaOITAccum()
+{
+    mRT->oit.bindTarget();
+    // Deferred pipeline masks alpha writes off; the accum divisor lives in .a, so
+    // re-enable them (restored in endAlphaOITComposite). See step C colorMask fix.
+    gGL.setColorMask(true, true);
+    const GLfloat clear_accum[4]  = { 0.f, 0.f, 0.f, 0.f };
+    const GLfloat clear_reveal[4] = { 1.f, 0.f, 0.f, 0.f }; // revealage starts fully open
+    glClearBufferfv(GL_COLOR, 0, clear_accum);
+    glClearBufferfv(GL_COLOR, 1, clear_reveal);
+
+    // accum (attachment 0) additive; revealage (attachment 1) *= (1-a)
+    gGL.blendFunci(0, LLRender::BF_ONE,  LLRender::BF_ONE);
+    gGL.blendFunci(1, LLRender::BF_ZERO, LLRender::BF_ONE_MINUS_SOURCE_COLOR);
+}
+
+void LLPipeline::endAlphaOITComposite()
+{
+    // flush() pops the RT stack back to the previous target (screen) and rebinds it
+    // itself -- do NOT bindTarget(screen) again or we'd double-push screen and corrupt
+    // the FBO stack (self-referential mPreviousRT -> flicker + progressive stall).
+    mRT->oit.flush();
+    // Restore the deferred default before compositing so we don't scribble coverage
+    // into the screen alpha that glow/FXAA consume.
+    gGL.setColorMask(true, false);
+
+    gOITCompositeProgram.bind();
+    mRT->oit.bindTexture(0, 0, LLTexUnit::TFO_POINT); // accum     -> unit 0
+    mRT->oit.bindTexture(1, 1, LLTexUnit::TFO_POINT); // revealage -> unit 1
+    gOITCompositeProgram.uniform1i(sOITAccum, 0);
+    gOITCompositeProgram.uniform1i(sOITRevealage, 1);
+    {
+        LLGLEnable blend(GL_BLEND);
+        gGL.setSceneBlendType(LLRender::BT_ALPHA);
+        LLGLDepthTest depth(GL_FALSE);
+        mScreenTriangleVB->setBuffer();
+        mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
+    }
+    gOITCompositeProgram.unbind();
+    gGL.getTexUnit(1)->unbind(LLTexUnit::TT_TEXTURE);
+    gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE);
+}
+
 void LLPipeline::renderDebug()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;

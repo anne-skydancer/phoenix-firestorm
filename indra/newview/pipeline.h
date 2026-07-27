@@ -359,6 +359,14 @@ public:
     void drawOITTestQuads();      // <FS> WBOIT: shared synthetic test geometry emitter
     void drawOITTestScene();      // <FS> WBOIT: sorted-blend baseline path
     void drawOITTestSceneWBOIT(); // <FS> WBOIT: order-independent path (accum + composite)
+
+    // <FS> WBOIT on the real alpha pool (D2). beginAlphaOITAccum: remember the
+    // current (screen) FBO, bind mRT->oit, enable alpha writes, clear accum+revealage,
+    // install the per-attachment accumulate blend. endAlphaOITComposite: restore the
+    // deferred colour mask, rebind the screen FBO, and composite the resolved OIT
+    // result over the scene. Called by LLDrawPoolAlpha around the source-over draws.
+    void beginAlphaOITAccum();
+    void endAlphaOITComposite();
     void renderPhysicsDisplay();
 
     void rebuildPools(); // Rebuild pools
@@ -651,7 +659,8 @@ public:
         RENDER_DEBUG_PROBE_UPDATES      = 0x400000000,
         RENDER_DEBUG_TEXTURE_SIZE       = 0x800000000,
         RENDER_DEBUG_OIT_TEST           = 0x1000000000, // <FS> WBOIT test scene -- sorted baseline
-        RENDER_DEBUG_OIT_WBOIT          = 0x2000000000  // <FS> WBOIT test scene -- order-independent
+        RENDER_DEBUG_OIT_WBOIT          = 0x2000000000, // <FS> WBOIT test scene -- order-independent
+        RENDER_DEBUG_OIT_ALPHA          = 0x4000000000  // <FS> WBOIT on the REAL alpha pool (D2 toggle)
     };
 
 public:

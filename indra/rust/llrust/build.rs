@@ -29,10 +29,12 @@ mod grok {
 
         let mut builder = bindgen::Builder::default()
             .header(&header)
-            // Keep the surface tight: just the Grok C API + its dependent types.
-            .allowlist_function("grk_.*")
-            .allowlist_type("_?grk_.*")
-            .allowlist_var("GRK_.*")
+            // Generate everything declared in grok.h (functions, structs, enums,
+            // consts) + their dependent types. A name-pattern allowlist ("grk_.*")
+            // MISSES the GRK_*-cased types embedded BY VALUE in grk_image
+            // (GRK_COLOR_SPACE, GRK_SUPPORTED_FILE_FMT, ...), which makes bindgen
+            // opaque grk_image and breaks field access. allowlist_file avoids that.
+            .allowlist_file(".*grok\\.h")
             // FFI POD structs -- skip generated layout-assert tests (noise) and let
             // the decode zero-init with mem::zeroed() (C++ uses `= {}`).
             .layout_tests(false)

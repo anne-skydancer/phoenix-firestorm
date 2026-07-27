@@ -212,6 +212,48 @@ bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 fir
         else
         {
             mDecoding = false;
+#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 1
+            // <FS> fs/rust-j2c Phase 1b shadow-compare: decode the SAME codestream
+            // via Rust-Grok and check it byte-for-byte against the C++ result. C++
+            // stays authoritative; this validates the Rust decode on real textures
+            // before we ever flip it primary. Mismatches are logged, not fatal.
+            if (raw_imagep->getData())
+            {
+                S32 rj_max_bytes = getMaxBytes() ? getMaxBytes() : getDataSize();
+                void* rj = ll_j2c_decode(getData(), (size_t)rj_max_bytes, mDiscardLevel,
+                                         first_channel, max_channel_count);
+                if (rj)
+                {
+                    LlJ2cView v = {};
+                    if (ll_j2c_view(rj, &v))
+                    {
+                        size_t clen = (size_t)raw_imagep->getDataSize();
+                        bool dims_ok = (v.width == (S32)raw_imagep->getWidth())
+                                    && (v.height == (S32)raw_imagep->getHeight())
+                                    && (v.components == (S32)raw_imagep->getComponents())
+                                    && (v.len == clen);
+                        if (dims_ok && v.pixels && memcmp(v.pixels, raw_imagep->getData(), clen) == 0)
+                        {
+                            LL_DEBUGS("LLRustJ2C") << "shadow OK " << v.width << "x" << v.height
+                                                   << "x" << v.components << LL_ENDL;
+                        }
+                        else if (dims_ok)
+                        {
+                            LL_WARNS("LLRustJ2C") << "shadow MISMATCH pixels " << v.width << "x"
+                                                  << v.height << "x" << v.components << LL_ENDL;
+                        }
+                        else
+                        {
+                            LL_WARNS("LLRustJ2C") << "shadow MISMATCH dims rust=" << v.width << "x"
+                                << v.height << "x" << v.components << "/" << (S32)v.len
+                                << " cpp=" << raw_imagep->getWidth() << "x" << raw_imagep->getHeight()
+                                << "x" << (S32)raw_imagep->getComponents() << "/" << (S32)clen << LL_ENDL;
+                        }
+                    }
+                    ll_j2c_free(rj);
+                }
+            }
+#endif
         }
     }
     else

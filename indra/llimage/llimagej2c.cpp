@@ -60,6 +60,15 @@ std::string LLImageJ2C::getEngineInfo()
     // the bridge's identity to the engine-info line logged at startup.
     info += " + ";
     info += ll_j2c_rust_version();
+    // Phase 1a: prove the Rust->Grok C-ABI link -- ll_j2c_grok_version() calls
+    // libgrok's grk_version() FROM RUST. Null if the crate was built without the
+    // grok feature (i.e. a non-Grok build).
+    if (const char* grok_ver = ll_j2c_grok_version())
+    {
+        info += " [rust->grok ";
+        info += grok_ver;
+        info += "]";
+    }
 #endif
     return info;
 }

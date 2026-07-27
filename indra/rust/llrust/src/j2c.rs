@@ -67,3 +67,31 @@ pub extern "C" fn ll_j2c_view(_handle: *const c_void, _out: *mut LlJ2cView) -> i
 pub extern "C" fn ll_j2c_free(_handle: *mut c_void) {
     // Phase 0: no handles are ever produced.
 }
+
+// --- Grok C-API bridge (Phase 1a: de-risk the Rust -> Grok link) --------------
+// bindgen is unavailable here (no libclang), so the Grok C API is declared BY
+// HAND. Phase 1a needs only grk_version() -- no structs -- to prove the Rust ->
+// Grok C symbol resolves at the final viewer link (grokj2k is already linked via
+// llimagej2cgrok). The `grok` cargo feature is enabled by LLRust.cmake only for
+// USE_GROK builds, so a non-Grok (e.g. OpenJPEG) build never references grk_*.
+#[cfg(feature = "grok")]
+extern "C" {
+    fn grk_version() -> *const c_char;
+}
+
+/// Grok's own version string, obtained by calling into libgrok FROM RUST. Returns
+/// null when built without the `grok` feature. Proves the Rust->Grok C-ABI bridge
+/// links and executes.
+#[no_mangle]
+pub extern "C" fn ll_j2c_grok_version() -> *const c_char {
+    #[cfg(feature = "grok")]
+    {
+        // Safety: grk_version() takes no args and returns a static C string owned
+        // by libgrok; we only borrow it (never free).
+        unsafe { grk_version() }
+    }
+    #[cfg(not(feature = "grok"))]
+    {
+        std::ptr::null()
+    }
+}

@@ -134,10 +134,21 @@ file(GLOB_RECURSE LLRUST_SOURCES
      "${LLRUST_CRATE_DIR}/Cargo.toml"
      "${LLRUST_CRATE_DIR}/cbindgen.toml")
 
+# Enable the `grok` cargo feature only for Grok builds that use the Rust J2C
+# decoder -- grokj2k is linked into the viewer (via llimagej2cgrok), so the crate's
+# grk_* references resolve at the final link. A non-Grok build must NOT reference
+# grk_*, so the feature stays off there.
+set(LLRUST_CARGO_FEATURES)
+if (USE_GROK AND NOT LLRUST_J2C_MODE EQUAL 0)
+  set(LLRUST_CARGO_FEATURES --features grok)
+  message(STATUS "LLRust: enabling cargo feature `grok` (USE_GROK + LL_RUSTJ2C=${LL_RUSTJ2C})")
+endif ()
+
 # Build the staticlib.
 add_custom_command(
     OUTPUT "${LLRUST_LIB}"
     COMMAND ${LLRUST_CARGO_ENV} "${CARGO_EXECUTABLE}" build --release
+            ${LLRUST_CARGO_FEATURES}
             --manifest-path "${LLRUST_CRATE_DIR}/Cargo.toml"
             --target-dir "${LLRUST_TARGET_DIR}"
     DEPENDS ${LLRUST_SOURCES}

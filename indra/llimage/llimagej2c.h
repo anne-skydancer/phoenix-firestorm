@@ -86,6 +86,10 @@ protected:
     friend class LLImageCompressionTester;
     void decodeFailed();
     void updateRawDiscardLevel();
+    // <FS> fs/rust-j2c FLIP (LL_RUSTJ2C=on): memory-safe Rust-primary decode.
+    // Returns true if Rust filled raw_image with a usable result; false if it
+    // declined (fail-closed) so the caller falls back to the C++ codec.
+    bool rustDecodeChannels(LLImageRaw &raw_image, S32 first_channel, S32 max_channel_count);
 
     S32 mMaxBytes; // Maximum number of bytes of data to use...
 

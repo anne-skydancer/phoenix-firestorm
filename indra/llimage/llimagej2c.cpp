@@ -159,6 +159,42 @@ bool LLImageJ2C::decode(LLImageRaw *raw_imagep, F32 decode_time)
 }
 
 
+#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 2
+// <FS> fs/rust-j2c FLIP: memory-safe Rust-primary decode into raw_image.
+// Mirrors LLImageJ2CGrok::decodeImpl's post-decode bookkeeping (resize +
+// interleaved copy + setDiscardLevel), but the pixel copy happens inside the
+// bounds-checked Rust decoder. Returns true iff Rust produced a usable result;
+// false (fail-closed) makes the caller fall back to the C++ codec.
+bool LLImageJ2C::rustDecodeChannels(LLImageRaw &raw_image, S32 first_channel, S32 max_channel_count)
+{
+    S32 rj_max_bytes = getMaxBytes() ? getMaxBytes() : getDataSize();
+    void* rj = ll_j2c_decode(getData(), (size_t)rj_max_bytes, mDiscardLevel,
+                             first_channel, max_channel_count);
+    if (!rj)
+    {
+        return false; // Rust declined -> C++ fallback.
+    }
+
+    bool ok = false;
+    LlJ2cView v = {};
+    if (ll_j2c_view(rj, &v) && v.pixels && v.width > 0 && v.height > 0 && v.components > 0)
+    {
+        raw_image.resize(U16(v.width), U16(v.height), S8(v.components));
+        U8* rawp = raw_image.getData();
+        if (rawp && (size_t)raw_image.getDataSize() == v.len)
+        {
+            memcpy(rawp, v.pixels, v.len);
+            // Grok does not report an achieved reduce factor; report the
+            // requested level, matching LLImageJ2CGrok::decodeImpl.
+            setDiscardLevel(mDiscardLevel);
+            ok = true;
+        }
+    }
+    ll_j2c_free(rj);
+    return ok; // false here -> caller falls back to the C++ codec.
+}
+#endif
+
 // Returns true to mean done, whether successful or not.
 bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 first_channel, S32 max_channel_count )
 {
@@ -182,7 +218,27 @@ bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 fir
         {
             // Update the raw discard level
             updateRawDiscardLevel();
+#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 2
+            // <FS> fs/rust-j2c FLIP: Rust is the PRIMARY decoder. The C++ codec
+            // is the fallback only when Rust declines (null) or returns an
+            // unusable result -- fail-closed, so we never ship a bad texture.
+            // Bit-exactness vs the C++ codec was proven by the cfallback
+            // shadow-compare before this path was ever enabled.
+            res = rustDecodeChannels(*raw_imagep, first_channel, max_channel_count);
+            if (!res)
+            {
+                static S32 sFallbackCount = 0;
+                S32 fn = ++sFallbackCount;
+                if (fn <= 20 || (fn % 100) == 0)
+                {
+                    LL_INFOS("LLRustJ2C") << "flip: Rust declined -> C++ fallback #"
+                                          << fn << LL_ENDL;
+                }
+                res = mImpl->decodeImpl(*this, *raw_imagep, decode_time, first_channel, max_channel_count);
+            }
+#else
             res = mImpl->decodeImpl(*this, *raw_imagep, decode_time, first_channel, max_channel_count);
+#endif
         }
     }
 
@@ -197,7 +253,7 @@ bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 fir
         else
         {
             mDecoding = false;
-#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 1
+#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE == 1
             // <FS> fs/rust-j2c ingress gate (LOG-ONLY): pure safe-Rust validation
             // of the codestream header, no decode. The C++ decode above just
             // SUCCEEDED, so any "would-reject" here is a candidate FALSE POSITIVE

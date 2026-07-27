@@ -5046,6 +5046,7 @@ void LLPipeline::drawOITTestScene()
     LLGLEnable blend(GL_BLEND);
     gGL.setSceneBlendType(LLRender::BT_ALPHA);
     LLGLDepthTest depth(GL_TRUE, GL_FALSE); // test on, write off -- like the alpha pass
+    LLGLDisable cull(GL_CULL_FACE); // two-sided: visible when orbited to the reverse
 
     // Anchor ~4 m in front of the agent at ~eye height; orbit the camera to inspect.
     const LLVector3 base = gAgent.getPositionAgent()

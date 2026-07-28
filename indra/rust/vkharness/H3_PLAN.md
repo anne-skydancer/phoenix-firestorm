@@ -48,6 +48,14 @@ no GL-vs-Vulkan FP confound ⇒ byte-exact is genuinely achievable, with residua
 sub-ULP drift inside the PASS tolerance. Same bit-exact-oracle discipline that
 carried rust-j2c, with Zink playing the role C++-Grok played there.
 
+**Reference form — committed golden (PRIMARY), live-Zink (polish).** The gate
+compares against a **golden image captured once** from the correct path (Zink) on
+the fixed deterministic inputs and **checked into the repo**. Rock-stable: the
+reference never moves, needs no live-Zink orchestration at gate time, reproduces
+on any machine, and is diffable in review. A live Zink re-capture is a *later
+cross-check* to tighten confidence — never the primary gate. (Standing preference:
+rock-stable-and-polishable over pure-but-fragile.)
+
 ## 3. Measured landscape (survey 2026-07-28 — plan is data-grounded, not assumed)
 
 - **665 value-uniform decls → 225 distinct.** Heavy head (top 11 names = 42% of
@@ -81,8 +89,9 @@ The tier-spanning proof on the real heavy shader.
 - Transform **all** softenLight value-uniforms into tiered UBOs (FrameUBO /
   local block / shadow-array block); samplers → descriptors. `shaderc`→SPIR-V →
   wgpu render.
-- Reference: **Zink golden** — softenLight rendered via correct GL-on-Vulkan on
-  the *same* synthetic inputs, captured once. `memcmp`.
+- Reference: **committed golden image** (primary) — softenLight via correct
+  GL-on-Vulkan (Zink) on the same synthetic inputs, captured once and checked in;
+  `memcmp` against it. Live Zink re-capture = optional later cross-check.
 - Proves the transform across frame-global + per-frame + local + shadow-array
   tiers on a genuine engine shader.
 
@@ -107,10 +116,12 @@ mechanical sweep in the viewer (that's `fs/uniforms` → `fs/ubos`).
 
 ## 6. Open design risks (flagged, resolved at implementation)
 
-1. **H3b input-sharing:** the deterministic synthetic-input generator must feed
-   harness and Zink-reference **byte-identical** inputs, or the memcmp is
-   meaningless. Likely a seeded generator emitting raw texel/uniform buffers both
-   sides load. Solve before H3b render, not during.
+1. **H3b input-sharing (de-risked by golden-primary):** because the golden is
+   captured **once** and committed, the gate needs no live input-sharing. The
+   one-time capture still needs the harness's exact inputs fed to the reference
+   path — a seeded generator emitting raw texel/uniform buffers both sides load;
+   if even that is awkward, hand-author a small fixed input set. Off the gate's
+   critical path either way.
 2. **GLSL→SPIR-V route in-harness:** H2 used `shaderc`. Confirm the UBO-rewritten
    GLSL compiles clean for Vulkan target with DescriptorSet/Binding **kept**
    (the GL-target strip does NOT apply here — Vulkan needs them).

@@ -135,6 +135,235 @@ fn glsl_module(
     })
 }
 
+// --- H3a: uniform -> std140 UBO -> SPIR-V, known-answer readback ----------------
+// Mechanism proof (H3_PLAN.md): prove a std140 UBO delivers its values intact
+// through shaderc->SPIR-V->wgpu by rendering a shader whose 1px output IS the
+// uniform values, and memcmp-ing against the hand-computed answer. Catches the
+// FrameUBO burn class (compiled+linked but wrong VALUE) cheaply, pre-softenLight.
+// Headless (no window/surface). Run with `cargo run -- h3a` (exit 0 = PASS).
+
+const H3A_VERT_GLSL: &str = r#"
+#version 450
+void main() {
+    // Fullscreen triangle; no varyings -> clean vs->fs interface.
+    vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"#;
+
+const H3A_FRAG_GLSL: &str = r#"
+#version 450
+layout(location = 0) out vec4 frag_color;
+layout(set = 0, binding = 0, std140) uniform H3aBlock {
+    float a_float;   // std140 offset 0
+    int   a_int;     //             4
+    vec3  a_vec3;    //            16 (16-aligned)
+    mat4  a_mat4;    //            32 (col-major, 64B)
+} u;
+void main() {
+    // Output IS the uniform values -> the framebuffer is a direct read of the UBO.
+    frag_color = vec4(u.a_float, float(u.a_int), u.a_vec3.y, u.a_mat4[3][3]);
+}
+"#;
+
+/// std140 mirror of H3aBlock. Explicit padding = exactly the layout rules a wrong
+/// transform would get wrong -- that's the point of the test.
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct H3aUbo {
+    a_float: f32,          // 0
+    a_int: i32,            // 4
+    _pad0: [u32; 2],       // 8  -> align vec3 to 16
+    a_vec3: [f32; 3],      // 16
+    _pad1: u32,            // 28 -> fill vec3's 16B slot, align mat4
+    a_mat4: [[f32; 4]; 4], // 32 -> 96 (each inner array = one column)
+}
+
+/// H3a: prove UBO value-delivery byte-exact against a known answer. Returns pass.
+fn run_h3a() -> bool {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None, // headless
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("H3a: no Vulkan adapter");
+        let info = adapter.get_info();
+        log::info!(
+            "H3a adapter: {} | backend={:?} | driver={} {}",
+            info.name, info.backend, info.driver, info.driver_info
+        );
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("h3a-device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                },
+                None,
+            )
+            .await
+            .expect("H3a: request_device");
+
+        // Known uniform values -- all exactly representable in f32.
+        let ubo = H3aUbo {
+            a_float: 0.25,
+            a_int: 7,
+            _pad0: [0, 0],
+            a_vec3: [1.0, 0.5, 0.0],
+            _pad1: 0,
+            a_mat4: [
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.75], // column 3 -> a_mat4[3][3] == 0.75
+            ],
+        };
+        let expected = [ubo.a_float, ubo.a_int as f32, ubo.a_vec3[1], ubo.a_mat4[3][3]];
+
+        let ubo_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("h3a-ubo"),
+            contents: bytemuck::bytes_of(&ubo),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("h3a-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("h3a-bg"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ubo_buf.as_entire_binding(),
+            }],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("h3a-pl"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let vs = glsl_module(&device, H3A_VERT_GLSL, shaderc::ShaderKind::Vertex, "h3a.vert");
+        let fs = glsl_module(&device, H3A_FRAG_GLSL, shaderc::ShaderKind::Fragment, "h3a.frag");
+
+        let fmt = wgpu::TextureFormat::Rgba32Float; // exact float storage -> clean memcmp
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("h3a-pipeline"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &fs,
+                entry_point: "main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: fmt,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("h3a-target"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("h3a-readback"),
+            size: 256, // >= 16B payload; bytes_per_row must be 256-aligned
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("h3a-enc") });
+        {
+            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("h3a-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(&pipeline);
+            rp.set_bind_group(0, &bind_group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &readback,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        queue.submit(std::iter::once(enc.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().expect("H3a: map_async failed");
+        let got = {
+            let data = slice.get_mapped_range();
+            let px: &[f32] = bytemuck::cast_slice(&data[0..16]);
+            [px[0], px[1], px[2], px[3]]
+        };
+        readback.unmap();
+
+        let pass = got == expected;
+        log::info!(
+            "H3a UBO value-delivery: expected {:?}  got {:?}  -> {}",
+            expected, got, if pass { "PASS" } else { "FAIL" }
+        );
+        pass
+    })
+}
+
 struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -358,6 +587,12 @@ impl State {
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // H3a: headless UBO value-delivery proof (H3_PLAN.md). `cargo run -- h3a`.
+    if std::env::args().skip(1).any(|a| a == "h3a") {
+        let ok = run_h3a();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
 
     let event_loop = EventLoop::new().expect("event loop");
     let window = Arc::new(

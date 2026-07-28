@@ -360,13 +360,19 @@ public:
     void drawOITTestScene();      // <FS> WBOIT: sorted-blend baseline path
     void drawOITTestSceneWBOIT(); // <FS> WBOIT: order-independent path (accum + composite)
 
-    // <FS> WBOIT on the real alpha pool (D2). beginAlphaOITAccum: remember the
-    // current (screen) FBO, bind mRT->oit, enable alpha writes, clear accum+revealage,
-    // install the per-attachment accumulate blend. endAlphaOITComposite: restore the
-    // deferred colour mask, rebind the screen FBO, and composite the resolved OIT
-    // result over the scene. Called by LLDrawPoolAlpha around the source-over draws.
+    // <FS> WBOIT on the real alpha pool (D2/D3). Three-part flow so the composite can
+    // run AFTER the residual (particle/fullbright/emissive) pass and thus attenuate the
+    // glow channel that pass writes:
+    //   beginAlphaOITAccum   -- bind mRT->oit, enable alpha writes, clear accum+revealage,
+    //                           install the per-attachment accumulate blend.
+    //   endAlphaOITAccum     -- flush the OIT target (pops the RT stack back to screen);
+    //                           no composite yet. Residual pass then draws into screen.
+    //   compositeAlphaOIT    -- composite the resolved OIT over screen AND multiply
+    //                           screen.a (glow) by reveal, restoring the occlusion that
+    //                           lit alpha's alpha-blend gives the sorted path.
     void beginAlphaOITAccum();
-    void endAlphaOITComposite();
+    void endAlphaOITAccum();
+    void compositeAlphaOIT();
     void renderPhysicsDisplay();
 
     void rebuildPools(); // Rebuild pools

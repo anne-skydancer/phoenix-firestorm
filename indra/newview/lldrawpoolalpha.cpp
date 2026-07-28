@@ -289,14 +289,16 @@ void LLDrawPoolAlpha::forwardRender(bool rigged)
             renderAlpha(alpha_mask, false, rigged, ALPHA_OIT_ACCUM);
         }
         setOITMode(0);
+        gPipeline.endAlphaOITAccum(); // OIT populated, back to screen -- no composite yet
 
-        // phase 2: resolve + composite OIT over the scene
-        gPipeline.endAlphaOITComposite();
-
-        // phase 3: residual (custom-blend particles + emissive glow) in-order into screen;
-        // emissive glow needs alpha writes back on.
+        // phase 2: residual in-order into screen -- custom-blend particles + fullbright
+        // colour, emissive glow into screen.a. Alpha writes back on for glow.
         gGL.setColorMask(true, true);
         renderAlpha(alpha_mask, false, rigged, ALPHA_OIT_RESIDUAL);
+
+        // phase 3: composite OIT over the residual scene AND attenuate the glow just
+        // written (screen.a *= reveal), restoring the occlusion the sorted path gets.
+        gPipeline.compositeAlphaOIT();
     }
     else
     {

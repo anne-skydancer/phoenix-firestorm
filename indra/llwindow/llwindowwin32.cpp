@@ -2168,13 +2168,97 @@ HCURSOR LLWindowWin32::loadColorCursor(LPCTSTR name)
                               LR_DEFAULTCOLOR);
 }
 
+// <FS> Build a non-inverting text I-beam cursor. The Windows system I-beam (IDC_IBEAM)
+// is a monochrome XOR/invert cursor -- on the desktop it inverts the pixels under it so
+// it's visible on any background, but inside an OpenGL/GPU-composited window the invert
+// isn't honored and it renders solid WHITE (invisible over light UI -- an accessibility
+// problem). We build an alpha cursor instead: a black stem with a 1px white outline, so
+// the black core reads on light backgrounds and the white halo reads on dark ones.
+static HCURSOR fsCreateIBeamCursor()
+{
+    const int SZ = 32;
+    const int cx = SZ / 2, cy = SZ / 2; // hotspot at centre
+
+    auto isBlack = [](int bx, int by) -> bool
+    {
+        if (bx == 0 && by >= -9 && by <= 9) return true;   // vertical stem (taller)
+        if (by == -9 && bx >= -2 && bx <= 2) return true;  // top serif
+        if (by ==  9 && bx >= -2 && bx <= 2) return true;  // bottom serif
+        return false;
+    };
+
+    std::vector<U32> argb(SZ * SZ, 0); // 0x00000000 = transparent
+    for (int y = 0; y < SZ; ++y)
+        for (int x = 0; x < SZ; ++x)
+            if (isBlack(x - cx, y - cy))
+                argb[y * SZ + x] = 0xFF000000u; // opaque black core
+
+    // 1px white outline around the black core (any transparent pixel touching black)
+    for (int y = 0; y < SZ; ++y)
+    {
+        for (int x = 0; x < SZ; ++x)
+        {
+            if (argb[y * SZ + x] != 0) continue;
+            // 4-connectivity (orthogonal only) keeps the outline a clean 1px -- 8-connectivity
+            // adds diagonal pixels at the serif corners that read as a fatter outline.
+            static const int od[4][2] = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} };
+            bool nearBlack = false;
+            for (int k = 0; k < 4 && !nearBlack; ++k)
+            {
+                int nx = x + od[k][0], ny = y + od[k][1];
+                if (nx >= 0 && nx < SZ && ny >= 0 && ny < SZ && isBlack(nx - cx, ny - cy))
+                {
+                    nearBlack = true;
+                }
+            }
+            if (nearBlack) argb[y * SZ + x] = 0xFFFFFFFFu; // opaque white outline
+        }
+    }
+
+    BITMAPV5HEADER bi = {};
+    bi.bV5Size = sizeof(BITMAPV5HEADER);
+    bi.bV5Width = SZ;
+    bi.bV5Height = -SZ; // top-down
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask   = 0x00FF0000;
+    bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask  = 0x000000FF;
+    bi.bV5AlphaMask = 0xFF000000;
+
+    HDC hdc = GetDC(NULL);
+    void* bits = nullptr;
+    HBITMAP hColor = CreateDIBSection(hdc, (BITMAPINFO*)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    ReleaseDC(NULL, hdc);
+    if (!hColor || !bits)
+    {
+        if (hColor) DeleteObject(hColor);
+        return LoadCursor(NULL, IDC_IBEAM); // fall back to the system cursor
+    }
+    memcpy(bits, argb.data(), SZ * SZ * sizeof(U32));
+
+    HBITMAP hMask = CreateBitmap(SZ, SZ, 1, 1, NULL); // required but ignored when alpha is present
+    ICONINFO ii = {};
+    ii.fIcon = FALSE; // cursor, not icon
+    ii.xHotspot = cx;
+    ii.yHotspot = cy;
+    ii.hbmColor = hColor;
+    ii.hbmMask = hMask;
+
+    HCURSOR cur = CreateIconIndirect(&ii);
+    DeleteObject(hColor);
+    DeleteObject(hMask);
+    return cur ? cur : LoadCursor(NULL, IDC_IBEAM);
+}
+
 //void LLWindowWin32::initCursors()
 void LLWindowWin32::initCursors(bool useLegacyCursors) // <FS:LO> Legacy cursor setting from main program
 {
     mCursor[ UI_CURSOR_ARROW ]      = LoadCursor(NULL, IDC_ARROW);
     mCursor[ UI_CURSOR_WAIT ]       = LoadCursor(NULL, IDC_WAIT);
     mCursor[ UI_CURSOR_HAND ]       = LoadCursor(NULL, IDC_HAND);
-    mCursor[ UI_CURSOR_IBEAM ]      = LoadCursor(NULL, IDC_IBEAM);
+    mCursor[ UI_CURSOR_IBEAM ]      = fsCreateIBeamCursor(); // <FS> non-inverting black I-beam (IDC_IBEAM inverts -> white/invisible in GL window)
     mCursor[ UI_CURSOR_CROSS ]      = LoadCursor(NULL, IDC_CROSS);
     mCursor[ UI_CURSOR_SIZENWSE ]   = LoadCursor(NULL, IDC_SIZENWSE);
     mCursor[ UI_CURSOR_SIZENESW ]   = LoadCursor(NULL, IDC_SIZENESW);

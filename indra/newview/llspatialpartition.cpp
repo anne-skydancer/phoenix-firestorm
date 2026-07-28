@@ -660,7 +660,13 @@ F32 LLSpatialPartition::calcDistance(LLSpatialGroup* group, LLCamera& camera)
         dist = eye.getLength3().getF32();
         eye.normalize3fast();
 
-        if (!group->hasState(LLSpatialGroup::ALPHA_DIRTY))
+        // <FS> WBOIT (D4b-1): under order-independent transparency the intra-group alpha
+        // re-sort is meaningless, so skip the view-angle trigger -- it was a steady stream
+        // of mesh rebuilds as the camera moved (and the old sort-popping source). This does
+        // NOT change batching or sort order, so it can't affect layered content. Legacy
+        // sorted path (RenderAlphaOIT off) still needs it.
+        static LLCachedControl<bool> render_alpha_oit(gSavedSettings, "RenderAlphaOIT", true);
+        if (!render_alpha_oit && !group->hasState(LLSpatialGroup::ALPHA_DIRTY))
         {
             if (!group->getSpatialPartition()->isBridge())
             {

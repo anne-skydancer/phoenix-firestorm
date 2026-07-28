@@ -763,6 +763,13 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged, EAlpha
                 bool custom_blend = (!LLPipeline::sImpostorRender &&
                                      params.mBlendFuncDst != LLRender::BF_SOURCE_ALPHA &&
                                      params.mBlendFuncSrc != LLRender::BF_SOURCE_ALPHA);
+                // Fullbright alpha outputs colour/exposure (constant-brightness). In bright
+                // areas exposure is tiny, so that value is huge -- and WBOIT's weighted
+                // AVERAGE lets it dominate any pixel it shares with lit alpha, spiking
+                // auto-exposure into a plume/halo. It's also near order-independent already,
+                // so keep it (like custom-blend particles) on the in-order residual path
+                // instead of the accumulation.
+                bool residual_draw = custom_blend || params.mFullbright;
                 if (oit_phase != ALPHA_OIT_ACCUM &&
                     getType() != LLDrawPool::POOL_ALPHA_PRE_WATER &&
                     params.mVertexBuffer->hasDataType(LLVertexBuffer::TYPE_EMISSIVE))
@@ -778,13 +785,13 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged, EAlpha
                         else                               pbr_emissives.push_back(&params);
                     }
                 }
-                if (oit_phase == ALPHA_OIT_ACCUM && custom_blend)
+                if (oit_phase == ALPHA_OIT_ACCUM && residual_draw)
                 {
-                    continue; // particles/custom blend belong to the residual pass
+                    continue; // fullbright + particles/custom blend belong to the residual pass
                 }
-                if (oit_phase == ALPHA_OIT_RESIDUAL && !custom_blend)
+                if (oit_phase == ALPHA_OIT_RESIDUAL && !residual_draw)
                 {
-                    continue; // source-over already accumulated; only its glow (above) remains
+                    continue; // source-over lit alpha already accumulated; only its glow (above) remains
                 }
 
                 LL_PROFILE_ZONE_NAMED_CATEGORY_DRAWPOOL("ra - push batch");

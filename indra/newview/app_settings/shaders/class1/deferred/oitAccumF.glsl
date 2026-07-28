@@ -23,7 +23,7 @@ void main()
     // dominate, so the weighted average approximates correct back-to-front order
     // without any sort. z is the positive view-space distance.
     float z = abs(vary_view_z);
-    float w = c.a * clamp(0.03 / (1e-5 + pow(z / 200.0, 4.0)), 1e-2, 3e3);
+    float w = c.a * clamp(0.03 / (1e-5 + pow(z / 200.0, 4.0)), 1e-2, 1e2); // max scaled down: fp16 overflow headroom
 
     frag_data[0] = vec4(c.rgb * c.a, c.a) * w; // accum
     frag_data[1] = vec4(c.a);                  // revealage (only .r is stored)

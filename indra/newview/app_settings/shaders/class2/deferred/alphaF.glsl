@@ -324,8 +324,8 @@ void main()
     if (oit_mode != 0)
     {
         float oit_z = abs(vary_position.z);
-        float oit_w = oit_final.a * clamp(0.03 / (1e-5 + pow(oit_z / 200.0, 4.0)), 1e-2, 3e3); // WBOIT-WEIGHT
-        frag_data[0] = vec4(oit_final.rgb * oit_final.a, oit_final.a) * oit_w;
+        float oit_w = oit_final.a * clamp(0.03 / (1e-5 + pow(oit_z / 200.0, 4.0)), 1e-2, 1e2); // WBOIT-WEIGHT (max scaled down: fp16 overflow headroom)
+        frag_data[0] = vec4(oit_final.rgb * oit_final.a, oit_final.a) * oit_w; // FP32 accum holds full HDR (incl. fullbright colour/exposure) without overflow
         frag_data[1] = vec4(oit_final.a);
     }
     else

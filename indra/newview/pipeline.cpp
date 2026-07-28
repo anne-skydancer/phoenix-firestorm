@@ -972,15 +972,20 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
     mRT->deferredScreen.shareDepthBuffer(mRT->screen);
 
     // <FS> WBOIT: order-independent-transparency accumulation target.
-    //   attachment 0 (accum, RGBA16F) = sum of weighted premultiplied colour + weighted alpha
+    //   attachment 0 (accum, RGBA32F) = sum of weighted premultiplied colour + weighted alpha
     //   attachment 1 (revealage, R16F) = product of (1 - alpha)
-    // Shares the G-buffer depth so alpha depth-tests against opaque, exactly like
-    // mRT->screen. Infra only in step B -- nothing renders to it yet.
-    if (!mRT->oit.allocate(resX, resY, GL_RGBA16F)) return false;
+    // accum MUST be FP32: the McGuire weight multiplies each fragment's premultiplied
+    // colour by up to ~1e2, and fullbright alpha in bright areas outputs colour/exposure
+    // (large HDR). Summed over layers this blows past fp16's 65504 -> +Inf/saturation ->
+    // white plumes on exposure transitions. FP32 holds it; the weight cancels in the
+    // resolve (avg = sum(w*c)/sum(w)), so output matches the sorted path. revealage is
+    // a bounded product in [0,1] -> R16F is plenty.
+    // Shares the G-buffer depth so alpha depth-tests against opaque, exactly like mRT->screen.
+    if (!mRT->oit.allocate(resX, resY, GL_RGBA32F)) return false;
     if (!mRT->oit.addColorAttachment(GL_R16F)) return false;
     mRT->deferredScreen.shareDepthBuffer(mRT->oit);
     LL_INFOS("WBOIT") << "WBOIT target allocated " << resX << "x" << resY
-                      << " (accum RGBA16F + revealage R16F), depth shared with G-buffer" << LL_ENDL;
+                      << " (accum RGBA32F + revealage R16F), depth shared with G-buffer" << LL_ENDL;
 
     // <FS:Beq> restore setSphere
     // if (hdr || shadow_detail > 0 || ssao || RenderDepthOfField))

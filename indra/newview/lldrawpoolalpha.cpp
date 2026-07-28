@@ -199,14 +199,50 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     // already being setup for rendering
     LLGLSLShader::unbind();
 
-    if (!LLPipeline::sRenderingHUDs)
-    {
-        // first pass, render rigged objects only and render to depth buffer
-        forwardRender(true);
-    }
+    // <FS> WBOIT (D4): unify rigged + non-rigged into ONE accum / revealage / composite
+    // cycle, so glow behind EITHER subset is attenuated by the TOTAL transmittance (fixes
+    // the cross-subset bloom flash the two-cycle v1 had). Toggle: Develop > Render Metadata
+    // > "Alpha OIT (real)". HUD/impostor/cube-snapshot stay on the legacy sorted path.
+    bool use_oit = getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER
+                && !LLPipeline::sRenderingHUDs
+                && !LLPipeline::sImpostorRender
+                && !gCubeSnapshot
+                && gPipeline.hasRenderDebugMask(LLPipeline::RENDER_DEBUG_OIT_ALPHA);
 
-    // second pass, regular forward alpha rendering
-    forwardRender();
+    if (use_oit)
+    {
+        // GLTF scene (opaque) to screen+depth first, while screen is bound, so all alpha
+        // (accum + residual) occludes correctly against it.
+        drawGLTFScene();
+
+        // ACCUM: rigged + non-rigged lit source-over into the SHARED oit (cleared once,
+        // one revealage). depth-write is forced off in forwardRender's ACCUM phase.
+        gPipeline.beginAlphaOITAccum();
+        setOITMode(1);
+        forwardRender(true,  ALPHA_OIT_ACCUM);   // rigged (hair, fitted mesh)
+        forwardRender(false, ALPHA_OIT_ACCUM);   // non-rigged
+        setOITMode(0);
+        gPipeline.endAlphaOITAccum();            // flush oit -> back to screen
+
+        // RESIDUAL: rigged + non-rigged particles/fullbright + emissive glow into screen.
+        forwardRender(true,  ALPHA_OIT_RESIDUAL);
+        forwardRender(false, ALPHA_OIT_RESIDUAL);
+
+        // ONE composite: resolve OIT over the scene AND attenuate screen.a (glow) by the
+        // TOTAL reveal of both subsets.
+        gPipeline.compositeAlphaOIT();
+    }
+    else
+    {
+        if (!LLPipeline::sRenderingHUDs)
+        {
+            // first pass, render rigged objects only and render to depth buffer
+            forwardRender(true);
+        }
+
+        // second pass, regular forward alpha rendering
+        forwardRender();
+    }
 
     // final pass, render to depth for depth of field effects
     if (!LLPipeline::sImpostorRender && LLPipeline::RenderDepthOfField && !gCubeSnapshot && !LLPipeline::sRenderingHUDs && getType() == LLDrawPool::POOL_ALPHA_POST_WATER)
@@ -229,7 +265,29 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     }
 }
 
-void LLDrawPoolAlpha::forwardRender(bool rigged)
+// <FS> WBOIT: GLTF scene (opaque PBR) to screen+depth before alpha, so alpha occludes
+// correctly against it. Extracted from forwardRender's rigged POST_WATER prepass so the
+// unified OIT path (renderPostDeferred) can run it once, before the accum, while screen
+// is bound.
+void LLDrawPoolAlpha::drawGLTFScene()
+{
+    if (getType() != LLDrawPool::POOL_ALPHA_POST_WATER)
+    {
+        return;
+    }
+    gPipeline.enableLightsDynamic();
+    LLGLSPipelineAlpha gls_pipeline_alpha;
+    gGL.setColorMask(true, true);
+    LLGLDepthTest depth(GL_TRUE, GL_TRUE); // opaque -> write depth
+    gGL.blendFunc(LLRender::BF_SOURCE_ALPHA, LLRender::BF_ONE_MINUS_SOURCE_ALPHA,
+                  LLRender::BF_ZERO, LLRender::BF_ONE_MINUS_SOURCE_ALPHA);
+    LL::GLTFSceneManager::instance().render(false, false);
+    LL::GLTFSceneManager::instance().render(false, true);
+    LL::GLTFSceneManager::instance().render(false, false, true);
+    LL::GLTFSceneManager::instance().render(false, true, true);
+}
+
+void LLDrawPoolAlpha::forwardRender(bool rigged, EAlphaOITPhase oit_phase)
 {
     gPipeline.enableLightsDynamic();
 
@@ -245,6 +303,12 @@ void LLDrawPoolAlpha::forwardRender(bool rigged)
         || LLPipeline::sImpostorRenderAlphaDepthPass
         || getType() == LLDrawPoolAlpha::POOL_ALPHA_PRE_WATER; // needed for accurate water fog
 
+    // <FS> WBOIT: the OIT accum target shares the G-buffer depth; writing transparent
+    // alpha depth there corrupts occlusion, so never write depth while accumulating.
+    if (oit_phase == ALPHA_OIT_ACCUM)
+    {
+        write_depth = false;
+    }
 
     LLGLDepthTest depth(GL_TRUE, write_depth ? GL_TRUE : GL_FALSE);
 
@@ -252,62 +316,35 @@ void LLDrawPoolAlpha::forwardRender(bool rigged)
     mColorDFactor = LLRender::BF_ONE_MINUS_SOURCE_ALPHA; // }
     mAlphaSFactor = LLRender::BF_ZERO;                         // } glow suppression
     mAlphaDFactor = LLRender::BF_ONE_MINUS_SOURCE_ALPHA;       // }
-    gGL.blendFunc(mColorSFactor, mColorDFactor, mAlphaSFactor, mAlphaDFactor);
+    if (oit_phase == ALPHA_OIT_ACCUM)
+    {
+        // <FS> WBOIT: set the per-attachment accumulate blend right before the draw, freshly
+        // for each of the two accum passes (accum additive, revealage *= (1-a)) so the second
+        // pass isn't left with a stale/flushed blend. Matches beginAlphaOITAccum.
+        gGL.blendFunci(0, LLRender::BF_ONE,  LLRender::BF_ONE);
+        gGL.blendFunci(1, LLRender::BF_ZERO, LLRender::BF_ONE_MINUS_SOURCE_COLOR);
+    }
+    else
+    {
+        gGL.blendFunc(mColorSFactor, mColorDFactor, mAlphaSFactor, mAlphaDFactor);
+    }
 
-    if (rigged && mType == LLDrawPool::POOL_ALPHA_POST_WATER)
-    { // draw GLTF scene to depth buffer before rigged alpha
-        LL::GLTFSceneManager::instance().render(false, false);
-        LL::GLTFSceneManager::instance().render(false, true);
-        LL::GLTFSceneManager::instance().render(false, false, true);
-        LL::GLTFSceneManager::instance().render(false, true, true);
+    // <FS> WBOIT: GLTF prepass in the legacy path only; the unified OIT path draws it once
+    // in renderPostDeferred (before the accum, while screen is bound).
+    if (rigged && oit_phase == ALPHA_OIT_NONE && getType() == LLDrawPool::POOL_ALPHA_POST_WATER)
+    {
+        drawGLTFScene();
     }
 
     U32 alpha_mask = getVertexDataMask() | LLVertexBuffer::MAP_TEXTURE_INDEX | LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD1 | LLVertexBuffer::MAP_TEXCOORD2;
 
-    // <FS> WBOIT (D2): when enabled, route POST_WATER source-over alpha (D2b: rigged AND
-    // non-rigged -- rigged is where avatar hair lives, the worst sort offender) through the
-    // order-independent accum+composite path; particles + emissive glow still render in-order
-    // into screen afterwards. Toggle: Develop > Render Metadata > "Alpha OIT (real)". Rigged
-    // and non-rigged each run their own accum+composite cycle here (cross-ordering between the
-    // two subsets is a known v1 approximation). HUD/impostor/cube snapshot stay legacy.
-    bool use_oit = getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER
-                && !LLPipeline::sRenderingHUDs
-                && !LLPipeline::sImpostorRender
-                && !gCubeSnapshot
-                && gPipeline.hasRenderDebugMask(LLPipeline::RENDER_DEBUG_OIT_ALPHA);
-
-    if (use_oit)
-    {
-        // phase 1: accumulate source-over alpha into the OIT target (oit_mode=1).
-        // Force depth-write OFF: rigged alpha normally writes depth (write_depth above),
-        // but the OIT target shares the G-buffer depth -- writing transparent hair depth
-        // there would corrupt occlusion for everything drawn afterwards.
-        gPipeline.beginAlphaOITAccum();
-        setOITMode(1);
-        {
-            LLGLDepthTest accum_depth(GL_TRUE, GL_FALSE);
-            renderAlpha(alpha_mask, false, rigged, ALPHA_OIT_ACCUM);
-        }
-        setOITMode(0);
-        gPipeline.endAlphaOITAccum(); // OIT populated, back to screen -- no composite yet
-
-        // phase 2: residual in-order into screen -- custom-blend particles + fullbright
-        // colour, emissive glow into screen.a. Alpha writes back on for glow.
-        gGL.setColorMask(true, true);
-        renderAlpha(alpha_mask, false, rigged, ALPHA_OIT_RESIDUAL);
-
-        // phase 3: composite OIT over the residual scene AND attenuate the glow just
-        // written (screen.a *= reveal), restoring the occlusion the sorted path gets.
-        gPipeline.compositeAlphaOIT();
-    }
-    else
-    {
-        renderAlpha(alpha_mask, false, rigged, ALPHA_OIT_NONE);
-    }
+    // <FS> WBOIT (D4): the accum/composite orchestration now lives in renderPostDeferred,
+    // unified across rigged + non-rigged. forwardRender just emits the requested phase.
+    renderAlpha(alpha_mask, false, rigged, oit_phase);
 
     gGL.setColorMask(true, false);
 
-    if (!rigged && getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER)
+    if (!rigged && oit_phase != ALPHA_OIT_ACCUM && getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER)
     { //render "highlight alpha" on final non-rigged pass
         // NOTE -- hacky call here protected by !rigged instead of alongside "forwardRender"
         // so renderDebugAlpha is executed while gls_pipeline_alpha and depth GL state
@@ -1000,7 +1037,13 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged, EAlpha
         }
     }
 
-    gGL.setSceneBlendType(LLRender::BT_ALPHA);
+    // <FS> WBOIT: in ACCUM the caller keeps the per-attachment accumulate blend active
+    // across BOTH accum passes (rigged + non-rigged) -- a global setSceneBlendType here
+    // would override the blendFunci-set buffers and corrupt the second pass.
+    if (oit_phase != ALPHA_OIT_ACCUM)
+    {
+        gGL.setSceneBlendType(LLRender::BT_ALPHA);
+    }
 
     LLVertexBuffer::unbind();
 

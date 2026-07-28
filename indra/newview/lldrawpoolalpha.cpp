@@ -199,15 +199,17 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     // already being setup for rendering
     LLGLSLShader::unbind();
 
-    // <FS> WBOIT (D4): unify rigged + non-rigged into ONE accum / revealage / composite
-    // cycle, so glow behind EITHER subset is attenuated by the TOTAL transmittance (fixes
-    // the cross-subset bloom flash the two-cycle v1 had). Toggle: Develop > Render Metadata
-    // > "Alpha OIT (real)". HUD/impostor/cube-snapshot stay on the legacy sorted path.
+    // <FS> WBOIT (D4c): order-independent transparency is now the DEFAULT for the main
+    // view (setting RenderAlphaOIT, default on) -- one unified accum/revealage/composite
+    // cycle so glow behind either rigged or non-rigged alpha is attenuated by the total
+    // transmittance. HUD / impostor / cube-snapshot still render on the legacy sorted path
+    // (they need the sort tiers), so OIT is scoped to POST_WATER main-view alpha.
+    static LLCachedControl<bool> render_alpha_oit(gSavedSettings, "RenderAlphaOIT", true);
     bool use_oit = getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER
                 && !LLPipeline::sRenderingHUDs
                 && !LLPipeline::sImpostorRender
                 && !gCubeSnapshot
-                && gPipeline.hasRenderDebugMask(LLPipeline::RENDER_DEBUG_OIT_ALPHA);
+                && render_alpha_oit;
 
     if (use_oit)
     {

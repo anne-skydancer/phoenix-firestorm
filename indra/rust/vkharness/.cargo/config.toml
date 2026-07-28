@@ -1,0 +1,6 @@
+# Point the shaderc-sys build at the LunarG Vulkan SDK's prebuilt library so it
+# links shaderc_combined.lib instead of doing its (heavy, Python+git) from-source
+# build. Mirrors indra/cmake/Shaderc.cmake's SDK discovery. Update the path if the
+# SDK version changes (glob-discovery would need a build.rs; hardcoded for the harness).
+[env]
+SHADERC_LIB_DIR = "C:\\VulkanSDK\\1.4.350.0\\Lib"

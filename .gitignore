@@ -130,3 +130,6 @@ firestorm.code-workspace
 .github/release.yaml
 
 checks.json
+
+# Stray nested clone + local cargo target (build artifacts, never source)
+/firestorm/

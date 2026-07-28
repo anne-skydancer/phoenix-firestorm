@@ -27,9 +27,12 @@ add_library( ll::rust INTERFACE IMPORTED GLOBAL )
 set(LL_RUSTMESH   "cfallback" CACHE STRING "Rust mesh decode: off | cfallback | on")
 set(LL_RUSTMSG    "cfallback" CACHE STRING "Rust UDP message decode: off | cfallback | on")
 set(LL_RUSTOBJUPD "cfallback" CACHE STRING "Rust object-update decode: off | cfallback | on")
+#   LL_RUSTJ2C  -> J2C (JPEG2000) texture decode (untrusted codestream parse)
+set(LL_RUSTJ2C    "on"        CACHE STRING "Rust J2C texture decode: off | cfallback | on")
 set_property(CACHE LL_RUSTMESH   PROPERTY STRINGS off cfallback on)
 set_property(CACHE LL_RUSTMSG    PROPERTY STRINGS off cfallback on)
 set_property(CACHE LL_RUSTOBJUPD PROPERTY STRINGS off cfallback on)
+set_property(CACHE LL_RUSTJ2C    PROPERTY STRINGS off cfallback on)
 
 # Map off|cfallback|on -> 0|1|2.
 macro(_llrust_mode _var _out)
@@ -46,9 +49,10 @@ endmacro()
 _llrust_mode(LL_RUSTMESH   LLRUST_MESH_MODE)
 _llrust_mode(LL_RUSTMSG    LLRUST_MSG_MODE)
 _llrust_mode(LL_RUSTOBJUPD LLRUST_OBJUPD_MODE)
+_llrust_mode(LL_RUSTJ2C     LLRUST_J2C_MODE)
 
 # Build/link the Rust bridge only if at least one subsystem actually uses it.
-if (LLRUST_MESH_MODE EQUAL 0 AND LLRUST_MSG_MODE EQUAL 0 AND LLRUST_OBJUPD_MODE EQUAL 0)
+if (LLRUST_MESH_MODE EQUAL 0 AND LLRUST_MSG_MODE EQUAL 0 AND LLRUST_OBJUPD_MODE EQUAL 0 AND LLRUST_J2C_MODE EQUAL 0)
   message(STATUS "LLRust: all subsystems off -> pure C++ (no Rust)")
   return()
 endif ()
@@ -130,10 +134,52 @@ file(GLOB_RECURSE LLRUST_SOURCES
      "${LLRUST_CRATE_DIR}/Cargo.toml"
      "${LLRUST_CRATE_DIR}/cbindgen.toml")
 
+# Enable the `grok` cargo feature only for Grok builds that use the Rust J2C
+# decoder -- grokj2k is linked into the viewer (via llimagej2cgrok), so the crate's
+# grk_* references resolve at the final link. A non-Grok build must NOT reference
+# grk_*, so the feature stays off there.
+set(LLRUST_CARGO_FEATURES)
+if (USE_GROK AND NOT LLRUST_J2C_MODE EQUAL 0)
+  set(LLRUST_CARGO_FEATURES --features grok)
+  message(STATUS "LLRust: enabling cargo feature `grok` (USE_GROK + LL_RUSTJ2C=${LL_RUSTJ2C})")
+
+  # bindgen (in build.rs) generates the Grok FFI from grok.h -- pass it the header,
+  # include dirs, and libclang location via env. GROK_ROOT is set by Grok.cmake.
+  if (NOT GROK_ROOT)
+    set(GROK_ROOT "C:/fs/grok")
+  endif ()
+  set(_grok_hdr  "${GROK_ROOT}/src/lib/core/grok.h")
+  # Comma-separated (NOT ';', which CMake splits into a stray command arg that
+  # `cmake -E env` would try to execute). build.rs splits on ',' or ';'.
+  set(_grok_incs "${GROK_ROOT}/src/lib/core,${GROK_ROOT}/build/src/lib/core")
+  find_file(LLRUST_LIBCLANG_DLL libclang.dll
+            PATHS "C:/Program Files/LLVM/bin" "$ENV{LIBCLANG_PATH}")
+  if (LLRUST_LIBCLANG_DLL)
+    get_filename_component(_libclang_dir "${LLRUST_LIBCLANG_DLL}" DIRECTORY)
+  else ()
+    set(_libclang_dir "C:/Program Files/LLVM/bin")
+    message(WARNING "LLRust: libclang.dll not found; bindgen for grok may fail. Install LLVM / set LIBCLANG_PATH.")
+  endif ()
+
+  # Prepend the grok bindgen env to the cargo invocation. On Windows LLRUST_CARGO_ENV
+  # is otherwise empty; on FreeBSD it already carries RUSTFLAGS, which would need
+  # merging (the Grok+Rust build is Windows for now).
+  if (NOT LLRUST_CARGO_ENV)
+    set(LLRUST_CARGO_ENV "${CMAKE_COMMAND}" -E env
+        "LLRUST_GROK_HEADER=${_grok_hdr}"
+        "LLRUST_GROK_INCLUDES=${_grok_incs}"
+        "LIBCLANG_PATH=${_libclang_dir}")
+    message(STATUS "LLRust: grok bindgen env -> header=${_grok_hdr}, libclang=${_libclang_dir}")
+  else ()
+    message(WARNING "LLRust: LLRUST_CARGO_ENV already set -- grok bindgen env not merged (FreeBSD?)")
+  endif ()
+endif ()
+
 # Build the staticlib.
 add_custom_command(
     OUTPUT "${LLRUST_LIB}"
     COMMAND ${LLRUST_CARGO_ENV} "${CARGO_EXECUTABLE}" build --release
+            ${LLRUST_CARGO_FEATURES}
             --manifest-path "${LLRUST_CRATE_DIR}/Cargo.toml"
             --target-dir "${LLRUST_TARGET_DIR}"
     DEPENDS ${LLRUST_SOURCES}
@@ -183,7 +229,7 @@ endif ()
 set_target_properties(ll::rust PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LLRUST_INCLUDE}"
     INTERFACE_LINK_LIBRARIES      "${LLRUST_LIB};${LLRUST_NATIVE_LIBS}"
-    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MESH_MODE};LL_RUSTMSG_MODE=${LLRUST_MSG_MODE};LL_RUSTOBJUPD_MODE=${LLRUST_OBJUPD_MODE}")
+    INTERFACE_COMPILE_DEFINITIONS "HAVE_LLRUST=1;LL_RUSTMESH_MODE=${LLRUST_MESH_MODE};LL_RUSTMSG_MODE=${LLRUST_MSG_MODE};LL_RUSTOBJUPD_MODE=${LLRUST_OBJUPD_MODE};LL_RUSTJ2C_MODE=${LLRUST_J2C_MODE}")
 
 # Consumers must `add_dependencies(<their_target> llrust_build)` so the .a/.h
 # exist before they compile/link.

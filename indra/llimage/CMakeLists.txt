@@ -12,6 +12,7 @@ include(ZLIBNG)
 include(LLAddBuildTest)
 include(bugsplat)
 include(Tut)
+include(LLRust)   # ll::rust -- memory-safe Rust bridge (J2C decode lives here)
 
 set(llimage_SOURCE_FILES
     llimagebmp.cpp
@@ -67,7 +68,13 @@ target_link_libraries(llimage
         llcommon
         ll::libpng
         ll::libjpeg
+        ll::rust # memory-safe J2C decode (llrust j2c module); no-op until wired
     )
+
+# Ensure the Rust staticlib + cbindgen header exist before llimage compiles/links.
+if (TARGET llrust_build)
+  add_dependencies(llimage llrust_build)
+endif ()
 
 # Add tests
 if (LL_TESTS)

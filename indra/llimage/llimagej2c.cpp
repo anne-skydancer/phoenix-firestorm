@@ -32,6 +32,10 @@
 #include "llmemory.h"
 #include "llsd.h"
 
+#ifdef HAVE_LLRUST
+#include "llrust.h" // memory-safe J2C decode bridge (ll_j2c_* -- phase 0: identity probe)
+#endif
+
 // Declare the prototype for this factory function here. It is implemented in
 // other files which define a LLImageJ2CImpl subclass, but only ONE static
 // library which has the implementation for this function should ever be
@@ -48,6 +52,9 @@ std::string LLImageJ2C::getEngineInfo()
     // All known LLImageJ2CImpl implementation subclasses are cheap to
     // construct.
     std::unique_ptr<LLImageJ2CImpl> impl(fallbackCreateLLImageJ2CImpl());
+    // NOTE: this string is stamped into the FIXED-SIZE texture-cache header
+    // (LLTextureCache::sHeaderCacheEncoderVersion) -- keep it short. The Rust J2C
+    // bridge is validated via the shadow-compare in decodeChannels, not here.
     return impl->getEngineInfo();
 }
 
@@ -152,6 +159,42 @@ bool LLImageJ2C::decode(LLImageRaw *raw_imagep, F32 decode_time)
 }
 
 
+#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 2
+// <FS> fs/rust-j2c FLIP: memory-safe Rust-primary decode into raw_image.
+// Mirrors LLImageJ2CGrok::decodeImpl's post-decode bookkeeping (resize +
+// interleaved copy + setDiscardLevel), but the pixel copy happens inside the
+// bounds-checked Rust decoder. Returns true iff Rust produced a usable result;
+// false (fail-closed) makes the caller fall back to the C++ codec.
+bool LLImageJ2C::rustDecodeChannels(LLImageRaw &raw_image, S32 first_channel, S32 max_channel_count)
+{
+    S32 rj_max_bytes = getMaxBytes() ? getMaxBytes() : getDataSize();
+    void* rj = ll_j2c_decode(getData(), (size_t)rj_max_bytes, mDiscardLevel,
+                             first_channel, max_channel_count);
+    if (!rj)
+    {
+        return false; // Rust declined -> C++ fallback.
+    }
+
+    bool ok = false;
+    LlJ2cView v = {};
+    if (ll_j2c_view(rj, &v) && v.pixels && v.width > 0 && v.height > 0 && v.components > 0)
+    {
+        raw_image.resize(U16(v.width), U16(v.height), S8(v.components));
+        U8* rawp = raw_image.getData();
+        if (rawp && (size_t)raw_image.getDataSize() == v.len)
+        {
+            memcpy(rawp, v.pixels, v.len);
+            // Grok does not report an achieved reduce factor; report the
+            // requested level, matching LLImageJ2CGrok::decodeImpl.
+            setDiscardLevel(mDiscardLevel);
+            ok = true;
+        }
+    }
+    ll_j2c_free(rj);
+    return ok; // false here -> caller falls back to the C++ codec.
+}
+#endif
+
 // Returns true to mean done, whether successful or not.
 bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 first_channel, S32 max_channel_count )
 {
@@ -175,7 +218,24 @@ bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 fir
         {
             // Update the raw discard level
             updateRawDiscardLevel();
+#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE >= 2
+            // <FS> fs/rust-j2c: Rust is the SOLE decoder; the C++ decode path is
+            // compiled out (the #else below). FAIL-CLOSED -- a Rust decline (null,
+            // i.e. malformed/hostile input) fails the texture rather than falling
+            // back to the unhardened C++ decode; not falling back IS the point of
+            // the untrusted-parse hardening. (Encode stays C++: Grok compress for
+            // uploads/baking is a TRUSTED path over our own images, not an attack
+            // surface, and there is no Rust encoder.) Bit-exactness was proven by
+            // the cfallback shadow-compare + fuzzed before this became the default.
+            res = rustDecodeChannels(*raw_imagep, first_channel, max_channel_count);
+            if (!res)
+            {
+                decodeFailed(); // mDecoding = false -> the block below fails it cleanly
+                res = true;     // "done"
+            }
+#else
             res = mImpl->decodeImpl(*this, *raw_imagep, decode_time, first_channel, max_channel_count);
+#endif
         }
     }
 
@@ -190,6 +250,79 @@ bool LLImageJ2C::decodeChannels(LLImageRaw *raw_imagep, F32 decode_time, S32 fir
         else
         {
             mDecoding = false;
+#if defined(HAVE_LLRUST) && LL_RUSTJ2C_MODE == 1
+            // <FS> fs/rust-j2c ingress gate (LOG-ONLY): pure safe-Rust validation
+            // of the codestream header, no decode. The C++ decode above just
+            // SUCCEEDED, so any "would-reject" here is a candidate FALSE POSITIVE
+            // -- the metric we need before this ever enforces. Reason codes are the
+            // LL_J2C_REJECT_* values in llrust.h.
+            {
+                S32 iv_bytes = getMaxBytes() ? getMaxBytes() : getDataSize();
+                LlJ2cVerdict verdict = {};
+                ll_j2c_validate(getData(), (size_t)iv_bytes, &verdict);
+                if (!verdict.accept)
+                {
+                    static S32 sRejectCount = 0;
+                    S32 rn = ++sRejectCount;
+                    if (rn <= 50 || (rn % 200) == 0)
+                    {
+                        LL_INFOS("LLRustJ2C") << "ingress would-reject #" << rn
+                            << " reason=" << verdict.reason << " (" << verdict.width
+                            << "x" << verdict.height << "x" << verdict.components
+                            << ") -- C++ decoded OK (candidate false-positive)" << LL_ENDL;
+                    }
+                }
+            }
+            // <FS> fs/rust-j2c Phase 1b shadow-compare: decode the SAME codestream
+            // via Rust-Grok and check it byte-for-byte against the C++ result. C++
+            // stays authoritative; this validates the Rust decode on real textures
+            // before we ever flip it primary. Mismatches are logged, not fatal.
+            if (raw_imagep->getData())
+            {
+                S32 rj_max_bytes = getMaxBytes() ? getMaxBytes() : getDataSize();
+                void* rj = ll_j2c_decode(getData(), (size_t)rj_max_bytes, mDiscardLevel,
+                                         first_channel, max_channel_count);
+                if (rj)
+                {
+                    LlJ2cView v = {};
+                    if (ll_j2c_view(rj, &v))
+                    {
+                        size_t clen = (size_t)raw_imagep->getDataSize();
+                        bool dims_ok = (v.width == (S32)raw_imagep->getWidth())
+                                    && (v.height == (S32)raw_imagep->getHeight())
+                                    && (v.components == (S32)raw_imagep->getComponents())
+                                    && (v.len == clen);
+                        if (dims_ok && v.pixels && memcmp(v.pixels, raw_imagep->getData(), clen) == 0)
+                        {
+                            // Throttled positive confirmation (decode runs on the
+                            // texture worker pool; this counter is a log throttle
+                            // only, a benign race is fine). First hit + every 500th
+                            // so a clean run is visibly non-zero without spamming.
+                            static S32 sOkCount = 0;
+                            S32 n = ++sOkCount;
+                            if (n == 1 || (n % 500) == 0)
+                            {
+                                LL_INFOS("LLRustJ2C") << "shadow OK x" << n << " (" << v.width
+                                    << "x" << v.height << "x" << v.components << ")" << LL_ENDL;
+                            }
+                        }
+                        else if (dims_ok)
+                        {
+                            LL_WARNS("LLRustJ2C") << "shadow MISMATCH pixels " << v.width << "x"
+                                                  << v.height << "x" << v.components << LL_ENDL;
+                        }
+                        else
+                        {
+                            LL_WARNS("LLRustJ2C") << "shadow MISMATCH dims rust=" << v.width << "x"
+                                << v.height << "x" << v.components << "/" << (S32)v.len
+                                << " cpp=" << raw_imagep->getWidth() << "x" << raw_imagep->getHeight()
+                                << "x" << (S32)raw_imagep->getComponents() << "/" << (S32)clen << LL_ENDL;
+                        }
+                    }
+                    ll_j2c_free(rj);
+                }
+            }
+#endif
         }
     }
     else

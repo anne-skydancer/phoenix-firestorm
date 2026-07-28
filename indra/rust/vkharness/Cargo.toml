@@ -1,0 +1,29 @@
+[package]
+name = "vkharness"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone Vulkan (wgpu) rendering harness for the Firestorm-FSVulkan shader/backend work."
+publish = false
+
+# Standalone binary. Deliberately NOT part of the viewer's CMake build -- this is
+# the incubator for RenderBackendWGPU and the SPIR-V shader testbed, decoupled
+# from the viewer so the Vulkan bring-up carries zero viewer-integration friction.
+[[bin]]
+name = "vkharness"
+path = "src/main.rs"
+
+[dependencies]
+# wgpu pinned to the Vulkan backend at runtime (see main.rs: Backends::VULKAN).
+# Chosen over raw ash so harness code ports directly into the viewer's rhi_wgpu.
+wgpu = { version = "0.19", features = ["spirv"] } # SpirV shader ingestion (H2)
+winit = "0.29"
+pollster = "0.3"      # block on wgpu's async device/adapter requests
+env_logger = "0.11"
+log = "0.4"
+bytemuck = { version = "1", features = ["derive"] }  # POD vertex/uniform casts (H1+)
+shaderc = "0.8"      # GLSL -> SPIR-V in-process (H2); links the SDK's prebuilt
+                     # shaderc_combined.lib via SHADERC_LIB_DIR (.cargo/config.toml)
+
+[profile.release]
+opt-level = 3
+lto = "thin"

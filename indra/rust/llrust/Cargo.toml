@@ -16,6 +16,18 @@ crate-type = ["staticlib"]
 # nothing new to link on FreeBSD.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
+[features]
+# J2C decode over the Grok codec. Enabled by LLRust.cmake only for USE_GROK builds
+# (grokj2k is linked into the viewer via llimagej2cgrok, which resolves grk_*).
+# Pulls bindgen (build-time) to auto-generate the Grok FFI from grok.h -> compiler-
+# verified struct layouts, no hand-writing. Keeps the default build lean (no bindgen).
+grok = ["dep:bindgen"]
+
+[build-dependencies]
+# bindgen generates the Grok C API FFI from grok.h at build time (needs libclang).
+# Optional + gated by the `grok` feature so a default build pulls none of it.
+bindgen = { version = "0.70", optional = true }
+
 [profile.release]
 opt-level = 3
 lto = true

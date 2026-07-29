@@ -1560,6 +1560,246 @@ fn run_h3b3d() -> bool {
     })
 }
 
+// --- H3b-3d EXECUTE: run the transformed softenLight on dummy inputs ------------
+// The full rig: passthrough VS+FS, both std140 UBOs, and the 12 tex/sampler pairs
+// the compiled shader actually references (from spirv-dis) bound at their exact
+// bindings. Success = the pipeline builds + a 1px draw completes with NO validation
+// error -- proof the transformed lighting shader RUNS on the real driver. (Value
+// correctness is 3e's golden gate; this proves the plumbing.)
+
+// Dummy fullscreen-triangle VS supplying the 3 varyings softenLightF reads, at the
+// exact locations from the FS SPIR-V: AdditiveColor@0, AtmosAttenuation@1, fragcoord@2.
+const SOFTEN_EXEC_VERT_GLSL: &str = r#"
+#version 450
+layout(location = 0) out vec3 vary_AdditiveColor;
+layout(location = 1) out vec3 vary_AtmosAttenuation;
+layout(location = 2) out vec2 vary_fragcoord;
+void main() {
+    vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    vary_fragcoord = p;                 // 0..1 across the visible area
+    vary_AdditiveColor = vec3(0.0);
+    vary_AtmosAttenuation = vec3(1.0);
+}
+"#;
+
+/// H3b-3d execute. Returns pass (pipeline built + draw ran with no validation error).
+fn run_h3b3d_exec() -> bool {
+    let (fspv, n_members, n_samplers) = match build_softenlight_ubo_spirv() {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("H3b-3d-exec: transform failed to compile: {e}");
+            return false;
+        }
+    };
+    let vspv = compile_glsl(SOFTEN_EXEC_VERT_GLSL, shaderc::ShaderKind::Vertex, "soften.exec.vert");
+
+    // The exact descriptor interface the compiled SPIR-V references (spirv-dis):
+    // 'U'=SoftenFrameBlock@0, 'R'=ReflectionProbes@35, 'T'=texture2D, 'C'=textureCubeArray, 'S'=sampler.
+    let table: &[(u32, char)] = &[
+        (0, 'U'), (35, 'R'),
+        (1, 'T'), (2, 'S'), (3, 'T'), (4, 'S'), (5, 'T'), (6, 'S'), (7, 'T'), (8, 'S'),
+        (9, 'T'), (10, 'S'), (11, 'T'), (12, 'S'), (15, 'T'), (16, 'S'), (17, 'T'), (18, 'S'),
+        (31, 'C'), (32, 'S'), (33, 'C'), (34, 'S'), (38, 'T'), (39, 'S'), (40, 'T'), (41, 'S'),
+    ];
+
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("H3b-3d-exec: no Vulkan adapter");
+        let info = adapter.get_info();
+        log::info!("H3b-3d-exec adapter: {} | {} {}", info.name, info.driver, info.driver_info);
+        if !adapter.features().contains(wgpu::Features::SPIRV_SHADER_PASSTHROUGH) {
+            log::warn!("H3b-3d-exec: no SPIRV_SHADER_PASSTHROUGH");
+            return false;
+        }
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("h3b3d-exec"),
+                    required_features: wgpu::Features::SPIRV_SHADER_PASSTHROUGH,
+                    required_limits: adapter.limits(), // headroom for UBO size / descriptors
+                },
+                None,
+            )
+            .await
+            .expect("H3b-3d-exec: request_device");
+
+        // passthrough modules (raw SPIR-V straight to the driver -- naga bypassed)
+        // SAFETY: shaderc produced valid SPIR-V from valid GLSL.
+        let fs_mod = unsafe {
+            device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
+                label: Some("softenLightF.exec"),
+                source: std::borrow::Cow::Borrowed(&fspv),
+            })
+        };
+        let vs_mod = unsafe {
+            device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
+                label: Some("soften.exec.vert"),
+                source: std::borrow::Cow::Borrowed(&vspv),
+            })
+        };
+
+        // dummy resources -- one of each kind, shared across all matching bindings.
+        let soften_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SoftenFrameBlock"),
+            size: 16384, // >> the ~1.5KB block; wgpu zero-inits
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let refl_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ReflectionProbes"),
+            size: 65536, // ReflectionProbes std140 ~48KB, alloc 64KB
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let tex2d = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dummy-2d"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm, // filterable float
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let tex2d_view = tex2d.create_view(&wgpu::TextureViewDescriptor::default());
+        let cube = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dummy-cubearray"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 6 }, // 1 cube
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let cube_view = cube.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("dummy-cubearray-view"),
+            dimension: Some(wgpu::TextureViewDimension::CubeArray),
+            ..Default::default()
+        });
+        let samp = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("dummy-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let layout_entries: Vec<wgpu::BindGroupLayoutEntry> = table
+            .iter()
+            .map(|&(b, k)| {
+                let ty = match k {
+                    'U' | 'R' => wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    'T' => wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    'C' => wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::CubeArray,
+                        multisampled: false,
+                    },
+                    _ => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                };
+                wgpu::BindGroupLayoutEntry {
+                    binding: b,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty,
+                    count: None,
+                }
+            })
+            .collect();
+        let bind_entries: Vec<wgpu::BindGroupEntry> = table
+            .iter()
+            .map(|&(b, k)| {
+                let resource = match k {
+                    'U' => soften_ubo.as_entire_binding(),
+                    'R' => refl_ubo.as_entire_binding(),
+                    'T' => wgpu::BindingResource::TextureView(&tex2d_view),
+                    'C' => wgpu::BindingResource::TextureView(&cube_view),
+                    _ => wgpu::BindingResource::Sampler(&samp),
+                };
+                wgpu::BindGroupEntry { binding: b, resource }
+            })
+            .collect();
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("soften-exec-bgl"),
+            entries: &layout_entries,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("soften-exec-bg"),
+            layout: &bgl,
+            entries: &bind_entries,
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("soften-exec-pl"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("soften-exec-pipeline"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &vs_mod, entry_point: "main", buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &fs_mod,
+                entry_point: "main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba32Float,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+        if let Some(e) = device.pop_error_scope().await {
+            log::warn!("H3b-3d-exec: pipeline/bind-group build FAILED (validation):\n  {e}");
+            return false;
+        }
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let px = render_1px(&device, &queue, &pipeline, &bind_group);
+        let render_err = device.pop_error_scope().await;
+        match render_err {
+            None => {
+                log::info!(
+                    "H3b-3d-exec: softenLight RAN on the driver -- pipeline built + 1px draw clean. \
+                     ({n_members} UBO members, {n_samplers} declared samplers, 26 live bindings) \
+                     px = [{:.4}, {:.4}, {:.4}, {:.4}]",
+                    px[0], px[1], px[2], px[3]
+                );
+                true
+            }
+            Some(e) => {
+                log::warn!("H3b-3d-exec: draw FAILED (validation):\n  {e}");
+                false
+            }
+        }
+    })
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -1951,6 +2191,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "h3b3d") {
         let ok = run_h3b3d();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "h3b3d-exec") {
+        let ok = run_h3b3d_exec();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

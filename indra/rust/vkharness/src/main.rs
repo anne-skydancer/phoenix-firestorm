@@ -2008,6 +2008,43 @@ fn run_furnace() -> bool {
     true
 }
 
+// --- AUTO-EXPOSURE gate (camera response, step #7-8) -----------------------------
+// The one question that matters: does the auto-exposure hold scene luminance at
+// MIDDLE-GREY across brightness (the whole point of exposure)? Physical answer:
+// exposure = key/L  =>  exposed = key, FLAT at every scene brightness. SL's exposureF
+// instead clamps L AT the key, normalizes, squares, and linearly interpolates between
+// two FIXED bounds -- so it holds grey only in a narrow band and can't compensate
+// dark/bright scenes. `cargo run -- exposure`.
+
+/// SL's `exposureF.glsl` steady-state exposure multiplier for scene avg luminance L
+/// (adaptation ignored). Ports the shader exactly: clamp at key, /key, square,
+/// mix(exp_max, exp_min, L).
+fn sl_exposure(scene_lum: f32, key: f32, exp_min: f32, exp_max: f32) -> f32 {
+    let l = (scene_lum.clamp(0.0, key) / key).powi(2);
+    exp_max * (1.0 - l) + exp_min * l // GLSL mix(exp_max, exp_min, l)
+}
+
+fn run_exposure() -> bool {
+    let key = 0.175f32; // 18% middle grey = SL's dynamic_exposure_coefficient
+    let (exp_min, exp_max) = (0.5f32, 2.0f32); // representative PBR sky (hdr_scale=2)
+    let scenes = [0.02f32, 0.04, 0.0875, 0.13, key, 0.26, 0.35, 0.7, 1.4];
+    log::info!("AUTO-EXPOSURE -- goal: exposed luminance held at middle-grey key={key:.3} across scene brightness");
+    log::info!("  sceneL   SL_exp  SL_exposed  SL_err    | phys_exp  phys_exposed  (physical = flat at key)");
+    let mut worst_err = 0.0f32;
+    for &l in &scenes {
+        let sl = sl_exposure(l, key, exp_min, exp_max);
+        let sl_exposed = l * sl;
+        let sl_err = (sl_exposed / key - 1.0) * 100.0; // % off middle grey
+        worst_err = worst_err.max(sl_err.abs());
+        let ph = key / l.max(1e-4); // physical: reciprocal key mapping
+        let ph_exposed = l * ph; // = key, always
+        log::info!("  {l:>5.3}   {sl:>5.3}   {sl_exposed:>8.4}  {sl_err:>+6.1}%  |  {ph:>7.3}   {ph_exposed:>8.4}");
+    }
+    log::info!("worst SL middle-grey error = {:.0}%  (physical auto-exposure = 0% by construction)", worst_err);
+    log::info!("+ legacy Windlight skies: NO auto-exposure (exp fixed 1.0); PBR range clamped to ~4x + gamma-coupled (sqrt(gamma)*2)");
+    true
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -2403,6 +2440,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "h3b3d-exec") {
         let ok = run_h3b3d_exec();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "exposure") {
+        let ok = run_exposure();
         std::process::exit(if ok { 0 } else { 1 });
     }
     if std::env::args().skip(1).any(|a| a == "furnace") {

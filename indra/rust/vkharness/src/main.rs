@@ -2315,6 +2315,144 @@ fn run_sky_lux() -> bool {
     pass
 }
 
+// --- ATMOSPHERE / SL sky vs physical (Track B, B3: the motivating gap) ------------
+// Port SL's legacy Windlight sky-dome radiance (class1/deferred/skyV.glsl + skyF's *2,
+// clamp[0,5]) with the SHIPPED DEFAULT EEP params -- real constants extracted from
+// llsettingssky.cpp / llsettingsvo.cpp, not recalled. SL's absolute scale is arbitrary
+// (artist colors x magic scales, hard clamp, then auto-exposure), so we compare
+// UNIT-INDEPENDENTLY vs the calibrated H-W sky: (1) zenith-normalized luminance profile
+// [shape], (2) blue/red chromaticity [color]. Structurally SL is NOT a scattering model:
+// sky = artist_color*weight*(sunlight+ambient) + haze; horizon brightening = a haze
+// transparency term (1-exp(-k*dist)), not airmass Rayleigh; the sun halo is
+// pow(1-cos, glow_param), not a Mie phase. `cargo run -- sky-sl`.
+
+/// SL legacy sky-dome radiance (skyV.glsl) at `view` for sun direction `sun` (both unit,
+/// y = up). Returns linear RGB in SL's arbitrary units (post skyF *2 + clamp[0,5]).
+fn sl_sky_radiance(view: [f32; 3], sun: [f32; 3]) -> [f32; 3] {
+    // Shipped DEFAULT EEP legacy sky params (from source):
+    let sunlight_color = [0.7342f32, 0.7815, 0.8999];
+    let ambient_color = [0.25f32, 0.25, 0.25];
+    let blue_horizon = [0.4954f32, 0.4954, 0.6399];
+    let blue_density = [0.2447f32, 0.4487, 0.7599];
+    let haze_horizon = 0.19f32;
+    let haze_density = 0.7f32;
+    let density_multiplier = 0.0001f32;
+    let max_y = 1605.0f32;
+    let glow = [5.0f32, 0.001, -0.4799];
+    let cloud_shadow = 0.2699f32;
+    let sun_moon_glow_factor = 1.0f32;
+
+    let dy = view[1].max(1e-3); // view up-component (clamp off the horizon singularity)
+    let rel_pos_len = max_y / dy; // skyV altitude clamp -> length for dy>0
+    let ndot = view[0] * sun[0] + view[1] * sun[1] + view[2] * sun[2];
+    let atten_k = density_multiplier * max_y;
+    let off_axis = 1.0 / (view[1].max(0.0) + sun[1]).max(1e-6);
+    let density_dist = rel_pos_len * density_multiplier;
+
+    let mut hg = (1.0 - ndot).max(0.001) * glow[0];
+    hg = hg.powf(glow[2]);
+    let haze_glow = if sun_moon_glow_factor < 1.0 { 0.0 } else { sun_moon_glow_factor * (hg + 0.25) };
+
+    let mut color = [0.0f32; 3];
+    for c in 0..3 {
+        let light_atten = (blue_density[c] + haze_density * 0.25) * atten_k;
+        let sunlight = sunlight_color[c] * (-light_atten * off_axis).exp();
+        let comb = (blue_density[c] + haze_density).max(1e-6);
+        let blue_w = blue_density[c] / comb;
+        let haze_w = haze_density / comb;
+        let combined_haze = (-comb * density_dist).exp();
+
+        let mut col = blue_horizon[c] * blue_w * (sunlight + ambient_color[c])
+            + (haze_horizon * haze_w) * (sunlight * haze_glow + ambient_color[c]);
+        col *= 1.0 - combined_haze;
+
+        let ambient2 = ambient_color[c] + (1.0 - ambient_color[c]).max(0.0) * cloud_shadow * 0.5;
+        let sunlight2 = sunlight * (1.0 - cloud_shadow).max(0.0);
+        let add_below = blue_horizon[c] * blue_w * (sunlight2 + ambient2)
+            + (haze_horizon * haze_w) * (sunlight2 * haze_glow + ambient2);
+
+        let ch2 = combined_haze.sqrt(); // skyV: combined_haze = sqrt(...)
+        col += (add_below - col) * (1.0 - ch2.sqrt()); // then *(1 - sqrt(that)) = 1 - orig^0.25
+        color[c] = (col * 2.0).clamp(0.0, 5.0); // skyF: *2, clamp[0,5]
+    }
+    color
+}
+
+fn run_sky_sl() -> bool {
+    use hw_skymodel::rgb::{Channel, SkyParams, SkyState};
+    let el_deg = 60.0f32;
+    let el = el_deg.to_radians();
+    let sun = [el.cos(), el.sin(), 0.0f32]; // azimuth 0, y = up
+    let hw = SkyState::new(&SkyParams { elevation: el, turbidity: 3.0, albedo: [0.3; 3] }).unwrap();
+    const K: f32 = 683.0;
+
+    let sl_y = |view: [f32; 3]| {
+        let c = sl_sky_radiance(view, sun);
+        luminance_y(c[0], c[1], c[2])
+    };
+    let hw_y = |theta: f32, gamma: f32| {
+        K * luminance_y(
+            hw.radiance(theta, gamma, Channel::R),
+            hw.radiance(theta, gamma, Channel::G),
+            hw.radiance(theta, gamma, Channel::B),
+        )
+    };
+
+    log::info!("SL WINDLIGHT SKY vs PHYSICAL H-W -- B3 gap (default EEP sky, sun elevation {el_deg:.0} deg)");
+    log::info!("  unit-independent: each profile normalized to its OWN zenith luminance");
+    log::info!("  {:>6} {:>16} {:>16}   {:>16} {:>16}", "theta", "SL/zenith(->sun)", "HW/zenith(->sun)", "SL/zenith(away)", "HW/zenith(away)");
+
+    let zenith = [0.0f32, 1.0, 0.0];
+    let gamma_z = zenith[0] * sun[0] + zenith[1] * sun[1] + zenith[2] * sun[2];
+    let sl_z = sl_y(zenith);
+    let hw_z = hw_y(0.0, gamma_z.clamp(-1.0, 1.0).acos());
+
+    let thetas = [0.0f32, 15.0, 30.0, 45.0, 60.0, 75.0, 85.0];
+    let mut sse = 0.0f32;
+    let mut n = 0u32;
+    for &th_deg in &thetas {
+        let th = th_deg.to_radians();
+        let (s, c) = (th.sin(), th.cos());
+        let mut row = format!("  {th_deg:>5.0} ");
+        for &sign in &[1.0f32, -1.0] {
+            let view = [sign * s, c, 0.0];
+            let ndot = (view[0] * sun[0] + view[1] * sun[1] + view[2] * sun[2]).clamp(-1.0, 1.0);
+            let gamma = ndot.acos();
+            let sl_n = sl_y(view) / sl_z;
+            let hw_n = hw_y(th, gamma) / hw_z;
+            row.push_str(&format!(" {sl_n:>16.4} {hw_n:>16.4}"));
+            if sign > 0.0 {
+                row.push_str("  ");
+            }
+            let rel = (sl_n - hw_n) / hw_n.max(1e-4);
+            sse += rel * rel;
+            n += 1;
+        }
+        log::info!("{row}");
+    }
+    let rms = (sse / n as f32).sqrt() * 100.0;
+
+    // chromaticity: blue/red ratio (unit-independent), zenith + horizon-away-from-sun
+    let horizon_away = { let th = 85f32.to_radians(); [-th.sin(), th.cos(), 0.0] };
+    let sl_zc = sl_sky_radiance(zenith, sun);
+    let sl_hc = sl_sky_radiance(horizon_away, sun);
+    let hw_zc = [hw.radiance(0.0, gamma_z.acos(), Channel::R), hw.radiance(0.0, gamma_z.acos(), Channel::B)];
+    let ga_h = { let v = horizon_away; (v[0]*sun[0]+v[1]*sun[1]+v[2]*sun[2]).clamp(-1.0,1.0).acos() };
+    let th_h = 85f32.to_radians();
+    let hw_hc = [hw.radiance(th_h, ga_h, Channel::R), hw.radiance(th_h, ga_h, Channel::B)];
+    let br = |r: f32, b: f32| b / r.max(1e-6);
+    log::info!("");
+    log::info!("  chromaticity (Blue/Red ratio, higher = bluer):");
+    log::info!("    zenith:       SL {:>6.3}   HW {:>6.3}", br(sl_zc[0], sl_zc[2]), br(hw_zc[0], hw_zc[1]));
+    log::info!("    horizon(away): SL {:>6.3}   HW {:>6.3}", br(sl_hc[0], sl_hc[2]), br(hw_hc[0], hw_hc[1]));
+    log::info!("");
+    log::info!("  physical zenith luminance (H-W): {:.0} cd/m^2   |   SL zenith: arbitrary units (no physical scale)", hw_z);
+    log::info!("GAP: SL zenith-normalized luminance profile deviates RMS {rms:.0}% from physical H-W.");
+    log::info!("  structural: SL sky is artist-color*weight*(sun+ambient), horizon = haze transparency (not airmass),");
+    log::info!("  sun halo = pow(1-cos,glow) (not Mie), output *2 & clamp[0,5] -- parametric look, not a scattering sky.");
+    true
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -2738,6 +2876,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "sky-lux") {
         let ok = run_sky_lux();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sky-sl") {
+        let ok = run_sky_sl();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

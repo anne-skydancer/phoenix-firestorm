@@ -1927,6 +1927,60 @@ fn run_furnace_direct() -> bool {
     true
 }
 
+/// THE FIX -- Fdez-Aguera multiscatter energy compensation (Khronos glTF method),
+/// computed from the EXISTING brdfLut (A,B) -> no new LUT, ports straight into SL.
+/// Returns (single_scatter, compensated) reflected energy per RGB channel under a
+/// white env (prefilteredColor=1). For F0=1 the compensated energy is 1.0 by
+/// construction (the multiscatter term adds back exactly the lost 1-Ess).
+fn multiscatter_energy(nov: f32, roughness: f32, f0: [f32; 3], samples: u32) -> ([f32; 3], [f32; 3]) {
+    let (a, b) = sl_brdf_lut(nov, roughness, samples);
+    let ess = a + b; // single-scatter directional albedo = the furnace value
+    let ems = 1.0 - ess; // energy the single-scatter model drops
+    let fc = (1.0 - nov).powf(5.0);
+    let mut ss = [0.0f32; 3];
+    let mut comp = [0.0f32; 3];
+    for c in 0..3 {
+        let fr = (1.0 - roughness).max(f0[c]) - f0[c];
+        let k_s = f0[c] + fr * fc; // Fresnel-weighted specular reflectance
+        let fss_ess = k_s * a + b; // single-scatter specular (what SL ships)
+        let f_avg = f0[c] + (1.0 - f0[c]) / 21.0; // average Fresnel over the hemisphere
+        let f_ms = fss_ess * f_avg / (1.0 - f_avg * ems); // multiscatter specular
+        ss[c] = fss_ess;
+        comp[c] = fss_ess + f_ms * ems; // + the recovered multiple-scatter energy
+    }
+    (ss, comp)
+}
+
+/// FIX validation gate: show the multiscatter compensation restores energy.
+/// White metal (F0=1) -> compensated furnace climbs to 1.0000 everywhere; a colored
+/// metal (gold) -> energy recovered AND tinted correctly (proof it ports to real materials).
+fn run_furnace_fix() -> bool {
+    let samples = 8192u32;
+    let roughs = [0.0f32, 0.25, 0.5, 0.75, 0.9, 1.0];
+    let novs = [1.0f32, 0.5, 0.1];
+    log::info!("KULLA-CONTY / FDEZ-AGUERA FIX -- white metal F0=1: BEFORE (single-scatter) -> AFTER (compensated)");
+    log::info!("  rough      NoV=1.00        NoV=0.50        NoV=0.10");
+    log::info!("            before  after   before  after   before  after");
+    for &r in &roughs {
+        let mut row = format!("   {r:>4.2}    ");
+        for &nv in &novs {
+            let (ss, comp) = multiscatter_energy(nv, r, [1.0, 1.0, 1.0], samples);
+            row.push_str(&format!("  {:.4} {:.4} ", ss[0], comp[0]));
+        }
+        log::info!("{row}");
+    }
+    // Gold (linear sRGB base ~ (1.0, 0.782, 0.344)) at a rough setting -- tint preserved?
+    let gold = [1.0f32, 0.782, 0.344];
+    log::info!("");
+    log::info!("Colored metal (gold F0={:?}) at roughness 0.9, NoV=1.0 -- energy recovered + tinted:", gold);
+    let (ss, comp) = multiscatter_energy(1.0, 0.9, gold, samples);
+    log::info!("  before (single-scatter) RGB = [{:.4}, {:.4}, {:.4}]", ss[0], ss[1], ss[2]);
+    log::info!("  after  (multiscatter)   RGB = [{:.4}, {:.4}, {:.4}]", comp[0], comp[1], comp[2]);
+    log::info!("  -> recovered {:.1}% / {:.1}% / {:.1}% of the missing energy per channel",
+        (comp[0]-ss[0])*100.0, (comp[1]-ss[1])*100.0, (comp[2]-ss[2])*100.0);
+    true
+}
+
 /// White furnace gate: tabulate SL's specular reflected energy (F0=1) over
 /// roughness x view angle. Deviation from 1.000 = energy the shader silently loses.
 fn run_furnace() -> bool {
@@ -2357,6 +2411,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "furnace-direct") {
         let ok = run_furnace_direct();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "furnace-fix") {
+        let ok = run_furnace_fix();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

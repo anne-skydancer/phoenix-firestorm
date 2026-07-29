@@ -1120,6 +1120,190 @@ fn run_h3b2() -> bool {
     pass
 }
 
+// --- H3b-3: assemble softenLight the viewer's way + compile (GL sanity) ----------
+// Replicate attachShaderFeatures' fragment attach order for softenLight's flags,
+// prepend the loadShaderFile header, class-resolve each include (class3->2->1),
+// concatenate, dump to disk, and compile for the OpenGL target (loose uniforms
+// legal there) -- proving the ASSEMBLY is well-formed before we UBO-ize (3c-3e).
+// `cargo run -- h3b3`.
+
+const SHADER_ROOT: &str = "c:/fs/fs-vulkan-engine/indra/newview/app_settings/shaders";
+
+/// The fragment attach order for softenLight (from attachShaderFeatures + its flags),
+/// softenLightF.glsl last. Each is "subdir/name.glsl", class-resolved at read time.
+const SOFTENLIGHT_FRAG_PIECES: &[&str] = &[
+    "deferred/globalF.glsl",
+    "environment/srgbF.glsl",
+    "windlight/atmosphericsVarsF.glsl",
+    "windlight/atmosphericsHelpersF.glsl",
+    "deferred/deferredUtil.glsl",
+    "deferred/gbufferUtil.glsl",
+    "deferred/screenSpaceReflUtil.glsl",
+    "deferred/shadowUtil.glsl",
+    "deferred/reflectionProbeF.glsl",
+    "windlight/gammaF.glsl",
+    "windlight/atmosphericsFuncs.glsl",
+    "windlight/atmosphericsF.glsl",
+    "environment/waterFogF.glsl",
+    "deferred/softenLightF.glsl",
+];
+
+/// Assemble the softenLight fragment source (header + class-resolved pieces).
+/// Extract the declared name from a single-line `uniform ... ;` decl (strips
+/// array suffix + qualifiers). Returns None for block-open lines (`uniform Foo {`).
+fn decl_name_uniform(line: &str) -> Option<String> {
+    let head = line.split(';').next()?; // "uniform vec2 screen_res"
+    let head = head.split('[').next()?; // strip array suffix
+    let name = head.split_whitespace().last()?;
+    if name == "uniform" || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Extract the name from a global `const TYPE name = ...;` decl.
+fn decl_name_const(line: &str) -> Option<String> {
+    let head = line.split('=').next()?; // "const float M_PI "
+    let name = head.split_whitespace().last()?;
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Keep-first dedup of GLOBAL (brace-depth-0) `uniform`/`const` declarations.
+/// This is exactly what the viewer's multi-object linker does implicitly when it
+/// merges the same `uniform screen_res` across attached shader objects -- flattening
+/// to one translation unit for SPIR-V surfaces them as redefinitions, so we merge
+/// them here. Behavior-identical (the decls are byte-identical), and this is the
+/// front half of the 3c UBO transform (find loose decls -> strip duplicates; 3c then
+/// strips ALL of a tier and re-emits them once inside a UBO block).
+fn dedup_global_decls(src: &str) -> (String, usize) {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut depth: i32 = 0;
+    let mut dropped = 0usize;
+    let mut out = String::with_capacity(src.len());
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        let mut drop_line = false;
+        if depth == 0 {
+            let name = if trimmed.starts_with("uniform ") {
+                decl_name_uniform(trimmed)
+            } else if trimmed.starts_with("const ") {
+                decl_name_const(trimmed)
+            } else {
+                None
+            };
+            if let Some(n) = name {
+                if !seen.insert(n) {
+                    drop_line = true; // duplicate global decl -> keep-first
+                }
+            }
+        }
+        if drop_line {
+            out.push_str("// [dedup] ");
+            dropped += 1;
+        }
+        out.push_str(line);
+        out.push('\n');
+        for c in line.chars() {
+            if c == '{' {
+                depth += 1;
+            } else if c == '}' {
+                depth -= 1;
+            }
+        }
+    }
+    (out, dropped)
+}
+
+fn assemble_softenlight_fragment() -> String {
+    let mut s = String::new();
+    // header (mirrors loadShaderFile's injected preamble): #version + precision +
+    // FRAGMENT_SHADER + gbuffer flags + the injected GBufferInfo struct + perms.
+    s.push_str("#version 450\n");
+    s.push_str("precision highp float;\n");
+    s.push_str("#define FRAGMENT_SHADER 1\n");
+    s.push_str("#define GBUFFER_FLAG_SKIP_ATMOS 0.0\n");
+    s.push_str("#define GBUFFER_FLAG_HAS_ATMOS 0.34\n");
+    s.push_str("#define GBUFFER_FLAG_HAS_PBR 0.67\n");
+    s.push_str("#define GBUFFER_FLAG_HAS_HDRI 1.0\n");
+    s.push_str("#define GET_GBUFFER_FLAG(data, flag) (abs(data-flag)< 0.1)\n");
+    // C++-injected struct (llshadermgr.cpp:752) -- used by gbufferUtil/softenLightF
+    s.push_str("struct GBufferInfo { vec4 albedo; vec4 specular; vec3 normal; vec4 emissive; float gbufferFlag; float envIntensity; };\n");
+    s.push_str("#define HAS_SUN_SHADOW 1\n");
+    s.push_str("#define HAS_SSAO 1\n");
+    s.push_str("#define REF_SAMPLE_COUNT 32\n"); // reflection-probe perm (llviewershadermgr.cpp:843)
+    s.push_str("#define IS_AMD_CARD 1\n");
+    for piece in SOFTENLIGHT_FRAG_PIECES {
+        let (sub, name) = piece.split_once('/').expect("piece has a subdir");
+        let mut found = None;
+        for cls in ["class3", "class2", "class1"] {
+            let p = format!("{SHADER_ROOT}/{cls}/{sub}/{name}");
+            if std::path::Path::new(&p).exists() {
+                found = Some((cls, p));
+                break;
+            }
+        }
+        match found {
+            Some((cls, p)) => {
+                let body = std::fs::read_to_string(&p).unwrap_or_default();
+                s.push_str(&format!("\n// ===== {piece}  [{cls}] =====\n"));
+                s.push_str(&body);
+                s.push('\n');
+            }
+            None => {
+                log::warn!("H3b-3: could NOT resolve include {piece}");
+                s.push_str(&format!("\n// ===== {piece}  [NOT FOUND] =====\n"));
+            }
+        }
+    }
+    let (deduped, dropped) = dedup_global_decls(&s);
+    log::info!("H3b-3: dedup merged {dropped} duplicate global decls (keep-first, = linker merge)");
+    deduped
+}
+
+/// H3b-3: assemble + GL-target compile (assembly sanity, no transform yet).
+fn run_h3b3() -> bool {
+    let src = assemble_softenlight_fragment();
+    let out = "c:/fs/softenLight_assembled.frag";
+    let _ = std::fs::write(out, &src);
+    log::info!(
+        "H3b-3: assembled softenLight fragment -> {}  ({} bytes, {} lines)",
+        out, src.len(), src.lines().count()
+    );
+
+    let compiler = shaderc::Compiler::new().expect("shaderc");
+    let mut opts = shaderc::CompileOptions::new().expect("shaderc opts");
+    // OpenGL target: default-block uniforms are legal, so a clean compile means the
+    // ASSEMBLY is well-formed (all functions resolve, order works).
+    opts.set_target_env(shaderc::TargetEnv::OpenGL, shaderc::EnvVersion::OpenGL4_5 as u32);
+    opts.set_auto_map_locations(true);
+    opts.set_auto_bind_uniforms(true);
+    match compiler.compile_into_spirv(
+        &src,
+        shaderc::ShaderKind::Fragment,
+        "softenLightF.assembled",
+        "main",
+        Some(&opts),
+    ) {
+        Ok(art) => {
+            let w = art.get_warning_messages();
+            log::info!(
+                "H3b-3: assembled source COMPILES for GL target ({} SPIR-V words) -> assembly well-formed{}",
+                art.len(),
+                if w.is_empty() { String::new() } else { format!("  (warnings:\n{w})") }
+            );
+            true
+        }
+        Err(e) => {
+            log::warn!("H3b-3: assembled source did NOT compile (GL target) -- the punch-list:\n{e}");
+            false
+        }
+    }
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -1498,6 +1682,11 @@ fn main() {
     // H3b-2: a texture+sampler descriptor. `cargo run -- h3b2`.
     if std::env::args().skip(1).any(|a| a == "h3b2") {
         let ok = run_h3b2();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    // H3b-3: assemble softenLight + GL-target compile (assembly sanity). `cargo run -- h3b3`.
+    if std::env::args().skip(1).any(|a| a == "h3b3") {
+        let ok = run_h3b3();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

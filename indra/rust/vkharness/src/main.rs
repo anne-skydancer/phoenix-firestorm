@@ -1304,6 +1304,149 @@ fn run_h3b3() -> bool {
     }
 }
 
+/// Is a global `uniform` line an opaque sampler/image (descriptor track, not UBO)?
+fn is_sampler_decl(trimmed: &str) -> bool {
+    match trimmed.split_whitespace().nth(1) {
+        Some(ty) => ty.starts_with("sampler")
+            || ty.starts_with("isampler")
+            || ty.starts_with("usampler")
+            || ty.starts_with("image"),
+        None => false,
+    }
+}
+
+/// H3b-3c: the transform. Rewrite the deduped loose-uniform source into the
+/// Vulkan shape:
+///  - every runtime value-uniform -> a member of ONE anonymous std140 block
+///    (anonymous => referenced by bare name => zero code churn; glslang computes
+///    the std140 offsets, so no manual layout needed for a compile),
+///  - each sampler/image -> explicit `layout(set=0, binding=N)` (deterministic),
+///  - a `uniform` with an initializer (POISSON3D_SAMPLES, a baked table) -> `const`
+///    (a UBO member can't carry an initializer anyway).
+/// Only touches brace-depth-0 decls. Returns (transformed_src, n_ubo_members, n_samplers).
+fn ubo_transform(src: &str) -> (String, usize, usize) {
+    let mut members: Vec<String> = Vec::new();
+    let mut binding: u32 = 1; // binding 0 reserved for the UBO block
+    let mut samplers = 0usize;
+    let mut depth: i32 = 0;
+    let mut body: Vec<String> = Vec::new();
+
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        let mut out_line = line.to_string();
+        if depth == 0 && trimmed.starts_with("uniform ") {
+            if is_sampler_decl(trimmed) {
+                // sampler/image -> explicit descriptor binding
+                out_line = format!("layout(set = 0, binding = {binding}) {trimmed}");
+                binding += 1;
+                samplers += 1;
+            } else if trimmed.contains('=') {
+                // uniform with initializer (may span lines) -> baked const table
+                out_line = line.replacen("uniform", "const", 1);
+            } else if trimmed.contains(';') {
+                // runtime value-uniform -> UBO member; drop the loose decl
+                let member = trimmed.strip_prefix("uniform ").unwrap().trim();
+                members.push(member.to_string());
+                out_line = format!("// [ubo] {trimmed}");
+            } else {
+                // `uniform BlockName` (no layout) opening a named UBO block -> binding
+                out_line = format!("layout(set = 0, binding = {binding}) {trimmed}");
+                binding += 1;
+            }
+        } else if depth == 0
+            && trimmed.starts_with("layout")
+            && trimmed.contains("uniform")
+            && !trimmed.contains(';')
+        {
+            // pre-existing named block, e.g. `layout (std140) uniform ReflectionProbes`
+            // -- legal loose in GL, but Vulkan requires an explicit binding. Stack a
+            // second layout qualifier (GLSL merges them) so we don't disturb std140.
+            out_line = format!("layout(set = 0, binding = {binding}) {trimmed}");
+            binding += 1;
+        }
+        body.push(out_line);
+        for c in line.chars() {
+            if c == '{' {
+                depth += 1;
+            } else if c == '}' {
+                depth -= 1;
+            }
+        }
+    }
+
+    // Build the anonymous std140 block.
+    let mut block = String::new();
+    block.push_str("layout(std140, set = 0, binding = 0) uniform SoftenFrameBlock {\n");
+    for m in &members {
+        block.push_str("    ");
+        block.push_str(m);
+        block.push('\n');
+    }
+    block.push_str("};\n");
+
+    // Inject the block right before the first include marker (after the preamble,
+    // so it's declared before every use).
+    let mut out = String::with_capacity(src.len() + block.len());
+    let mut injected = false;
+    for l in body {
+        if !injected && l.starts_with("// ===== ") {
+            out.push_str("\n// ---- H3b-3c: value-uniforms -> anonymous std140 UBO ----\n");
+            out.push_str(&block);
+            out.push('\n');
+            injected = true;
+        }
+        out.push_str(&l);
+        out.push('\n');
+    }
+    if !injected {
+        out.push_str(&block); // fallback (no marker found)
+    }
+    (out, members.len(), samplers)
+}
+
+/// H3b-3c: transform loose uniforms -> UBO + sampler bindings, compile for VULKAN.
+/// Success = the transformed shader compiles for the Vulkan target with
+/// DescriptorSet/Binding KEPT (the opposite of the GL strip). This is the real
+/// uniform->UBO transform on the heaviest engine shader, compile-proven.
+fn run_h3b3c() -> bool {
+    let deduped = assemble_softenlight_fragment();
+    let (src, n_members, n_samplers) = ubo_transform(&deduped);
+    let out = "c:/fs/softenLight_ubo.frag";
+    let _ = std::fs::write(out, &src);
+    log::info!(
+        "H3b-3c: transformed -> {}  ({} UBO members, {} samplers, {} lines)",
+        out, n_members, n_samplers, src.lines().count()
+    );
+
+    let compiler = shaderc::Compiler::new().expect("shaderc");
+    let mut opts = shaderc::CompileOptions::new().expect("shaderc opts");
+    // VULKAN target: default-block uniforms are ILLEGAL here, so a clean compile
+    // proves the transform produced a valid Vulkan shader. Keep DescriptorSet/Binding.
+    opts.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_3 as u32);
+    opts.set_auto_map_locations(true); // in/out get locations; bindings are explicit
+    match compiler.compile_into_spirv(
+        &src,
+        shaderc::ShaderKind::Fragment,
+        "softenLightF.ubo",
+        "main",
+        Some(&opts),
+    ) {
+        Ok(art) => {
+            let w = art.get_warning_messages();
+            log::info!(
+                "H3b-3c: transformed source COMPILES for VULKAN ({} SPIR-V words) -> uniform->UBO transform valid{}",
+                art.len(),
+                if w.is_empty() { String::new() } else { format!("  (warnings:\n{w})") }
+            );
+            true
+        }
+        Err(e) => {
+            log::warn!("H3b-3c: transformed source did NOT compile (Vulkan target) -- the punch-list:\n{e}");
+            false
+        }
+    }
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -1687,6 +1830,10 @@ fn main() {
     // H3b-3: assemble softenLight + GL-target compile (assembly sanity). `cargo run -- h3b3`.
     if std::env::args().skip(1).any(|a| a == "h3b3") {
         let ok = run_h3b3();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "h3b3c") {
+        let ok = run_h3b3c();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

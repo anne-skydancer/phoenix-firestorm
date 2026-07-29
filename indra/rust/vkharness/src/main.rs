@@ -984,6 +984,142 @@ fn run_h3b1() -> bool {
     pass
 }
 
+// --- H3b-2: a sampler + texture descriptor (opens the 181-sampler track) ---------
+// softenLight samples ~13 textures (G-buffer, shadow maps, probes). Prove the
+// separate-texture+sampler descriptor path: sample a fixed texel (nearest) from a
+// known 2x2 Rgba32Float texture and read it back byte-exact. `cargo run -- h3b2`.
+
+const H3B2_FRAG_GLSL: &str = r#"
+#version 450
+layout(location = 0) out vec4 frag_color;
+layout(set = 0, binding = 0) uniform texture2D tex;   // Vulkan-style separate
+layout(set = 0, binding = 1) uniform sampler samp;    //   texture + sampler
+void main() {
+    // fixed texel centre, nearest -> an exact texel (no filtering ambiguity)
+    frag_color = texture(sampler2D(tex, samp), vec2(0.75, 0.25));
+}
+"#;
+
+/// H3b-2: prove a texture+sampler descriptor delivers an exact texel.
+fn run_h3b2() -> bool {
+    let (device, queue) = headless_vulkan_device();
+
+    // 2x2 Rgba32Float, row-major. Sample (0.75,0.25) -> texel (col 1, row 0).
+    let texdata: [f32; 16] = [
+        0.1, 0.2, 0.3, 0.4,       // (0,0)
+        0.25, 0.5, 0.625, 0.75,   // (1,0) <- expected
+        0.6, 0.7, 0.8, 0.9,       // (0,1)
+        0.11, 0.22, 0.33, 0.44,   // (1,1)
+    ];
+    let expected = [0.25f32, 0.5, 0.625, 0.75];
+
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("h3b2-tex"),
+        size: wgpu::Extent3d { width: 2, height: 2, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        bytemuck::cast_slice(&texdata),
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(2 * 16),
+            rows_per_image: Some(2),
+        },
+        wgpu::Extent3d { width: 2, height: 2, depth_or_array_layers: 1 },
+    );
+    let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("h3b2-samp"),
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("h3b2-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                count: None,
+            },
+        ],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("h3b2-bg"),
+        layout: &bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&tex_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("h3b2-pl"),
+        bind_group_layouts: &[&bgl],
+        push_constant_ranges: &[],
+    });
+    let vs = glsl_module(&device, H3A_VERT_GLSL, shaderc::ShaderKind::Vertex, "h3b2.vert");
+    let fs = glsl_module(&device, H3B2_FRAG_GLSL, shaderc::ShaderKind::Fragment, "h3b2.frag");
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("h3b2-pipeline"),
+        layout: Some(&pl),
+        vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+        fragment: Some(wgpu::FragmentState {
+            module: &fs,
+            entry_point: "main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba32Float,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+
+    let got = render_1px(&device, &queue, &pipeline, &bind_group);
+    let pass = got == expected;
+    log::info!(
+        "H3b-2 sampler/texture descriptor: expected {:?}  got {:?}  -> {}",
+        expected, got, if pass { "PASS" } else { "FAIL" }
+    );
+    pass
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -1357,6 +1493,11 @@ fn main() {
     // H3b-1: two UBOs bound in one pipeline. `cargo run -- h3b1`.
     if std::env::args().skip(1).any(|a| a == "h3b1") {
         let ok = run_h3b1();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    // H3b-2: a texture+sampler descriptor. `cargo run -- h3b2`.
+    if std::env::args().skip(1).any(|a| a == "h3b2") {
+        let ok = run_h3b2();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

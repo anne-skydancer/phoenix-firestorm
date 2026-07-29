@@ -2453,6 +2453,35 @@ fn run_sky_sl() -> bool {
     true
 }
 
+// --- ATMOSPHERE / bake dump: reference for the C++ viewer bake gate ---------------
+// Prints raw() (27 params + 3 radiances) for a fixed set of (elevation, turbidity,
+// albedo) configs in a parseable form, so the viewer's C++ LLHWSky::bake port can be
+// diffed against this oracle. Keep the config list IN SYNC with the C++ test.
+// `cargo run -- sky-dump`.
+const SKY_DUMP_CONFIGS: [(f32, f32, f32); 7] = [
+    (60.0, 3.0, 0.3),
+    (10.0, 2.0, 0.1),
+    (30.0, 7.0, 0.5),
+    (89.0, 1.0, 0.0),
+    (2.0, 10.0, 1.0),
+    (45.0, 4.5, 0.25),
+    (20.0, 5.5, 0.6),
+];
+
+fn run_sky_dump() -> bool {
+    use hw_skymodel::rgb::{SkyParams, SkyState};
+    for (el_deg, tb, al) in SKY_DUMP_CONFIGS {
+        let st = SkyState::new(&SkyParams { elevation: el_deg.to_radians(), turbidity: tb, albedo: [al; 3] }).unwrap();
+        let (p, r) = st.raw();
+        let mut line = format!("{el_deg} {tb} {al}");
+        for v in p.iter().chain(r.iter()) {
+            line.push_str(&format!(" {v:.7e}"));
+        }
+        println!("{line}");
+    }
+    true
+}
+
 // --- ATMOSPHERE / H-W SKY, RENDERED (Track B, I1: harness-visual integration) -----
 // Port radiance() to GLSL (the exact shippable shader), render the full H-W sky dome to
 // an equirectangular image on the GPU, and (a) numerically gate the GLSL port vs our Rust
@@ -3149,6 +3178,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sky-dump") {
+        let ok = run_sky_dump();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

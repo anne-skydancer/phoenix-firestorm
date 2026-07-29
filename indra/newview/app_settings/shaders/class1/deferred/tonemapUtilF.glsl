@@ -116,6 +116,7 @@ vec3 PBRNeutralToneMapping( vec3 color )
 uniform float exposure;
 uniform float tonemap_mix;
 uniform int tonemap_type;
+uniform int faithful_camera; // faithful camera: ignore auto-exposure (fixed camera; environment owns brightness)
 
 
 vec3 toneMap(vec3 color)
@@ -123,7 +124,10 @@ vec3 toneMap(vec3 color)
 #ifndef NO_POST
     vec3 linear_input_color = color;
 
-    float exp_scale = texture(exposureMap, vec2(0.5,0.5)).r;
+    // Faithful camera => fixed exposure (exp_scale=1): the camera reflects the
+    // environment's radiance instead of auto-metering it away. (vkharness `camera`
+    // gate: only a fixed camera lets a brighter environment produce a brighter image.)
+    float exp_scale = (faithful_camera != 0) ? 1.0 : texture(exposureMap, vec2(0.5,0.5)).r;
     float final_exposure = exposure * exp_scale;
     vec3 exposed_color = color * final_exposure;
 

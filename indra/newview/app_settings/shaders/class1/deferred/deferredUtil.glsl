@@ -48,6 +48,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+// Multiscatter GGX energy compensation toggle. Default ON; a future viewer setting
+// (RenderMultiscatterGGX) can inject `#define MULTISCATTER_GGX 0` via the shader
+// preamble to A/B it in-world. Value-based (#if), so 0 truly disables it.
+#ifndef MULTISCATTER_GGX
+#define MULTISCATTER_GGX 1
+#endif
+
 uniform sampler2D normalMap;
 uniform sampler2D depthMap;
 uniform sampler2D projectionMap; // rgba
@@ -388,7 +395,23 @@ void pbrIbl(vec3 diffuseColor,
     vec3 specularLight = radiance;
 
     vec3 diffuse = diffuseLight * diffuseColor;
-    vec3 specular = specularLight * (specularColor * brdf.x + brdf.y);
+
+    // Single-scatter specular (the split-sum LUT result: F0*A + B).
+    vec3 FssEss = specularColor * brdf.x + brdf.y;
+#if MULTISCATTER_GGX
+    // Multiscatter energy compensation (Fdez-Aguera 2019). Single-scatter GGX drops
+    // the light that would bounce a second time between microfacets -- up to ~69% at
+    // high roughness (measured: vkharness `furnace`/`furnace-direct`). Recover it from
+    // the SAME LUT (A,B) -- no extra data. Restores energy conservation; rough and
+    // colored metals stop reading dark, and gain the correct roughness-saturation.
+    float Ess  = brdf.x + brdf.y;                        // single-scatter directional albedo
+    float Ems  = 1.0 - Ess;                              // energy lost to multiple scattering
+    vec3  Favg = specularColor + (1.0 - specularColor) / 21.0; // avg Fresnel over hemisphere
+    vec3  Fms  = FssEss * Favg / (1.0 - Ems * Favg);     // multiscatter specular lobe
+    vec3 specular = specularLight * (FssEss + Fms * Ems);
+#else
+    vec3 specular = specularLight * FssEss;              // single-scatter only (energy-leaky)
+#endif
 
     diffuseOut = diffuse * ao;
     specularOut = specular * ao;
@@ -511,6 +534,15 @@ void pbrPunctual(vec3 diffuseColor, vec3 specularColor,
     // Calculation of analytical lighting contribution
     vec3 diffuseContrib = (1.0 - F) * diffuse(pbrInputs);
     vec3 specContrib = F * G * D / (4.0 * NdotL * NdotV);
+
+#if MULTISCATTER_GGX
+    // Match the IBL multiscatter compensation on the direct (sun/local) path -- gate 2
+    // showed both paths leak the same ~69% at high roughness. Recover it via the
+    // directional albedo Ess from the SAME brdfLut; specularColor (F0) tints it.
+    vec2  msAB  = BRDF(NdotV, 1.0 - perceptualRoughness);
+    float msEss = msAB.x + msAB.y;
+    specContrib *= 1.0 + specularColor * (1.0 / max(msEss, 1e-3) - 1.0);
+#endif
 
     nl = NdotL;
 

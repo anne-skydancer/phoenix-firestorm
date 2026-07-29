@@ -8090,7 +8090,11 @@ void LLPipeline::tonemap(LLRenderTarget* src, LLRenderTarget* dst, bool gamma_co
 
         LLSettingsSky::ptr_t psky = LLEnvironment::instance().getCurrentSky();
 
-        bool no_post = gSnapshotNoPost || psky->getReflectionProbeAmbiance(should_auto_adjust) == 0.f || (buildNoPost && gFloaterTools && gFloaterTools->isAvailable());
+        // Faithful camera: stop the camera from branching on which sky is loaded. A legacy
+        // (probe-ambiance 0) sky should NOT bypass the tonemap -- one consistent film, always.
+        // (Env owns light; the camera just captures it. vkharness `camera` gate validated this.)
+        static LLCachedControl<bool> faithful_camera(gSavedSettings, "RenderFaithfulCamera", false);
+        bool no_post = gSnapshotNoPost || (!faithful_camera && psky->getReflectionProbeAmbiance(should_auto_adjust) == 0.f) || (buildNoPost && gFloaterTools && gFloaterTools->isAvailable());
         LLGLSLShader* shader = nullptr;
         if(gamma_correct)
         {
@@ -8132,6 +8136,10 @@ void LLPipeline::tonemap(LLRenderTarget* src, LLRenderTarget* dst, bool gamma_co
         static LLCachedControl<U32> tonemap_type_setting(gSavedSettings, "RenderTonemapType", 0U);
         shader->uniform1i(tonemap_type, tonemap_type_setting);
         shader->uniform1f(tonemap_mix, psky->getTonemapMix(should_auto_adjust()));
+
+        // Faithful camera => tell the tonemap to use a fixed exposure (ignore auto-metering).
+        static LLStaticHashedString s_faithful_camera("faithful_camera");
+        shader->uniform1i(s_faithful_camera, faithful_camera ? 1 : 0);
 
         mScreenTriangleVB->setBuffer();
         mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);

@@ -388,7 +388,19 @@ void pbrIbl(vec3 diffuseColor,
     vec3 specularLight = radiance;
 
     vec3 diffuse = diffuseLight * diffuseColor;
-    vec3 specular = specularLight * (specularColor * brdf.x + brdf.y);
+
+    // Single-scatter specular (the split-sum LUT result: F0*A + B).
+    vec3 FssEss = specularColor * brdf.x + brdf.y;
+    // Multiscatter energy compensation (Fdez-Aguera 2019). Single-scatter GGX drops
+    // the light that would bounce a second time between microfacets -- up to ~69% at
+    // high roughness (measured: vkharness `furnace`/`furnace-direct`). Recover it from
+    // the SAME LUT (A,B) -- no extra data. Restores energy conservation; rough and
+    // colored metals stop reading dark, and gain the correct roughness-saturation.
+    float Ess  = brdf.x + brdf.y;                        // single-scatter directional albedo
+    float Ems  = 1.0 - Ess;                              // energy lost to multiple scattering
+    vec3  Favg = specularColor + (1.0 - specularColor) / 21.0; // avg Fresnel over hemisphere
+    vec3  Fms  = FssEss * Favg / (1.0 - Ems * Favg);     // multiscatter specular lobe
+    vec3 specular = specularLight * (FssEss + Fms * Ems);
 
     diffuseOut = diffuse * ao;
     specularOut = specular * ao;

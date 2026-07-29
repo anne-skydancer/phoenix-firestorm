@@ -1404,24 +1404,21 @@ fn ubo_transform(src: &str) -> (String, usize, usize) {
     (out, members.len(), samplers)
 }
 
-/// H3b-3c: transform loose uniforms -> UBO + sampler bindings, compile for VULKAN.
-/// Success = the transformed shader compiles for the Vulkan target with
-/// DescriptorSet/Binding KEPT (the opposite of the GL strip). This is the real
-/// uniform->UBO transform on the heaviest engine shader, compile-proven.
-fn run_h3b3c() -> bool {
+/// Assemble + UBO-transform softenLight, then compile to Vulkan SPIR-V words.
+/// Shared by 3c (compile gate) and 3d (execute). Writes the transformed source to
+/// c:/fs/softenLight_ubo.frag as a side effect. Returns (spirv_words, members, samplers).
+fn build_softenlight_ubo_spirv() -> Result<(Vec<u32>, usize, usize), String> {
     let deduped = assemble_softenlight_fragment();
     let (src, n_members, n_samplers) = ubo_transform(&deduped);
     let out = "c:/fs/softenLight_ubo.frag";
     let _ = std::fs::write(out, &src);
     log::info!(
-        "H3b-3c: transformed -> {}  ({} UBO members, {} samplers, {} lines)",
+        "softenLight UBO transform -> {}  ({} UBO members, {} samplers, {} lines)",
         out, n_members, n_samplers, src.lines().count()
     );
-
     let compiler = shaderc::Compiler::new().expect("shaderc");
     let mut opts = shaderc::CompileOptions::new().expect("shaderc opts");
-    // VULKAN target: default-block uniforms are ILLEGAL here, so a clean compile
-    // proves the transform produced a valid Vulkan shader. Keep DescriptorSet/Binding.
+    // VULKAN target: default-block uniforms ILLEGAL here; keep DescriptorSet/Binding.
     opts.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_3 as u32);
     opts.set_auto_map_locations(true); // in/out get locations; bindings are explicit
     match compiler.compile_into_spirv(
@@ -1431,12 +1428,21 @@ fn run_h3b3c() -> bool {
         "main",
         Some(&opts),
     ) {
-        Ok(art) => {
-            let w = art.get_warning_messages();
+        Ok(art) => Ok((art.as_binary().to_vec(), n_members, n_samplers)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// H3b-3c: transform loose uniforms -> UBO + sampler bindings, compile for VULKAN.
+/// Success = the transformed shader compiles for the Vulkan target with
+/// DescriptorSet/Binding KEPT (the opposite of the GL strip). This is the real
+/// uniform->UBO transform on the heaviest engine shader, compile-proven.
+fn run_h3b3c() -> bool {
+    match build_softenlight_ubo_spirv() {
+        Ok((spv, _, _)) => {
             log::info!(
-                "H3b-3c: transformed source COMPILES for VULKAN ({} SPIR-V words) -> uniform->UBO transform valid{}",
-                art.len(),
-                if w.is_empty() { String::new() } else { format!("  (warnings:\n{w})") }
+                "H3b-3c: transformed source COMPILES for VULKAN ({} SPIR-V words) -> uniform->UBO transform valid",
+                spv.len()
             );
             true
         }
@@ -1445,6 +1451,83 @@ fn run_h3b3c() -> bool {
             false
         }
     }
+}
+
+/// H3b-3d (probe): can wgpu create a shader module from the transformed SPIR-V via
+/// SPIRV_SHADER_PASSTHROUGH (raw SPIR-V straight to the driver, naga bypassed)?
+///
+/// FINDING so far: the default `ShaderSource::SpirV` path routes through naga, which
+/// PANICS on this real-engine SPIR-V (InvalidId + "Unknown decoration Block"). That
+/// path is a re-translation we don't want anyway -- the thesis is that the SPIR-V
+/// runs on AMD's real Vulkan driver. Passthrough is the correct route. This probe
+/// tells us whether passthrough module creation succeeds (=> only naga was the
+/// module blocker; descriptor-model is the next question) or fails deeper.
+fn run_h3b3d() -> bool {
+    let (spv, n_members, n_samplers) = match build_softenlight_ubo_spirv() {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("H3b-3d: transform failed to compile: {e}");
+            return false;
+        }
+    };
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("H3b-3d: no Vulkan adapter");
+        let info = adapter.get_info();
+        log::info!("H3b-3d adapter: {} | {} {}", info.name, info.driver, info.driver_info);
+        if !adapter
+            .features()
+            .contains(wgpu::Features::SPIRV_SHADER_PASSTHROUGH)
+        {
+            log::warn!("H3b-3d: adapter lacks SPIRV_SHADER_PASSTHROUGH -- cannot bypass naga");
+            return false;
+        }
+        let (device, _queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("h3b3d-passthrough"),
+                    required_features: wgpu::Features::SPIRV_SHADER_PASSTHROUGH,
+                    required_limits: wgpu::Limits::default(),
+                },
+                None,
+            )
+            .await
+            .expect("H3b-3d: request_device (passthrough)");
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        // SAFETY: passthrough trusts the SPIR-V; shaderc produced it from valid GLSL.
+        let _module = unsafe {
+            device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
+                label: Some("softenLightF.ubo.passthrough"),
+                source: std::borrow::Cow::Borrowed(&spv),
+            })
+        };
+        let err = device.pop_error_scope().await;
+        match err {
+            None => {
+                log::info!(
+                    "H3b-3d: PASSTHROUGH module created OK ({n_members} UBO members, {n_samplers} \
+                     samplers) -- naga was the only module blocker; the descriptor model (combined \
+                     samplers) is the next question at pipeline time."
+                );
+                true
+            }
+            Some(e) => {
+                log::warn!("H3b-3d: passthrough module creation FAILED -- deeper finding.\n  {e}");
+                false
+            }
+        }
+    })
 }
 
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
@@ -1834,6 +1917,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "h3b3c") {
         let ok = run_h3b3c();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "h3b3d") {
+        let ok = run_h3b3d();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

@@ -23,6 +23,11 @@ log = "0.4"
 bytemuck = { version = "1", features = ["derive"] }  # POD vertex/uniform casts (H1+)
 shaderc = "0.8"      # GLSL -> SPIR-V in-process (H2); links the SDK's prebuilt
                      # shaderc_combined.lib via SHADERC_LIB_DIR (.cargo/config.toml)
+# Track B (atmosphere): reference ORACLE for the Hosek-Wilkie sky gate. A faithful
+# pure-Rust port of the authors' reference dataset -- we validate our OWN independent
+# evaluator against this, and validate BOTH against the model-independent physical
+# illuminance property (B2). Oracle only; not shipped to the viewer.
+hw-skymodel = "0.1.1"
 
 [profile.release]
 opt-level = 3

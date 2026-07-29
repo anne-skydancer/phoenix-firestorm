@@ -2097,6 +2097,224 @@ fn run_camera() -> bool {
     true
 }
 
+// --- ATMOSPHERE / Hosek-Wilkie SKY gate (Track B, B1: correctness) ---------------
+// Physical sky-dome radiance. Oracle = the `hw-skymodel` crate (a faithful pure-Rust
+// port of Hosek & Wilkie's reference RGB dataset). We implement the analytic radiance
+// FORMULA independently from the published model and gate it against the oracle across
+// (elevation x turbidity x albedo x theta x gamma x channel).
+//
+// Why this is the shippable seam, not a toy: the crate's own architecture is CPU bakes
+// the 27+3 interpolated coefficients ONCE per sky change (SkyState::raw()), then a
+// shader evaluates radiance() per pixel. So THIS radiance() port IS the GLSL we will
+// ship -- the gate validates the shader-side math: the formula and the notorious H/I
+// index convention (index 7 = I on the sqrt(cos th) term, index 8 = H = Mie g inside
+// chi) that porters routinely swap. `cargo run -- sky`.
+//
+// Published Hosek-Wilkie analytic term, coeffs A..I per channel:
+//   F(th,g) = (1 + A*exp(B/(cos th + 0.01)))
+//           * (C + D*exp(E*g) + F*cos^2 g + G*chi(H,g) + I*sqrt(cos th))
+//   chi(H,g) = (1 + cos^2 g) / (1 + H^2 - 2H*cos g)^{3/2},   L = F * radiance_channel
+
+fn hw_channel(ci: usize) -> hw_skymodel::rgb::Channel {
+    use hw_skymodel::rgb::Channel;
+    match ci {
+        0 => Channel::R,
+        1 => Channel::G,
+        _ => Channel::B,
+    }
+}
+
+/// Our independent Hosek-Wilkie radiance, written from the published formula (NOT
+/// copied from the oracle). `p` = the 9 interpolated coefficients for one channel in
+/// SkyState::raw() layout; `r` = that channel's radiance term. theta = view zenith
+/// angle, gamma = angle from the sun (both radians).
+fn hw_radiance_ours(p: &[f32], r: f32, theta: f32, gamma: f32) -> f32 {
+    let a = p[0];
+    let b = p[1];
+    let c = p[2];
+    let d = p[3];
+    let e = p[4];
+    let f = p[5];
+    let g = p[6];
+    let big_i = p[7]; // coefficient on the sqrt(cos theta) zenith term
+    let big_h = p[8]; // Mie directionality g, inside chi()
+    let cos_theta = theta.cos().abs();
+    let cos_gamma = gamma.cos();
+    let cos_gamma2 = cos_gamma * cos_gamma;
+    let chi = (1.0 + cos_gamma2) / (1.0 + big_h * big_h - 2.0 * big_h * cos_gamma).powf(1.5);
+    let lhs = 1.0 + a * (b / (cos_theta + 0.01)).exp();
+    let rhs = c + d * (e * gamma).exp() + f * cos_gamma2 + g * chi + big_i * cos_theta.sqrt();
+    r * lhs * rhs
+}
+
+fn run_sky() -> bool {
+    use hw_skymodel::rgb::{SkyParams, SkyState};
+    let elevations_deg = [2.0f32, 10.0, 30.0, 60.0, 89.0]; // horizon -> zenith
+    let turbidities = [1.0f32, 2.0, 4.0, 7.0, 10.0]; // clear -> hazy
+    let albedos = [0.0f32, 0.3, 1.0]; // dark -> bright ground
+    let thetas_deg = [0.0f32, 30.0, 60.0, 85.0]; // view zenith (0=up .. ~horizon)
+    let gammas_deg = [0.0f32, 20.0, 60.0, 120.0, 180.0]; // angle from sun
+
+    log::info!("HOSEK-WILKIE SKY -- B1 correctness: our independent radiance() vs hw-skymodel oracle");
+    log::info!(
+        "  grid: {}el x {}turb x {}alb x {}theta x {}gamma x 3ch",
+        elevations_deg.len(), turbidities.len(), albedos.len(), thetas_deg.len(), gammas_deg.len()
+    );
+
+    let mut worst_rel = 0.0f32;
+    let mut worst_ctx = String::new();
+    let mut n = 0u64;
+    for &el in &elevations_deg {
+        for &tb in &turbidities {
+            for &al in &albedos {
+                let params = SkyParams { elevation: el.to_radians(), turbidity: tb, albedo: [al; 3] };
+                let state = match SkyState::new(&params) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("SkyState::new failed (el={el} tb={tb} al={al}): {e:?}");
+                        return false;
+                    }
+                };
+                let (raw_p, raw_r) = state.raw();
+                for ci in 0..3usize {
+                    let p = &raw_p[(9 * ci)..(9 * ci + 9)];
+                    let r = raw_r[ci];
+                    for &th in &thetas_deg {
+                        for &ga in &gammas_deg {
+                            let theta = th.to_radians();
+                            let gamma = ga.to_radians();
+                            let ours = hw_radiance_ours(p, r, theta, gamma);
+                            let oracle = state.radiance(theta, gamma, hw_channel(ci));
+                            let rel = (ours - oracle).abs() / oracle.abs().max(1e-6);
+                            if rel > worst_rel {
+                                worst_rel = rel;
+                                worst_ctx = format!(
+                                    "el={el} tb={tb} al={al} ch={ci} th={th} ga={ga}: ours={ours:.6} oracle={oracle:.6}"
+                                );
+                            }
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    log::info!("  samples compared: {n}");
+    log::info!("  worst relative error = {worst_rel:.2e}   ({worst_ctx})");
+    let pass = worst_rel < 1e-4;
+    if pass {
+        log::info!("PASS: independent radiance() matches the H-W reference (formula + H/I index convention correct).");
+        log::info!("  next: B2 -- integrate the dome to horizontal illuminance (lux), the model-INDEPENDENT physical anchor.");
+    } else {
+        log::error!("FAIL: radiance() diverges (>1e-4) -- check coeff index mapping (I=7, H=8), signs, powf(1.5).");
+    }
+    pass
+}
+
+// --- ATMOSPHERE / Hosek-Wilkie SKY gate (Track B, B2: physical illuminance) ------
+// The furnace-analog for atmosphere, and the MODEL-INDEPENDENT trust anchor: whatever
+// coefficients we use, the integrated sky dome must produce physically real magnitudes.
+// Integrate H-W dome radiance over the upper hemisphere -> horizontal DIFFUSE illuminance
+// (lux; the sun disk is excluded, which the RGB model omits anyway) and zenith luminance
+// (cd/m^2), then compare to measured clear-sky values. If off by a clean factor, THAT
+// factor is the finding (the model's scale convention) -- exactly like the furnace's
+// 69%. `cargo run -- sky-lux`.
+
+fn luminance_y(r: f32, g: f32, b: f32) -> f32 {
+    0.2126 * r + 0.7152 * g + 0.0722 * b // Rec.709 relative luminance
+}
+
+/// Angle from the sun for a view direction (theta = view zenith, phi = azimuth), with
+/// the sun at elevation `el` (rad), azimuth 0.
+fn gamma_from(theta: f32, phi: f32, el: f32) -> f32 {
+    let cg = el.sin() * theta.cos() + el.cos() * theta.sin() * phi.cos();
+    cg.clamp(-1.0, 1.0).acos()
+}
+
+/// (horizontal diffuse illuminance, zenith luminance) for a sky state. Midpoint
+/// hemisphere quadrature of Y*cos(theta) dω, dω = sin θ dθ dφ.
+fn dome_illuminance_and_zenith(
+    state: &hw_skymodel::rgb::SkyState,
+    el: f32,
+    n_theta: usize,
+    n_phi: usize,
+) -> (f32, f32) {
+    use hw_skymodel::rgb::Channel;
+    let y_at = |theta: f32, gamma: f32| {
+        luminance_y(
+            state.radiance(theta, gamma, Channel::R),
+            state.radiance(theta, gamma, Channel::G),
+            state.radiance(theta, gamma, Channel::B),
+        )
+    };
+    let zenith_lum = y_at(0.0, std::f32::consts::FRAC_PI_2 - el); // straight up
+    let dtheta = std::f32::consts::FRAC_PI_2 / n_theta as f32;
+    let dphi = std::f32::consts::TAU / n_phi as f32;
+    let mut e = 0.0f32;
+    for it in 0..n_theta {
+        let theta = (it as f32 + 0.5) * dtheta;
+        let cos_t = theta.cos();
+        let sin_t = theta.sin();
+        for ip in 0..n_phi {
+            let phi = (ip as f32 + 0.5) * dphi;
+            let gamma = gamma_from(theta, phi, el);
+            e += y_at(theta, gamma) * cos_t * sin_t * dtheta * dphi;
+        }
+    }
+    (e, zenith_lum)
+}
+
+fn run_sky_lux() -> bool {
+    use hw_skymodel::rgb::{SkyParams, SkyState};
+    // CALIBRATION (found in B2): raw H-W RGB output is radiometric; photometric
+    // luminance (cd/m^2) = K * Rec709(RGB), K = 683 lm/W max luminous efficacy -- the
+    // standard radiance->luminance constant. The test below proves ONE K lands BOTH
+    // independent anchors (zenith luminance AND horizontal illuminance) in physical band.
+    const K_LM_PER_W: f32 = 683.0;
+    log::info!("HOSEK-WILKIE SKY -- B2 physical illuminance (model-independent anchor; sun disk excluded)");
+    log::info!("  raw H-W RGB is radiometric; calibrate cd/m^2 = {K_LM_PER_W} * Rec709(RGB) (max luminous efficacy)");
+    log::info!("  {:>26} {:>10} {:>12} {:>10} {:>13}", "sky", "zen(raw)", "zen cd/m^2", "E(raw)", "E lux (xK)");
+    let cases = [
+        ("clear high sun (t=3,e=60)", 3.0f32, 60.0f32),
+        ("clear low sun  (t=3,e=10)", 3.0, 10.0),
+        ("hazy  high sun (t=8,e=60)", 8.0, 60.0),
+    ];
+    let (mut clear_lux, mut clear_zen) = (0.0f32, 0.0f32);
+    for (name, tb, el_deg) in cases {
+        let el = el_deg.to_radians();
+        let params = SkyParams { elevation: el, turbidity: tb, albedo: [0.3; 3] };
+        let state = match SkyState::new(&params) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("{name}: {e:?}");
+                return false;
+            }
+        };
+        let (e_raw, z_raw) = dome_illuminance_and_zenith(&state, el, 256, 512);
+        let (z_cd, e_lux) = (z_raw * K_LM_PER_W, e_raw * K_LM_PER_W);
+        log::info!("  {name:>26} {z_raw:>10.2} {z_cd:>12.0} {e_raw:>10.2} {e_lux:>13.0}");
+        if (tb - 3.0).abs() < 0.1 && (el_deg - 60.0).abs() < 0.1 {
+            clear_lux = e_lux;
+            clear_zen = z_cd;
+        }
+    }
+    // Two INDEPENDENT physical anchors, clear high sun:
+    //   diffuse horizontal illuminance ~ 8..25 klux (CIE);  zenith luminance ~ 1.5..8 kcd/m^2.
+    let (e_lo, e_hi) = (8_000.0f32, 25_000.0f32);
+    let (z_lo, z_hi) = (1_500.0f32, 8_000.0f32);
+    log::info!("  reference (clear high sun): illuminance {e_lo:.0}..{e_hi:.0} lux, zenith luminance {z_lo:.0}..{z_hi:.0} cd/m^2");
+    let e_ok = clear_lux >= e_lo && clear_lux <= e_hi;
+    let z_ok = clear_zen >= z_lo && clear_zen <= z_hi;
+    let pass = e_ok && z_ok;
+    if pass {
+        log::info!("PASS: K={K_LM_PER_W} lands BOTH anchors physical (E={clear_lux:.0} lux, zenith={clear_zen:.0} cd/m^2).");
+        log::info!("  => calibration locked: the sky feeds the engine as physical cd/m^2. Ready to slot in as an environment.");
+    } else {
+        log::error!("FAIL: E_ok={e_ok} (={clear_lux:.0} lux), zenith_ok={z_ok} (={clear_zen:.0} cd/m^2) -- one constant should fit both.");
+    }
+    pass
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -2512,6 +2730,14 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "furnace-fix") {
         let ok = run_furnace_fix();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sky") {
+        let ok = run_sky();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sky-lux") {
+        let ok = run_sky_lux();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

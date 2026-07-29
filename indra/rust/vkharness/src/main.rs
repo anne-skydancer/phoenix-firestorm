@@ -2453,6 +2453,271 @@ fn run_sky_sl() -> bool {
     true
 }
 
+// --- ATMOSPHERE / H-W SKY, RENDERED (Track B, I1: harness-visual integration) -----
+// Port radiance() to GLSL (the exact shippable shader), render the full H-W sky dome to
+// an equirectangular image on the GPU, and (a) numerically gate the GLSL port vs our Rust
+// radiance() [closes B1 at the shader level], (b) tonemap it to a BMP so we can SEE the
+// physical sky before touching the viewer. The CPU bakes raw() coeffs -> UBO; the shader
+// evaluates radiance() per pixel -- exactly the viewer seam. `cargo run -- sky-view`.
+
+const SKY_VIEW_VERT_GLSL: &str = r#"#version 450
+void main() {
+    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"#;
+
+const SKY_VIEW_FRAG_GLSL: &str = r#"#version 450
+layout(location=0) out vec4 o;
+layout(std140, binding=0) uniform Sky {
+    vec4 coeff[8];   // flat: [0..27)=params (9/ch), [27..30)=radiances
+    vec4 sun_dir;    // xyz, y=up
+    vec4 img;        // x=width, y=height
+};
+float C(int i){ return coeff[i>>2][i&3]; }
+// Hosek-Wilkie radiance -- SAME formula/index convention proven in B1 (I=7, H=8).
+float radiance(int ch, float theta, float gamma){
+    int b = 9*ch;
+    float A=C(b+0), Bc=C(b+1), Cc=C(b+2), D=C(b+3), E=C(b+4),
+          F=C(b+5), G=C(b+6), I=C(b+7), H=C(b+8);
+    float r = C(27+ch);
+    float ct = abs(cos(theta));
+    float cg = cos(gamma);
+    float cg2 = cg*cg;
+    float chi = (1.0 + cg2) / pow(1.0 + H*H - 2.0*H*cg, 1.5);
+    float lhs = 1.0 + A*exp(Bc/(ct + 0.01));
+    float rhs = Cc + D*exp(E*gamma) + F*cg2 + G*chi + I*sqrt(ct);
+    return r*lhs*rhs;
+}
+void main(){
+    vec2 uv = gl_FragCoord.xy / img.xy;          // 0..1, y=0 at top
+    float phi   = (uv.x - 0.5) * 6.28318530718;  // sun centered at x=0.5
+    float theta = uv.y * 1.57079632679;          // 0=zenith(top) .. pi/2=horizon(bottom)
+    vec3 view = vec3(sin(theta)*cos(phi), cos(theta), sin(theta)*sin(phi));
+    float g = acos(clamp(dot(view, sun_dir.xyz), -1.0, 1.0));
+    o = vec4(radiance(0,theta,g), radiance(1,theta,g), radiance(2,theta,g), 1.0);
+}
+"#;
+
+fn linear_to_srgb_c(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.0031308 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// 24-bit BMP writer (no deps). `px` is row-major top-to-bottom RGB; BMP is bottom-up.
+fn write_bmp(path: &str, w: usize, h: usize, px: &[[u8; 3]]) -> std::io::Result<()> {
+    use std::io::Write;
+    let row_bytes = w * 3;
+    let pad = (4 - (row_bytes % 4)) % 4;
+    let img_size = (row_bytes + pad) * h;
+    let file_size = 54 + img_size;
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let mut hdr = [0u8; 54];
+    hdr[0] = b'B'; hdr[1] = b'M';
+    hdr[2..6].copy_from_slice(&(file_size as u32).to_le_bytes());
+    hdr[10] = 54;
+    hdr[14] = 40;
+    hdr[18..22].copy_from_slice(&(w as u32).to_le_bytes());
+    hdr[22..26].copy_from_slice(&(h as u32).to_le_bytes());
+    hdr[26] = 1; hdr[28] = 24;
+    hdr[34..38].copy_from_slice(&(img_size as u32).to_le_bytes());
+    f.write_all(&hdr)?;
+    for y in (0..h).rev() {
+        for x in 0..w {
+            let p = px[y * w + x];
+            f.write_all(&[p[2], p[1], p[0]])?; // BGR
+        }
+        for _ in 0..pad { f.write_all(&[0])?; }
+    }
+    Ok(())
+}
+
+/// Render `pipeline`+`bind_group` (fullscreen triangle) to a WxH Rgba32Float target and
+/// read it back row-major (top row first). W*16 must be 256-aligned (W multiple of 16).
+fn render_rgba32f(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+    w: u32,
+    h: u32,
+) -> Vec<[f32; 4]> {
+    let bpr = (w * 16) as u64;
+    assert_eq!(bpr % 256, 0, "bytes_per_row must be 256-aligned; use W multiple of 16");
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("sky-target"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("sky-readback"),
+        size: bpr * h as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sky-enc") });
+    {
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sky-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        rp.set_pipeline(pipeline);
+        rp.set_bind_group(0, bind_group, &[]);
+        rp.draw(0..3, 0..1);
+    }
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer { buffer: &readback, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(bpr as u32), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    queue.submit(std::iter::once(enc.finish()));
+    let slice = readback.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+    device.poll(wgpu::Maintain::Wait);
+    rx.recv().unwrap().expect("map_async failed");
+    let out = {
+        let data = slice.get_mapped_range();
+        let f: &[f32] = bytemuck::cast_slice(&data);
+        let stride = (bpr / 4) as usize; // f32s per row
+        let mut v = Vec::with_capacity((w * h) as usize);
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let i = y * stride + x * 4;
+                v.push([f[i], f[i + 1], f[i + 2], f[i + 3]]);
+            }
+        }
+        v
+    };
+    readback.unmap();
+    out
+}
+
+fn run_sky_view() -> bool {
+    use hw_skymodel::rgb::{SkyParams, SkyState};
+    let (w, h) = (512u32, 256u32);
+    let el_deg = 25.0f32; // low-ish sun -> a legible gradient + halo in frame
+    let el = el_deg.to_radians();
+    let sun = [el.cos(), el.sin(), 0.0f32];
+    let state = SkyState::new(&SkyParams { elevation: el, turbidity: 3.0, albedo: [0.3; 3] }).unwrap();
+    let (raw_p, raw_r) = state.raw();
+
+    // Pack UBO: coeff[8] (32 f32: 27 params + 3 radiances + 2 pad), sun_dir(4), img(4).
+    let mut ubo = [0.0f32; 40];
+    ubo[..27].copy_from_slice(&raw_p);
+    ubo[27..30].copy_from_slice(&raw_r);
+    ubo[32..35].copy_from_slice(&sun);
+    ubo[36] = w as f32;
+    ubo[37] = h as f32;
+
+    let (device, queue) = headless_vulkan_device();
+    let ubuf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("sky-ubo"),
+        size: (ubo.len() * 4) as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&ubuf, 0, bytemuck::cast_slice(&ubo));
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("sky-bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        }],
+    });
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("sky-bg"),
+        layout: &bgl,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() }],
+    });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("sky-pl"),
+        bind_group_layouts: &[&bgl],
+        push_constant_ranges: &[],
+    });
+    let vs = glsl_module(&device, SKY_VIEW_VERT_GLSL, shaderc::ShaderKind::Vertex, "sky.vert");
+    let fs = glsl_module(&device, SKY_VIEW_FRAG_GLSL, shaderc::ShaderKind::Fragment, "sky.frag");
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("sky-pipeline"),
+        layout: Some(&pl),
+        vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+        fragment: Some(wgpu::FragmentState {
+            module: &fs,
+            entry_point: "main",
+            targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba32Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+
+    let img = render_rgba32f(&device, &queue, &pipeline, &bg, w, h);
+
+    // (a) NUMERIC GATE: GLSL radiance vs our Rust radiance at sample pixels.
+    let mut worst = 0.0f32;
+    let mut worst_ctx = String::new();
+    for &(px, py) in &[(10u32, 5u32), (256, 5), (256, 128), (500, 200), (128, 250), (400, 60)] {
+        let uv = [(px as f32 + 0.5) / w as f32, (py as f32 + 0.5) / h as f32];
+        let phi = (uv[0] - 0.5) * std::f32::consts::TAU;
+        let theta = uv[1] * std::f32::consts::FRAC_PI_2;
+        let view = [theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin()];
+        let gamma = (view[0] * sun[0] + view[1] * sun[1] + view[2] * sun[2]).clamp(-1.0, 1.0).acos();
+        let gpu = img[(py * w + px) as usize];
+        for ci in 0..3usize {
+            let ours = hw_radiance_ours(&raw_p[(9 * ci)..(9 * ci + 9)], raw_r[ci], theta, gamma);
+            let rel = (gpu[ci] - ours).abs() / ours.abs().max(1e-4);
+            if rel > worst {
+                worst = rel;
+                worst_ctx = format!("px=({px},{py}) ch={ci}: gpu={:.4} rust={ours:.4}", gpu[ci]);
+            }
+        }
+    }
+    log::info!("H-W SKY RENDERED -- I1 harness-visual (sun elev {el_deg:.0}, turbidity 3, {w}x{h} equirect)");
+    log::info!("  GLSL-vs-Rust radiance worst rel err = {worst:.2e}   ({worst_ctx})");
+    let gate = worst < 1e-3;
+
+    // (b) VISUAL: physical cd/m^2 (x683) -> fixed display exposure -> PBRNeutral -> sRGB -> BMP.
+    const K: f32 = 683.0;
+    const EXPOSURE: f32 = 1.0 / 16000.0; // display choice (real exposure = viewer-integration crux)
+    let mut rgb8 = Vec::with_capacity((w * h) as usize);
+    for p in &img {
+        let lin = [p[0] * K * EXPOSURE, p[1] * K * EXPOSURE, p[2] * K * EXPOSURE];
+        let tm = pbr_neutral_tonemap(lin);
+        rgb8.push([
+            (linear_to_srgb_c(tm[0]) * 255.0 + 0.5) as u8,
+            (linear_to_srgb_c(tm[1]) * 255.0 + 0.5) as u8,
+            (linear_to_srgb_c(tm[2]) * 255.0 + 0.5) as u8,
+        ]);
+    }
+    let out_path = "C:/fs/sky_hw.bmp";
+    match write_bmp(out_path, w as usize, h as usize, &rgb8) {
+        Ok(()) => log::info!("  wrote {out_path}  (sun centered; top=zenith, bottom=horizon)"),
+        Err(e) => { log::error!("  BMP write failed: {e}"); return false; }
+    }
+    if gate {
+        log::info!("PASS: the shippable GLSL radiance() matches Rust/oracle (<1e-3); physical sky rendered.");
+    } else {
+        log::error!("FAIL: GLSL radiance() diverges from Rust (>1e-3) -- shader port bug.");
+    }
+    gate
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -2880,6 +3145,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "sky-sl") {
         let ok = run_sky_sl();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sky-view") {
+        let ok = run_sky_view();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

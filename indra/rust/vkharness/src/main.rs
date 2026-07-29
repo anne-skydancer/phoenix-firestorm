@@ -2453,6 +2453,58 @@ fn run_sky_sl() -> bool {
     true
 }
 
+// --- Track B / Phase B: PHYSICAL EXPOSURE -- pin L_ref (the faithful camera's EV) ---
+// The exposure spine. Absolute physical luminance (cd/m^2) maps into display via a
+// physical reference L_ref = the luminance that lands on display middle-grey (0.18).
+// exposure = 0.18/L_ref; the faithful camera fixes L_ref (a real photographic EV) so a
+// brighter environment gives a brighter image (auto-metering would cancel it). This gate
+// pins the L_ref the viewer's pre_exposure + faithful-EV need, using B2's calibrated
+// numbers + standard photometry (grey card L = E*rho/pi). `cargo run -- expo-phys`.
+fn run_expo_phys() -> bool {
+    let daylight_lux = 100_000.0f32; // clear midday, sky + sun (CIE)
+    let l_grey = daylight_lux * 0.18 / std::f32::consts::PI; // ~5730 cd/m^2 (18% card)
+    let l_white = daylight_lux * 0.90 / std::f32::consts::PI; // 90% card
+    let l_sky = 4084.0f32; // B2 calibrated H-W zenith, clear high sun
+    let key = 0.18f32;
+    let l_ref = l_grey; // faithful anchor: 18% card in reference daylight = middle grey
+    let exposure = key / l_ref; // EV0 physical exposure multiplier
+
+    log::info!("PHYSICAL EXPOSURE -- pin L_ref (faithful camera EV anchor)");
+    log::info!("  ref daylight {daylight_lux:.0} lux -> 18% grey = {l_grey:.0} cd/m^2 = L_ref");
+    log::info!("  exposure(EV0) = key/L_ref = {key}/{l_ref:.0} = {exposure:.3e}   (slider = exposure * 2^EV)");
+    log::info!("  {:>12} {:>11} {:>9} {:>11}", "surface", "cd/m^2", "exposed", "display sRGB");
+    let show = |name: &str, l: f32| {
+        let exp = l * exposure;
+        let tm = pbr_neutral_tonemap([exp; 3])[0];
+        log::info!("  {name:>12} {l:>11.0} {exp:>9.4} {:>11.4}", linear_to_srgb_c(tm));
+    };
+    show("18% grey", l_grey);
+    show("90% white", l_white);
+    show("sky zenith", l_sky);
+
+    log::info!("");
+    log::info!("  FAITHFUL: 18% grey under env x0.25..x4 at FIXED exposure (image must TRACK):");
+    let envs = [0.25f32, 0.5, 1.0, 2.0, 4.0];
+    let (mut d0, mut dl) = (0.0f32, 0.0f32);
+    for (i, &k) in envs.iter().enumerate() {
+        let tm = pbr_neutral_tonemap([l_grey * k * exposure; 3])[0];
+        if i == 0 { d0 = tm; }
+        dl = tm;
+        log::info!("    env x{k:>4.2}  grey {:>7.0} cd/m^2  display {tm:.4}", l_grey * k);
+    }
+    let exposed_grey = l_grey * exposure;
+    let white_ok = l_white * exposure < 1.0; // 90% card must not pre-clip
+    log::info!("  16x env sweep -> display ratio x{:.2} (faithful tracks; auto would be ~x1)", dl / d0.max(1e-4));
+    let pass = (exposed_grey - key).abs() < 1e-4 && white_ok;
+    if pass {
+        log::info!("PASS: 18% grey -> exposed {exposed_grey:.3} (=key), 90% white {:.3} (<1, no clip).", l_white * exposure);
+        log::info!("  => L_ref = {l_ref:.0} cd/m^2 pins the viewer pre_exposure; faithful EV0 = exposure {exposure:.3e}.");
+    } else {
+        log::error!("FAIL: grey={exposed_grey:.3} (want {key}), white_ok={white_ok}.");
+    }
+    pass
+}
+
 // --- ATMOSPHERE / bake dump: reference for the C++ viewer bake gate ---------------
 // Prints raw() (27 params + 3 radiances) for a fixed set of (elevation, turbidity,
 // albedo) configs in a parseable form, so the viewer's C++ LLHWSky::bake port can be
@@ -3182,6 +3234,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "sky-dump") {
         let ok = run_sky_dump();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "expo-phys") {
+        let ok = run_expo_phys();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

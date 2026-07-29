@@ -1853,6 +1853,80 @@ fn sl_brdf_lut(n_dot_v: f32, roughness: f32, samples: u32) -> (f32, f32) {
     (scale / samples as f32, bias / samples as f32)
 }
 
+/// SL's DIRECT-light geometry term (deferredUtil.glsl `geometricOcclusion`): the
+/// exact separable Smith-GGX masking-shadowing, r = alphaRoughness = perceptualRoughness^2.
+/// This is a DIFFERENT G than the IBL LUT's Schlick-k -- the whole point of gate 2.
+fn sl_geometric_occlusion(n_dot_l: f32, n_dot_v: f32, alpha_roughness: f32) -> f32 {
+    let r = alpha_roughness;
+    let al = 2.0 * n_dot_l / (n_dot_l + (r * r + (1.0 - r * r) * n_dot_l * n_dot_l).sqrt());
+    let av = 2.0 * n_dot_v / (n_dot_v + (r * r + (1.0 - r * r) * n_dot_v * n_dot_v).sqrt());
+    al * av
+}
+
+/// Direct-light specular reflected energy (F0=1), importance-sampled the SAME way as
+/// gate 1 (GGX alpha = perceptualRoughness^2), but with SL's EXACT Smith G from
+/// pbrPunctual instead of the LUT's Schlick-k. Same estimator: mean of G*VoH/(NoH*NoV).
+fn sl_direct_specular_energy(n_dot_v: f32, roughness: f32, samples: u32) -> f32 {
+    let alpha = roughness * roughness; // GGX alpha = alphaRoughness (matches punctual D)
+    let v = [(1.0 - n_dot_v * n_dot_v).max(0.0).sqrt(), 0.0, n_dot_v];
+    let mut acc = 0.0f32;
+    for i in 0..samples {
+        let xi_x = i as f32 / samples as f32;
+        let xi_y = radical_inverse_vdc(i);
+        let phi = 2.0 * std::f32::consts::PI * xi_x;
+        let cos_t = ((1.0 - xi_y) / (1.0 + (alpha * alpha - 1.0) * xi_y)).sqrt();
+        let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
+        let h = [sin_t * phi.cos(), sin_t * phi.sin(), cos_t];
+        let vdoth = v[0] * h[0] + v[1] * h[1] + v[2] * h[2];
+        let l = [2.0 * vdoth * h[0] - v[0], 2.0 * vdoth * h[1] - v[1], 2.0 * vdoth * h[2] - v[2]];
+        let n_dot_l = l[2];
+        let n_dot_h = h[2].max(0.0);
+        let v_dot_h = vdoth.max(0.0);
+        if n_dot_l > 0.0 {
+            let g = sl_geometric_occlusion(n_dot_l, n_dot_v, alpha); // r = alphaRoughness
+            acc += g * v_dot_h / (n_dot_h * n_dot_v);
+        }
+    }
+    acc / samples as f32
+}
+
+/// GATE 2 -- direct-light specular furnace + IBL-vs-direct consistency check.
+/// Tabulates SL's punctual specular energy (exact Smith G) and compares to the IBL
+/// LUT energy (gate 1) at normal incidence: if the two disagree, the same material
+/// reflects different energy under sun vs under reflection probes.
+fn run_furnace_direct() -> bool {
+    let samples = 8192u32;
+    let roughs = [0.0f32, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+    let novs = [1.0f32, 0.75, 0.5, 0.25, 0.1];
+    log::info!("DIRECT-LIGHT FURNACE -- SL pbrPunctual exact-Smith G, F0=1 (lossless = 1.0000)");
+    log::info!("  rough\\NoV     1.00    0.75    0.50    0.25    0.10");
+    let mut worst = 1.0f32;
+    for &r in &roughs {
+        let mut row = format!("   {r:>4.2}     ");
+        for &nv in &novs {
+            let e = sl_direct_specular_energy(nv, r, samples);
+            worst = worst.min(e);
+            row.push_str(&format!("  {e:.4}"));
+        }
+        log::info!("{row}");
+    }
+    log::info!("worst-case direct specular energy = {:.4}  =>  max LOSS = {:.1}%", worst, (1.0 - worst) * 100.0);
+    log::info!("");
+    log::info!("IBL (gate1 Schlick-k) vs DIRECT (exact-Smith) at NoV=1.00 -- same material, two paths:");
+    log::info!("  rough     IBL      DIRECT    disagree");
+    let mut max_disagree = 0.0f32;
+    for &r in &roughs {
+        let (s, b) = sl_brdf_lut(1.0, r, samples);
+        let ibl = s + b;
+        let dir = sl_direct_specular_energy(1.0, r, samples);
+        let d = (ibl - dir).abs();
+        max_disagree = max_disagree.max(d);
+        log::info!("  {r:>4.2}    {ibl:.4}   {dir:.4}    {d:.4}");
+    }
+    log::info!("max IBL-vs-direct disagreement (NoV=1) = {:.4} ({:.1}% of full energy)", max_disagree, max_disagree * 100.0);
+    true
+}
+
 /// White furnace gate: tabulate SL's specular reflected energy (F0=1) over
 /// roughness x view angle. Deviation from 1.000 = energy the shader silently loses.
 fn run_furnace() -> bool {
@@ -2279,6 +2353,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "furnace") {
         let ok = run_furnace();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "furnace-direct") {
+        let ok = run_furnace_direct();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

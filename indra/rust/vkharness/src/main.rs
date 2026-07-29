@@ -135,6 +135,122 @@ fn glsl_module(
     })
 }
 
+// --- shared helpers for the headless known-answer gates -------------------------
+// (h3a/c/d predate these and keep their own inline copies -- stable code stays put;
+// new gates from H3b on use these.)
+
+/// A headless Vulkan device+queue (no window/surface), adapter logged.
+fn headless_vulkan_device() -> (wgpu::Device, wgpu::Queue) {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("no Vulkan adapter");
+        let info = adapter.get_info();
+        log::info!(
+            "adapter: {} | backend={:?} | driver={} {}",
+            info.name, info.backend, info.driver, info.driver_info
+        );
+        adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("headless"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                },
+                None,
+            )
+            .await
+            .expect("request_device")
+    })
+}
+
+/// Draw a fullscreen triangle through `pipeline`+`bind_group` to a 1px Rgba32Float
+/// target and read the pixel back exactly (4x f32).
+fn render_1px(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+) -> [f32; 4] {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("px-target"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("px-readback"),
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("px-enc") });
+    {
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("px-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        rp.set_pipeline(pipeline);
+        rp.set_bind_group(0, bind_group, &[]);
+        rp.draw(0..3, 0..1);
+    }
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture {
+            texture: &tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::ImageCopyBuffer {
+            buffer: &readback,
+            layout: wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    queue.submit(std::iter::once(enc.finish()));
+    let slice = readback.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+    device.poll(wgpu::Maintain::Wait);
+    rx.recv().unwrap().expect("map_async failed");
+    let out = {
+        let data = slice.get_mapped_range();
+        let px: &[f32] = bytemuck::cast_slice(&data[0..16]);
+        [px[0], px[1], px[2], px[3]]
+    };
+    readback.unmap();
+    out
+}
+
 // --- H3a: uniform -> std140 UBO -> SPIR-V, known-answer readback ----------------
 // Mechanism proof (H3_PLAN.md): prove a std140 UBO delivers its values intact
 // through shaderc->SPIR-V->wgpu by rendering a shader whose 1px output IS the
@@ -775,6 +891,99 @@ fn run_h3d() -> bool {
     })
 }
 
+// --- H3b-1: multiple UBOs bound in one pipeline (the softenLight shape) ----------
+// softenLight will read a Frame UBO + a local UBO + a shadow-array UBO at once.
+// Prove two coexist: std140 blocks at binding 0 and 1, read from both (incl. a
+// cross-block sum so a mis-bind is caught), memcmp. `cargo run -- h3b1`.
+
+const H3B1_FRAG_GLSL: &str = r#"
+#version 450
+layout(location = 0) out vec4 frag_color;
+layout(set = 0, binding = 0, std140) uniform BlockA { vec4 a; } ua;
+layout(set = 0, binding = 1, std140) uniform BlockB { vec4 b; } ub;
+void main() {
+    frag_color = vec4(ua.a.x, ub.b.y, ua.a.z + ub.b.z, ub.b.w);
+}
+"#;
+
+/// H3b-1: prove two UBOs bind + deliver correctly in one pipeline.
+fn run_h3b1() -> bool {
+    let (device, queue) = headless_vulkan_device();
+
+    let a = [0.25f32, 0.0, 0.5, 0.0];
+    let b = [0.0f32, 0.375, 0.125, 0.875];
+    let expected = [a[0], b[1], a[2] + b[2], b[3]]; // [0.25, 0.375, 0.625, 0.875]
+
+    let buf_a = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("h3b1-a"),
+        contents: bytemuck::cast_slice(&a),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let buf_b = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("h3b1-b"),
+        contents: bytemuck::cast_slice(&b),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let entry = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("h3b1-bgl"),
+        entries: &[entry(0), entry(1)],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("h3b1-bg"),
+        layout: &bgl,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: buf_b.as_entire_binding() },
+        ],
+    });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("h3b1-pl"),
+        bind_group_layouts: &[&bgl],
+        push_constant_ranges: &[],
+    });
+    let vs = glsl_module(&device, H3A_VERT_GLSL, shaderc::ShaderKind::Vertex, "h3b1.vert");
+    let fs = glsl_module(&device, H3B1_FRAG_GLSL, shaderc::ShaderKind::Fragment, "h3b1.frag");
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("h3b1-pipeline"),
+        layout: Some(&pl),
+        vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+        fragment: Some(wgpu::FragmentState {
+            module: &fs,
+            entry_point: "main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba32Float,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+
+    let got = render_1px(&device, &queue, &pipeline, &bind_group);
+    let pass = got == expected;
+    log::info!(
+        "H3b-1 two UBOs in one pipeline: expected {:?}  got {:?}  -> {}",
+        expected, got, if pass { "PASS" } else { "FAIL" }
+    );
+    pass
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -1143,6 +1352,11 @@ fn main() {
     // H3d: std140 array-element stride (array tier). `cargo run -- h3d`.
     if std::env::args().skip(1).any(|a| a == "h3d") {
         let ok = run_h3d();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    // H3b-1: two UBOs bound in one pipeline. `cargo run -- h3b1`.
+    if std::env::args().skip(1).any(|a| a == "h3b1") {
+        let ok = run_h3b1();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

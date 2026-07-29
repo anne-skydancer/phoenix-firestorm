@@ -1800,6 +1800,86 @@ fn run_h3b3d_exec() -> bool {
     })
 }
 
+// --- LIGHT, measured: analytic known-answer gates -------------------------------
+// "Accurate light" isn't taste -- it has closed-form answers. First instrument: the
+// WHITE FURNACE test for the specular BRDF. Faithful Rust port of SL's genbrdflutF
+// split-sum LUT (importanceSample_GGX alpha=roughness^2, G_SchlicksmithGGX k=
+// roughness^2/2, Fc=(1-VoH)^5). For a perfect mirror (F0=1) the reflected energy =
+// scale+bias; a LOSSLESS BRDF returns exactly 1.0 at every roughness. Single-scatter
+// GGX (what SL ships -- no multiscatter/energy-compensation term exists in the tree)
+// LOSES energy as roughness rises => rough metals/speculars render too dark. This
+// measures SL's actual specular energy conservation. `cargo run -- furnace`.
+
+/// Van der Corput radical inverse (base 2) -- the y of a Hammersley point.
+fn radical_inverse_vdc(mut bits: u32) -> f32 {
+    bits = (bits << 16) | (bits >> 16);
+    bits = ((bits & 0x5555_5555) << 1) | ((bits & 0xAAAA_AAAA) >> 1);
+    bits = ((bits & 0x3333_3333) << 2) | ((bits & 0xCCCC_CCCC) >> 2);
+    bits = ((bits & 0x0F0F_0F0F) << 4) | ((bits & 0xF0F0_F0F0) >> 4);
+    bits = ((bits & 0x00FF_00FF) << 8) | ((bits & 0xFF00_FF00) >> 8);
+    (bits as f32) * 2.328_306_437e-10
+}
+
+/// SL's genbrdflutF `BRDF(NoV, roughness)` -> (scale, bias), ported byte-faithfully.
+/// N=+z; the per-sample phi jitter is dropped (a constant offset under full-2pi
+/// integration -> identical result, and deterministic). roughness is PERCEPTUAL.
+fn sl_brdf_lut(n_dot_v: f32, roughness: f32, samples: u32) -> (f32, f32) {
+    let alpha = roughness * roughness;
+    let k = (roughness * roughness) / 2.0; // SL's IBL Schlick-Smith k (perceptual)
+    let v = [(1.0 - n_dot_v * n_dot_v).max(0.0).sqrt(), 0.0, n_dot_v];
+    let (mut scale, mut bias) = (0.0f32, 0.0f32);
+    for i in 0..samples {
+        let xi_x = i as f32 / samples as f32;
+        let xi_y = radical_inverse_vdc(i);
+        let phi = 2.0 * std::f32::consts::PI * xi_x;
+        let cos_t = ((1.0 - xi_y) / (1.0 + (alpha * alpha - 1.0) * xi_y)).sqrt();
+        let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
+        let h = [sin_t * phi.cos(), sin_t * phi.sin(), cos_t];
+        let vdoth = v[0] * h[0] + v[1] * h[1] + v[2] * h[2];
+        let l = [2.0 * vdoth * h[0] - v[0], 2.0 * vdoth * h[1] - v[1], 2.0 * vdoth * h[2] - v[2]];
+        let n_dot_l = l[2].max(0.0);
+        let n_dot_h = h[2].max(0.0);
+        let v_dot_h = vdoth.max(0.0);
+        if n_dot_l > 0.0 {
+            let gl = n_dot_l / (n_dot_l * (1.0 - k) + k);
+            let gv = n_dot_v / (n_dot_v * (1.0 - k) + k);
+            let g = gl * gv;
+            let g_vis = (g * v_dot_h) / (n_dot_h * n_dot_v);
+            let fc = (1.0 - v_dot_h).powf(5.0);
+            scale += (1.0 - fc) * g_vis;
+            bias += fc * g_vis;
+        }
+    }
+    (scale / samples as f32, bias / samples as f32)
+}
+
+/// White furnace gate: tabulate SL's specular reflected energy (F0=1) over
+/// roughness x view angle. Deviation from 1.000 = energy the shader silently loses.
+fn run_furnace() -> bool {
+    let samples = 8192u32;
+    let roughs = [0.0f32, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+    let novs = [1.0f32, 0.75, 0.5, 0.25, 0.1];
+    log::info!("WHITE FURNACE -- SL genbrdflutF, F0=1: reflected energy = scale+bias (lossless = 1.0000)");
+    log::info!("  rough\\NoV     1.00    0.75    0.50    0.25    0.10");
+    let mut worst = 1.0f32;
+    for &r in &roughs {
+        let mut row = format!("   {r:>4.2}     ");
+        for &nv in &novs {
+            let (s, b) = sl_brdf_lut(nv, r, samples);
+            let e = s + b;
+            worst = worst.min(e);
+            row.push_str(&format!("  {e:.4}"));
+        }
+        log::info!("{row}");
+    }
+    log::info!(
+        "worst-case reflected energy = {:.4}  =>  max specular energy LOSS = {:.1}%  (single-scatter GGX, no compensation)",
+        worst,
+        (1.0 - worst) * 100.0
+    );
+    true
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -2195,6 +2275,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "h3b3d-exec") {
         let ok = run_h3b3d_exec();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "furnace") {
+        let ok = run_furnace();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

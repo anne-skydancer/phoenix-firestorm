@@ -364,6 +364,210 @@ fn run_h3a() -> bool {
     })
 }
 
+// --- H3c: the TRANSFORM tier -- a mat4 UBO applied in the VERTEX stage -----------
+// H3a proved value-delivery to a fragment shader. H3c proves the biggest tier
+// (per-draw matrices; modelview_projection is in 59 shaders) by applying a mat4
+// from a UBO in the VERTEX stage and reading the transformed point back as colour.
+// Known answer: mvp * (1,2,3,1), cols [2,0,0,0][0,3,0,0][0,0,4,0][10,20,30,1]
+// = 1*c0 + 2*c1 + 3*c2 + 1*c3 = [12,26,42,1]. Headless. `cargo run -- h3c`.
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct TransformUbo {
+    mvp: [[f32; 4]; 4], // column-major, std140 offset 0, 64B (each inner = a column)
+}
+
+const H3C_VERT_GLSL: &str = r#"
+#version 450
+layout(set = 0, binding = 0, std140) uniform T { mat4 mvp; } t;
+layout(location = 0) out vec4 vP;
+void main() {
+    // fullscreen coverage so the 1px target is written
+    vec2 fp = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    gl_Position = vec4(fp * 2.0 - 1.0, 0.0, 1.0);
+    // the actual test: transform a known point by the UBO matrix (constant across
+    // the triangle -> the fragment reads it exactly)
+    vP = t.mvp * vec4(1.0, 2.0, 3.0, 1.0);
+}
+"#;
+
+const H3C_FRAG_GLSL: &str = r#"
+#version 450
+layout(location = 0) in vec4 vP;
+layout(location = 0) out vec4 frag_color;
+void main() { frag_color = vP; }
+"#;
+
+/// H3c: prove a mat4 UBO is delivered + applied correctly in the vertex stage.
+fn run_h3c() -> bool {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("H3c: no Vulkan adapter");
+        let info = adapter.get_info();
+        log::info!(
+            "H3c adapter: {} | backend={:?} | driver={} {}",
+            info.name, info.backend, info.driver, info.driver_info
+        );
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("h3c-device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                },
+                None,
+            )
+            .await
+            .expect("H3c: request_device");
+
+        let ubo = TransformUbo {
+            mvp: [
+                [2.0, 0.0, 0.0, 0.0],     // col0
+                [0.0, 3.0, 0.0, 0.0],     // col1
+                [0.0, 0.0, 4.0, 0.0],     // col2
+                [10.0, 20.0, 30.0, 1.0],  // col3 (translation)
+            ],
+        };
+        let expected = [12.0f32, 26.0, 42.0, 1.0]; // mvp * (1,2,3,1)
+
+        let ubo_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("h3c-ubo"),
+            contents: bytemuck::bytes_of(&ubo),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("h3c-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX, // matrix used in the vertex stage
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("h3c-bg"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: ubo_buf.as_entire_binding() }],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("h3c-pl"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let vs = glsl_module(&device, H3C_VERT_GLSL, shaderc::ShaderKind::Vertex, "h3c.vert");
+        let fs = glsl_module(&device, H3C_FRAG_GLSL, shaderc::ShaderKind::Fragment, "h3c.frag");
+        let fmt = wgpu::TextureFormat::Rgba32Float;
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("h3c-pipeline"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &fs,
+                entry_point: "main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: fmt,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("h3c-target"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("h3c-readback"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("h3c-enc") });
+        {
+            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("h3c-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(&pipeline);
+            rp.set_bind_group(0, &bind_group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &readback,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        queue.submit(std::iter::once(enc.finish()));
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().expect("H3c: map_async failed");
+        let got = {
+            let data = slice.get_mapped_range();
+            let px: &[f32] = bytemuck::cast_slice(&data[0..16]);
+            [px[0], px[1], px[2], px[3]]
+        };
+        readback.unmap();
+        let pass = got == expected;
+        log::info!(
+            "H3c mat4-UBO transform (vertex stage): expected {:?}  got {:?}  -> {}",
+            expected, got, if pass { "PASS" } else { "FAIL" }
+        );
+        pass
+    })
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -722,6 +926,11 @@ fn main() {
     // H3a: headless UBO value-delivery proof (H3_PLAN.md). `cargo run -- h3a`.
     if std::env::args().skip(1).any(|a| a == "h3a") {
         let ok = run_h3a();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    // H3c: mat4 UBO applied in the vertex stage (transform tier). `cargo run -- h3c`.
+    if std::env::args().skip(1).any(|a| a == "h3c") {
+        let ok = run_h3c();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

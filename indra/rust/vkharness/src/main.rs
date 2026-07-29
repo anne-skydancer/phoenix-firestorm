@@ -1315,6 +1315,18 @@ fn is_sampler_decl(trimmed: &str) -> bool {
     }
 }
 
+/// Map a GLSL combined-sampler type to its Vulkan SEPARATE (texture, sampler) pair.
+/// e.g. sampler2D -> (texture2D, sampler); sampler2DShadow -> (texture2D, samplerShadow);
+/// samplerCubeArray -> (textureCubeArray, sampler). The combined type itself is reused
+/// verbatim as the `sampler2D(tex, smp)` constructor in the #define.
+fn split_sampler_type(st: &str) -> (String, String) {
+    let is_shadow = st.contains("Shadow");
+    let smp_type = if is_shadow { "samplerShadow" } else { "sampler" };
+    // strip leading "sampler", drop "Shadow", prepend "texture"
+    let suffix = st.strip_prefix("sampler").unwrap_or(st).replace("Shadow", "");
+    (format!("texture{suffix}"), smp_type.to_string())
+}
+
 /// H3b-3c: the transform. Rewrite the deduped loose-uniform source into the
 /// Vulkan shape:
 ///  - every runtime value-uniform -> a member of ONE anonymous std140 block
@@ -1336,9 +1348,21 @@ fn ubo_transform(src: &str) -> (String, usize, usize) {
         let mut out_line = line.to_string();
         if depth == 0 && trimmed.starts_with("uniform ") {
             if is_sampler_decl(trimmed) {
-                // sampler/image -> explicit descriptor binding
-                out_line = format!("layout(set = 0, binding = {binding}) {trimmed}");
-                binding += 1;
+                // COMBINED sampler -> SEPARATE texture + sampler (Transform #2, wgpu
+                // has no combined binding type). A #define reconstructs the combined
+                // sampler at every use site via the preprocessor -- zero call-site
+                // churn, correct token boundaries, works through function args too.
+                let st = trimmed.split_whitespace().nth(1).unwrap_or("sampler2D");
+                let name = decl_name_uniform(trimmed).unwrap_or_default();
+                let (tex_type, smp_type) = split_sampler_type(st);
+                let b_tex = binding;
+                let b_smp = binding + 1;
+                binding += 2;
+                out_line = format!(
+                    "layout(set = 0, binding = {b_tex}) uniform {tex_type} {name}_tex;\n\
+                     layout(set = 0, binding = {b_smp}) uniform {smp_type} {name}_smp;\n\
+                     #define {name} {st}({name}_tex, {name}_smp)"
+                );
                 samplers += 1;
             } else if trimmed.contains('=') {
                 // uniform with initializer (may span lines) -> baked const table
@@ -1428,7 +1452,13 @@ fn build_softenlight_ubo_spirv() -> Result<(Vec<u32>, usize, usize), String> {
         "main",
         Some(&opts),
     ) {
-        Ok(art) => Ok((art.as_binary().to_vec(), n_members, n_samplers)),
+        Ok(art) => {
+            let spv = art.as_binary().to_vec();
+            // dump raw bytes for spirv-dis inspection
+            let bytes: &[u8] = bytemuck::cast_slice(&spv);
+            let _ = std::fs::write("c:/fs/softenLight_ubo.spv", bytes);
+            Ok((spv, n_members, n_samplers))
+        }
         Err(e) => Err(e.to_string()),
     }
 }

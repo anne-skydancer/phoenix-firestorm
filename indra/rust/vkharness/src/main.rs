@@ -364,6 +364,104 @@ fn run_h3a() -> bool {
     })
 }
 
+// --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
+// H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
+// whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
+// per-frame-gather update path (what the FrameUBO burn's setter-interception got
+// wrong), and it's simply nice to watch. `cargo run -- h3a-view`.
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ViewUbo {
+    params: [f32; 4],  // x=time  (all-vec4 -> std140 offsets are trivially 0/16/32)
+    color_a: [f32; 4],
+    color_b: [f32; 4],
+}
+
+const H3A_VIEW_FRAG_GLSL: &str = r#"
+#version 450
+layout(location = 0) in vec2 vUV;
+layout(location = 0) out vec4 frag;
+layout(set = 0, binding = 0, std140) uniform ViewBlock {
+    vec4 params;   // x = time
+    vec4 color_a;
+    vec4 color_b;
+} u;
+void main() {
+    float t = u.params.x;
+    vec2 uv = vUV;
+    // three slow, out-of-phase waves -> a soft drifting field, gently in [0,1]
+    float a = sin(uv.x * 3.0 + t * 0.35)
+            + sin(uv.y * 3.0 - t * 0.28)
+            + sin((uv.x + uv.y) * 2.0 + t * 0.19);
+    a = 0.5 + 0.16 * a;
+    vec3 col = mix(u.color_a.rgb, u.color_b.rgb, a);
+    // soft vignette so the edges settle into the dark
+    vec2 c = uv - 0.5;
+    col *= 1.0 - 0.35 * dot(c, c);
+    frag = vec4(col, 1.0);
+}
+"#;
+
+fn build_h3a_view(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> (wgpu::RenderPipeline, wgpu::BindGroup, wgpu::Buffer) {
+    let ubo = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("view-ubo"),
+        size: std::mem::size_of::<ViewUbo>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("view-bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("view-bg"),
+        layout: &bgl,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: ubo.as_entire_binding() }],
+    });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("view-pl"),
+        bind_group_layouts: &[&bgl],
+        push_constant_ranges: &[],
+    });
+    let vs = glsl_module(device, BG_VERT_GLSL, shaderc::ShaderKind::Vertex, "view.vert");
+    let fs = glsl_module(device, H3A_VIEW_FRAG_GLSL, shaderc::ShaderKind::Fragment, "view.frag");
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("view-pipeline"),
+        layout: Some(&pl),
+        vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+        fragment: Some(wgpu::FragmentState {
+            module: &fs,
+            entry_point: "main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    });
+    (pipeline, bind_group, ubo)
+}
+
 struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -375,10 +473,14 @@ struct State {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     bg_pipeline: wgpu::RenderPipeline, // H2: GLSL->SPIR-V fullscreen background
+    view_mode: bool,                   // h3a-view: draw the UBO-driven field instead
+    view_pipeline: wgpu::RenderPipeline,
+    view_bind_group: wgpu::BindGroup,
+    view_ubo: wgpu::Buffer,
 }
 
 impl State {
-    async fn new(window: Arc<Window>) -> State {
+    async fn new(window: Arc<Window>, view_mode: bool) -> State {
         let size = window.inner_size();
 
         // Pin to the Vulkan backend -- the whole point of the harness.
@@ -511,6 +613,12 @@ impl State {
         });
         log::info!("H2: GLSL->SPIR-V background pipeline built via shaderc");
 
+        // H3a-view: UBO-driven fullscreen field, updated per frame.
+        let (view_pipeline, view_bind_group, view_ubo) = build_h3a_view(&device, config.format);
+        if view_mode {
+            log::info!("H3a-view: UBO-driven field (per-frame UBO rewrite) -- Esc quits, F fullscreen");
+        }
+
         State {
             surface,
             device,
@@ -522,6 +630,10 @@ impl State {
             pipeline,
             vertex_buffer,
             bg_pipeline,
+            view_mode,
+            view_pipeline,
+            view_bind_group,
+            view_ubo,
         }
     }
 
@@ -541,6 +653,18 @@ impl State {
         let t = (self.frame as f64) * 0.01;
         let pulse = 0.5 - 0.5 * t.cos();
         let clear = wgpu::Color { r: 0.02, g: 0.02 + 0.10 * pulse, b: 0.14, a: 1.0 };
+
+        // h3a-view: rewrite the whole UBO every frame (per-frame gather), so the
+        // picture on screen is a live read of a UBO we refill each tick.
+        if self.view_mode {
+            let t = self.frame as f32 * 0.016;
+            let ubo = ViewUbo {
+                params: [t, self.config.width as f32, self.config.height as f32, 0.0],
+                color_a: [0.04, 0.06, 0.16, 1.0], // deep night blue
+                color_b: [0.16, 0.34, 0.42, 1.0], // soft twilight teal
+            };
+            self.queue.write_buffer(&self.view_ubo, 0, bytemuck::bytes_of(&ubo));
+        }
 
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -562,14 +686,21 @@ impl State {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            // H2: GLSL-sourced fullscreen background (no vertex buffer), then
-            // the H1 WGSL triangle on top -- both shader front-ends, one frame.
-            rpass.set_pipeline(&self.bg_pipeline);
-            rpass.draw(0..3, 0..1);
+            if self.view_mode {
+                // h3a-view: the UBO-driven field, fullscreen.
+                rpass.set_pipeline(&self.view_pipeline);
+                rpass.set_bind_group(0, &self.view_bind_group, &[]);
+                rpass.draw(0..3, 0..1);
+            } else {
+                // H2: GLSL-sourced fullscreen background (no vertex buffer), then
+                // the H1 WGSL triangle on top -- both shader front-ends, one frame.
+                rpass.set_pipeline(&self.bg_pipeline);
+                rpass.draw(0..3, 0..1);
 
-            rpass.set_pipeline(&self.pipeline);
-            rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            rpass.draw(0..VERTICES.len() as u32, 0..1);
+                rpass.set_pipeline(&self.pipeline);
+                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                rpass.draw(0..VERTICES.len() as u32, 0..1);
+            }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
@@ -594,16 +725,24 @@ fn main() {
         std::process::exit(if ok { 0 } else { 1 });
     }
 
+    // h3a-view: the same UBO path as the headless gate, but drawn to the window.
+    let view_mode = std::env::args().skip(1).any(|a| a == "h3a-view");
+
     let event_loop = EventLoop::new().expect("event loop");
+    let title = if view_mode {
+        "vkharness -- H3a-view (UBO-driven, Vulkan)"
+    } else {
+        "vkharness -- Firestorm-FSVulkan (Vulkan)"
+    };
     let window = Arc::new(
         WindowBuilder::new()
-            .with_title("vkharness -- Firestorm-FSVulkan (Vulkan)")
+            .with_title(title)
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
             .build(&event_loop)
             .expect("window"),
     );
 
-    let mut state = pollster::block_on(State::new(window.clone()));
+    let mut state = pollster::block_on(State::new(window.clone(), view_mode));
 
     event_loop
         .run(move |event, elwt| {

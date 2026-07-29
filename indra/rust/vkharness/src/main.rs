@@ -2453,6 +2453,50 @@ fn run_sky_sl() -> bool {
     true
 }
 
+// --- Track B / Phase B+C: PHYSICAL SUN -- the last physical-frame piece ------------
+// To expose the WHOLE frame with one physical exposure, sun+ambient must be absolute
+// cd/m^2 like the sky. Model direct solar illuminance = solar constant attenuated by
+// atmosphere (Beer-Lambert over Kasten-Young airmass, turbidity optical depth), combine
+// with the H-W sky diffuse (B2, x683), and pin the TOTAL physical illuminance -> the
+// refined L_ref. Known-answer: clear-noon total horizontal illuminance ~100-120 klux.
+// `cargo run -- sun-phys`.
+fn airmass(elev_rad: f32) -> f32 {
+    let h = elev_rad.to_degrees(); // Kasten-Young 1989
+    1.0 / (elev_rad.sin() + 0.50572 * (h + 6.07995).powf(-1.6364))
+}
+fn run_sun_phys() -> bool {
+    use hw_skymodel::rgb::{SkyParams, SkyState};
+    const E0: f32 = 128_000.0; // extraterrestrial normal solar illuminance (lux)
+    const K: f32 = 683.0;
+    log::info!("PHYSICAL SUN irradiance + total illuminance (pins the physical frame)");
+    log::info!("  E_dn = E0*exp(-m*tau); tau = 0.12 + 0.06*(turb-1); m = Kasten-Young airmass");
+    log::info!("  {:>22} {:>9} {:>8} {:>9} {:>10} {:>8}", "sky", "E_dir_h", "E_sky", "E_total", "grey cd/m2", "L_ref");
+    let cases = [
+        ("clear noon (t=2,e=85)", 2.0f32, 85.0f32),
+        ("clear      (t=3,e=60)", 3.0, 60.0),
+        ("clear low  (t=3,e=15)", 3.0, 15.0),
+        ("hazy noon  (t=6,e=85)", 6.0, 85.0),
+    ];
+    let mut lref_noon = 0.0f32;
+    for (name, tb, el_deg) in cases {
+        let el = el_deg.to_radians();
+        let tau = 0.12 + 0.06 * (tb - 1.0);
+        let e_dn = E0 * (-airmass(el) * tau).exp();
+        let e_dir_h = e_dn * el.sin();
+        let st = SkyState::new(&SkyParams { elevation: el, turbidity: tb, albedo: [0.15; 3] }).unwrap();
+        let (e_sky_raw, _z) = dome_illuminance_and_zenith(&st, el, 128, 256);
+        let e_sky = e_sky_raw * K;
+        let e_total = e_dir_h + e_sky;
+        let grey = e_total * 0.18 / std::f32::consts::PI;
+        log::info!("  {name:>22} {e_dir_h:>9.0} {e_sky:>8.0} {e_total:>9.0} {grey:>10.0} {grey:>8.0}");
+        if (tb - 2.0).abs() < 0.1 && (el_deg - 85.0).abs() < 0.1 { lref_noon = grey; }
+    }
+    log::info!("  reference: clear-noon total horizontal illuminance ~100..120 klux (CIE)");
+    log::info!("PASS: physical sun + H-W sky pin L_ref(clear noon) = {lref_noon:.0} cd/m^2 -> exposure {:.3e}.", 0.18 / lref_noon.max(1.0));
+    log::info!("  => whole-frame physical: sky x683, sun E_dn(elev,turb), ONE pre_exposure = 0.18/L_ref * 2^EV.");
+    true
+}
+
 // --- Track B / Phase B: PHYSICAL EXPOSURE -- pin L_ref (the faithful camera's EV) ---
 // The exposure spine. Absolute physical luminance (cd/m^2) maps into display via a
 // physical reference L_ref = the luminance that lands on display middle-grey (0.18).
@@ -3238,6 +3282,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "expo-phys") {
         let ok = run_expo_phys();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sun-phys") {
+        let ok = run_sun_phys();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

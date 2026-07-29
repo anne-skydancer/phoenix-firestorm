@@ -568,6 +568,213 @@ fn run_h3c() -> bool {
     })
 }
 
+// --- H3d: the ARRAY tier -- std140 element stride (the shadow_matrix[6] gotcha) --
+// std140's finicky rule: EVERY array element is padded up to 16 bytes. A Rust
+// [f32;4] is packed (stride 4); std140 float[4] is stride 16. Get the mirror wrong
+// and the shader reads garbage -- exactly what would bite shadow_matrix[6]/light_*[]
+// in H3b. Prove it in isolation: scalar array + vec4 array + mat4 array, known
+// answer. Headless. `cargo run -- h3d`.
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ArrUbo {
+    vals: [[f32; 4]; 4],        // std140 float[4]: each element in its own 16B slot
+    cols: [[f32; 4]; 2],        // std140 vec4[2]: stride 16 (vec4 is natural)
+    mats: [[[f32; 4]; 4]; 2],   // std140 mat4[2]: stride 64 (the shadow_matrix shape)
+}
+
+const H3D_FRAG_GLSL: &str = r#"
+#version 450
+layout(location = 0) out vec4 frag_color;
+layout(set = 0, binding = 0, std140) uniform ArrBlock {
+    float vals[4];   //   0..64   (stride 16)
+    vec4  cols[2];   //  64..96   (stride 16)
+    mat4  mats[2];   //  96..224  (stride 64)
+} u;
+void main() {
+    // pull specific elements so a wrong stride reads wrong values
+    frag_color = vec4(u.vals[3], u.cols[1].x, u.mats[1][3][3], u.mats[0][0][0]);
+}
+"#;
+
+/// H3d: prove std140 array-element stride is delivered correctly.
+fn run_h3d() -> bool {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("H3d: no Vulkan adapter");
+        let info = adapter.get_info();
+        log::info!(
+            "H3d adapter: {} | backend={:?} | driver={} {}",
+            info.name, info.backend, info.driver, info.driver_info
+        );
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("h3d-device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                },
+                None,
+            )
+            .await
+            .expect("H3d: request_device");
+
+        let z = [0.0f32; 4];
+        let zm = [[0.0f32; 4]; 4];
+        let ubo = ArrUbo {
+            // scalar array: value lives in element[i][0], rest is std140 pad
+            vals: [[0.25, 0.0, 0.0, 0.0], z, z, [0.75, 0.0, 0.0, 0.0]],
+            cols: [z, [0.375, 0.0, 0.0, 0.0]], // cols[1].x = 0.375
+            mats: [
+                { let mut m = zm; m[0][0] = 0.125; m }, // mats[0][0][0] = 0.125
+                { let mut m = zm; m[3][3] = 0.875; m }, // mats[1][3][3] = 0.875
+            ],
+        };
+        let expected = [
+            ubo.vals[3][0],   // u.vals[3]
+            ubo.cols[1][0],   // u.cols[1].x
+            ubo.mats[1][3][3],// u.mats[1][3][3]
+            ubo.mats[0][0][0],// u.mats[0][0][0]
+        ];
+
+        let ubo_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("h3d-ubo"),
+            contents: bytemuck::bytes_of(&ubo),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("h3d-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("h3d-bg"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: ubo_buf.as_entire_binding() }],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("h3d-pl"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let vs = glsl_module(&device, H3A_VERT_GLSL, shaderc::ShaderKind::Vertex, "h3d.vert");
+        let fs = glsl_module(&device, H3D_FRAG_GLSL, shaderc::ShaderKind::Fragment, "h3d.frag");
+        let fmt = wgpu::TextureFormat::Rgba32Float;
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("h3d-pipeline"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &fs,
+                entry_point: "main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: fmt,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("h3d-target"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("h3d-readback"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("h3d-enc") });
+        {
+            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("h3d-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(&pipeline);
+            rp.set_bind_group(0, &bind_group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &readback,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        queue.submit(std::iter::once(enc.finish()));
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().expect("H3d: map_async failed");
+        let got = {
+            let data = slice.get_mapped_range();
+            let px: &[f32] = bytemuck::cast_slice(&data[0..16]);
+            [px[0], px[1], px[2], px[3]]
+        };
+        readback.unmap();
+        let pass = got == expected;
+        log::info!(
+            "H3d std140 array stride (float[]/vec4[]/mat4[]): expected {:?}  got {:?}  -> {}",
+            expected, got, if pass { "PASS" } else { "FAIL" }
+        );
+        pass
+    })
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -931,6 +1138,11 @@ fn main() {
     // H3c: mat4 UBO applied in the vertex stage (transform tier). `cargo run -- h3c`.
     if std::env::args().skip(1).any(|a| a == "h3c") {
         let ok = run_h3c();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    // H3d: std140 array-element stride (array tier). `cargo run -- h3d`.
+    if std::env::args().skip(1).any(|a| a == "h3d") {
+        let ok = run_h3d();
         std::process::exit(if ok { 0 } else { 1 });
     }
 

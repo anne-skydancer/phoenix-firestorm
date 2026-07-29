@@ -535,14 +535,12 @@ void pbrPunctual(vec3 diffuseColor, vec3 specularColor,
     vec3 diffuseContrib = (1.0 - F) * diffuse(pbrInputs);
     vec3 specContrib = F * G * D / (4.0 * NdotL * NdotV);
 
-#if MULTISCATTER_GGX
-    // Match the IBL multiscatter compensation on the direct (sun/local) path -- gate 2
-    // showed both paths leak the same ~69% at high roughness. Recover it via the
-    // directional albedo Ess from the SAME brdfLut; specularColor (F0) tints it.
-    vec2  msAB  = BRDF(NdotV, 1.0 - perceptualRoughness);
-    float msEss = msAB.x + msAB.y;
-    specContrib *= 1.0 + specularColor * (1.0 / max(msEss, 1e-3) - 1.0);
-#endif
+    // Direct-path multiscatter compensation REMOVED: it fetched brdfLut PER LIGHT, but
+    // the directional albedo Ess is per-PIXEL (depends only on NdotV+roughness) -- so it
+    // was redundant work in light-heavy scenes. The per-pixel IBL multiscatter (pbrIbl)
+    // keeps the dominant environment-specular energy recovery. Follow-up if we want the
+    // direct-highlight recovery back efficiently: compute Ess once per pixel at the caller
+    // (reuse pbrIbl's fetch) and apply to the SUMMED direct specular, not per light.
 
     nl = NdotL;
 

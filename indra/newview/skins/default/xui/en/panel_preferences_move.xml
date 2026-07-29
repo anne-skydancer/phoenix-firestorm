@@ -341,6 +341,36 @@
           name="2"
           value="2"/>
         </combo_box>
+        <text
+         follows="left|top"
+         type="string"
+         length="1"
+         height="10"
+         layout="topleft"
+         left="25"
+         name="camera_style_lbl"
+         width="75"
+         top_pad="14">
+            Camera:
+        </text>
+        <combo_box
+         control_name="RenderFaithfulCamera"
+         height="23"
+         layout="topleft"
+         left_pad="10"
+         top_delta="-6"
+         name="camera_style_combo"
+         tool_tip="Original = legacy camera (per-sky auto-exposure). Cinematic = faithful capture: fixed exposure and one consistent tonemap on every environment, so the environment owns the brightness and the camera just captures what is rendered."
+         width="150">
+         <combo_box.item
+          label="Original"
+          name="0"
+          value="0"/>
+         <combo_box.item
+          label="Cinematic"
+          name="1"
+          value="1"/>
+        </combo_box>
     </panel>
 
     <!--Mouselook-->

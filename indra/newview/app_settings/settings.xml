@@ -13019,13 +13019,13 @@ Change of this parameter will affect the layout of buttons in notification toast
   <key>RenderFaithfulCamera</key>
   <map>
     <key>Comment</key>
-    <string>Faithful camera: fixed exposure + one consistent tonemap on every environment (the environment owns brightness; the camera just captures it). Off = legacy per-sky auto-exposure + tonemap bypass.</string>
+    <string>Camera style. 1 = Cinematic (faithful): fixed exposure + one consistent tonemap on every environment (the environment owns brightness; the camera just captures it). 0 = Original (legacy): per-sky auto-exposure + tonemap bypass. Read as bool by the renderer (non-zero = faithful); typed S32 so the Move &amp; View dropdown can bind to it.</string>
     <key>Persist</key>
     <integer>1</integer>
     <key>Type</key>
-    <string>Boolean</string>
+    <string>S32</string>
     <key>Value</key>
-    <integer>0</integer>
+    <integer>1</integer>
   </map>
 
   <key>RenderReflectionProbeDrawDistance</key>

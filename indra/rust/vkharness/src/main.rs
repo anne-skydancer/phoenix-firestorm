@@ -2045,6 +2045,58 @@ fn run_exposure() -> bool {
     true
 }
 
+// --- CAMERA RESPONSE instrument (measure, don't assert) --------------------------
+// The faithful-camera design PREDICTS: brighten the environment -> brighter image
+// (faithful), and auto-exposure CANCELS it. This measures that on real math instead
+// of believing it. Ports SL's actual PBRNeutral tonemap (tonemapUtilF.glsl:96) and
+// runs a fixed grey surface through 3 cameras while scaling the environment.
+// `cargo run -- camera`.
+
+/// SL's Khronos PBRNeutral tonemap, ported byte-faithfully from tonemapUtilF.glsl.
+fn pbr_neutral_tonemap(mut c: [f32; 3]) -> [f32; 3] {
+    let start_compression = 0.8 - 0.04;
+    let desaturation = 0.15;
+    let x = c[0].min(c[1]).min(c[2]);
+    let offset = if x < 0.08 { x - 6.25 * x * x } else { 0.04 };
+    for v in &mut c { *v -= offset; }
+    let peak = c[0].max(c[1]).max(c[2]);
+    if peak < start_compression { return c; }
+    let d = 1.0 - start_compression;
+    let new_peak = 1.0 - d * d / (peak + d - start_compression);
+    for v in &mut c { *v *= new_peak / peak; }
+    let g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+    for v in &mut c { *v = *v * (1.0 - g) + new_peak * g; }
+    c
+}
+
+fn run_camera() -> bool {
+    let base = 0.18f32; // linear radiance of a grey test surface at env-scale 1.0
+    let env = [0.25f32, 0.5, 1.0, 2.0, 4.0];
+    let key = 0.175f32;
+    let (exp_min, exp_max) = (0.5f32, 2.0f32);
+    let render_exposure = 1.0f32; // user EV knob, default
+    log::info!("CAMERA RESPONSE to environment brightness (scene = envScale x {base:.2}, then tonemap).");
+    log::info!("THE question: does the DISPLAY track the environment (faithful) or get CANCELLED (auto)?");
+    log::info!("  envScale  sceneL  |  CURRENT(auto)  FAITHFUL(fixed)  HONEST(auto)   -- display grey [0,1]");
+    let (mut cur0, mut fa0, mut ho0) = (0.0f32, 0.0f32, 0.0f32);
+    let (mut cur_last, mut fa_last, mut ho_last) = (0.0f32, 0.0f32, 0.0f32);
+    for (i, &k) in env.iter().enumerate() {
+        let scene = base * k;
+        let cur = pbr_neutral_tonemap([scene * render_exposure * sl_exposure(scene, key, exp_min, exp_max); 3])[0];
+        let fa = pbr_neutral_tonemap([scene * render_exposure; 3])[0];
+        let ho = pbr_neutral_tonemap([scene * (key / scene.max(1e-4)); 3])[0];
+        if i == 0 { cur0 = cur; fa0 = fa; ho0 = ho; }
+        cur_last = cur; fa_last = fa; ho_last = ho;
+        log::info!("  {k:>6.2}   {scene:>6.3}  |    {cur:>8.4}       {fa:>8.4}       {ho:>8.4}");
+    }
+    let ratio = |lo: f32, hi: f32| if lo > 1e-4 { hi / lo } else { f32::INFINITY };
+    log::info!("");
+    log::info!("16x env-brightness sweep (0.25->4.0) -> display ratio:");
+    log::info!("  CURRENT  x{:.2}   FAITHFUL x{:.2}   HONEST x{:.2}   (faithful tracks env; autos flatten toward 1)",
+        ratio(cur0, cur_last), ratio(fa0, fa_last), ratio(ho0, ho_last));
+    true
+}
+
 // --- H3a-view: the UBO, made visible (a calm, per-frame-driven picture) ----------
 // H3a proved a STATIC UBO delivers its values. This renders a soft drifting field
 // whose look is driven by a UBO *rewritten every frame* -- so it also exercises the
@@ -2444,6 +2496,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "exposure") {
         let ok = run_exposure();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "camera") {
+        let ok = run_camera();
         std::process::exit(if ok { 0 } else { 1 });
     }
     if std::env::args().skip(1).any(|a| a == "furnace") {

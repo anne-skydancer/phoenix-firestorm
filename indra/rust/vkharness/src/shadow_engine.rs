@@ -83,6 +83,7 @@ struct Frame {
     splits: [f32; N_CASCADES],
     sun: Vec3,
     debug: bool, // cascade-tint overlay
+    mask: bool,  // output the shadow mask (lit value) for area measurement
 }
 
 fn orbit_eye(yaw: f32, pitch: f32, radius: f32) -> Vec3 {
@@ -172,7 +173,7 @@ fn compute_cascades(
 fn make_frame(render_vp: Mat4, fit_eye: Vec3, fit_fwd: Vec3, fit_up: Vec3, aspect: f32, sun: Vec3, snap: bool) -> Frame {
     let sel_view = Mat4::look_at_rh(fit_eye, fit_eye + fit_fwd, fit_up);
     let (cascades, splits) = compute_cascades(fit_eye, fit_fwd, fit_up, aspect, sun, snap);
-    Frame { view_proj: render_vp, sel_view, cascades, splits, sun, debug: false }
+    Frame { view_proj: render_vp, sel_view, cascades, splits, sun, debug: false, mask: false }
 }
 
 // ---- geometry -------------------------------------------------------------------
@@ -294,6 +295,9 @@ void main() {{
         blend = clamp((v_viewdepth - (u.splits[ci] - band)) / band, 0.0, 1.0);
         if (blend > 0.0) lit = mix(lit, shadow_lit(v_world, N, ci + 1), blend);
     }}
+    // Shadow mask (sun_dir.w == 2): output the lit value directly -> shadowed area is
+    // countable (dark = in shadow) for the M4 continuity gate.
+    if (u.sun_dir.w > 1.5) {{ frag = vec4(vec3(lit), 1.0); return; }}
     vec3 col = u.base_color.rgb * (0.25 + 0.75 * ndl * lit);
     // Debug (sun_dir.w > 0.5): tint each surface by the cascade it samples, blended across
     // the band -- our RENDER_DEBUG_SHADOW_FRUSTA. Shows the partition IS coverage-complete.
@@ -504,7 +508,7 @@ impl Renderer {
                 model: obj.model.to_cols_array_2d(),
                 light_vp,
                 splits,
-                sun_dir: [f.sun.x, f.sun.y, f.sun.z, if f.debug { 1.0 } else { 0.0 }],
+                sun_dir: [f.sun.x, f.sun.y, f.sun.z, if f.mask { 2.0 } else if f.debug { 1.0 } else { 0.0 }],
                 base_color: obj.color,
             };
             queue.write_buffer(&obj.ubo, 0, bytemuck::bytes_of(&u));
@@ -901,4 +905,58 @@ pub fn run_axes() {
     let combo = sweep("yaw+pitch+roll", &|k| (d(k as f32 * 3.0), d(20.0 + k as f32 * 2.0), d(k as f32 * 3.0)));
     let worst = yaw.max(pitch).max(roll).max(combo);
     log::info!("worst axis: {} px over {} frames. Sun-response baseline (suncam B): ~large. PASS if every axis << that.", worst, steps);
+}
+
+/// **M4 — the continuity acceptance gate.** The legacy failure: shadow AREA collapses across
+/// a range of camera angles, then snaps back. Here: FIXED measurement cam, LOW sun (long
+/// shadow = stress), fit cam orbits a wide arc. Each frame we measure the world shadowed AREA
+/// (mask mode) and the per-frame change. PASS = area stays continuous (never collapses) AND
+/// no cut/flicker spike -- the whole "no cut, no flicker on a pan" spec, one number.
+pub fn run_continuity() {
+    let (device, queue) = crate::headless_vulkan_device();
+    let renderer = Renderer::new(&device, SHOT_FMT);
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    let dir = std::env::temp_dir();
+    let sun = sun_dir(15.0, 41.0); // LOW sun -- long raking shadow, the stress case
+    let (mvp, _, _) = orbit_cam(w, h, 30.0, 50.0, 14.0); // FIXED measurement cam
+    let steps = 60usize;
+
+    let count_shadow = |px: &[u8]| -> u64 {
+        let mut n = 0u64;
+        let mut i = 0;
+        while i + 2 < px.len() {
+            if px[i] < 40 && px[i + 1] < 40 && px[i + 2] < 40 { n += 1; }
+            i += 4;
+        }
+        n
+    };
+
+    let mut prev: Option<Vec<u8>> = None;
+    let (mut peak_diff, mut total_diff, mut peak_at) = (0u64, 0u64, 0usize);
+    let (mut min_area, mut max_area) = (u64::MAX, 0u64);
+    for k in 0..steps {
+        let fit_yaw = (k as f32 * 2.0).to_radians(); // wide orbit, 2deg/frame
+        let feye = orbit_eye(fit_yaw, 0.4, 5.0);
+        let ffwd = (FOCUS - feye).normalize();
+        let mut frame = make_frame(mvp, feye, ffwd, Vec3::Y, aspect, sun, true);
+        frame.mask = true;
+        let px = render_to_pixels(&device, &queue, &renderer, &frame, w, h);
+        let area = count_shadow(&px);
+        min_area = min_area.min(area);
+        max_area = max_area.max(area);
+        if let Some(p) = &prev {
+            let d = pixel_diff(&px, p);
+            total_diff += d;
+            if d > peak_diff { peak_diff = d; peak_at = k; }
+        }
+        if k == 0 || k == steps / 2 { write_png(&dir.join(format!("continuity_{:02}.png", k)), &px, w, h); }
+        prev = Some(px);
+    }
+    let spread = 100.0 * (max_area - min_area) as f64 / max_area.max(1) as f64;
+    log::info!("M4 CONTINUITY GATE: {} frames, LOW sun 15deg, fit cam orbits 0..{}deg (2deg steps):", steps, (steps - 1) * 2);
+    log::info!("  shadowed area: min {} .. max {} px  (spread {:.1}%)  -> want small; shadow never collapses", min_area, max_area, spread);
+    log::info!("  per-frame change: peak {} px (frame {}), total {}  -> want NO cut/flicker spike", peak_diff, peak_at, total_diff);
+    let ok = spread < 5.0 && min_area > max_area / 2 && peak_diff < max_area / 4;
+    log::info!("  M4 {} (area continuous, no collapse, no spike).", if ok { "PASS" } else { "REVIEW" });
 }

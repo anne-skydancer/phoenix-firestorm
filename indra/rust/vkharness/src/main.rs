@@ -3556,6 +3556,10 @@ fn main() {
         shadow_engine::run_cascades(); // M3b cascade-tint debug view (partition + blend band)
         std::process::exit(0);
     }
+    if std::env::args().skip(1).any(|a| a == "shadow-continuity") {
+        shadow_engine::run_continuity(); // M4 continuity acceptance gate (low-sun wide orbit)
+        std::process::exit(0);
+    }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();
         std::process::exit(if ok { 0 } else { 1 });

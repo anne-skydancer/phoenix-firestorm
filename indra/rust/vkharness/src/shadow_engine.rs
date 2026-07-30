@@ -39,6 +39,7 @@ const SUN: [f32; 3] = [0.4, -0.9, 0.35];
 struct Vtx {
     pos: [f32; 3],
     nrm: [f32; 3],
+    uv: [f32; 2], // used by the textured G-buffer (H4c); forward/shadow ignore it
 }
 
 impl Vtx {
@@ -48,6 +49,7 @@ impl Vtx {
         attributes: &[
             wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
             wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+            wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
         ],
     };
 }
@@ -187,12 +189,13 @@ fn cube() -> (Vec<Vtx>, Vec<u16>) {
         ([ 0., 0.,  1.], [[ 0.5, 0.,  0.5], [ 0.5, 1.,  0.5], [-0.5, 1.,  0.5], [-0.5, 0.,  0.5]]),
         ([ 0., 0., -1.], [[-0.5, 0., -0.5], [-0.5, 1., -0.5], [ 0.5, 1., -0.5], [ 0.5, 0., -0.5]]),
     ];
+    let uvq = [[0., 0.], [0., 1.], [1., 1.], [1., 0.]]; // per-face 0..1
     let mut v = Vec::new();
     let mut idx = Vec::new();
     for (n, quad) in faces.iter() {
         let base = v.len() as u16;
-        for p in quad.iter() {
-            v.push(Vtx { pos: *p, nrm: *n });
+        for (k, p) in quad.iter().enumerate() {
+            v.push(Vtx { pos: *p, nrm: *n, uv: uvq[k] });
         }
         idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -202,10 +205,10 @@ fn cube() -> (Vec<Vtx>, Vec<u16>) {
 fn plane(half: f32) -> (Vec<Vtx>, Vec<u16>) {
     let n = [0., 1., 0.];
     let v = vec![
-        Vtx { pos: [-half, 0., -half], nrm: n },
-        Vtx { pos: [-half, 0.,  half], nrm: n },
-        Vtx { pos: [ half, 0.,  half], nrm: n },
-        Vtx { pos: [ half, 0., -half], nrm: n },
+        Vtx { pos: [-half, 0., -half], nrm: n, uv: [0., 0.] },
+        Vtx { pos: [-half, 0.,  half], nrm: n, uv: [0., 1.] },
+        Vtx { pos: [ half, 0.,  half], nrm: n, uv: [1., 1.] },
+        Vtx { pos: [ half, 0., -half], nrm: n, uv: [1., 0.] },
     ];
     (v, vec![0u16, 1, 2, 0, 2, 3])
 }
@@ -987,22 +990,27 @@ fn gbuf_vert() -> String {
     format!(r#"#version 450
 layout(location = 0) in vec3 pos;
 layout(location = 1) in vec3 nrm;
+layout(location = 2) in vec2 uv;
 {UBO_DECL}
 layout(location = 0) out vec3 v_nrm;
 layout(location = 1) out vec3 v_world;
+layout(location = 2) out vec2 v_uv;
 void main() {{
     vec4 wp = u.model * vec4(pos, 1.0);
     v_world = wp.xyz;
     v_nrm = mat3(u.model) * nrm;
+    v_uv = uv;
     gl_Position = u.view_proj * wp;
 }}
 "#)
 }
 
+/// Flat G-buffer fragment: albedo = base_color (H4a/H4b path).
 fn gbuf_frag() -> String {
     format!(r#"#version 450
 layout(location = 0) in vec3 v_nrm;
 layout(location = 1) in vec3 v_world;
+layout(location = 2) in vec2 v_uv;
 {UBO_DECL}
 layout(location = 0) out vec4 gAlbedo;
 layout(location = 1) out vec4 gWorld;
@@ -1011,6 +1019,27 @@ void main() {{
     gAlbedo = vec4(u.base_color.rgb, 1.0);
     gWorld  = vec4(v_world, 1.0);
     gNormal = vec4(normalize(v_nrm), 1.0); // w = 1 -> this texel has geometry
+}}
+"#)
+}
+
+/// Textured G-buffer fragment: albedo = sample(albedoTex, uv) (H4c). Proves the UV + sampler
+/// path lands in the deferred albedo, reusing the H3b2 texture+sampler descriptor mechanism.
+fn gbuf_frag_tex() -> String {
+    format!(r#"#version 450
+layout(location = 0) in vec3 v_nrm;
+layout(location = 1) in vec3 v_world;
+layout(location = 2) in vec2 v_uv;
+{UBO_DECL}
+layout(set = 1, binding = 0) uniform texture2D albedoTex;
+layout(set = 1, binding = 1) uniform sampler   albedoSamp;
+layout(location = 0) out vec4 gAlbedo;
+layout(location = 1) out vec4 gWorld;
+layout(location = 2) out vec4 gNormal;
+void main() {{
+    gAlbedo = vec4(texture(sampler2D(albedoTex, albedoSamp), v_uv).rgb, 1.0);
+    gWorld  = vec4(v_world, 1.0);
+    gNormal = vec4(normalize(v_nrm), 1.0);
 }}
 "#)
 }
@@ -1093,11 +1122,14 @@ struct DeferredRenderer {
     gbuf_sampler: wgpu::Sampler,
     frame_ubo: wgpu::Buffer,
     frame_bind: wgpu::BindGroup,
+    albedo_bind: Option<wgpu::BindGroup>, // Some -> textured G-buffer (H4c)
     objs: Vec<Obj>,
 }
 
 impl DeferredRenderer {
-    fn new(device: &wgpu::Device, scene: &[ObjSpec]) -> DeferredRenderer {
+    /// `checker: Some(view)` -> textured G-buffer (albedo from that texture via UVs); `None` ->
+    /// flat albedo = base_color (the H4a/H4b byte-exact path).
+    fn new(device: &wgpu::Device, scene: &[ObjSpec], checker: Option<&wgpu::TextureView>) -> DeferredRenderer {
         let obj_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("d-obj-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1200,11 +1232,37 @@ impl DeferredRenderer {
             multisample: wgpu::MultisampleState::default(), multiview: None,
         });
 
-        // g-buffer pipeline (3 float targets + depth)
+        // albedo texture bind group (H4c textured mode)
+        let albedo_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("albedo-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let albedo_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("albedo-samp"),
+            address_mode_u: wgpu::AddressMode::Repeat, address_mode_v: wgpu::AddressMode::Repeat, address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let albedo_bind = checker.map(|view| device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("albedo-bind"), layout: &albedo_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&albedo_sampler) },
+            ],
+        }));
+
+        // g-buffer pipeline (3 float targets + depth); textured variant when a checker is bound
         let gvs = glsl_module(device, &gbuf_vert(), shaderc::ShaderKind::Vertex, "gbuf.vert");
-        let gfs = glsl_module(device, &gbuf_frag(), shaderc::ShaderKind::Fragment, "gbuf.frag");
+        let gfs_src = if checker.is_some() { gbuf_frag_tex() } else { gbuf_frag() };
+        let gfs = glsl_module(device, &gfs_src, shaderc::ShaderKind::Fragment, "gbuf.frag");
+        let gbuf_layouts: Vec<&wgpu::BindGroupLayout> = if checker.is_some() { vec![&obj_bgl, &albedo_bgl] } else { vec![&obj_bgl] };
         let gbuf_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("gbuf-pl"), bind_group_layouts: &[&obj_bgl], push_constant_ranges: &[],
+            label: Some("gbuf-pl"), bind_group_layouts: &gbuf_layouts, push_constant_ranges: &[],
         });
         let ct = |fmt| Some(wgpu::ColorTargetState { format: fmt, blend: None, write_mask: wgpu::ColorWrites::ALL });
         let gbuffer_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1259,7 +1317,7 @@ impl DeferredRenderer {
 
         DeferredRenderer {
             gbuffer_pipeline, lighting_pipeline, shadow_pipeline, shadow_layer_views, shadow_bind,
-            cascidx_binds, gbuf_bgl, gbuf_sampler, frame_ubo, frame_bind, objs,
+            cascidx_binds, gbuf_bgl, gbuf_sampler, frame_ubo, frame_bind, albedo_bind, objs,
         }
     }
 
@@ -1364,6 +1422,7 @@ impl DeferredRenderer {
                 timestamp_writes: None, occlusion_query_set: None,
             });
             rp.set_pipeline(&self.gbuffer_pipeline);
+            if let Some(ab) = &self.albedo_bind { rp.set_bind_group(1, ab, &[]); } // H4c textured albedo
             for obj in &self.objs {
                 rp.set_bind_group(0, &obj.bind, &[]);
                 rp.set_vertex_buffer(0, obj.vbuf.slice(..));
@@ -1425,7 +1484,7 @@ fn default_scene() -> Vec<ObjSpec> {
 pub fn run_h4a() -> bool {
     let (device, queue) = crate::headless_vulkan_device();
     let forward = Renderer::new(&device, SHOT_FMT);
-    let deferred = DeferredRenderer::new(&device, &default_scene());
+    let deferred = DeferredRenderer::new(&device, &default_scene(), None);
     let (w, h) = (1280u32, 800u32);
     let aspect = w as f32 / h as f32;
     let dir = std::env::temp_dir();
@@ -1487,7 +1546,9 @@ fn dae_to_vtx(m: &crate::dae::DaeMesh) -> (Vec<Vtx>, Vec<u16>) {
     if m.positions.len() > u16::MAX as usize {
         log::warn!("dae mesh has {} verts (> u16 max) -- needs u32 indices; render will be wrong", m.positions.len());
     }
-    let verts: Vec<Vtx> = m.positions.iter().zip(&m.normals).map(|(p, n)| Vtx { pos: *p, nrm: *n }).collect();
+    let verts: Vec<Vtx> = (0..m.positions.len())
+        .map(|i| Vtx { pos: m.positions[i], nrm: m.normals[i], uv: m.uvs[i] })
+        .collect();
     let idx: Vec<u16> = m.indices.iter().map(|&i| i as u16).collect();
     (verts, idx)
 }
@@ -1543,8 +1604,8 @@ pub fn run_h4b(extra: Vec<String>) -> bool {
         (dcv, dci, cube_model, orange, true),
         (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
     ];
-    let r_proc = DeferredRenderer::new(&device, &scene_proc);
-    let r_dae = DeferredRenderer::new(&device, &scene_dae);
+    let r_proc = DeferredRenderer::new(&device, &scene_proc, None);
+    let r_dae = DeferredRenderer::new(&device, &scene_dae, None);
 
     let (vp, eye, fwd) = orbit_cam(w, h, 35.0, 28.0, 7.0);
     let frame = make_frame(vp, eye, fwd, Vec3::Y, aspect, sun_dir(40.0, 41.0), true);
@@ -1589,7 +1650,7 @@ pub fn run_h4b(extra: Vec<String>) -> bool {
                     (mv, mi, fit_model(&m, 3.0), [0.82, 0.80, 0.74, 1.0], true),
                     (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
                 ];
-                let r = DeferredRenderer::new(&device, &scene);
+                let r = DeferredRenderer::new(&device, &scene, None);
                 let (mvp, meye, mfwd) = orbit_cam(w, h, 35.0, 20.0, 8.0);
                 let mframe = make_frame(mvp, meye, mfwd, Vec3::Y, aspect, sun_dir(45.0, 41.0), true);
                 let mpx = r.render(&device, &queue, &mframe, w, h);
@@ -1609,5 +1670,136 @@ pub fn run_h4b(extra: Vec<String>) -> bool {
     log::info!("  wrote h4b_*.png to {}", dir.display());
     let ok = cube_ok && show_ok;
     log::info!("  H4b {} -- real .dae loads + renders lit/shadowed in the deferred pipeline.", if ok { "PASS" } else { "REVIEW" });
+    ok
+}
+
+/// A procedural checker texture (sRGB) -- known content for the H4c UV+sampler proof.
+fn make_checker(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = 512u32;
+    let cell = size / 8; // 8x8 cells
+    let mut data = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let dark = ((x / cell + y / cell) % 2) == 0;
+            let (r, g, b) = if dark { (40u8, 44, 60) } else { (225u8, 228, 235) };
+            let i = ((y * size + x) * 4) as usize;
+            data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
+        }
+    }
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("checker"),
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::ImageCopyTexture { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        &data,
+        wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(size * 4), rows_per_image: Some(size) },
+        wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+    );
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
+}
+
+/// dark/light split over geometry pixels (luminance threshold) -- checker detector.
+fn lum_split(px: &[u8]) -> (u64, u64) {
+    let bg = [px[0], px[1], px[2]];
+    let (mut dark, mut light) = (0u64, 0u64);
+    let mut i = 0;
+    while i + 3 < px.len() {
+        let is_geom = (px[i] as i16 - bg[0] as i16).abs() > 8
+            || (px[i + 1] as i16 - bg[1] as i16).abs() > 8
+            || (px[i + 2] as i16 - bg[2] as i16).abs() > 8;
+        if is_geom {
+            let lum = (px[i] as u32 + px[i + 1] as u32 * 2 + px[i + 2] as u32) / 4;
+            if lum < 110 { dark += 1; } else { light += 1; }
+        }
+        i += 4;
+    }
+    (dark, light)
+}
+
+/// **H4c gate.** Textures through the deferred pipeline via the mesh UVs + a sampler (the H3b2
+/// mechanism, now feeding the G-buffer albedo). GATE: a checker-textured plane must show the
+/// two-tone pattern (~50/50 dark/light) while a flat render of the same is single-tone -- proving
+/// albedo varies by UV through the sampler, not a constant. SHOWCASE: checker on the cube + any
+/// CLI `*.dae`. `cargo run -- h4c [extra.dae ...]`.
+pub fn run_h4c(extra: Vec<String>) -> bool {
+    let (device, queue) = crate::headless_vulkan_device();
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    let dir = std::env::temp_dir();
+    let (_checker_tex, checker_view) = make_checker(&device, &queue);
+    let (pv, pi) = plane(40.0);
+    let ground = [0.55f32, 0.55, 0.58, 1.0];
+    let white = [1.0f32, 1.0, 1.0, 1.0];
+
+    // ---- GATE ----
+    let (gpv, gpi) = plane(4.0); // small plane: uv 0..1 -> ~8 checker cells in view
+    let gate_scene: Vec<ObjSpec> = vec![(gpv, gpi, Mat4::IDENTITY, white, false)];
+    let r_tex = DeferredRenderer::new(&device, &gate_scene, Some(&checker_view));
+    let r_flat = DeferredRenderer::new(&device, &gate_scene, None);
+    let eye = Vec3::new(0.0, 9.0, 0.001); // near-top-down
+    let proj = Mat4::perspective_rh(FOV, aspect, 0.1, 100.0);
+    let vp = proj * Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::NEG_Z);
+    let fwd = (Vec3::ZERO - eye).normalize();
+    let frame = make_frame(vp, eye, fwd, Vec3::NEG_Z, aspect, sun_dir(70.0, 41.0), true);
+    let px_tex = r_tex.render(&device, &queue, &frame, w, h);
+    let px_flat = r_flat.render(&device, &queue, &frame, w, h);
+    write_png(&dir.join("h4c_checker_tex.png"), &px_tex, w, h);
+    write_png(&dir.join("h4c_checker_flat.png"), &px_flat, w, h);
+
+    let (td, tl) = lum_split(&px_tex);
+    let (fd, fl) = lum_split(&px_flat);
+    let tex_dark = td as f64 / (td + tl).max(1) as f64;
+    let flat_dark = fd as f64 / (fd + fl).max(1) as f64;
+    let gate_ok = tex_dark > 0.30 && tex_dark < 0.70 && (flat_dark < 0.10 || flat_dark > 0.90);
+    log::info!("H4c UV+SAMPLER gate (checker-textured plane, top-down):");
+    log::info!("  textured: {:>4.0}% dark / {:>4.0}% light   (want ~50/50 -> checker sampled by UV)", tex_dark * 100.0, (1.0 - tex_dark) * 100.0);
+    log::info!("  flat:     {:>4.0}% dark / {:>4.0}% light   (want single-tone -> no texture)", flat_dark * 100.0, (1.0 - flat_dark) * 100.0);
+    log::info!("  gate {}", if gate_ok { "PASS" } else { "REVIEW" });
+
+    // ---- SHOWCASE ----
+    let (cv, ci) = cube();
+    let mut show_ok = true;
+    let cube_scene: Vec<ObjSpec> = vec![
+        (cv, ci, Mat4::IDENTITY, white, true),
+        (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
+    ];
+    let rc = DeferredRenderer::new(&device, &cube_scene, Some(&checker_view));
+    let (cvp, ceye, cfwd) = orbit_cam(w, h, 35.0, 25.0, 5.0);
+    let cframe = make_frame(cvp, ceye, cfwd, Vec3::Y, aspect, sun_dir(45.0, 41.0), true);
+    let cpx = rc.render(&device, &queue, &cframe, w, h);
+    write_png(&dir.join("h4c_cube.png"), &cpx, w, h);
+    log::info!("H4c SHOWCASE:  checker cube {} geometry px -> RENDERED", geom_px(&cpx));
+
+    for path in &extra {
+        let p = std::path::Path::new(path);
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("mesh").replace(' ', "_");
+        match crate::dae::load(p) {
+            Ok(m) => {
+                let (mv, mi) = dae_to_vtx(&m);
+                let scene: Vec<ObjSpec> = vec![
+                    (mv, mi, fit_model(&m, 3.0), white, true),
+                    (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
+                ];
+                let r = DeferredRenderer::new(&device, &scene, Some(&checker_view));
+                let (mvp, meye, mfwd) = orbit_cam(w, h, 35.0, 20.0, 8.0);
+                let mframe = make_frame(mvp, meye, mfwd, Vec3::Y, aspect, sun_dir(45.0, 41.0), true);
+                let mpx = r.render(&device, &queue, &mframe, w, h);
+                let gp = geom_px(&mpx);
+                write_png(&dir.join(format!("h4c_{stem}.png")), &mpx, w, h);
+                log::info!("  checker {:<20} {:>5} tris, {:>7} geometry px -> {}", stem, m.tri_count(), gp, if gp > 2000 { "RENDERED" } else { "DEGENERATE" });
+                if gp <= 2000 { show_ok = false; }
+            }
+            Err(e) => { log::warn!("  {}: load failed: {e}", stem); show_ok = false; }
+        }
+    }
+
+    log::info!("  wrote h4c_*.png to {}", dir.display());
+    let ok = gate_ok && show_ok;
+    log::info!("  H4c {} -- textures (UV + sampler) render through the deferred pipeline.", if ok { "PASS" } else { "REVIEW" });
     ok
 }

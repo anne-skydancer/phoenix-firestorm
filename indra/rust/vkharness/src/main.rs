@@ -3572,6 +3572,12 @@ fn main() {
         let ok = shadow_engine::run_h4b(extra);
         std::process::exit(if ok { 0 } else { 1 });
     }
+    if std::env::args().skip(1).any(|a| a == "h4c") {
+        // H4c: textures (UV + sampler) through the deferred pipeline. Extra `*.dae` = showcase.
+        let extra: Vec<String> = std::env::args().skip(1).filter(|a| a.to_lowercase().ends_with(".dae")).collect();
+        let ok = shadow_engine::run_h4c(extra);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();
         std::process::exit(if ok { 0 } else { 1 });

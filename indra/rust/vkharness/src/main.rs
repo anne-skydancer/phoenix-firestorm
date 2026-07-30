@@ -124,6 +124,7 @@ fn compile_glsl(source: &str, kind: shaderc::ShaderKind, name: &str) -> Vec<u32>
 /// Build a wgpu shader module from GLSL by way of SPIR-V.
 mod shadow_engine; // engine shadow work (SHADOW_PLAN.md), invoked by the `shadow` subcommand
 mod dae; // minimal Collada (.dae) reader for the real-mesh path (H4b)
+mod sweep; // Phase 1: offline shader sweep (rhi/PLAN.md) -- assemble + transform + compile the corpus
 
 pub(crate) fn glsl_module(
     device: &wgpu::Device,
@@ -1130,7 +1131,7 @@ fn run_h3b2() -> bool {
 // legal there) -- proving the ASSEMBLY is well-formed before we UBO-ize (3c-3e).
 // `cargo run -- h3b3`.
 
-const SHADER_ROOT: &str = "c:/fs/fs-vulkan-engine/indra/newview/app_settings/shaders";
+pub(crate) const SHADER_ROOT: &str = "c:/fs/fs-vulkan-engine/indra/newview/app_settings/shaders";
 
 /// The fragment attach order for softenLight (from attachShaderFeatures + its flags),
 /// softenLightF.glsl last. Each is "subdir/name.glsl", class-resolved at read time.
@@ -1181,7 +1182,7 @@ fn decl_name_const(line: &str) -> Option<String> {
 /// them here. Behavior-identical (the decls are byte-identical), and this is the
 /// front half of the 3c UBO transform (find loose decls -> strip duplicates; 3c then
 /// strips ALL of a tier and re-emits them once inside a UBO block).
-fn dedup_global_decls(src: &str) -> (String, usize) {
+pub(crate) fn dedup_global_decls(src: &str) -> (String, usize) {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();
     let mut depth: i32 = 0;
@@ -1339,7 +1340,7 @@ fn split_sampler_type(st: &str) -> (String, String) {
 ///  - a `uniform` with an initializer (POISSON3D_SAMPLES, a baked table) -> `const`
 ///    (a UBO member can't carry an initializer anyway).
 /// Only touches brace-depth-0 decls. Returns (transformed_src, n_ubo_members, n_samplers).
-fn ubo_transform(src: &str) -> (String, usize, usize) {
+pub(crate) fn ubo_transform(src: &str) -> (String, usize, usize) {
     let mut members: Vec<String> = Vec::new();
     let mut binding: u32 = 1; // binding 0 reserved for the UBO block
     let mut samplers = 0usize;
@@ -3582,6 +3583,11 @@ fn main() {
         // H4d: EEP sky + sun behind the shadowed textured mesh. Extra `*.dae` = showcase.
         let extra: Vec<String> = std::env::args().skip(1).filter(|a| a.to_lowercase().ends_with(".dae")).collect();
         let ok = shadow_engine::run_h4d(extra);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sweep") {
+        // Phase 1 (rhi/PLAN.md): offline shader sweep gate. `cargo run -- sweep`.
+        let ok = sweep::run_sweep();
         std::process::exit(if ok { 0 } else { 1 });
     }
     if std::env::args().skip(1).any(|a| a == "h4") {

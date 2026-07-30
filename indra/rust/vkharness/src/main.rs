@@ -3552,6 +3552,10 @@ fn main() {
         shadow_engine::run_axes(); // camera-invariance across yaw/pitch/roll + combined
         std::process::exit(0);
     }
+    if std::env::args().skip(1).any(|a| a == "shadow-cascades") {
+        shadow_engine::run_cascades(); // M3b cascade-tint debug view (partition + blend band)
+        std::process::exit(0);
+    }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();
         std::process::exit(if ok { 0 } else { 1 });

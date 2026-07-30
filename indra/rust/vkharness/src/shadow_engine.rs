@@ -82,6 +82,7 @@ struct Frame {
     cascades: [Mat4; N_CASCADES],
     splits: [f32; N_CASCADES],
     sun: Vec3,
+    debug: bool, // cascade-tint overlay
 }
 
 fn orbit_eye(yaw: f32, pitch: f32, radius: f32) -> Vec3 {
@@ -171,7 +172,7 @@ fn compute_cascades(
 fn make_frame(render_vp: Mat4, fit_eye: Vec3, fit_fwd: Vec3, fit_up: Vec3, aspect: f32, sun: Vec3, snap: bool) -> Frame {
     let sel_view = Mat4::look_at_rh(fit_eye, fit_eye + fit_fwd, fit_up);
     let (cascades, splits) = compute_cascades(fit_eye, fit_fwd, fit_up, aspect, sun, snap);
-    Frame { view_proj: render_vp, sel_view, cascades, splits, sun }
+    Frame { view_proj: render_vp, sel_view, cascades, splits, sun, debug: false }
 }
 
 // ---- geometry -------------------------------------------------------------------
@@ -286,7 +287,22 @@ void main() {{
     float ndl = max(dot(N, L), 0.0);
     int ci = pick_cascade(v_viewdepth);
     float lit = shadow_lit(v_world, N, ci);
+    // Blend into the next cascade over the last `band` world-units -> no seam at the boundary.
+    float band = 2.0;
+    float blend = 0.0;
+    if (ci < 3) {{
+        blend = clamp((v_viewdepth - (u.splits[ci] - band)) / band, 0.0, 1.0);
+        if (blend > 0.0) lit = mix(lit, shadow_lit(v_world, N, ci + 1), blend);
+    }}
     vec3 col = u.base_color.rgb * (0.25 + 0.75 * ndl * lit);
+    // Debug (sun_dir.w > 0.5): tint each surface by the cascade it samples, blended across
+    // the band -- our RENDER_DEBUG_SHADOW_FRUSTA. Shows the partition IS coverage-complete.
+    if (u.sun_dir.w > 0.5) {{
+        vec3 tints[4] = vec3[4](vec3(0.2,1.0,0.3), vec3(1.0,1.0,0.2), vec3(1.0,0.6,0.1), vec3(1.0,0.25,0.25));
+        vec3 tc = tints[ci];
+        if (ci < 3) tc = mix(tc, tints[ci + 1], blend);
+        col = col * 0.55 + tc * 0.45;
+    }}
     frag = vec4(col, 1.0);
 }}
 "#, size = SHADOW_SIZE)
@@ -488,7 +504,7 @@ impl Renderer {
                 model: obj.model.to_cols_array_2d(),
                 light_vp,
                 splits,
-                sun_dir: [f.sun.x, f.sun.y, f.sun.z, 0.0],
+                sun_dir: [f.sun.x, f.sun.y, f.sun.z, if f.debug { 1.0 } else { 0.0 }],
                 base_color: obj.color,
             };
             queue.write_buffer(&obj.ubo, 0, bytemuck::bytes_of(&u));
@@ -559,6 +575,7 @@ struct Scene {
     radius: f32,
     auto_rotate: bool,
     snap: bool,
+    debug: bool,
 }
 
 impl Scene {
@@ -592,7 +609,7 @@ impl Scene {
             let aspect = config.width as f32 / config.height as f32;
             let proj = Mat4::perspective_rh(FOV, aspect, 0.1, 100.0);
 
-            Scene { window, surface, device, queue, config, depth, renderer, proj, yaw: 0.7, pitch: 0.55, radius: 16.0, auto_rotate: false, snap: true }
+            Scene { window, surface, device, queue, config, depth, renderer, proj, yaw: 0.7, pitch: 0.55, radius: 16.0, auto_rotate: false, snap: true, debug: false }
         })
     }
 
@@ -613,7 +630,8 @@ impl Scene {
         let sun = Vec3::from_array(SUN).normalize();
         let fwd = (FOCUS - eye).normalize();
         let aspect = self.config.width as f32 / self.config.height as f32;
-        let frame = make_frame(view_proj, eye, fwd, Vec3::Y, aspect, sun, self.snap);
+        let mut frame = make_frame(view_proj, eye, fwd, Vec3::Y, aspect, sun, self.snap);
+        frame.debug = self.debug;
         self.renderer.update(&self.queue, &frame);
 
         let sframe = self.surface.get_current_texture()?;
@@ -645,6 +663,7 @@ pub fn run() {
                         KeyCode::Escape => elwt.exit(),
                         KeyCode::Space => scene.auto_rotate = !scene.auto_rotate,
                         KeyCode::KeyN => { scene.snap = !scene.snap; log::info!("texel snap: {}", if scene.snap { "ON" } else { "OFF" }); }
+                        KeyCode::KeyC => { scene.debug = !scene.debug; log::info!("cascade tint: {}", if scene.debug { "ON" } else { "OFF" }); }
                         KeyCode::ArrowLeft => scene.yaw -= step,
                         KeyCode::ArrowRight => scene.yaw += step,
                         KeyCode::ArrowUp => scene.pitch = (scene.pitch + step).min(1.5),
@@ -749,6 +768,26 @@ pub fn run_shot() {
         let px = render_to_pixels(&device, &queue, &renderer, &frame, w, h);
         write_png(&dir.join(format!("shadow_{}.png", name)), &px, w, h);
     }
+}
+
+/// Capture the cascade-tint debug view -- shows the unified partition (each surface tinted by
+/// the cascade it samples) and the blend band (gradient at boundaries).
+pub fn run_cascades() {
+    let (device, queue) = crate::headless_vulkan_device();
+    let renderer = Renderer::new(&device, SHOT_FMT);
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    // Low camera looking down the row of cubes so the ground recedes through ALL cascades.
+    let eye = Vec3::new(7.0, 2.5, -7.0);
+    let target = Vec3::new(0.0, 0.5, 9.0);
+    let proj = Mat4::perspective_rh(FOV, aspect, 0.1, 100.0);
+    let vp = proj * Mat4::look_at_rh(eye, target, Vec3::Y);
+    let fwd = (target - eye).normalize();
+    let mut frame = make_frame(vp, eye, fwd, Vec3::Y, aspect, sun_dir(45.0, 41.0), true);
+    frame.debug = true;
+    let px = render_to_pixels(&device, &queue, &renderer, &frame, w, h);
+    write_png(&std::env::temp_dir().join("shadow_cascades.png"), &px, w, h);
+    log::info!("cascade tint: green=0(near) yellow=1 orange=2 red=3(far); gradient = blend band.");
 }
 
 pub fn run_shimmer() {

@@ -2366,7 +2366,7 @@ impl EepSky {
     }
 }
 
-fn sl_sky_radiance(view: [f32; 3], sun: [f32; 3]) -> [f32; 3] {
+pub(crate) fn sl_sky_radiance(view: [f32; 3], sun: [f32; 3]) -> [f32; 3] {
     sl_sky_radiance_p(view, sun, &EepSky::shipped_default())
 }
 
@@ -3576,6 +3576,12 @@ fn main() {
         // H4c: textures (UV + sampler) through the deferred pipeline. Extra `*.dae` = showcase.
         let extra: Vec<String> = std::env::args().skip(1).filter(|a| a.to_lowercase().ends_with(".dae")).collect();
         let ok = shadow_engine::run_h4c(extra);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "h4d") {
+        // H4d: EEP sky + sun behind the shadowed textured mesh. Extra `*.dae` = showcase.
+        let extra: Vec<String> = std::env::args().skip(1).filter(|a| a.to_lowercase().ends_with(".dae")).collect();
+        let ok = shadow_engine::run_h4d(extra);
         std::process::exit(if ok { 0 } else { 1 });
     }
     if std::env::args().skip(1).any(|a| a == "sky-view") {

@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 use winit::{
     event::{ElementState, Event, KeyEvent, WindowEvent},
@@ -86,6 +86,7 @@ struct Frame {
     sun: Vec3,
     debug: bool, // cascade-tint overlay
     mask: bool,  // output the shadow mask (lit value) for area measurement
+    sky: bool,   // EEP sky backdrop behind geometry (H4d)
 }
 
 fn orbit_eye(yaw: f32, pitch: f32, radius: f32) -> Vec3 {
@@ -175,7 +176,7 @@ fn compute_cascades(
 fn make_frame(render_vp: Mat4, fit_eye: Vec3, fit_fwd: Vec3, fit_up: Vec3, aspect: f32, sun: Vec3, snap: bool) -> Frame {
     let sel_view = Mat4::look_at_rh(fit_eye, fit_eye + fit_fwd, fit_up);
     let (cascades, splits) = compute_cascades(fit_eye, fit_fwd, fit_up, aspect, sun, snap);
-    Frame { view_proj: render_vp, sel_view, cascades, splits, sun, debug: false, mask: false }
+    Frame { view_proj: render_vp, sel_view, cascades, splits, sun, debug: false, mask: false, sky: false }
 }
 
 // ---- geometry -------------------------------------------------------------------
@@ -986,6 +987,10 @@ const GNORMAL_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// One scene object for the deferred renderer: geometry, model transform, colour, is-caster.
 type ObjSpec = (Vec<Vtx>, Vec<u16>, Mat4, [f32; 4], bool);
 
+/// Sky display tone-map exponent: display = 1 - exp(-radiance * K). Shared by the GLSL sky and
+/// the CPU oracle so the H4d gate is a like-for-like comparison.
+const SKY_TONEMAP_K: f32 = 0.5;
+
 fn gbuf_vert() -> String {
     format!(r#"#version 450
 layout(location = 0) in vec3 pos;
@@ -1064,6 +1069,63 @@ layout(set = 1, binding = 3) uniform sampler   gSamp;
 layout(set = 2, binding = 0) uniform texture2DArray shadowTex;
 layout(set = 2, binding = 1) uniform samplerShadow  shadowSamp;
 
+// EEP/WindLight dome radiance (skyV+skyF), shipped default sky -- a faithful port of the Rust
+// sl_sky_radiance (vectorized), validated per-pixel against it by the H4d gate. NOT Hosek-Wilkie.
+vec3 sl_sky(vec3 view, vec3 sun) {{
+    const vec3  blue_horizon = vec3(0.4954, 0.4954, 0.6399);
+    const vec3  blue_density = vec3(0.2447, 0.4487, 0.7599);
+    const float haze_horizon = 0.19;
+    const float haze_density = 0.7;
+    const float density_multiplier = 0.0001;
+    const vec3  glow = vec3(5.0, 0.001, -0.4799);
+    const vec3  ambient = vec3(0.25);
+    const vec3  sunlight = vec3(0.7342, 0.7815, 0.8999);
+    const float cloud_shadow = 0.2699;
+    const float max_y = 1605.0;
+
+    float dy = max(view.y, 1e-3);
+    float rel_pos_len = max_y / dy;
+    float ndot = dot(view, sun);
+    float atten_k = density_multiplier * max_y;
+    float off_axis = 1.0 / max(max(view.y, 0.0) + sun.y, 1e-6);
+    float density_dist = rel_pos_len * density_multiplier;
+    float hg = pow(max(1.0 - ndot, 0.001) * glow.x, glow.z);
+    float haze_glow = hg + 0.25;
+
+    vec3 light_atten = (blue_density + haze_density * 0.25) * atten_k;
+    vec3 sun_c = sunlight * exp(-light_atten * off_axis);
+    vec3 comb = max(blue_density + haze_density, vec3(1e-6));
+    vec3 blue_w = blue_density / comb;
+    vec3 haze_w = vec3(haze_density) / comb;
+    vec3 combined_haze = exp(-comb * density_dist);
+    vec3 col = blue_horizon * blue_w * (sun_c + ambient)
+             + (haze_horizon * haze_w) * (sun_c * haze_glow + ambient);
+    col *= (vec3(1.0) - combined_haze);
+    vec3 ambient2 = ambient + (vec3(1.0) - ambient) * cloud_shadow * 0.5;
+    vec3 sun2 = sun_c * (1.0 - cloud_shadow);
+    vec3 add_below = blue_horizon * blue_w * (sun2 + ambient2)
+                   + (haze_horizon * haze_w) * (sun2 * haze_glow + ambient2);
+    vec3 ch2 = sqrt(combined_haze);
+    col += (add_below - col) * (vec3(1.0) - sqrt(ch2));
+    return clamp(col * 2.0, 0.0, 5.0);
+}}
+vec3 sky_background() {{
+    vec2 res = vec2(textureSize(sampler2D(gNormalT, gSamp), 0));
+    vec2 uvv = gl_FragCoord.xy / res;
+    vec2 ndc = vec2(uvv.x * 2.0 - 1.0, 1.0 - uvv.y * 2.0);
+    mat4 invVP = inverse(u.view_proj);
+    vec4 pn = invVP * vec4(ndc, 0.0, 1.0);
+    vec4 pf = invVP * vec4(ndc, 1.0, 1.0);
+    vec3 vd = normalize(pf.xyz / pf.w - pn.xyz / pn.w);
+    vec3 sunUp = -normalize(u.sun_dir.xyz);
+    vec3 disp = vec3(1.0) - exp(-sl_sky(vd, sunUp) * {k});
+    float sd = dot(vd, sunUp);
+    float disk = smoothstep(0.9993, 0.9997, sd);
+    float glow = pow(max(sd, 0.0), 250.0) * 0.35;
+    disp += vec3(1.0, 0.96, 0.85) * (disk * 2.0 + glow);
+    return clamp(disp, 0.0, 1.0);
+}}
+
 int pick_cascade(float vd) {{
     if (vd <= u.splits.x) return 0;
     if (vd <= u.splits.y) return 1;
@@ -1087,7 +1149,12 @@ float shadow_lit(vec3 wp, vec3 N, int ci) {{
 void main() {{
     ivec2 px = ivec2(gl_FragCoord.xy);
     vec4 nrm4 = texelFetch(sampler2D(gNormalT, gSamp), px, 0);
-    if (nrm4.w < 0.5) {{ frag = vec4(0.50, 0.62, 0.78, 1.0); return; }} // background = forward clear
+    if (nrm4.w < 0.5) {{
+        // background: EEP sky (flag 3) or the flat clear (h4a/b/c -> byte-exact)
+        if (u.sun_dir.w > 2.5) frag = vec4(sky_background(), 1.0);
+        else frag = vec4(0.50, 0.62, 0.78, 1.0);
+        return;
+    }}
     vec3 albedo = texelFetch(sampler2D(gAlbedoT, gSamp), px, 0).rgb;
     vec3 world  = texelFetch(sampler2D(gWorldT,  gSamp), px, 0).xyz;
     vec3 N = normalize(nrm4.xyz);
@@ -1105,7 +1172,7 @@ void main() {{
     vec3 col = albedo * (0.25 + 0.75 * ndl * lit);
     frag = vec4(col, 1.0);
 }}
-"#, size = SHADOW_SIZE)
+"#, size = SHADOW_SIZE, k = SKY_TONEMAP_K)
 }
 
 /// Deferred renderer: same scene + same shadow pass as the forward `Renderer`, but shading
@@ -1325,7 +1392,7 @@ impl DeferredRenderer {
         let mut light_vp = [[[0f32; 4]; 4]; N_CASCADES];
         for i in 0..N_CASCADES { light_vp[i] = f.cascades[i].to_cols_array_2d(); }
         let splits = [f.splits[0], f.splits[1], f.splits[2], f.splits[3]];
-        let flag = if f.mask { 2.0 } else if f.debug { 1.0 } else { 0.0 };
+        let flag = if f.mask { 2.0 } else if f.debug { 1.0 } else if f.sky { 3.0 } else { 0.0 };
         for obj in &self.objs {
             let u = Uniforms {
                 view_proj: f.view_proj.to_cols_array_2d(), sel_view: f.sel_view.to_cols_array_2d(),
@@ -1801,5 +1868,125 @@ pub fn run_h4c(extra: Vec<String>) -> bool {
     log::info!("  wrote h4c_*.png to {}", dir.display());
     let ok = gate_ok && show_ok;
     log::info!("  H4c {} -- textures (UV + sampler) render through the deferred pipeline.", if ok { "PASS" } else { "REVIEW" });
+    ok
+}
+
+fn srgb8(l: f32) -> u8 {
+    let s = if l <= 0.0031308 { 12.92 * l } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+    (s.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+}
+
+/// CPU mirror of the shader's sky tone-map + sRGB encode (the H4d oracle side).
+fn sky_tonemap_srgb(sky: [f32; 3]) -> [u8; 3] {
+    let mut o = [0u8; 3];
+    for c in 0..3 {
+        let disp = 1.0 - (-sky[c] * SKY_TONEMAP_K).exp();
+        o[c] = srgb8(disp.clamp(0.0, 1.0));
+    }
+    o
+}
+
+/// **H4d gate.** The EEP sky (sun + sky) behind the shadowed, textured mesh -- the north star.
+/// GATE: the GLSL sky (a port of the Rust `sl_sky_radiance`, the shipped-default EEP dome) must
+/// match that Rust oracle PER-PIXEL, using the same inverse-VP view-ray reconstruction (sun disk
+/// excluded). This is the H3/H4a discipline applied to the sky: a trusted CPU oracle, byte-close.
+/// SHOWCASE: textured cube + any CLI `.dae` under the sky, high & low sun. `cargo run -- h4d`.
+pub fn run_h4d(extra: Vec<String>) -> bool {
+    let (device, queue) = crate::headless_vulkan_device();
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    let dir = std::env::temp_dir();
+    let (_ck, ckview) = make_checker(&device, &queue);
+    let (pv, pi) = plane(40.0);
+    let ground = [0.55f32, 0.55, 0.58, 1.0];
+    let white = [1.0f32, 1.0, 1.0, 1.0];
+    let sun_az = 41.0f32;
+
+    // ---- GATE: GLSL EEP sky == Rust sl_sky_radiance, per-pixel ----
+    let sky_only = DeferredRenderer::new(&device, &[], None); // empty scene -> whole frame is sky
+    let sun = sun_dir(25.0, sun_az);
+    let eye = Vec3::new(0.0, 2.0, 0.0);
+    let target = Vec3::new(3.0, 6.0, 10.0);
+    let proj = Mat4::perspective_rh(FOV, aspect, 0.1, 100.0);
+    let vp = proj * Mat4::look_at_rh(eye, target, Vec3::Y);
+    let fwd = (target - eye).normalize();
+    let mut frame = make_frame(vp, eye, fwd, Vec3::Y, aspect, sun, true);
+    frame.sky = true;
+    let px = sky_only.render(&device, &queue, &frame, w, h);
+    write_png(&dir.join("h4d_sky.png"), &px, w, h);
+
+    let sun_up = -sun;
+    let inv = vp.inverse();
+    let (mut n, mut sum, mut worst, mut lmin, mut lmax) = (0u64, 0.0f64, 0i32, 255i32, 0i32);
+    for y in 0..h {
+        for x in 0..w {
+            let (uvx, uvy) = ((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+            let (ndx, ndy) = (uvx * 2.0 - 1.0, 1.0 - uvy * 2.0);
+            let pn = inv * Vec4::new(ndx, ndy, 0.0, 1.0);
+            let pf = inv * Vec4::new(ndx, ndy, 1.0, 1.0);
+            let d = (pf.truncate() / pf.w - pn.truncate() / pn.w).normalize();
+            if d.dot(sun_up) > 0.95 { continue; } // exclude the sun disk/glow (not in the dome oracle)
+            let exp = sky_tonemap_srgb(crate::sl_sky_radiance([d.x, d.y, d.z], [sun_up.x, sun_up.y, sun_up.z]));
+            let i = ((y * w + x) * 4) as usize;
+            let dm = (px[i] as i32 - exp[0] as i32).abs()
+                .max((px[i + 1] as i32 - exp[1] as i32).abs())
+                .max((px[i + 2] as i32 - exp[2] as i32).abs());
+            sum += dm as f64;
+            worst = worst.max(dm);
+            n += 1;
+            let lum = (px[i] as i32 + px[i + 1] as i32 + px[i + 2] as i32) / 3;
+            lmin = lmin.min(lum);
+            lmax = lmax.max(lum);
+        }
+    }
+    let mean = sum / n.max(1) as f64;
+    let gate_ok = mean < 2.0 && worst < 16 && (lmax - lmin) > 20;
+    log::info!("H4d EEP SKY gate -- GLSL sky vs Rust sl_sky_radiance ({} sky px, sun disk excluded):", n);
+    log::info!("  mean 8-bit delta {:.2}, worst {}   (want ~0 -> faithful EEP port + view-ray)", mean, worst);
+    log::info!("  sky luminance spread {}..{}   (want wide -> real gradient, not flat)", lmin, lmax);
+    log::info!("  gate {}", if gate_ok { "PASS" } else { "REVIEW" });
+
+    // ---- SHOWCASE: mesh + EEP sky + shadows ----
+    let (cv, ci) = cube();
+    let scene: Vec<ObjSpec> = vec![
+        (cv, ci, Mat4::IDENTITY, white, true),
+        (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
+    ];
+    let r = DeferredRenderer::new(&device, &scene, Some(&ckview));
+    log::info!("H4d SHOWCASE (mesh + EEP sky + shadows):");
+    for &(name, elev) in &[("high", 55.0f32), ("low", 12.0)] {
+        let (cvp, ceye, cfwd) = orbit_cam(w, h, 40.0, 10.0, 6.0);
+        let mut cframe = make_frame(cvp, ceye, cfwd, Vec3::Y, aspect, sun_dir(elev, sun_az), true);
+        cframe.sky = true;
+        let cpx = r.render(&device, &queue, &cframe, w, h);
+        write_png(&dir.join(format!("h4d_scene_{name}sun.png")), &cpx, w, h);
+        log::info!("  checker cube + sky ({:>4} sun) -> RENDERED", name);
+    }
+    let mut show_ok = true;
+    for path in &extra {
+        let p = std::path::Path::new(path);
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("mesh").replace(' ', "_");
+        match crate::dae::load(p) {
+            Ok(m) => {
+                let (mv, mi) = dae_to_vtx(&m);
+                let sc: Vec<ObjSpec> = vec![
+                    (mv, mi, fit_model(&m, 3.0), white, true),
+                    (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
+                ];
+                let rr = DeferredRenderer::new(&device, &sc, Some(&ckview));
+                let (mvp, meye, mfwd) = orbit_cam(w, h, 35.0, 12.0, 8.0);
+                let mut mframe = make_frame(mvp, meye, mfwd, Vec3::Y, aspect, sun_dir(30.0, sun_az), true);
+                mframe.sky = true;
+                let mpx = rr.render(&device, &queue, &mframe, w, h);
+                write_png(&dir.join(format!("h4d_{stem}.png")), &mpx, w, h);
+                log::info!("  {} + sky: {} tris -> RENDERED", stem, m.tri_count());
+            }
+            Err(e) => { log::warn!("  {}: load failed: {e}", stem); show_ok = false; }
+        }
+    }
+
+    log::info!("  wrote h4d_*.png to {}", dir.display());
+    let ok = gate_ok && show_ok;
+    log::info!("  H4d {} -- EEP sky + sun behind the mesh, shadows consistent (north star).", if ok { "PASS" } else { "REVIEW" });
     ok
 }

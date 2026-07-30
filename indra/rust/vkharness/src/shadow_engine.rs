@@ -65,10 +65,16 @@ struct Uniforms {
     base_color: [f32; 4],
 }
 
+/// Sun travel direction from elevation + azimuth (degrees). Lower elevation = longer shadow.
+fn sun_dir(elev_deg: f32, azim_deg: f32) -> Vec3 {
+    let (el, az) = (elev_deg.to_radians(), azim_deg.to_radians());
+    Vec3::new(el.cos() * az.cos(), -el.sin(), el.cos() * az.sin()).normalize()
+}
+
 /// Sun ortho view-projection. (M2 replaces this with the stable sphere-bounded,
 /// texel-snapped cascade.)
-fn light_matrix() -> Mat4 {
-    let dir = Vec3::from_array(SUN).normalize();
+fn light_matrix(sun: Vec3) -> Mat4 {
+    let dir = sun.normalize();
     let center = Vec3::new(0.0, 0.5, 0.0);
     let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
     let eye = center - dir * 12.0;
@@ -536,8 +542,8 @@ impl Scene {
             self.yaw += 0.0015;
         }
         let view_proj = camera(self.proj, self.yaw, self.pitch, 5.0);
-        let light_vp = light_matrix();
         let sun = Vec3::from_array(SUN).normalize();
+        let light_vp = light_matrix(sun);
         self.renderer.update(&self.queue, view_proj, light_vp, sun);
 
         let frame = self.surface.get_current_texture()?;
@@ -609,7 +615,7 @@ pub fn run() {
 /// Render one frame headless (no window) to a PNG. `yaw_deg`/`pitch_deg` pick the camera.
 /// Returns the path written. Width is a multiple of 64 so the readback row stride needs
 /// no 256-byte padding.
-pub fn shot(out: &std::path::Path, w: u32, h: u32, yaw_deg: f32, pitch_deg: f32) {
+pub fn shot(out: &std::path::Path, sun: Vec3, w: u32, h: u32, yaw_deg: f32, pitch_deg: f32, radius: f32) {
     const FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
     let (device, queue) = crate::headless_vulkan_device();
     let renderer = Renderer::new(&device, FMT);
@@ -629,8 +635,8 @@ pub fn shot(out: &std::path::Path, w: u32, h: u32, yaw_deg: f32, pitch_deg: f32)
         .create_view(&wgpu::TextureViewDescriptor::default());
 
     let proj = Mat4::perspective_rh(45f32.to_radians(), w as f32 / h as f32, 0.1, 100.0);
-    let view_proj = camera(proj, yaw_deg.to_radians(), pitch_deg.to_radians(), 5.5);
-    renderer.update(&queue, view_proj, light_matrix(), Vec3::from_array(SUN).normalize());
+    let view_proj = camera(proj, yaw_deg.to_radians(), pitch_deg.to_radians(), radius);
+    renderer.update(&queue, view_proj, light_matrix(sun), sun);
 
     let bpr = w * 4; // Rgba8 = 4 bytes; w multiple of 64 -> bpr multiple of 256 (no padding)
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -669,6 +675,9 @@ pub fn shot(out: &std::path::Path, w: u32, h: u32, yaw_deg: f32, pitch_deg: f32)
 }
 
 pub fn run_shot() {
-    let out = std::env::temp_dir().join("shadow_shot.png");
-    shot(&out, 1280, 800, 40.0, 32.0);
+    let dir = std::env::temp_dir();
+    // High sun (~59deg): short shadow, the M0b default.
+    shot(&dir.join("shadow_high.png"), sun_dir(59.0, 41.0), 1280, 800, 40.0, 32.0, 5.5);
+    // Low sun (~18deg): long raking shadow -- the stress case for shadow coverage.
+    shot(&dir.join("shadow_low.png"), sun_dir(18.0, 41.0), 1280, 800, 40.0, 24.0, 6.5);
 }

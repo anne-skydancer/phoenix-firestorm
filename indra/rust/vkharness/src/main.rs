@@ -3544,6 +3544,10 @@ fn main() {
         shadow_engine::run_shimmer(); // M2 anti-shimmer gate (fixed render cam, panning fit cam)
         std::process::exit(0);
     }
+    if std::env::args().skip(1).any(|a| a == "shadow-suncam") {
+        shadow_engine::run_suncam(); // moving-sun + moving-cam test (dynamic vs invariant)
+        std::process::exit(0);
+    }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();
         std::process::exit(if ok { 0 } else { 1 });

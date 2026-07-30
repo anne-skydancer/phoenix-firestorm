@@ -808,3 +808,57 @@ pub fn run_shimmer() {
     }
     log::info!("GATE PASS if snap=on total << snap=off total (crawl eliminated by texel snapping).");
 }
+
+/// **Moving-sun + moving-camera test** (user's proposal), decoupled for rigor. A FIXED
+/// top-down measurement camera views the WORLD shadow footprint; we vary ONE thing at a time:
+///   A) fit camera orbits wide, sun fixed  -> world shadow must be INVARIANT (ignores camera)
+///   B) sun sweeps, fit camera fixed        -> world shadow must FOLLOW the sun (changes)
+/// PASS = A << B. Writes representative frames for eyeball backup.
+pub fn run_suncam() {
+    let (device, queue) = crate::headless_vulkan_device();
+    let renderer = Renderer::new(&device, SHOT_FMT);
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    let dir = std::env::temp_dir();
+    let steps = 16;
+
+    // FIXED measurement camera: steep top-down so the ground shadow footprint is visible and
+    // the fit camera's motion cannot move the view.
+    let mproj = Mat4::perspective_rh(45f32.to_radians(), aspect, 0.1, 100.0);
+    let meye = orbit_eye(25f32.to_radians(), 65f32.to_radians(), 7.0);
+    let mvp = mproj * Mat4::look_at_rh(meye, FOCUS, Vec3::Y);
+
+    // A: camera (fit) orbits 0..60deg, sun FIXED.
+    let sun_fixed = sun_dir(45.0, 41.0);
+    let (mut prev, mut a_total) = (None::<Vec<u8>>, 0u64);
+    for k in 0..steps {
+        let fit_yaw = (k as f32 * 4.0).to_radians();
+        let feye = orbit_eye(fit_yaw, 0.5, 5.0);
+        let ffwd = (FOCUS - feye).normalize();
+        let lvp = stable_light_matrix(feye, ffwd, Vec3::Y, 45f32.to_radians(), aspect, 0.5, 8.0, sun_fixed, true);
+        let px = render_to_pixels(&device, &queue, &renderer, mvp, lvp, sun_fixed, w, h);
+        if let Some(p) = &prev { a_total += pixel_diff(&px, p); }
+        if k == 0 { write_png(&dir.join("suncam_A_camstart.png"), &px, w, h); }
+        if k == steps - 1 { write_png(&dir.join("suncam_A_camend.png"), &px, w, h); }
+        prev = Some(px);
+    }
+
+    // B: sun sweeps 58..13deg, camera (fit) FIXED.
+    let feye = orbit_eye(30f32.to_radians(), 0.5, 5.0);
+    let ffwd = (FOCUS - feye).normalize();
+    let (mut prev, mut b_total) = (None::<Vec<u8>>, 0u64);
+    for k in 0..steps {
+        let el = 58.0 - k as f32 * 3.0;
+        let sun_k = sun_dir(el, 41.0);
+        let lvp = stable_light_matrix(feye, ffwd, Vec3::Y, 45f32.to_radians(), aspect, 0.5, 8.0, sun_k, true);
+        let px = render_to_pixels(&device, &queue, &renderer, mvp, lvp, sun_k, w, h);
+        if let Some(p) = &prev { b_total += pixel_diff(&px, p); }
+        if k % 5 == 0 { write_png(&dir.join(format!("suncam_B_sun{:02}.png", k)), &px, w, h); }
+        prev = Some(px);
+    }
+
+    log::info!("moving-sun / moving-cam (fixed top-down measurement cam, {} frames each):", steps);
+    log::info!("  A) camera orbits 0..60deg, sun FIXED : {:>8} px changed  -> want ~0     (shadow IGNORES camera)", a_total);
+    log::info!("  B) sun sweeps 58..13deg, camera FIXED: {:>8} px changed  -> want LARGE  (shadow FOLLOWS sun)", b_total);
+    log::info!("  PASS if A << B.");
+}

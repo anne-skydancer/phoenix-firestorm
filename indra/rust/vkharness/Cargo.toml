@@ -22,6 +22,7 @@ env_logger = "0.11"
 log = "0.4"
 bytemuck = { version = "1", features = ["derive"] }  # POD vertex/uniform casts (H1+)
 glam = "0.27"        # Vec3/Mat4 for the engine forward + shadow passes (M0a+)
+png = "0.17"         # encode the headless one-frame capture (shadow-shot; M2/M4 gate)
 shaderc = "0.8"      # GLSL -> SPIR-V in-process (H2); links the SDK's prebuilt
                      # shaderc_combined.lib via SHADERC_LIB_DIR (.cargo/config.toml)
 # Track B (atmosphere): reference ORACLE for the Hosek-Wilkie sky gate. A faithful

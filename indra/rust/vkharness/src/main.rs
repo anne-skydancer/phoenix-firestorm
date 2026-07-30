@@ -142,7 +142,7 @@ pub(crate) fn glsl_module(
 // new gates from H3b on use these.)
 
 /// A headless Vulkan device+queue (no window/surface), adapter logged.
-fn headless_vulkan_device() -> (wgpu::Device, wgpu::Queue) {
+pub(crate) fn headless_vulkan_device() -> (wgpu::Device, wgpu::Queue) {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
@@ -3534,6 +3534,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "shadow") {
         shadow_engine::run(); // M0a+ forward/shadow engine (runs its own window loop)
+        std::process::exit(0);
+    }
+    if std::env::args().skip(1).any(|a| a == "shadow-shot") {
+        shadow_engine::run_shot(); // headless one-frame capture -> PNG (M2/M4 gate seed)
         std::process::exit(0);
     }
     if std::env::args().skip(1).any(|a| a == "sky-view") {

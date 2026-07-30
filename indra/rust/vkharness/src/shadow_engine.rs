@@ -862,3 +862,63 @@ pub fn run_suncam() {
     log::info!("  B) sun sweeps 58..13deg, camera FIXED: {:>8} px changed  -> want LARGE  (shadow FOLLOWS sun)", b_total);
     log::info!("  PASS if A << B.");
 }
+
+/// One camera-invariance sweep: rotate the FIT camera per `gen(k) -> (yaw, pitch, roll)` in
+/// radians (sun + measurement cam fixed); return (total, peak) world-shadow pixel change.
+#[allow(clippy::too_many_arguments)]
+fn axis_sweep(
+    device: &wgpu::Device, queue: &wgpu::Queue, renderer: &Renderer, mvp: Mat4, sun: Vec3,
+    w: u32, h: u32, aspect: f32, steps: usize, gen: impl Fn(usize) -> (f32, f32, f32),
+) -> (u64, u64) {
+    let mut prev: Option<Vec<u8>> = None;
+    let (mut total, mut peak) = (0u64, 0u64);
+    for k in 0..steps {
+        let (yaw, pitch, roll) = gen(k);
+        let eye = orbit_eye(yaw, pitch, 5.0);
+        let fwd = (FOCUS - eye).normalize();
+        // roll = tilt the up vector about the view direction (horizon tilt).
+        let up = glam::Quat::from_axis_angle(fwd, roll) * Vec3::Y;
+        let lvp = stable_light_matrix(eye, fwd, up, 45f32.to_radians(), aspect, 0.5, 8.0, sun, true);
+        let px = render_to_pixels(device, queue, renderer, mvp, lvp, sun, w, h);
+        if let Some(p) = &prev {
+            let d = pixel_diff(&px, p);
+            total += d;
+            peak = peak.max(d);
+        }
+        prev = Some(px);
+    }
+    (total, peak)
+}
+
+/// **Camera-invariance across ALL rotation axes** (user's request). FIXED sun + FIXED
+/// top-down measurement camera; the FIT camera rotates on yaw, pitch, roll, and all three
+/// combined. Every sweep must leave the WORLD shadow unchanged (~0 px), vs the ~14.6M px
+/// sun-response baseline from `shadow-suncam`.
+pub fn run_axes() {
+    let (device, queue) = crate::headless_vulkan_device();
+    let renderer = Renderer::new(&device, SHOT_FMT);
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    let sun = sun_dir(45.0, 41.0); // FIXED -> isolates camera invariance
+    let mproj = Mat4::perspective_rh(45f32.to_radians(), aspect, 0.1, 100.0);
+    let meye = orbit_eye(25f32.to_radians(), 65f32.to_radians(), 7.0);
+    let mvp = mproj * Mat4::look_at_rh(meye, FOCUS, Vec3::Y);
+    let steps = 16;
+    let d = |x: f32| x.to_radians();
+
+    let sweep = |label: &str, gen: &dyn Fn(usize) -> (f32, f32, f32)| -> u64 {
+        let (total, peak) = axis_sweep(&device, &queue, &renderer, mvp, sun, w, h, aspect, steps, gen);
+        log::info!("  {:<15}: {:>7} px total, {:>5} peak/frame  (want ~0)", label, total, peak);
+        total
+    };
+
+    log::info!("CAMERA INVARIANCE across axes (fixed sun, fixed measurement cam, {} frames each):", steps);
+    let yaw   = sweep("yaw (L<->R)",    &|k| (d(k as f32 * 4.0), d(30.0), 0.0));           // 0..60
+    let pitch = sweep("pitch (D<->U)",  &|k| (d(30.0), d(15.0 + k as f32 * 3.0), 0.0));    // 15..60
+    let roll  = sweep("roll (tilt)",    &|k| (d(30.0), d(30.0), d(k as f32 * 4.0)));       // 0..60
+    let combo = sweep("yaw+pitch+roll", &|k| (d(k as f32 * 3.0), d(20.0 + k as f32 * 2.0), d(k as f32 * 3.0)));
+
+    let worst = yaw.max(pitch).max(roll).max(combo);
+    log::info!("worst axis: {} px over {} frames. Sun-response baseline (shadow-suncam B): ~14.6M.", worst, steps);
+    log::info!("PASS if every axis << the sun baseline (world shadow ignores camera on all axes).");
+}

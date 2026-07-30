@@ -1507,6 +1507,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1625,7 +1631,7 @@ checksum = "73120d240fe22196300f39ca8547ca2d014960f27b19b47b21288b396272f7f7"
 dependencies = [
  "cmake",
  "libc",
- "roxmltree",
+ "roxmltree 0.14.1",
 ]
 
 [[package]]
@@ -1906,6 +1912,7 @@ dependencies = [
  "log",
  "png",
  "pollster",
+ "roxmltree 0.20.0",
  "shaderc",
  "wgpu",
  "winit",

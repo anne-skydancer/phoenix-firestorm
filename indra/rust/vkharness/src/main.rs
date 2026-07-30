@@ -123,6 +123,7 @@ fn compile_glsl(source: &str, kind: shaderc::ShaderKind, name: &str) -> Vec<u32>
 
 /// Build a wgpu shader module from GLSL by way of SPIR-V.
 mod shadow_engine; // engine shadow work (SHADOW_PLAN.md), invoked by the `shadow` subcommand
+mod dae; // minimal Collada (.dae) reader for the real-mesh path (H4b)
 
 pub(crate) fn glsl_module(
     device: &wgpu::Device,
@@ -3563,6 +3564,12 @@ fn main() {
     if std::env::args().skip(1).any(|a| a == "h4a") {
         // H4a: deferred G-buffer + fullscreen lighting == forward shading (unified-render gate).
         let ok = shadow_engine::run_h4a();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "h4b") {
+        // H4b: real .dae mesh in the deferred pipeline. Extra `*.dae` args = showcase meshes.
+        let extra: Vec<String> = std::env::args().skip(1).filter(|a| a.to_lowercase().ends_with(".dae")).collect();
+        let ok = shadow_engine::run_h4b(extra);
         std::process::exit(if ok { 0 } else { 1 });
     }
     if std::env::args().skip(1).any(|a| a == "sky-view") {

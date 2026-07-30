@@ -980,6 +980,9 @@ const GALBEDO_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const GWORLD_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const GNORMAL_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// One scene object for the deferred renderer: geometry, model transform, colour, is-caster.
+type ObjSpec = (Vec<Vtx>, Vec<u16>, Mat4, [f32; 4], bool);
+
 fn gbuf_vert() -> String {
     format!(r#"#version 450
 layout(location = 0) in vec3 pos;
@@ -1094,7 +1097,7 @@ struct DeferredRenderer {
 }
 
 impl DeferredRenderer {
-    fn new(device: &wgpu::Device) -> DeferredRenderer {
+    fn new(device: &wgpu::Device, scene: &[ObjSpec]) -> DeferredRenderer {
         let obj_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("d-obj-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -1249,14 +1252,10 @@ impl DeferredRenderer {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_ubo.as_entire_binding() }],
         });
 
-        // same scene as the forward Renderer
-        let mut objs = Vec::new();
-        let (cv, ci) = cube();
-        for &z in &[0.0f32, 9.0, 18.0] {
-            objs.push(Obj::new(device, &obj_bgl, &cv, &ci, Mat4::from_translation(Vec3::new(0.0, 0.0, z)), [0.85, 0.45, 0.20, 1.0], true));
-        }
-        let (pv, pi) = plane(40.0);
-        objs.push(Obj::new(device, &obj_bgl, &pv, &pi, Mat4::IDENTITY, [0.55, 0.55, 0.58, 1.0], false));
+        // caller-supplied scene
+        let objs: Vec<Obj> = scene.iter()
+            .map(|(v, i, m, c, caster)| Obj::new(device, &obj_bgl, v, i, *m, *c, *caster))
+            .collect();
 
         DeferredRenderer {
             gbuffer_pipeline, lighting_pipeline, shadow_pipeline, shadow_layer_views, shadow_bind,
@@ -1411,10 +1410,22 @@ impl DeferredRenderer {
 /// **H4a gate.** Render the same scene FORWARD (trusted `Renderer`) and DEFERRED, then prove the
 /// deferred lighting reproduces the forward shading on lit geometry. Same computation, different
 /// plumbing -- the first time the shadow pass + shading render together off a G-buffer.
+/// The default cube+plane scene (identical to the forward `Renderer`'s hardcoded scene).
+fn default_scene() -> Vec<ObjSpec> {
+    let (cv, ci) = cube();
+    let (pv, pi) = plane(40.0);
+    let mut scene: Vec<ObjSpec> = Vec::new();
+    for &z in &[0.0f32, 9.0, 18.0] {
+        scene.push((cv.clone(), ci.clone(), Mat4::from_translation(Vec3::new(0.0, 0.0, z)), [0.85, 0.45, 0.20, 1.0], true));
+    }
+    scene.push((pv, pi, Mat4::IDENTITY, [0.55, 0.55, 0.58, 1.0], false));
+    scene
+}
+
 pub fn run_h4a() -> bool {
     let (device, queue) = crate::headless_vulkan_device();
     let forward = Renderer::new(&device, SHOT_FMT);
-    let deferred = DeferredRenderer::new(&device);
+    let deferred = DeferredRenderer::new(&device, &default_scene());
     let (w, h) = (1280u32, 800u32);
     let aspect = w as f32 / h as f32;
     let dir = std::env::temp_dir();
@@ -1468,5 +1479,135 @@ pub fn run_h4a() -> bool {
     log::info!("  wrote h4a_forward.png / h4a_deferred.png / h4a_diff.png to {}", dir.display());
     let ok = frac < 0.01;
     log::info!("  H4a {} -- deferred reproduces forward shading (unified render integration proven).", if ok { "PASS" } else { "REVIEW" });
+    ok
+}
+
+/// Convert a loaded Collada mesh to the engine's vertex + index buffers.
+fn dae_to_vtx(m: &crate::dae::DaeMesh) -> (Vec<Vtx>, Vec<u16>) {
+    if m.positions.len() > u16::MAX as usize {
+        log::warn!("dae mesh has {} verts (> u16 max) -- needs u32 indices; render will be wrong", m.positions.len());
+    }
+    let verts: Vec<Vtx> = m.positions.iter().zip(&m.normals).map(|(p, n)| Vtx { pos: *p, nrm: *n }).collect();
+    let idx: Vec<u16> = m.indices.iter().map(|&i| i as u16).collect();
+    (verts, idx)
+}
+
+/// Model matrix that scales a mesh to `target_height` and rests it (base-centered) on y=0.
+fn fit_model(m: &crate::dae::DaeMesh, target_height: f32) -> Mat4 {
+    let (lo, hi) = m.bounds();
+    let s = target_height / (hi.y - lo.y).max(1e-3);
+    let base_center = Vec3::new((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5);
+    Mat4::from_scale(Vec3::splat(s)) * Mat4::from_translation(-base_center)
+}
+
+/// count geometry pixels (differ from the background/corner) -- non-degenerate render check.
+fn geom_px(px: &[u8]) -> u64 {
+    let bg = [px[0], px[1], px[2]];
+    let mut n = 0u64;
+    let mut i = 0;
+    while i + 3 < px.len() {
+        if (px[i] as i16 - bg[0] as i16).abs() > 8 || (px[i + 1] as i16 - bg[1] as i16).abs() > 8 || (px[i + 2] as i16 - bg[2] as i16).abs() > 8 { n += 1; }
+        i += 4;
+    }
+    n
+}
+
+/// **H4b gate.** Real `.dae` geometry through the (proven) deferred pipeline. Two parts:
+/// (1) an ORACLE -- the repo `cube.dae`, loaded and fit to our procedural cube's box, must
+/// render the same image as the procedural cube (validates the loader against trusted geometry);
+/// (2) a SHOWCASE -- real SL meshes (repo `hex_phys.dae` + any `*.dae` paths on the CLI) load and
+/// render lit + shadowed. The deferred pipeline is unchanged from H4a; only the mesh source is.
+pub fn run_h4b(extra: Vec<String>) -> bool {
+    let (device, queue) = crate::headless_vulkan_device();
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    let dir = std::env::temp_dir();
+    let (pv, pi) = plane(40.0);
+    let ground = [0.55f32, 0.55, 0.58, 1.0];
+    let orange = [0.85f32, 0.45, 0.20, 1.0];
+
+    // ---- (1) loader oracle: cube.dae must match our procedural cube ----
+    let cube_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../newview/cube.dae");
+    let dcube = match crate::dae::load(std::path::Path::new(cube_path)) {
+        Ok(m) => m,
+        Err(e) => { log::error!("H4b: load cube.dae failed: {e}"); return false; }
+    };
+    let (dcv, dci) = dae_to_vtx(&dcube);
+    let cube_model = fit_model(&dcube, 1.0); // -> procedural cube's box (y 0..1, +-0.5)
+    let (cv, ci) = cube();
+    let scene_proc: Vec<ObjSpec> = vec![
+        (cv, ci, Mat4::IDENTITY, orange, true),
+        (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
+    ];
+    let scene_dae: Vec<ObjSpec> = vec![
+        (dcv, dci, cube_model, orange, true),
+        (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
+    ];
+    let r_proc = DeferredRenderer::new(&device, &scene_proc);
+    let r_dae = DeferredRenderer::new(&device, &scene_dae);
+
+    let (vp, eye, fwd) = orbit_cam(w, h, 35.0, 28.0, 7.0);
+    let frame = make_frame(vp, eye, fwd, Vec3::Y, aspect, sun_dir(40.0, 41.0), true);
+    let px_proc = r_proc.render(&device, &queue, &frame, w, h);
+    let px_dae = r_dae.render(&device, &queue, &frame, w, h);
+    write_png(&dir.join("h4b_cube_proc.png"), &px_proc, w, h);
+    write_png(&dir.join("h4b_cube_dae.png"), &px_dae, w, h);
+
+    let bg = [px_proc[0], px_proc[1], px_proc[2]];
+    let (mut geom, mut gdiff) = (0u64, 0u64);
+    let mut i = 0;
+    while i + 3 < px_proc.len().min(px_dae.len()) {
+        let is_geom = (px_proc[i] as i16 - bg[0] as i16).abs() > 8
+            || (px_proc[i + 1] as i16 - bg[1] as i16).abs() > 8
+            || (px_proc[i + 2] as i16 - bg[2] as i16).abs() > 8;
+        if is_geom {
+            geom += 1;
+            let d = (px_proc[i] as i16 - px_dae[i] as i16).abs()
+                .max((px_proc[i + 1] as i16 - px_dae[i + 1] as i16).abs())
+                .max((px_proc[i + 2] as i16 - px_dae[i + 2] as i16).abs());
+            if d > 6 { gdiff += 1; }
+        }
+        i += 4;
+    }
+    let frac = if geom > 0 { gdiff as f64 / geom as f64 } else { 1.0 };
+    let cube_ok = frac < 0.01 && geom > 1000;
+    log::info!("H4b (1) LOADER ORACLE -- cube.dae vs procedural cube ({} tris loaded):", dcube.tri_count());
+    log::info!("  geometry px {}   differing (>6/ch) {}  ({:.3}%)  -> {}", geom, gdiff, frac * 100.0, if cube_ok { "loader validated" } else { "MISMATCH" });
+
+    // ---- (2) showcase: real SL meshes ----
+    let mut show: Vec<String> = vec![concat!(env!("CARGO_MANIFEST_DIR"), "/../../newview/fs_resources/hex_phys.dae").to_string()];
+    show.extend(extra);
+    let mut show_ok = true;
+    log::info!("H4b (2) SHOWCASE -- real meshes through the deferred pipeline:");
+    for path in &show {
+        let p = std::path::Path::new(path);
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("mesh").replace(' ', "_");
+        match crate::dae::load(p) {
+            Ok(m) => {
+                let (mv, mi) = dae_to_vtx(&m);
+                let scene: Vec<ObjSpec> = vec![
+                    (mv, mi, fit_model(&m, 3.0), [0.82, 0.80, 0.74, 1.0], true),
+                    (pv.clone(), pi.clone(), Mat4::IDENTITY, ground, false),
+                ];
+                let r = DeferredRenderer::new(&device, &scene);
+                let (mvp, meye, mfwd) = orbit_cam(w, h, 35.0, 20.0, 8.0);
+                let mframe = make_frame(mvp, meye, mfwd, Vec3::Y, aspect, sun_dir(45.0, 41.0), true);
+                let mpx = r.render(&device, &queue, &mframe, w, h);
+                let gp = geom_px(&mpx);
+                let out = dir.join(format!("h4b_{stem}.png"));
+                write_png(&out, &mpx, w, h);
+                let (lo, hi) = m.bounds();
+                let rendered = gp > 2000;
+                log::info!("  {:<22} {:>6} verts / {:>5} tris  bbox [{:.1},{:.1},{:.1}]..[{:.1},{:.1},{:.1}]  {:>7} px  -> {}",
+                    stem, m.positions.len(), m.tri_count(), lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, gp, if rendered { "RENDERED" } else { "DEGENERATE" });
+                if !rendered { show_ok = false; }
+            }
+            Err(e) => { log::warn!("  {}: load failed: {e}", stem); show_ok = false; }
+        }
+    }
+
+    log::info!("  wrote h4b_*.png to {}", dir.display());
+    let ok = cube_ok && show_ok;
+    log::info!("  H4b {} -- real .dae loads + renders lit/shadowed in the deferred pipeline.", if ok { "PASS" } else { "REVIEW" });
     ok
 }

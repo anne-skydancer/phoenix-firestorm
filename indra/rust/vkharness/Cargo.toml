@@ -30,6 +30,7 @@ shaderc = "0.8"      # GLSL -> SPIR-V in-process (H2); links the SDK's prebuilt
 # evaluator against this, and validate BOTH against the model-independent physical
 # illuminance property (B2). Oracle only; not shipped to the viewer.
 hw-skymodel = "0.1.1"
+roxmltree = "0.20"   # XML tokenizer for the Collada (.dae) reader (H4b); Collada semantics are ours
 
 [profile.release]
 opt-level = 3

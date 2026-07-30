@@ -122,7 +122,9 @@ fn compile_glsl(source: &str, kind: shaderc::ShaderKind, name: &str) -> Vec<u32>
 }
 
 /// Build a wgpu shader module from GLSL by way of SPIR-V.
-fn glsl_module(
+mod shadow_engine; // engine shadow work (SHADOW_PLAN.md), invoked by the `shadow` subcommand
+
+pub(crate) fn glsl_module(
     device: &wgpu::Device,
     source: &str,
     kind: shaderc::ShaderKind,
@@ -3529,6 +3531,10 @@ fn main() {
     if std::env::args().skip(1).any(|a| a == "sky-fit") {
         let ok = run_sky_fit();
         std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "shadow") {
+        shadow_engine::run(); // M0a+ forward/shadow engine (runs its own window loop)
+        std::process::exit(0);
     }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();

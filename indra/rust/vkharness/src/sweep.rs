@@ -245,9 +245,9 @@ fn global_defines() -> Vec<(&'static str, String)> {
         ("SPOT_SHADOW", "1".into()),
         ("REFMAP_LEVEL", "3".into()),
         ("REF_SAMPLE_COUNT", "32".into()),
-        ("TERRAIN_PLANAR_TEXTURE_SAMPLE_COUNT", "1".into()),
+        ("TERRAIN_PLANAR_TEXTURE_SAMPLE_COUNT", "3".into()),
         ("TERRAIN_TRIPLANAR_BLEND_FACTOR", "4.00".into()),
-        ("TERRAIN_PBR_DETAIL", "1".into()),
+        ("TERRAIN_PBR_DETAIL", "0".into()),
         // GLTF caps from canonical mMaxUniformBlockSize=65536 (llviewershadermgr.cpp:291-302)
         ("MAX_NODES_PER_GLTF_OBJECT", "1365".into()),
         ("MAX_MATERIALS_PER_GLTF_OBJECT", "341".into()),
@@ -412,13 +412,11 @@ fn diffuse_lookup_block(channels: i32) -> String {
 pub fn assemble(p: &ProgramDef, fragment: bool) -> (String, Vec<String>) {
     let mut missing = Vec::new();
     // union of canonical globals + per-program permutations, lexicographic (D7)
-    let mut defines: Vec<(String, String)> = global_defines()
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect();
-    for (k, v) in &p.defines {
+    // program permutations WIN over canonical globals on collision (more specific source)
+    let mut defines: Vec<(String, String)> = p.defines.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+    for (k, v) in global_defines() {
         if !defines.iter().any(|(dk, _)| dk == k) {
-            defines.push((k.to_string(), v.clone()));
+            defines.push((k.to_string(), v));
         }
     }
     defines.sort();
@@ -663,7 +661,7 @@ fn spirv_val(words: &[u32]) -> Result<(), String> {
 pub fn run_sweep() -> bool {
     let dump = std::env::temp_dir().join("sweep_fail");
     let _ = std::fs::create_dir_all(&dump);
-    let table = programs();
+    let table = crate::sweep_table::programs_full();
     let mut pass = 0usize;
     let mut fail = 0usize;
     log::info!("PHASE 1 SWEEP -- {} programs x 2 stages (assemble -> transform -> shaderc Vulkan1.3 -> spirv-val)", table.len());

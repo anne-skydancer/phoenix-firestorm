@@ -125,6 +125,7 @@ fn compile_glsl(source: &str, kind: shaderc::ShaderKind, name: &str) -> Vec<u32>
 mod shadow_engine; // engine shadow work (SHADOW_PLAN.md), invoked by the `shadow` subcommand
 mod dae; // minimal Collada (.dae) reader for the real-mesh path (H4b)
 mod sweep; // Phase 1: offline shader sweep (rhi/PLAN.md) -- assemble + transform + compile the corpus
+mod sweep_table; // FULL llviewershadermgr.cpp program table (229 ProgramDefs) for the sweep
 
 pub(crate) fn glsl_module(
     device: &wgpu::Device,
@@ -1131,7 +1132,7 @@ fn run_h3b2() -> bool {
 // legal there) -- proving the ASSEMBLY is well-formed before we UBO-ize (3c-3e).
 // `cargo run -- h3b3`.
 
-pub(crate) const SHADER_ROOT: &str = "c:/fs/fs-vulkan-engine/indra/newview/app_settings/shaders";
+pub(crate) const SHADER_ROOT: &str = "c:/fs/firestorm-upstream/indra/newview/app_settings/shaders";
 
 /// The fragment attach order for softenLight (from attachShaderFeatures + its flags),
 /// softenLightF.glsl last. Each is "subdir/name.glsl", class-resolved at read time.

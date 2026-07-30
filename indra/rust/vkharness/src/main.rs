@@ -3584,6 +3584,12 @@ fn main() {
         let ok = shadow_engine::run_h4d(extra);
         std::process::exit(if ok { 0 } else { 1 });
     }
+    if std::env::args().skip(1).any(|a| a == "h4") {
+        // Live windowed H4: interactive deferred scene (mesh + EEP sky + shadows). `cargo run -- h4 [mesh.dae]`.
+        let mesh = std::env::args().skip(1).find(|a| a.to_lowercase().ends_with(".dae"));
+        shadow_engine::run_h4_window(mesh);
+        std::process::exit(0);
+    }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();
         std::process::exit(if ok { 0 } else { 1 });

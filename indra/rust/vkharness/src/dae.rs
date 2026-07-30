@@ -7,7 +7,7 @@
 //! single-geometry meshes; multi-prim linksets (e.g. Nest, 47 geometries + node transforms) are
 //! a later step. XML tokenizing via `roxmltree`; the Collada semantics are ours.
 
-use glam::Vec3;
+use glam::{Mat3, Mat4, Vec3};
 use std::collections::HashMap;
 
 pub struct DaeMesh {
@@ -46,6 +46,22 @@ pub fn load(path: &std::path::Path) -> Result<DaeMesh, String> {
     let conv = |v: [f32; 3]| if z_up { [v[0], v[2], -v[1]] } else { v }; // Z-up -> Y-up (rotate -90 about X)
 
     let mesh = root.descendants().find(|n| local(n, "mesh")).ok_or("no <mesh>")?;
+
+    // Scene-node transform: SL exports geometry in a unit box and keeps the real proportions in
+    // the <node> <matrix> that instances this geometry. Apply it (points by the matrix, normals by
+    // its inverse-transpose) so non-uniform scale (e.g. the lamp's 1.7x up) isn't squashed away.
+    let geom_id = mesh.parent().and_then(|g| g.attribute("id")).unwrap_or("").to_string();
+    let node_mat = root.descendants()
+        .find(|n| local(n, "node") && n.children().any(|c| local(&c, "instance_geometry")
+            && c.attribute("url") == Some(format!("#{geom_id}").as_str())))
+        .and_then(|n| n.children().find(|c| local(c, "matrix")))
+        .and_then(|m| m.text())
+        .and_then(|t| {
+            let f = floats(t);
+            <[f32; 16]>::try_from(&f[..]).ok().map(|a| Mat4::from_cols_array(&a).transpose()) // Collada is row-major
+        })
+        .unwrap_or(Mat4::IDENTITY);
+    let node_nrm = Mat3::from_mat4(node_mat).inverse().transpose();
 
     // sources: "#id" -> (floats, stride)
     let mut sources: HashMap<String, (Vec<f32>, usize)> = HashMap::new();
@@ -119,7 +135,10 @@ pub fn load(path: &std::path::Path) -> Result<DaeMesh, String> {
 
         let base_out = out.positions.len();
         for tri in &tris {
-            let ps: [[f32; 3]; 3] = std::array::from_fn(|k| conv(get3(pos, p[tri[k] * stride + voff], pstride)));
+            let ps: [[f32; 3]; 3] = std::array::from_fn(|k| {
+                let raw = get3(pos, p[tri[k] * stride + voff], pstride);
+                conv(node_mat.transform_point3(Vec3::from(raw)).to_array())
+            });
             let face = {
                 let (a, b, c) = (Vec3::from(ps[0]), Vec3::from(ps[1]), Vec3::from(ps[2]));
                 (b - a).cross(c - a).normalize_or_zero()
@@ -127,7 +146,8 @@ pub fn load(path: &std::path::Path) -> Result<DaeMesh, String> {
             for k in 0..3 {
                 out.positions.push(ps[k]);
                 let n = if let Some((o, f, st)) = normal {
-                    let v = Vec3::from(conv(get3(f, p[tri[k] * stride + o], st)));
+                    let raw = Vec3::from(get3(f, p[tri[k] * stride + o], st));
+                    let v = Vec3::from(conv((node_nrm * raw).to_array()));
                     if v.length_squared() > 1e-8 { v } else { face }
                 } else { face };
                 out.normals.push(n.into());

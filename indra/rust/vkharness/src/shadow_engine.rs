@@ -1409,7 +1409,9 @@ impl DeferredRenderer {
         queue.write_buffer(&self.frame_ubo, 0, bytemuck::bytes_of(&fu));
     }
 
-    fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, w: u32, h: u32) -> Vec<u8> {
+    /// Render the full deferred frame (shadow -> G-buffer -> lighting) into `target` (any color
+    /// view of size w x h -- a readback texture headless, or the swapchain in the live window).
+    fn render_into(&self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, target: &wgpu::TextureView, w: u32, h: u32) {
         let mk = |fmt, label| device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt,
@@ -1421,14 +1423,7 @@ impl DeferredRenderer {
         let va = g_albedo.create_view(&wgpu::TextureViewDescriptor::default());
         let vw = g_world.create_view(&wgpu::TextureViewDescriptor::default());
         let vn = g_normal.create_view(&wgpu::TextureViewDescriptor::default());
-        let depth = depth_texture(device, w, h, 1, DEPTH_FORMAT, "h4a-depth").create_view(&wgpu::TextureViewDescriptor::default());
-
-        let color = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("h4a-color"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: SHOT_FMT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
-        });
-        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = depth_texture(device, w, h, 1, DEPTH_FORMAT, "h4-depth").create_view(&wgpu::TextureViewDescriptor::default());
 
         let gbuf_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gbuf-bind"), layout: &self.gbuf_bgl,
@@ -1441,13 +1436,7 @@ impl DeferredRenderer {
         });
 
         self.update(queue, frame);
-
-        let bpr = w * 4;
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("h4a-readback"), size: (bpr * h) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
-        });
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("h4a") });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("h4") });
 
         // shadow sub-passes (one per cascade layer)
         for ci in 0..N_CASCADES {
@@ -1503,7 +1492,7 @@ impl DeferredRenderer {
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("lighting"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_view, resolve_target: None,
+                    view: target, resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.50, g: 0.62, b: 0.78, a: 1.0 }), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
@@ -1515,13 +1504,31 @@ impl DeferredRenderer {
             rp.draw(0..3, 0..1);
         }
 
+        queue.submit([enc.finish()]);
+    }
+
+    /// Headless: render into a COPY_SRC color texture and read it back to tight Rgba8 pixels.
+    fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, w: u32, h: u32) -> Vec<u8> {
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("h4-color"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: SHOT_FMT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+        });
+        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        self.render_into(device, queue, frame, &color_view, w, h);
+
+        let bpr = w * 4;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("h4-readback"), size: (bpr * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("h4-readback") });
         enc.copy_texture_to_buffer(
             wgpu::ImageCopyTexture { texture: &color, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::ImageCopyBuffer { buffer: &readback, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(h) } },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         queue.submit([enc.finish()]);
-
         let slice = readback.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
@@ -1989,4 +1996,158 @@ pub fn run_h4d(extra: Vec<String>) -> bool {
     let ok = gate_ok && show_ok;
     log::info!("  H4d {} -- EEP sky + sun behind the mesh, shadows consistent (north star).", if ok { "PASS" } else { "REVIEW" });
     ok
+}
+
+// ---- live windowed H4 view -------------------------------------------------------
+
+/// Interactive H4: the deferred scene (mesh + EEP sky + cascade shadows) to the swapchain.
+struct H4Scene {
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    _checker: wgpu::Texture, // keep the albedo texture alive
+    renderer: DeferredRenderer,
+    proj: Mat4,
+    yaw: f32,
+    pitch: f32,
+    radius: f32,
+    sun_elev: f32,
+    sun_az: f32,
+    auto_rotate: bool,
+    sun_move: bool,
+}
+
+impl H4Scene {
+    fn new(window: Arc<Window>, mesh_path: Option<String>) -> H4Scene {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::VULKAN, ..Default::default() });
+            let surface = instance.create_surface(window.clone()).expect("surface");
+            let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: Some(&surface), force_fallback_adapter: false,
+            }).await.expect("no Vulkan adapter");
+            let info = adapter.get_info();
+            log::info!("adapter: {} | backend={:?} | {} {}", info.name, info.backend, info.driver, info.driver_info);
+            let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("h4-engine"), required_features: wgpu::Features::empty(), required_limits: wgpu::Limits::default(),
+            }, None).await.expect("request_device");
+
+            let size = window.inner_size();
+            let caps = surface.get_capabilities(&adapter);
+            // The lighting pipeline targets SHOT_FMT (Rgba8UnormSrgb); match the surface to it.
+            let format = if caps.formats.contains(&SHOT_FMT) { SHOT_FMT } else {
+                let f = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
+                log::warn!("surface lacks {:?}; using {:?} (lighting pipeline may need that format)", SHOT_FMT, f);
+                f
+            };
+            let config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT, format,
+                width: size.width.max(1), height: size.height.max(1),
+                present_mode: caps.present_modes[0], alpha_mode: caps.alpha_modes[0],
+                view_formats: vec![], desired_maximum_frame_latency: 2,
+            };
+            surface.configure(&device, &config);
+
+            let (checker, checker_view) = make_checker(&device, &queue);
+            let (pv, pi) = plane(40.0);
+            let ground = [0.55f32, 0.55, 0.58, 1.0];
+            let mut objs: Vec<ObjSpec> = Vec::new();
+            match mesh_path.as_ref().map(|p| (p.clone(), crate::dae::load(std::path::Path::new(p)))) {
+                Some((p, Ok(m))) => {
+                    log::info!("loaded {}: {} tris", p, m.tri_count());
+                    let (mv, mi) = dae_to_vtx(&m);
+                    objs.push((mv, mi, fit_model(&m, 3.0), [0.82, 0.80, 0.74, 1.0], true));
+                }
+                other => {
+                    if let Some((p, Err(e))) = other { log::warn!("load {p}: {e}; using cube"); }
+                    let (cv, ci) = cube();
+                    objs.push((cv, ci, Mat4::IDENTITY, [0.85, 0.45, 0.20, 1.0], true));
+                }
+            }
+            objs.push((pv, pi, Mat4::IDENTITY, ground, false));
+            let renderer = DeferredRenderer::new(&device, &objs, Some(&checker_view));
+
+            let aspect = config.width as f32 / config.height as f32;
+            let proj = Mat4::perspective_rh(FOV, aspect, 0.1, 200.0);
+            H4Scene {
+                window, surface, device, queue, config, _checker: checker, renderer, proj,
+                yaw: 0.7, pitch: 0.35, radius: 8.0, sun_elev: 35.0, sun_az: 41.0, auto_rotate: true, sun_move: false,
+            }
+        })
+    }
+
+    fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        if size.width == 0 || size.height == 0 { return; }
+        self.config.width = size.width;
+        self.config.height = size.height;
+        self.surface.configure(&self.device, &self.config);
+        self.proj = Mat4::perspective_rh(FOV, size.width as f32 / size.height as f32, 0.1, 200.0);
+    }
+
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        if self.auto_rotate { self.yaw += 0.004; }
+        if self.sun_move { self.sun_az += 0.3; }
+        let target = Vec3::new(0.0, 1.1, 0.0);
+        let eye = orbit_eye(self.yaw, self.pitch, self.radius);
+        let view_proj = self.proj * Mat4::look_at_rh(eye, target, Vec3::Y);
+        let sun = sun_dir(self.sun_elev, self.sun_az);
+        let fwd = (target - eye).normalize();
+        let aspect = self.config.width as f32 / self.config.height as f32;
+        let mut frame = make_frame(view_proj, eye, fwd, Vec3::Y, aspect, sun, true);
+        frame.sky = true;
+
+        let sframe = self.surface.get_current_texture()?;
+        let view = sframe.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.renderer.render_into(&self.device, &self.queue, &frame, &view, self.config.width, self.config.height);
+        sframe.present();
+        Ok(())
+    }
+}
+
+/// `cargo run -- h4 [mesh.dae]` -- interactive deferred scene: mesh + EEP sky + shadows.
+pub fn run_h4_window(mesh_path: Option<String>) {
+    let event_loop = EventLoop::new().expect("event loop");
+    let window = Arc::new(WindowBuilder::new()
+        .with_title("vkharness -- H4 engine (deferred: DAE + EEP sky + shadows)")
+        .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0))
+        .build(&event_loop).expect("window"));
+    let mut scene = H4Scene::new(window.clone(), mesh_path);
+    log::info!("H4 live: arrows orbit | Space auto-spin | S sun-spin | [ ] sun elevation | Esc quits");
+    event_loop.run(move |event, elwt| {
+        elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
+        match event {
+            Event::WindowEvent { event, window_id } if window_id == scene.window.id() => match event {
+                WindowEvent::CloseRequested => elwt.exit(),
+                WindowEvent::KeyboardInput { event: KeyEvent { physical_key: PhysicalKey::Code(code), state: ElementState::Pressed, .. }, .. } => {
+                    let step = 0.06;
+                    match code {
+                        KeyCode::Escape => elwt.exit(),
+                        KeyCode::Space => scene.auto_rotate = !scene.auto_rotate,
+                        KeyCode::KeyS => scene.sun_move = !scene.sun_move,
+                        KeyCode::ArrowLeft => scene.yaw -= step,
+                        KeyCode::ArrowRight => scene.yaw += step,
+                        KeyCode::ArrowUp => scene.pitch = (scene.pitch + step).min(1.5),
+                        KeyCode::ArrowDown => scene.pitch = (scene.pitch - step).max(-0.2),
+                        KeyCode::BracketRight => scene.sun_elev = (scene.sun_elev + 2.0).min(89.0),
+                        KeyCode::BracketLeft => scene.sun_elev = (scene.sun_elev - 2.0).max(2.0),
+                        _ => {}
+                    }
+                }
+                WindowEvent::Resized(sz) => scene.resize(sz),
+                WindowEvent::RedrawRequested => {
+                    match scene.render() {
+                        Ok(()) => {}
+                        Err(wgpu::SurfaceError::Lost) => { let s = scene.window.inner_size(); scene.resize(s); }
+                        Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
+                        Err(e) => log::warn!("render: {e:?}"),
+                    }
+                    scene.window.request_redraw();
+                }
+                _ => {}
+            },
+            Event::AboutToWait => scene.window.request_redraw(),
+            _ => {}
+        }
+    }).expect("event loop");
 }

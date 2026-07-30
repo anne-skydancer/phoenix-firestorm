@@ -1704,6 +1704,9 @@ https://www.firestormviewer.org/support aby uzyskać pomoc.
 	<string name="FSInventoryCustomTabDefaultName">
 		Własny
 	</string>
+	<string name="FSInventoryCustomTabShowHidden">
+		Pokaż ukryte zakładki
+	</string>
 	<string name="PlacesNoMatchingItems">
 		Aby dodać miejsce do landmarków, kliknij gwiazdkę po prawej stronie nazwy lokalizacji.
 	</string>
@@ -6773,6 +6776,9 @@ Twoja aktualna pozycja: [AVATAR_POS]
 	</string>
 	<string name="OmnifilterDefaultName">
 		Domyślny
+	</string>
+	<string name="OmnifilterExportDescription">
+		Zestaw regul Wszystkofiltra: [REPLACEMENT]
 	</string>
 	<string name="FSAvatarAlignToggleMini">
 		Małe

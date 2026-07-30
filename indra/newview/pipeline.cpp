@@ -11489,13 +11489,48 @@ void LLPipeline::generateSunShadow(LLCamera& camera)
                 mShadowError.mV[j] /= wpf.size();
                 mShadowError.mV[j] /= size.mV[0];
 
-                if (mShadowError.mV[j] > RenderShadowErrorCutoff)
+                if (true) // BACKPORT (fs/engine-shadows): always use the stable sphere-bound ortho fit
                 { //just use ortho projection
                     mShadowFOV.mV[j] = -1.f;
                     origin.clearVec();
-                    proj[j] = glm::ortho(min.mV[0], max.mV[0],
-                                        min.mV[1], max.mV[1],
-                                        -max.mV[2], -min.mV[2]);
+
+                    // === STABLE FIT (backport M2/M3): sphere-bound + texel-snap ===
+                    // Bound the split-slice frustum corners (world) with a SPHERE -> the extent is
+                    // rotation-invariant, so the ortho size can't change as the camera turns (no
+                    // sweep). Use a FIXED-rotation light view (eye far along -lightDir, NOT
+                    // camera-relative) and TEXEL-SNAP the ortho centre -> shadow texels lock to
+                    // world positions (no crawl). Only view[j]/proj[j] change here; the caster
+                    // cull (shadow_cam) is untouched this iteration.
+                    LLVector3 wc(0.f, 0.f, 0.f);
+                    for (U32 fi = 0; fi < 8; ++fi) wc += frust[fi];
+                    wc *= (1.f / 8.f);
+                    F32 sr = 0.f;
+                    for (U32 fi = 0; fi < 8; ++fi) sr = llmax(sr, (frust[fi] - wc).length());
+
+                    LLVector3 lup = (fabsf(lightDir.mV[1]) > 0.99f) ? LLVector3(0.f, 0.f, 1.f) : LLVector3(0.f, 1.f, 0.f);
+                    // `ext` = how far toward the light we capture casters. Also the depth-range /
+                    // peter-pan knob (bigger = more toward-sun coverage but softer bias). Tightened
+                    // from 256 -> ~sr to pull the shadow back to the caster's feet.
+                    F32 ext = llmax(sr, 32.f);
+                    F32 sback = sr + ext;
+                    LLVector3 leye = wc - lightDir * sback;
+                    view[j] = look(leye, lightDir, lup);
+
+                    glm::vec3 c_ls = mul_mat4_vec3(view[j], glm::vec3(wc));
+                    F32 sres = llmax((F32)mRT->shadow[j].getWidth(), 1.f);
+                    F32 upt = (2.f * sr) / sres;
+                    c_ls.x = floorf(c_ls.x / upt) * upt;
+                    c_ls.y = floorf(c_ls.y / upt) * upt;
+
+                    proj[j] = glm::ortho(c_ls.x - sr, c_ls.x + sr, c_ls.y - sr, c_ls.y + sr, 0.1f, 2.f * sr + ext);
+
+                    // UNIFY THE CASTER CULL: cull from the light eye toward the sphere centre, so
+                    // casters BETWEEN the sun and the receivers (toward-sun) are included in every
+                    // cascade that selects those receivers -> closes the selection-vs-caster seam
+                    // (the remaining "polite fade"). eye/center feed shadow_cam.setOriginAndLookAt below.
+                    eye = leye;
+                    center = wc;
+                    // === end stable fit ===
                 }
                 else
                 {

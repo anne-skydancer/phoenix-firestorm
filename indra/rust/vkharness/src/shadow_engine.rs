@@ -164,19 +164,28 @@ layout(set = 0, binding = 0) uniform U {
 layout(set = 1, binding = 0) uniform texture2D    shadowTex;
 layout(set = 1, binding = 1) uniform samplerShadow shadowSamp;
 
-float shadow_lit(vec3 wp) {
-    vec4 lc = u.light_vp * vec4(wp, 1.0);
+float shadow_lit(vec3 wp, vec3 N) {
+    // Normal-offset: nudge the sample along the surface normal (in the surface plane, not
+    // toward the light) so acne vanishes without detaching the shadow (peter-panning).
+    vec3 wpo = wp + N * 0.02;
+    vec4 lc = u.light_vp * vec4(wpo, 1.0);
     vec3 p = lc.xyz / lc.w;
     vec2 uv = p.xy * vec2(0.5, -0.5) + 0.5;
-    float ref = p.z;
+    float ref = p.z - 0.0006;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ref > 1.0) return 1.0;
-    return texture(sampler2DShadow(shadowTex, shadowSamp), vec3(uv, ref - 0.0015));
+    // 3x3 PCF; each tap is a 2x2 hardware bilinear comparison -> soft edge.
+    float texel = 1.0 / 2048.0;
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+            sum += texture(sampler2DShadow(shadowTex, shadowSamp), vec3(uv + vec2(x, y) * texel, ref));
+    return sum / 9.0;
 }
 void main() {
     vec3 N = normalize(v_nrm);
     vec3 L = -normalize(u.sun_dir.xyz);
     float ndl = max(dot(N, L), 0.0);
-    float lit = shadow_lit(v_world);
+    float lit = shadow_lit(v_world, N);
     vec3 col = u.base_color.rgb * (0.25 + 0.75 * ndl * lit);
     frag = vec4(col, 1.0);
 }
@@ -297,8 +306,8 @@ impl Renderer {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest, // M0b hard shadow; M1 -> PCF
-            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear, // M1: 2x2 hardware PCF per tap
+            min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Nearest,
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()

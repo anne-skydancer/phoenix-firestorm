@@ -3560,6 +3560,11 @@ fn main() {
         shadow_engine::run_continuity(); // M4 continuity acceptance gate (low-sun wide orbit)
         std::process::exit(0);
     }
+    if std::env::args().skip(1).any(|a| a == "h4a") {
+        // H4a: deferred G-buffer + fullscreen lighting == forward shading (unified-render gate).
+        let ok = shadow_engine::run_h4a();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();
         std::process::exit(if ok { 0 } else { 1 });

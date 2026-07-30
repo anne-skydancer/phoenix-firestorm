@@ -960,3 +960,513 @@ pub fn run_continuity() {
     let ok = spread < 5.0 && min_area > max_area / 2 && peak_diff < max_area / 4;
     log::info!("  M4 {} (area continuous, no collapse, no spike).", if ok { "PASS" } else { "REVIEW" });
 }
+
+// ==== H4 — deferred unified render ================================================
+// H4a: prove a deferred G-buffer + fullscreen lighting pass reproduces the proven
+// FORWARD shading (the M-series `Renderer`), reusing the shadow pass unchanged. Same
+// computation, new plumbing (the H3 discipline). The forward renderer is the trusted
+// oracle; the gate is `deferred == forward` on lit geometry. `cargo run -- h4a`.
+//
+// G-buffer: albedo (32F) + world (32F) + normal (16F, w=1 marks coverage). Full-precision
+// albedo+world make the result BYTE-EXACT vs the forward oracle (0 differing pixels whole-
+// frame); 16F albedo alone rounds base_color ~1-3/255. Packing (8-bit albedo, oct-normals,
+// depth-reconstruction instead of a 32F world target) is a later optimization, each step
+// re-validated against this same forward oracle. Lighting: a fullscreen triangle reads
+// the G-buffer by `texelFetch(gl_FragCoord)` (exact per-pixel correspondence, no uv
+// orientation ambiguity), samples the same cascade shadow array, and runs the identical
+// `pick_cascade`/`shadow_lit`/band-blend/`0.25 + 0.75*ndl*lit` shading.
+
+const GALBEDO_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+const GWORLD_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+const GNORMAL_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+fn gbuf_vert() -> String {
+    format!(r#"#version 450
+layout(location = 0) in vec3 pos;
+layout(location = 1) in vec3 nrm;
+{UBO_DECL}
+layout(location = 0) out vec3 v_nrm;
+layout(location = 1) out vec3 v_world;
+void main() {{
+    vec4 wp = u.model * vec4(pos, 1.0);
+    v_world = wp.xyz;
+    v_nrm = mat3(u.model) * nrm;
+    gl_Position = u.view_proj * wp;
+}}
+"#)
+}
+
+fn gbuf_frag() -> String {
+    format!(r#"#version 450
+layout(location = 0) in vec3 v_nrm;
+layout(location = 1) in vec3 v_world;
+{UBO_DECL}
+layout(location = 0) out vec4 gAlbedo;
+layout(location = 1) out vec4 gWorld;
+layout(location = 2) out vec4 gNormal;
+void main() {{
+    gAlbedo = vec4(u.base_color.rgb, 1.0);
+    gWorld  = vec4(v_world, 1.0);
+    gNormal = vec4(normalize(v_nrm), 1.0); // w = 1 -> this texel has geometry
+}}
+"#)
+}
+
+fn light_vert() -> String {
+    r#"#version 450
+void main() {
+    vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"#.to_string()
+}
+
+fn light_frag() -> String {
+    format!(r#"#version 450
+layout(location = 0) out vec4 frag;
+{UBO_DECL}
+layout(set = 1, binding = 0) uniform texture2D gAlbedoT;
+layout(set = 1, binding = 1) uniform texture2D gWorldT;
+layout(set = 1, binding = 2) uniform texture2D gNormalT;
+layout(set = 1, binding = 3) uniform sampler   gSamp;
+layout(set = 2, binding = 0) uniform texture2DArray shadowTex;
+layout(set = 2, binding = 1) uniform samplerShadow  shadowSamp;
+
+int pick_cascade(float vd) {{
+    if (vd <= u.splits.x) return 0;
+    if (vd <= u.splits.y) return 1;
+    if (vd <= u.splits.z) return 2;
+    return 3;
+}}
+float shadow_lit(vec3 wp, vec3 N, int ci) {{
+    vec3 wpo = wp + N * 0.02;
+    vec4 lc = u.light_vp[ci] * vec4(wpo, 1.0);
+    vec3 p = lc.xyz / lc.w;
+    vec2 uv = p.xy * vec2(0.5, -0.5) + 0.5;
+    float ref = p.z - 0.0006;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ref > 1.0) return 1.0;
+    float texel = 1.0 / {size}.0;
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x)
+            sum += texture(sampler2DArrayShadow(shadowTex, shadowSamp), vec4(uv + vec2(x, y) * texel, float(ci), ref));
+    return sum / 9.0;
+}}
+void main() {{
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    vec4 nrm4 = texelFetch(sampler2D(gNormalT, gSamp), px, 0);
+    if (nrm4.w < 0.5) {{ frag = vec4(0.50, 0.62, 0.78, 1.0); return; }} // background = forward clear
+    vec3 albedo = texelFetch(sampler2D(gAlbedoT, gSamp), px, 0).rgb;
+    vec3 world  = texelFetch(sampler2D(gWorldT,  gSamp), px, 0).xyz;
+    vec3 N = normalize(nrm4.xyz);
+    vec3 L = -normalize(u.sun_dir.xyz);
+    float ndl = max(dot(N, L), 0.0);
+    float vd = -(u.sel_view * vec4(world, 1.0)).z;
+    int ci = pick_cascade(vd);
+    float lit = shadow_lit(world, N, ci);
+    float band = 2.0;
+    float blend = 0.0;
+    if (ci < 3) {{
+        blend = clamp((vd - (u.splits[ci] - band)) / band, 0.0, 1.0);
+        if (blend > 0.0) lit = mix(lit, shadow_lit(world, N, ci + 1), blend);
+    }}
+    vec3 col = albedo * (0.25 + 0.75 * ndl * lit);
+    frag = vec4(col, 1.0);
+}}
+"#, size = SHADOW_SIZE)
+}
+
+/// Deferred renderer: same scene + same shadow pass as the forward `Renderer`, but shading
+/// happens in a fullscreen lighting pass off a G-buffer. Its own shadow resources (the proven
+/// forward path stays untouched).
+struct DeferredRenderer {
+    gbuffer_pipeline: wgpu::RenderPipeline,
+    lighting_pipeline: wgpu::RenderPipeline,
+    shadow_pipeline: wgpu::RenderPipeline,
+    shadow_layer_views: Vec<wgpu::TextureView>,
+    shadow_bind: wgpu::BindGroup,
+    cascidx_binds: Vec<wgpu::BindGroup>,
+    gbuf_bgl: wgpu::BindGroupLayout,
+    gbuf_sampler: wgpu::Sampler,
+    frame_ubo: wgpu::Buffer,
+    frame_bind: wgpu::BindGroup,
+    objs: Vec<Obj>,
+}
+
+impl DeferredRenderer {
+    fn new(device: &wgpu::Device) -> DeferredRenderer {
+        let obj_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("d-obj-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let cascidx_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("d-cascidx-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let shadow_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("d-shadow-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison), count: None,
+                },
+            ],
+        });
+        let gbuf_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("d-gbuf-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering), count: None },
+            ],
+        });
+
+        // shadow map array (own copy; forward path untouched)
+        let shadow_tex = depth_texture(device, SHADOW_SIZE, SHADOW_SIZE, N_CASCADES as u32, SHADOW_FORMAT, "d-shadow-array");
+        let shadow_layer_views: Vec<_> = (0..N_CASCADES as u32)
+            .map(|i| shadow_tex.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("d-shadow-layer"), dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: i, array_layer_count: Some(1), ..Default::default()
+            }))
+            .collect();
+        let shadow_array_view = shadow_tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("d-shadow-array-view"), dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default()
+        });
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("d-shadow-cmp"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::FilterMode::Nearest,
+            compare: Some(wgpu::CompareFunction::LessEqual), ..Default::default()
+        });
+        let shadow_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("d-shadow-bind"), layout: &shadow_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&shadow_array_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&shadow_sampler) },
+            ],
+        });
+        let cascidx_binds: Vec<_> = (0..N_CASCADES as u32)
+            .map(|i| {
+                let ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("d-cascidx"), contents: bytemuck::bytes_of(&CascIdx { idx: i, _pad: [0; 3] }),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("d-cascidx-bind"), layout: &cascidx_bgl,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: ubo.as_entire_binding() }],
+                })
+            })
+            .collect();
+
+        // shadow pipeline (identical to the forward path so the depth maps match)
+        let shadow_vs = glsl_module(device, &shadow_vert(), shaderc::ShaderKind::Vertex, "d-shadow.vert");
+        let shadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("d-shadow-pl"), bind_group_layouts: &[&obj_bgl, &cascidx_bgl], push_constant_ranges: &[],
+        });
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("d-shadow"), layout: Some(&shadow_pl),
+            vertex: wgpu::VertexState { module: &shadow_vs, entry_point: "main", buffers: &[Vtx::LAYOUT] },
+            fragment: None,
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: SHADOW_FORMAT, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+            }),
+            multisample: wgpu::MultisampleState::default(), multiview: None,
+        });
+
+        // g-buffer pipeline (3 float targets + depth)
+        let gvs = glsl_module(device, &gbuf_vert(), shaderc::ShaderKind::Vertex, "gbuf.vert");
+        let gfs = glsl_module(device, &gbuf_frag(), shaderc::ShaderKind::Fragment, "gbuf.frag");
+        let gbuf_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gbuf-pl"), bind_group_layouts: &[&obj_bgl], push_constant_ranges: &[],
+        });
+        let ct = |fmt| Some(wgpu::ColorTargetState { format: fmt, blend: None, write_mask: wgpu::ColorWrites::ALL });
+        let gbuffer_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("gbuffer"), layout: Some(&gbuf_pl),
+            vertex: wgpu::VertexState { module: &gvs, entry_point: "main", buffers: &[Vtx::LAYOUT] },
+            fragment: Some(wgpu::FragmentState { module: &gfs, entry_point: "main", targets: &[ct(GALBEDO_FMT), ct(GWORLD_FMT), ct(GNORMAL_FMT)] }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT, depth_write_enabled: true, depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(), multiview: None,
+        });
+
+        // lighting pipeline (fullscreen, no vertex buffers, no depth)
+        let lvs = glsl_module(device, &light_vert(), shaderc::ShaderKind::Vertex, "light.vert");
+        let lfs = glsl_module(device, &light_frag(), shaderc::ShaderKind::Fragment, "light.frag");
+        let light_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("light-pl"), bind_group_layouts: &[&obj_bgl, &gbuf_bgl, &shadow_bgl], push_constant_ranges: &[],
+        });
+        let lighting_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("lighting"), layout: Some(&light_pl),
+            vertex: wgpu::VertexState { module: &lvs, entry_point: "main", buffers: &[] },
+            fragment: Some(wgpu::FragmentState {
+                module: &lfs, entry_point: "main",
+                targets: &[Some(wgpu::ColorTargetState { format: SHOT_FMT, blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None,
+        });
+
+        let gbuf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("gbuf-nearest"),
+            mag_filter: wgpu::FilterMode::Nearest, min_filter: wgpu::FilterMode::Nearest, mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // frame UBO for the lighting pass (frame-global fields; model/base_color unused there)
+        let frame_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame-ubo"), size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        });
+        let frame_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frame-bind"), layout: &obj_bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_ubo.as_entire_binding() }],
+        });
+
+        // same scene as the forward Renderer
+        let mut objs = Vec::new();
+        let (cv, ci) = cube();
+        for &z in &[0.0f32, 9.0, 18.0] {
+            objs.push(Obj::new(device, &obj_bgl, &cv, &ci, Mat4::from_translation(Vec3::new(0.0, 0.0, z)), [0.85, 0.45, 0.20, 1.0], true));
+        }
+        let (pv, pi) = plane(40.0);
+        objs.push(Obj::new(device, &obj_bgl, &pv, &pi, Mat4::IDENTITY, [0.55, 0.55, 0.58, 1.0], false));
+
+        DeferredRenderer {
+            gbuffer_pipeline, lighting_pipeline, shadow_pipeline, shadow_layer_views, shadow_bind,
+            cascidx_binds, gbuf_bgl, gbuf_sampler, frame_ubo, frame_bind, objs,
+        }
+    }
+
+    fn update(&self, queue: &wgpu::Queue, f: &Frame) {
+        let mut light_vp = [[[0f32; 4]; 4]; N_CASCADES];
+        for i in 0..N_CASCADES { light_vp[i] = f.cascades[i].to_cols_array_2d(); }
+        let splits = [f.splits[0], f.splits[1], f.splits[2], f.splits[3]];
+        let flag = if f.mask { 2.0 } else if f.debug { 1.0 } else { 0.0 };
+        for obj in &self.objs {
+            let u = Uniforms {
+                view_proj: f.view_proj.to_cols_array_2d(), sel_view: f.sel_view.to_cols_array_2d(),
+                model: obj.model.to_cols_array_2d(), light_vp, splits,
+                sun_dir: [f.sun.x, f.sun.y, f.sun.z, flag], base_color: obj.color,
+            };
+            queue.write_buffer(&obj.ubo, 0, bytemuck::bytes_of(&u));
+        }
+        let fu = Uniforms {
+            view_proj: f.view_proj.to_cols_array_2d(), sel_view: f.sel_view.to_cols_array_2d(),
+            model: Mat4::IDENTITY.to_cols_array_2d(), light_vp, splits,
+            sun_dir: [f.sun.x, f.sun.y, f.sun.z, flag], base_color: [0.0; 4],
+        };
+        queue.write_buffer(&self.frame_ubo, 0, bytemuck::bytes_of(&fu));
+    }
+
+    fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, w: u32, h: u32) -> Vec<u8> {
+        let mk = |fmt, label| device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        });
+        let g_albedo = mk(GALBEDO_FMT, "g-albedo");
+        let g_world = mk(GWORLD_FMT, "g-world");
+        let g_normal = mk(GNORMAL_FMT, "g-normal");
+        let va = g_albedo.create_view(&wgpu::TextureViewDescriptor::default());
+        let vw = g_world.create_view(&wgpu::TextureViewDescriptor::default());
+        let vn = g_normal.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = depth_texture(device, w, h, 1, DEPTH_FORMAT, "h4a-depth").create_view(&wgpu::TextureViewDescriptor::default());
+
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("h4a-color"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: SHOT_FMT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+        });
+        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let gbuf_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gbuf-bind"), layout: &self.gbuf_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&va) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&vw) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&vn) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.gbuf_sampler) },
+            ],
+        });
+
+        self.update(queue, frame);
+
+        let bpr = w * 4;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("h4a-readback"), size: (bpr * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("h4a") });
+
+        // shadow sub-passes (one per cascade layer)
+        for ci in 0..N_CASCADES {
+            let mut sp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("d-shadow"), color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_layer_views[ci],
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None, occlusion_query_set: None,
+            });
+            sp.set_pipeline(&self.shadow_pipeline);
+            sp.set_bind_group(1, &self.cascidx_binds[ci], &[]);
+            for obj in &self.objs {
+                if !obj.caster { continue; }
+                sp.set_bind_group(0, &obj.bind, &[]);
+                sp.set_vertex_buffer(0, obj.vbuf.slice(..));
+                sp.set_index_buffer(obj.ibuf.slice(..), wgpu::IndexFormat::Uint16);
+                sp.draw_indexed(0..obj.nidx, 0, 0..1);
+            }
+        }
+
+        // g-buffer pass
+        {
+            let clear0 = wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
+            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gbuffer"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment { view: &va, resolve_target: None, ops: clear0 }),
+                    Some(wgpu::RenderPassColorAttachment { view: &vw, resolve_target: None, ops: clear0 }),
+                    Some(wgpu::RenderPassColorAttachment { view: &vn, resolve_target: None, ops: clear0 }),
+                ],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None, occlusion_query_set: None,
+            });
+            rp.set_pipeline(&self.gbuffer_pipeline);
+            for obj in &self.objs {
+                rp.set_bind_group(0, &obj.bind, &[]);
+                rp.set_vertex_buffer(0, obj.vbuf.slice(..));
+                rp.set_index_buffer(obj.ibuf.slice(..), wgpu::IndexFormat::Uint16);
+                rp.draw_indexed(0..obj.nidx, 0, 0..1);
+            }
+        }
+
+        // lighting pass (fullscreen triangle)
+        {
+            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("lighting"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.50, g: 0.62, b: 0.78, a: 1.0 }), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+            });
+            rp.set_pipeline(&self.lighting_pipeline);
+            rp.set_bind_group(0, &self.frame_bind, &[]);
+            rp.set_bind_group(1, &gbuf_bind, &[]);
+            rp.set_bind_group(2, &self.shadow_bind, &[]);
+            rp.draw(0..3, 0..1);
+        }
+
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: &color, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &readback, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().unwrap();
+        let px = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        px
+    }
+}
+
+/// **H4a gate.** Render the same scene FORWARD (trusted `Renderer`) and DEFERRED, then prove the
+/// deferred lighting reproduces the forward shading on lit geometry. Same computation, different
+/// plumbing -- the first time the shadow pass + shading render together off a G-buffer.
+pub fn run_h4a() -> bool {
+    let (device, queue) = crate::headless_vulkan_device();
+    let forward = Renderer::new(&device, SHOT_FMT);
+    let deferred = DeferredRenderer::new(&device);
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    let dir = std::env::temp_dir();
+
+    // A camera across the receding cubes, mid-low sun -> shadows span cascades (the interesting case).
+    let (vp, eye, fwd) = orbit_cam(w, h, 35.0, 30.0, 22.0);
+    let sun = sun_dir(35.0, 41.0);
+    let frame = make_frame(vp, eye, fwd, Vec3::Y, aspect, sun, true);
+
+    let fpx = render_to_pixels(&device, &queue, &forward, &frame, w, h);
+    let dpx = deferred.render(&device, &queue, &frame, w, h);
+    write_png(&dir.join("h4a_forward.png"), &fpx, w, h);
+    write_png(&dir.join("h4a_deferred.png"), &dpx, w, h);
+
+    // Geometry-masked comparison: the corner pixel is background (sky); geometry = pixels that
+    // differ from it. Isolate the lighting integration from any background/clear encoding trivia.
+    let bg = [fpx[0], fpx[1], fpx[2]];
+    let is_geom = |p: &[u8], i: usize| {
+        (p[i] as i16 - bg[0] as i16).abs() > 8 || (p[i + 1] as i16 - bg[1] as i16).abs() > 8 || (p[i + 2] as i16 - bg[2] as i16).abs() > 8
+    };
+    let chan_delta = |i: usize| {
+        let d0 = (fpx[i] as i16 - dpx[i] as i16).abs();
+        let d1 = (fpx[i + 1] as i16 - dpx[i + 1] as i16).abs();
+        let d2 = (fpx[i + 2] as i16 - dpx[i + 2] as i16).abs();
+        d0.max(d1).max(d2)
+    };
+    let mut diff_img = vec![0u8; (w * h * 4) as usize];
+    let (mut geom, mut gdiff, mut full_diff, mut worst) = (0u64, 0u64, 0u64, 0i16);
+    let mut i = 0;
+    while i + 3 < fpx.len().min(dpx.len()) {
+        let delta = chan_delta(i);
+        if delta > 0 { full_diff += 1; }
+        if is_geom(&fpx, i) {
+            geom += 1;
+            if delta > 3 {
+                gdiff += 1;
+                worst = worst.max(delta);
+                diff_img[i] = 255; diff_img[i + 1] = 255; diff_img[i + 2] = 255; diff_img[i + 3] = 255;
+            } else {
+                diff_img[i + 3] = 255;
+            }
+        }
+        i += 4;
+    }
+    write_png(&dir.join("h4a_diff.png"), &diff_img, w, h);
+
+    let frac = if geom > 0 { gdiff as f64 / geom as f64 } else { 0.0 };
+    log::info!("H4a DEFERRED == FORWARD gate ({}x{}, mid-low sun, cubes span cascades):", w, h);
+    log::info!("  geometry pixels: {}   deferred!=forward (>3/ch): {}  ({:.3}% of geometry, worst {}/255)", geom, gdiff, frac * 100.0, worst);
+    log::info!("  full-frame differing pixels (incl. edges/bg): {}", full_diff);
+    log::info!("  wrote h4a_forward.png / h4a_deferred.png / h4a_diff.png to {}", dir.display());
+    let ok = frac < 0.01;
+    log::info!("  H4a {} -- deferred reproduces forward shading (unified render integration proven).", if ok { "PASS" } else { "REVIEW" });
+    ok
+}

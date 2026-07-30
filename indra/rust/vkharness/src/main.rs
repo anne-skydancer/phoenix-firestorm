@@ -3540,6 +3540,10 @@ fn main() {
         shadow_engine::run_shot(); // headless one-frame capture -> PNG (M2/M4 gate seed)
         std::process::exit(0);
     }
+    if std::env::args().skip(1).any(|a| a == "shadow-shimmer") {
+        shadow_engine::run_shimmer(); // M2 anti-shimmer gate (fixed render cam, panning fit cam)
+        std::process::exit(0);
+    }
     if std::env::args().skip(1).any(|a| a == "sky-view") {
         let ok = run_sky_view();
         std::process::exit(if ok { 0 } else { 1 });

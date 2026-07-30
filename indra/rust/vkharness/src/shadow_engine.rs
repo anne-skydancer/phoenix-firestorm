@@ -71,23 +71,59 @@ fn sun_dir(elev_deg: f32, azim_deg: f32) -> Vec3 {
     Vec3::new(el.cos() * az.cos(), -el.sin(), el.cos() * az.sin()).normalize()
 }
 
-/// Sun ortho view-projection. (M2 replaces this with the stable sphere-bounded,
-/// texel-snapped cascade.)
-fn light_matrix(sun: Vec3) -> Mat4 {
-    let dir = sun.normalize();
-    let center = Vec3::new(0.0, 0.5, 0.0);
-    let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
-    let eye = center - dir * 12.0;
-    let view = Mat4::look_at_rh(eye, center, up);
-    let proj = Mat4::orthographic_rh(-6.0, 6.0, -6.0, 6.0, 0.1, 30.0);
-    proj * view
+const FOCUS: Vec3 = Vec3::new(0.0, 0.5, 0.0);
+
+fn orbit_eye(yaw: f32, pitch: f32, radius: f32) -> Vec3 {
+    FOCUS + Vec3::new(pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos()) * radius
 }
 
-/// Orbit camera -> view-projection.
-fn camera(proj: Mat4, yaw: f32, pitch: f32, radius: f32) -> Mat4 {
-    let center = Vec3::new(0.0, 0.5, 0.0);
-    let eye = center + Vec3::new(pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos()) * radius;
-    proj * Mat4::look_at_rh(eye, center, Vec3::Y)
+/// **M2 — the core of the fix.** A camera-FOLLOWING sun ortho, made stable by construction:
+/// the cascade is fit to the bounding SPHERE of the fit-camera's view-frustum slice (radius
+/// is orientation-independent -> the ortho size can't change as you rotate = no sweep), and
+/// its position is TEXEL-SNAPPED (-> shadow texels map to fixed world spots = no crawl on
+/// translate). `snap=false` reproduces the classic CSM shimmer for the gate.
+fn stable_light_matrix(
+    fit_eye: Vec3, fit_fwd: Vec3, fit_up: Vec3, fov: f32, aspect: f32, near: f32, far: f32,
+    sun: Vec3, snap: bool,
+) -> Mat4 {
+    // Bounding sphere of the [near, far] view-frustum slice.
+    let tan = (fov * 0.5).tan();
+    let right = fit_fwd.cross(fit_up).normalize();
+    let up = right.cross(fit_fwd).normalize();
+    let mut corners = [Vec3::ZERO; 8];
+    let mut i = 0;
+    for &d in &[near, far] {
+        let (hh, hw) = (d * tan, d * tan * aspect);
+        let c = fit_eye + fit_fwd * d;
+        for &sy in &[1.0f32, -1.0] {
+            for &sx in &[1.0f32, -1.0] {
+                corners[i] = c + up * (hh * sy) + right * (hw * sx);
+                i += 1;
+            }
+        }
+    }
+    let center = corners.iter().copied().fold(Vec3::ZERO, |a, b| a + b) / 8.0;
+    let radius = corners.iter().map(|c| (*c - center).length()).fold(0.0f32, f32::max);
+
+    // Fixed-rotation light view: eye pulled far back along -sun so the whole scene is in
+    // front. The rotation does NOT re-center on the moving sphere (that would defeat snapping).
+    let ldir = sun.normalize();
+    let lup = if ldir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+    let back = 100.0f32;
+    let leye = -ldir * back;
+    let view = Mat4::look_at_rh(leye, leye + ldir, lup);
+
+    // Sphere center in light space; snap its x,y to the shadow-map texel grid.
+    let mut c = view.transform_point3(center);
+    if snap {
+        let units_per_texel = 2.0 * radius / SHADOW_SIZE as f32;
+        c.x = (c.x / units_per_texel).floor() * units_per_texel;
+        c.y = (c.y / units_per_texel).floor() * units_per_texel;
+    }
+    let near_z = back - radius - 40.0; // extend toward the light for off-slice casters
+    let far_z = back + radius + 40.0;
+    let proj = Mat4::orthographic_rh(c.x - radius, c.x + radius, c.y - radius, c.y + radius, near_z, far_z);
+    proj * view
 }
 
 // ---- geometry -------------------------------------------------------------------
@@ -476,6 +512,7 @@ struct Scene {
     yaw: f32,
     pitch: f32,
     auto_rotate: bool,
+    snap: bool,
 }
 
 impl Scene {
@@ -529,7 +566,7 @@ impl Scene {
             let aspect = config.width as f32 / config.height as f32;
             let proj = Mat4::perspective_rh(45f32.to_radians(), aspect, 0.1, 100.0);
 
-            Scene { window, surface, device, queue, config, depth, renderer, proj, yaw: 0.7, pitch: 0.5, auto_rotate: false }
+            Scene { window, surface, device, queue, config, depth, renderer, proj, yaw: 0.7, pitch: 0.5, auto_rotate: false, snap: true }
         })
     }
 
@@ -550,9 +587,13 @@ impl Scene {
         if self.auto_rotate {
             self.yaw += 0.0015;
         }
-        let view_proj = camera(self.proj, self.yaw, self.pitch, 5.0);
+        let eye = orbit_eye(self.yaw, self.pitch, 5.0);
+        let view_proj = self.proj * Mat4::look_at_rh(eye, FOCUS, Vec3::Y);
         let sun = Vec3::from_array(SUN).normalize();
-        let light_vp = light_matrix(sun);
+        // The sun ortho FOLLOWS the camera (real CSM). Stable by construction when snap is on.
+        let fwd = (FOCUS - eye).normalize();
+        let aspect = self.config.width as f32 / self.config.height as f32;
+        let light_vp = stable_light_matrix(eye, fwd, Vec3::Y, 45f32.to_radians(), aspect, 0.5, 8.0, sun, self.snap);
         self.renderer.update(&self.queue, view_proj, light_vp, sun);
 
         let frame = self.surface.get_current_texture()?;
@@ -575,7 +616,7 @@ pub fn run() {
             .expect("window"),
     );
     let mut scene = Scene::new(window.clone());
-    log::info!("M0b: cube casts a shadow onto the plane (+x/+z side). Starts still. Arrows orbit, Space auto-spin, Esc quits.");
+    log::info!("M2: sun ortho FOLLOWS the camera. N toggles texel-snap (ON=stable / OFF=shimmer). Space auto-spin, arrows orbit, Esc quits.");
     event_loop
         .run(move |event, elwt| {
             elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
@@ -590,6 +631,10 @@ pub fn run() {
                         match code {
                             KeyCode::Escape => elwt.exit(),
                             KeyCode::Space => scene.auto_rotate = !scene.auto_rotate,
+                            KeyCode::KeyN => {
+                                scene.snap = !scene.snap;
+                                log::info!("texel snap: {}", if scene.snap { "ON (stable)" } else { "OFF (shimmer)" });
+                            }
                             KeyCode::ArrowLeft => scene.yaw -= step,
                             KeyCode::ArrowRight => scene.yaw += step,
                             KeyCode::ArrowUp => scene.pitch = (scene.pitch + step).min(1.5),
@@ -624,37 +669,36 @@ pub fn run() {
 /// Render one frame headless (no window) to a PNG. `yaw_deg`/`pitch_deg` pick the camera.
 /// Returns the path written. Width is a multiple of 64 so the readback row stride needs
 /// no 256-byte padding.
-pub fn shot(out: &std::path::Path, sun: Vec3, w: u32, h: u32, yaw_deg: f32, pitch_deg: f32, radius: f32) {
-    const FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let (device, queue) = crate::headless_vulkan_device();
-    let renderer = Renderer::new(&device, FMT);
+const SHOT_FMT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// Render one frame headless -> tight Rgba8 pixel buffer. `w` must be a multiple of 64 so
+/// the readback row stride (w*4) is 256-byte aligned (no padding to strip).
+fn render_to_pixels(
+    device: &wgpu::Device, queue: &wgpu::Queue, renderer: &Renderer,
+    view_proj: Mat4, light_vp: Mat4, sun: Vec3, w: u32, h: u32,
+) -> Vec<u8> {
     let color = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("shot-color"),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: FMT,
+        format: SHOT_FMT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
-    let depth = depth_texture(&device, w, h, DEPTH_FORMAT, "shot-depth")
+    let depth = depth_texture(device, w, h, DEPTH_FORMAT, "shot-depth")
         .create_view(&wgpu::TextureViewDescriptor::default());
+    renderer.update(queue, view_proj, light_vp, sun);
 
-    let proj = Mat4::perspective_rh(45f32.to_radians(), w as f32 / h as f32, 0.1, 100.0);
-    let view_proj = camera(proj, yaw_deg.to_radians(), pitch_deg.to_radians(), radius);
-    renderer.update(&queue, view_proj, light_matrix(sun), sun);
-
-    let bpr = w * 4; // Rgba8 = 4 bytes; w multiple of 64 -> bpr multiple of 256 (no padding)
+    let bpr = w * 4;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("shot-readback"),
         size: (bpr * h) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("shot") });
     renderer.encode(&mut enc, &color_view, &depth);
     enc.copy_texture_to_buffer(
@@ -672,21 +716,95 @@ pub fn shot(out: &std::path::Path, sun: Vec3, w: u32, h: u32, yaw_deg: f32, pitc
     slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
     device.poll(wgpu::Maintain::Wait);
     rx.recv().unwrap().unwrap();
-    let pixels = slice.get_mapped_range().to_vec();
+    let px = slice.get_mapped_range().to_vec();
     readback.unmap();
+    px
+}
 
+fn write_png(out: &std::path::Path, px: &[u8], w: u32, h: u32) {
     let file = std::fs::File::create(out).expect("create png");
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.write_header().expect("png header").write_image_data(&pixels).expect("png data");
-    log::info!("shadow-shot: wrote {}x{} -> {}", w, h, out.display());
+    let mut e = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    e.set_color(png::ColorType::Rgba);
+    e.set_depth(png::BitDepth::Eight);
+    e.write_header().expect("png header").write_image_data(px).expect("png data");
+    log::info!("wrote {}x{} -> {}", w, h, out.display());
+}
+
+/// # RGB pixels that differ between two frames (ignore alpha).
+fn pixel_diff(a: &[u8], b: &[u8]) -> u64 {
+    let mut n = 0u64;
+    let mut i = 0;
+    while i + 2 < a.len() && i + 2 < b.len() {
+        if a[i] != b[i] || a[i + 1] != b[i + 1] || a[i + 2] != b[i + 2] {
+            n += 1;
+        }
+        i += 4;
+    }
+    n
+}
+
+pub fn shot(out: &std::path::Path, sun: Vec3, w: u32, h: u32, yaw_deg: f32, pitch_deg: f32, radius: f32) {
+    let (device, queue) = crate::headless_vulkan_device();
+    let renderer = Renderer::new(&device, SHOT_FMT);
+    let proj = Mat4::perspective_rh(45f32.to_radians(), w as f32 / h as f32, 0.1, 100.0);
+    let eye = orbit_eye(yaw_deg.to_radians(), pitch_deg.to_radians(), radius);
+    let vp = proj * Mat4::look_at_rh(eye, FOCUS, Vec3::Y);
+    let fwd = (FOCUS - eye).normalize();
+    let light_vp = stable_light_matrix(eye, fwd, Vec3::Y, 45f32.to_radians(), w as f32 / h as f32, 0.5, 8.0, sun, true);
+    let px = render_to_pixels(&device, &queue, &renderer, vp, light_vp, sun, w, h);
+    write_png(out, &px, w, h);
 }
 
 pub fn run_shot() {
     let dir = std::env::temp_dir();
-    // High sun (~59deg): short shadow, the M0b default.
     shot(&dir.join("shadow_high.png"), sun_dir(59.0, 41.0), 1280, 800, 40.0, 32.0, 5.5);
-    // Low sun (~18deg): long raking shadow -- the stress case for shadow coverage.
     shot(&dir.join("shadow_low.png"), sun_dir(18.0, 41.0), 1280, 800, 40.0, 24.0, 6.5);
+}
+
+/// **M2 anti-shimmer gate.** FIXED render camera, PANNING fit camera. The render view never
+/// moves, so any pixel that changes between consecutive frames is purely the shadow crawling
+/// as the sun-ortho re-fits to the moving fit camera. Texel snapping should collapse the
+/// crawl to near-zero (only whole-texel jumps at boundaries) vs a large continuous total
+/// without it. Writes first/last frames per mode for eyeball backup.
+pub fn run_shimmer() {
+    let (device, queue) = crate::headless_vulkan_device();
+    let renderer = Renderer::new(&device, SHOT_FMT);
+    let (w, h) = (1280u32, 800u32);
+    let aspect = w as f32 / h as f32;
+    let sun = sun_dir(35.0, 41.0);
+    // FIXED render camera, tilted down to see the ground shadow clearly.
+    let rproj = Mat4::perspective_rh(45f32.to_radians(), aspect, 0.1, 100.0);
+    let reye = orbit_eye(40f32.to_radians(), 55f32.to_radians(), 6.0);
+    let rvp = rproj * Mat4::look_at_rh(reye, FOCUS, Vec3::Y);
+
+    let dir = std::env::temp_dir();
+    log::info!("M2 shimmer gate: fixed render cam, fit cam pans 0.4deg/frame x16.");
+    for &snap in &[false, true] {
+        let mut prev: Option<Vec<u8>> = None;
+        let (mut total, mut peak) = (0u64, 0u64);
+        let steps = 16;
+        let (mut first, mut last) = (None, None);
+        for k in 0..steps {
+            let fit_yaw = (30.0 + k as f32 * 0.4).to_radians();
+            let feye = orbit_eye(fit_yaw, 0.5, 5.0);
+            let ffwd = (FOCUS - feye).normalize();
+            let light_vp = stable_light_matrix(feye, ffwd, Vec3::Y, 45f32.to_radians(), aspect, 0.5, 8.0, sun, snap);
+            let px = render_to_pixels(&device, &queue, &renderer, rvp, light_vp, sun, w, h);
+            if let Some(p) = &prev {
+                let d = pixel_diff(&px, p);
+                total += d;
+                peak = peak.max(d);
+            }
+            if k == 0 { first = Some(px.clone()); }
+            if k == steps - 1 { last = Some(px.clone()); }
+            prev = Some(px);
+        }
+        let tag = if snap { "on" } else { "off" };
+        log::info!("  snap={:<3}: {:>8} px changed total, {:>6} peak/frame (of {})", tag, total, peak, w * h);
+        if let (Some(f), Some(l)) = (first, last) {
+            write_png(&dir.join(format!("shimmer_{}_first.png", tag)), &f, w, h);
+            write_png(&dir.join(format!("shimmer_{}_last.png", tag)), &l, w, h);
+        }
+    }
+    log::info!("GATE PASS if snap=on total << snap=off total (crawl eliminated by texel snapping).");
 }

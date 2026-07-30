@@ -2328,18 +2328,58 @@ fn run_sky_lux() -> bool {
 
 /// SL legacy sky-dome radiance (skyV.glsl) at `view` for sun direction `sun` (both unit,
 /// y = up). Returns linear RGB in SL's arbitrary units (post skyF *2 + clamp[0,5]).
+// The EEP legacy-Windlight sky knobs that drive dome radiance (skyV.glsl). max_y and
+// distance_multiplier are omitted -- max_y is fixed at 1605 and distance_multiplier does
+// NOT affect the dome (only scene fog). glow.y is unused; only .x and .z matter.
+#[derive(Clone)]
+struct EepSky {
+    blue_horizon: [f32; 3],
+    blue_density: [f32; 3],
+    haze_horizon: f32,
+    haze_density: f32,
+    density_multiplier: f32,
+    glow_x: f32,
+    glow_z: f32,
+    ambient: [f32; 3],
+    sunlight_color: [f32; 3],
+    cloud_shadow: f32,
+}
+
+impl EepSky {
+    // The shipped DEFAULT EEP sky (the "arbitrary values set in the path" we want to ground).
+    fn shipped_default() -> Self {
+        EepSky {
+            blue_horizon: [0.4954, 0.4954, 0.6399],
+            blue_density: [0.2447, 0.4487, 0.7599],
+            haze_horizon: 0.19,
+            haze_density: 0.7,
+            density_multiplier: 0.0001,
+            glow_x: 5.0,
+            glow_z: -0.4799,
+            ambient: [0.25, 0.25, 0.25],
+            sunlight_color: [0.7342, 0.7815, 0.8999],
+            cloud_shadow: 0.2699,
+        }
+    }
+}
+
 fn sl_sky_radiance(view: [f32; 3], sun: [f32; 3]) -> [f32; 3] {
-    // Shipped DEFAULT EEP legacy sky params (from source):
-    let sunlight_color = [0.7342f32, 0.7815, 0.8999];
-    let ambient_color = [0.25f32, 0.25, 0.25];
-    let blue_horizon = [0.4954f32, 0.4954, 0.6399];
-    let blue_density = [0.2447f32, 0.4487, 0.7599];
-    let haze_horizon = 0.19f32;
-    let haze_density = 0.7f32;
-    let density_multiplier = 0.0001f32;
+    sl_sky_radiance_p(view, sun, &EepSky::shipped_default())
+}
+
+// Faithful port of skyV.glsl's per-vertex vary_HazeColor + skyF.glsl's *2/clamp[0,5],
+// parameterized by the EEP knobs. Verified term-by-term against the shipping shader.
+fn sl_sky_radiance_p(view: [f32; 3], sun: [f32; 3], p: &EepSky) -> [f32; 3] {
+    let sunlight_color = p.sunlight_color;
+    let ambient_color = p.ambient;
+    let blue_horizon = p.blue_horizon;
+    let blue_density = p.blue_density;
+    let haze_horizon = p.haze_horizon;
+    let haze_density = p.haze_density;
+    let density_multiplier = p.density_multiplier;
     let max_y = 1605.0f32;
-    let glow = [5.0f32, 0.001, -0.4799];
-    let cloud_shadow = 0.2699f32;
+    let glow = [p.glow_x, 0.001, p.glow_z];
+    let cloud_shadow = p.cloud_shadow;
     let sun_moon_glow_factor = 1.0f32;
 
     let dy = view[1].max(1e-3); // view up-component (clamp off the horizon singularity)
@@ -2450,6 +2490,220 @@ fn run_sky_sl() -> bool {
     log::info!("GAP: SL zenith-normalized luminance profile deviates RMS {rms:.0}% from physical H-W.");
     log::info!("  structural: SL sky is artist-color*weight*(sun+ambient), horizon = haze transparency (not airmass),");
     log::info!("  sun halo = pow(1-cos,glow) (not Mie), output *2 & clamp[0,5] -- parametric look, not a scattering sky.");
+    true
+}
+
+// --- EEP-conformant-to-HW sky fit --------------------------------------------------
+// Keep EEP as the reliable rendering driver, but replace its arbitrary hand-picked
+// "magic values" with numbers fit to the physical Hosek-Wilkie dome. We do NOT make the
+// renderer physically absolute (that broke fullbright/indoor); we ONLY ground the knobs.
+// Fit ONE default-sky knob-set across a day's sun elevations (skyV.glsl's own sun-position
+// response then tracks HW as the sun moves), then paste the numbers into LLSettingsSky.
+fn run_sky_fit() -> bool {
+    use hw_skymodel::rgb::{Channel, SkyParams, SkyState};
+
+    const NP: usize = 18;
+    // (min, max, log) per free parameter, in EepSky field order.
+    let desc: [(f32, f32, bool); NP] = [
+        (0.0, 3.0, false), (0.0, 3.0, false), (0.0, 3.0, false), // blue_horizon
+        (0.0, 3.0, false), (0.0, 3.0, false), (0.0, 3.0, false), // blue_density
+        (0.0, 5.0, false),                                       // haze_horizon
+        (0.0, 5.0, false),                                       // haze_density
+        (1e-6, 2.0, true),                                       // density_multiplier (log)
+        (0.2, 40.0, true),                                       // glow_x (log)
+        (-10.0, 10.0, false),                                    // glow_z
+        (0.0, 3.0, false), (0.0, 3.0, false), (0.0, 3.0, false), // ambient
+        (0.0, 3.0, false), (0.0, 3.0, false), (0.0, 3.0, false), // sunlight_color
+        (0.0, 1.0, false),                                       // cloud_shadow
+    ];
+    let norm1 = |v: f32, d: (f32, f32, bool)| -> f32 {
+        let (mn, mx, lg) = d;
+        if lg { (v.max(1e-12).ln() - mn.ln()) / (mx.ln() - mn.ln()) } else { (v - mn) / (mx - mn) }
+    };
+    let denorm1 = |t: f32, d: (f32, f32, bool)| -> f32 {
+        let (mn, mx, lg) = d;
+        let t = t.clamp(0.0, 1.0);
+        if lg { (mn.ln() + t * (mx.ln() - mn.ln())).exp() } else { mn + t * (mx - mn) }
+    };
+    let pack = |p: &EepSky| -> [f32; NP] {
+        let v = [
+            p.blue_horizon[0], p.blue_horizon[1], p.blue_horizon[2],
+            p.blue_density[0], p.blue_density[1], p.blue_density[2],
+            p.haze_horizon, p.haze_density, p.density_multiplier, p.glow_x, p.glow_z,
+            p.ambient[0], p.ambient[1], p.ambient[2],
+            p.sunlight_color[0], p.sunlight_color[1], p.sunlight_color[2], p.cloud_shadow,
+        ];
+        let mut x = [0.0f32; NP];
+        for i in 0..NP { x[i] = norm1(v[i], desc[i]).clamp(0.0, 1.0); }
+        x
+    };
+    let unpack = |x: &[f32; NP]| -> EepSky {
+        let mut v = [0.0f32; NP];
+        for i in 0..NP { v[i] = denorm1(x[i], desc[i]); }
+        EepSky {
+            blue_horizon: [v[0], v[1], v[2]],
+            blue_density: [v[3], v[4], v[5]],
+            haze_horizon: v[6], haze_density: v[7], density_multiplier: v[8],
+            glow_x: v[9], glow_z: v[10],
+            ambient: [v[11], v[12], v[13]],
+            sunlight_color: [v[14], v[15], v[16]],
+            cloud_shadow: v[17],
+        }
+    };
+
+    // Fit ONE default sky across a day's sun elevations (same knobs, sun moved).
+    let elevs_deg = [15.0f32, 30.0, 45.0, 60.0, 75.0];
+    let turbidity = 3.0f32;
+    // Hemisphere sample grid: zenith theta x azimuth phi (relative to the sun plane, az 0).
+    let thetas: Vec<f32> = (0..=17).map(|i| i as f32 * 5.0).collect(); // 0..85 step 5
+    let phis: Vec<f32> = (0..=6).map(|i| i as f32 * 30.0).collect();   // 0..180 step 30
+
+    struct Sample { view: [f32; 3], w: f32, target: [f32; 3] }
+    struct ElevData { deg: f32, sun: [f32; 3], samples: Vec<Sample>, tmean: f32 }
+
+    let mut data: Vec<ElevData> = Vec::new();
+    for &eld in &elevs_deg {
+        let el = eld.to_radians();
+        let sun = [el.cos(), el.sin(), 0.0f32];
+        let hw = SkyState::new(&SkyParams { elevation: el, turbidity, albedo: [0.3; 3] }).unwrap();
+        let mut samples = Vec::new();
+        let (mut tsum, mut wsum) = (0.0f32, 0.0f32);
+        for &thd in &thetas {
+            let th = thd.to_radians();
+            let (st, ct) = (th.sin(), th.cos());
+            for &phd in &phis {
+                let ph = phd.to_radians();
+                let view = [st * ph.cos(), ct, st * ph.sin()];
+                let ndot = (view[0] * sun[0] + view[1] * sun[1] + view[2] * sun[2]).clamp(-1.0, 1.0);
+                let gamma = ndot.acos();
+                let target = [
+                    hw.radiance(th, gamma, Channel::R).max(0.0),
+                    hw.radiance(th, gamma, Channel::G).max(0.0),
+                    hw.radiance(th, gamma, Channel::B).max(0.0),
+                ];
+                let w = st.max(0.03); // ~ solid-angle weight (sin theta)
+                tsum += luminance_y(target[0], target[1], target[2]) * w;
+                wsum += w;
+                samples.push(Sample { view, w, target });
+            }
+        }
+        let tmean = (tsum / wsum).max(1e-9);
+        data.push(ElevData { deg: eld, sun, samples, tmean });
+    }
+
+    // Objective: each dome normalized to unit mean luminance, summed squared RGB error
+    // (fits angular shape + chromaticity up to a global scale, which EEP lacks anyway),
+    // PLUS regularization: an unconstrained fit drives redundant params to nonphysical
+    // extremes (green-only ambient, zero-red density). Pull toward the known-good default
+    // sky (we are GROUNDING it, not reinventing it) and keep ambient near-neutral.
+    let x0 = pack(&EepSky::shipped_default());
+    let lambda = 8.0f32;      // toward the default sky
+    let lambda_amb = 25.0f32; // ambient neutrality
+    let obj = |p: &EepSky| -> f32 {
+        let mut err = 0.0f32;
+        for ed in &data {
+            let (mut msum, mut wsum) = (0.0f32, 0.0f32);
+            let mut model: Vec<[f32; 3]> = Vec::with_capacity(ed.samples.len());
+            for s in &ed.samples {
+                let c = sl_sky_radiance_p(s.view, ed.sun, p);
+                msum += luminance_y(c[0], c[1], c[2]) * s.w;
+                wsum += s.w;
+                model.push(c);
+            }
+            let mmean = (msum / wsum).max(1e-6);
+            for (s, m) in ed.samples.iter().zip(model.iter()) {
+                for ch in 0..3 {
+                    let d = m[ch] / mmean - s.target[ch] / ed.tmean;
+                    err += s.w * d * d;
+                }
+            }
+        }
+        let xp = pack(p);
+        let mut reg = 0.0f32;
+        for i in 0..NP { let dd = xp[i] - x0[i]; reg += dd * dd; }
+        let amb_avg = (p.ambient[0] + p.ambient[1] + p.ambient[2]) / 3.0;
+        let amb_chroma = (p.ambient[0] - amb_avg).powi(2)
+            + (p.ambient[1] - amb_avg).powi(2)
+            + (p.ambient[2] - amb_avg).powi(2);
+        err + lambda * reg + lambda_amb * amb_chroma
+    };
+
+    // Coordinate descent with step halving, starting from the shipped default sky.
+    let mut x = pack(&EepSky::shipped_default());
+    let mut fx = obj(&unpack(&x));
+    let f0 = fx;
+    let mut h = 0.12f32;
+    let mut iters = 0u32;
+    while h > 1e-4 && iters < 60_000 {
+        let mut improved = false;
+        for i in 0..NP {
+            for &d in &[h, -h] {
+                let mut cand = x;
+                cand[i] = (cand[i] + d).clamp(0.0, 1.0);
+                let fc = obj(&unpack(&cand));
+                if fc < fx - 1e-9 {
+                    x = cand; fx = fc; improved = true; break;
+                }
+            }
+            iters += 1;
+        }
+        if !improved { h *= 0.5; }
+    }
+    let fitted = unpack(&x);
+    let deflt = EepSky::shipped_default();
+
+    // ---- report ----
+    log::info!("HW->EEP SKY FIT  (one default sky fit across sun elevations {:?} deg, turbidity {})", elevs_deg, turbidity);
+    log::info!("  objective (mean-normalized RGB shape error): {:.4} -> {:.4}  ({:.0}% lower, {} obj-evals)",
+        f0, fx, (1.0 - fx / f0) * 100.0, iters);
+    log::info!("");
+    log::info!("  FITTED default-sky values (paste into LLSettingsSky defaults / legacy-haze fallbacks):");
+    log::info!("    blue_horizon       = ({:.4}, {:.4}, {:.4})", fitted.blue_horizon[0], fitted.blue_horizon[1], fitted.blue_horizon[2]);
+    log::info!("    blue_density       = ({:.4}, {:.4}, {:.4})", fitted.blue_density[0], fitted.blue_density[1], fitted.blue_density[2]);
+    log::info!("    haze_horizon       = {:.4}", fitted.haze_horizon);
+    log::info!("    haze_density       = {:.4}", fitted.haze_density);
+    log::info!("    density_multiplier = {:.6}", fitted.density_multiplier);
+    log::info!("    glow  (x, _, z)    = ({:.4}, 0.001, {:.4})", fitted.glow_x, fitted.glow_z);
+    log::info!("    ambient            = ({:.4}, {:.4}, {:.4})", fitted.ambient[0], fitted.ambient[1], fitted.ambient[2]);
+    log::info!("    sunlight_color     = ({:.4}, {:.4}, {:.4})", fitted.sunlight_color[0], fitted.sunlight_color[1], fitted.sunlight_color[2]);
+    log::info!("    cloud_shadow       = {:.4}", fitted.cloud_shadow);
+    log::info!("");
+
+    // Per-elevation luminance-shape residual, default vs fitted.
+    let rms_of = |p: &EepSky, ed: &ElevData| -> f32 {
+        let (mut msum, mut wsum) = (0.0f32, 0.0f32);
+        let mut mlum: Vec<f32> = Vec::with_capacity(ed.samples.len());
+        for s in &ed.samples {
+            let c = sl_sky_radiance_p(s.view, ed.sun, p);
+            let l = luminance_y(c[0], c[1], c[2]);
+            msum += l * s.w; wsum += s.w; mlum.push(l);
+        }
+        let mmean = (msum / wsum).max(1e-6);
+        let (mut sse, mut wtot) = (0.0f32, 0.0f32);
+        for (s, &l) in ed.samples.iter().zip(mlum.iter()) {
+            let tn = luminance_y(s.target[0], s.target[1], s.target[2]) / ed.tmean;
+            let d = l / mmean - tn;
+            sse += s.w * d * d; wtot += s.w;
+        }
+        (sse / wtot).sqrt() * 100.0
+    };
+    log::info!("  per-elevation luminance-shape RMS (mean-normalized):   default -> fitted");
+    for ed in &data {
+        log::info!("    sun {:>2.0} deg:   {:>6.1}%  ->  {:>6.1}%", ed.deg, rms_of(&deflt, ed), rms_of(&fitted, ed));
+    }
+    log::info!("");
+    // zenith Blue/Red chromaticity check at the mid elevation.
+    let mid = data.iter().find(|e| e.deg == 45.0).unwrap();
+    let zen = [0.0f32, 1.0, 0.0];
+    let br = |c: [f32; 3]| c[2] / c[0].max(1e-6);
+    let hw45 = SkyState::new(&SkyParams { elevation: 45f32.to_radians(), turbidity, albedo: [0.3; 3] }).unwrap();
+    let gz = (zen[1] * mid.sun[1]).clamp(-1.0, 1.0).acos();
+    let hw_br = hw45.radiance(0.0, gz, Channel::B) / hw45.radiance(0.0, gz, Channel::R).max(1e-6);
+    log::info!("  zenith Blue/Red @ sun 45 deg (higher = bluer):  default {:.3}   fitted {:.3}   HW {:.3}",
+        br(sl_sky_radiance_p(zen, mid.sun, &deflt)), br(sl_sky_radiance_p(zen, mid.sun, &fitted)), hw_br);
+    log::info!("");
+    log::info!("  NOTE: EEP's fixed non-Mie glow lobe + clamp[0,5] cap how close the fit can reach;");
+    log::info!("  the residual is EEP's model limit, not a fit failure. These values ground the DEFAULT sky.");
     true
 }
 
@@ -3270,6 +3524,10 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "sky-sl") {
         let ok = run_sky_sl();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sky-fit") {
+        let ok = run_sky_fit();
         std::process::exit(if ok { 0 } else { 1 });
     }
     if std::env::args().skip(1).any(|a| a == "sky-view") {

@@ -199,6 +199,7 @@ struct Scene {
     proj: Mat4,
     yaw: f32,
     pitch: f32,
+    auto_rotate: bool,
 }
 
 impl Scene {
@@ -306,7 +307,7 @@ impl Scene {
             let aspect = config.width as f32 / config.height as f32;
             let proj = Mat4::perspective_rh(45f32.to_radians(), aspect, 0.1, 100.0);
 
-            Scene { window, surface, device, queue, config, depth, pipeline, objs, proj, yaw: 0.7, pitch: 0.5 }
+            Scene { window, surface, device, queue, config, depth, pipeline, objs, proj, yaw: 0.7, pitch: 0.5, auto_rotate: false }
         })
     }
 
@@ -323,8 +324,10 @@ impl Scene {
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        // Slow auto-orbit so depth ordering + shading are visible from all sides.
-        self.yaw += 0.005;
+        // Starts still (inspect the shading); Space toggles a gentle auto-orbit, arrows steer.
+        if self.auto_rotate {
+            self.yaw += 0.0015;
+        }
         let center = Vec3::new(0.0, 0.5, 0.0);
         let r = 5.0;
         let eye = center
@@ -389,7 +392,7 @@ pub fn run() {
             .expect("window"),
     );
     let mut scene = Scene::new(window.clone());
-    log::info!("M0a: forward geometry (cube + plane + depth), auto-orbit. Esc quits.");
+    log::info!("M0a: forward geometry (cube + plane + depth). Starts still. Arrows orbit, Space toggles auto-spin, Esc quits.");
     event_loop
         .run(move |event, elwt| {
             elwt.set_control_flow(winit::event_loop::ControlFlow::Poll);
@@ -397,9 +400,20 @@ pub fn run() {
                 Event::WindowEvent { event, window_id } if window_id == scene.window.id() => match event {
                     WindowEvent::CloseRequested => elwt.exit(),
                     WindowEvent::KeyboardInput {
-                        event: KeyEvent { physical_key: PhysicalKey::Code(KeyCode::Escape), state: ElementState::Pressed, .. },
+                        event: KeyEvent { physical_key: PhysicalKey::Code(code), state: ElementState::Pressed, .. },
                         ..
-                    } => elwt.exit(),
+                    } => {
+                        let step = 0.06;
+                        match code {
+                            KeyCode::Escape => elwt.exit(),
+                            KeyCode::Space => scene.auto_rotate = !scene.auto_rotate,
+                            KeyCode::ArrowLeft => scene.yaw -= step,
+                            KeyCode::ArrowRight => scene.yaw += step,
+                            KeyCode::ArrowUp => scene.pitch = (scene.pitch + step).min(1.5),
+                            KeyCode::ArrowDown => scene.pitch = (scene.pitch - step).max(-0.2),
+                            _ => {}
+                        }
+                    }
                     WindowEvent::Resized(sz) => scene.resize(sz),
                     WindowEvent::RedrawRequested => {
                         match scene.render() {

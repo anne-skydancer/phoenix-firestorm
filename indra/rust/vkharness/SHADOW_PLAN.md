@@ -3,6 +3,12 @@
 Standalone Vulkan/Rust engine (`vkharness`). Greenfield shadow maps designed so the
 legacy Firestorm/LL sun-shadow dropout **cannot arise by construction** — not patched.
 
+**Kept API-neutral by design** (pure technique + math, no wgpu-isms): once proven here it
+**backports to the legacy GL renderer** — conditional on M4 proving it renders consistently
+and well under any condition (user, 2026-07-30). Prove it where it's safe, port it where it
+ships. The earlier 3 in-place GL patches regressed for lack of a proven design; this removes
+that.
+
 ## 1. The bug we are designing against (proven, not hypothesized)
 
 Legacy sun (directional) shadows **cut out across sustained camera-angle ranges and
@@ -86,8 +92,13 @@ regressed; a min-lit-across-cascades shader tweak failed because the caster is a
   legacy failure scenario). Measure the per-pixel shadow mask frame to frame; **assert zero
   shadowed-area discontinuity** — no cut, no flicker. This automates your spec.
 
+- **M5 — (conditional) backport to the legacy GL renderer.** Triggered by M4 green. Port the
+  *proven* design into the GL CSM (`generateSunShadow` + the shadow shaders). Because the
+  design is API-neutral and already validated, this is a principled port, not the guesswork
+  that regressed the 3 prior patches. Scope/timing decided when M4 lands.
+
 ## 6. Acceptance
-"Done" = **M4 green**: across a full orbit and a 1°-incremental z-pan on a legacy-style
+"Done" (engine) = **M4 green**: across a full orbit and a 1°-incremental z-pan on a legacy-style
 scene, shadowed area is continuous frame to frame. No cut. No flicker. By construction, not
 by tuning.
 

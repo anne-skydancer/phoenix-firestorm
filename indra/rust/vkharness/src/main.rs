@@ -125,7 +125,8 @@ fn compile_glsl(source: &str, kind: shaderc::ShaderKind, name: &str) -> Vec<u32>
 mod shadow_engine; // engine shadow work (SHADOW_PLAN.md), invoked by the `shadow` subcommand
 mod dae; // minimal Collada (.dae) reader for the real-mesh path (H4b)
 mod sweep; // Phase 1: offline shader sweep (rhi/PLAN.md) -- assemble + transform + compile the corpus
-mod sweep_table; // FULL llviewershadermgr.cpp program table (229 ProgramDefs) for the sweep
+mod sweep_table;
+mod table_diff; // P2a: validate sweep_table vs a live-viewer FS_SHADER_MANIFEST dump // FULL llviewershadermgr.cpp program table (229 ProgramDefs) for the sweep
 
 pub(crate) fn glsl_module(
     device: &wgpu::Device,
@@ -3590,6 +3591,20 @@ fn main() {
         // Phase 1 (rhi/PLAN.md): offline shader sweep gate. `cargo run -- sweep`.
         let ok = sweep::run_sweep(false);
         std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "table-diff") {
+        // P2a: `cargo run -- table-diff <manifest.jsonl>` (from the FS_SHADER_MANIFEST viewer run).
+        let path = std::env::args().skip(1).skip_while(|a| a != "table-diff").nth(1);
+        match path {
+            Some(p) => {
+                let ok = table_diff::run_table_diff(&p);
+                std::process::exit(if ok { 0 } else { 1 });
+            }
+            None => {
+                eprintln!("usage: vkharness table-diff <manifest.jsonl>");
+                std::process::exit(2);
+            }
+        }
     }
     if std::env::args().skip(1).any(|a| a == "sweep-split") {
         // A2 (PHASE2_PLAN.md): separate-sampler split mode -- the wgpu-ready corpus.

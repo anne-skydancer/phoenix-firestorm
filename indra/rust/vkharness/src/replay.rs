@@ -50,6 +50,7 @@ struct Draw {
     depth_write: bool,
     blend: bool,
     mvp: Mat4,
+    pkey: [u32; 4], // projection fingerprint (raw proj [0],[5],[10],[14] bits) -- pass grouping
 }
 
 fn parse_f32_array(line: &str, key: &str) -> Option<[f32; 16]> {
@@ -87,7 +88,17 @@ fn parse_draws(path: &std::path::Path) -> Vec<Draw> {
             depth_test: extract_i32(line, "depth_test").unwrap_or(1) != 0,
             depth_write: extract_i32(line, "depth_write").unwrap_or(1) != 0,
             blend: extract_i32(line, "blend").unwrap_or(0) != 0,
-            mvp: Mat4::from_cols_array(&pj) * Mat4::from_cols_array(&mv),
+            mvp: {
+                // GL clip z [-1,1] -> wgpu [0,1]: z' = 0.5*z + 0.5*w
+                let fix = Mat4::from_cols_array(&[
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 0.5, 0.0,
+                    0.0, 0.0, 0.5, 1.0,
+                ]);
+                fix * Mat4::from_cols_array(&pj) * Mat4::from_cols_array(&mv)
+            },
+            pkey: [pj[0].to_bits(), pj[5].to_bits(), pj[10].to_bits(), pj[14].to_bits()],
         });
     }
     out
@@ -105,8 +116,11 @@ fn is_world_draw(d: &Draw) -> bool {
     {
         return false;
     }
-    // triangles only; must have geometry + a vertex block
-    (d.mode == 4 || d.mode == 5) && d.num_verts > 0 && d.typemask & 1 != 0
+    if p.contains("radiance") || p.contains("irradiance") || p.contains("draw color") {
+        return false;
+    }
+    // LLRender modes: TRIANGLES=0, TRIANGLE_STRIP=1 (llrender.h:317); need geometry + vertex block
+    (d.mode == 0 || d.mode == 1) && d.num_verts > 0 && d.typemask & 1 != 0
 }
 
 const REPLAY_VERT: &str = r#"#version 450
@@ -160,8 +174,28 @@ pub fn run_replay(dump_dir: &str) -> bool {
         log::info!("  {:>5}  {}", n, p);
     }
 
-    let world: Vec<&Draw> = draws.iter().filter(|d| is_world_draw(d)).collect();
-    log::info!("replay: {} world draws selected (gate-1 include list)", world.len());
+    let world_all: Vec<&Draw> = draws.iter().filter(|d| is_world_draw(d)).collect();
+    // one frame contains MANY cameras (G-buffer, water reflection, impostors, previews).
+    // Keep only the modal (fbo, projection) group = the main-camera pass.
+    let mut groups: HashMap<(i32, [u32; 4]), usize> = HashMap::new();
+    for d in &world_all {
+        *groups.entry((d.fbo, d.pkey)).or_default() += 1;
+    }
+    let mut gs: Vec<_> = groups.iter().collect();
+    gs.sort_by(|a, b| b.1.cmp(a.1));
+    for ((fbo, _), n) in gs.iter().take(5) {
+        log::info!("  pass group fbo={} -> {} draws", fbo, n);
+    }
+    let modal = *gs[0].0;
+    let world: Vec<&Draw> = world_all
+        .iter()
+        .filter(|d| (d.fbo, d.pkey) == modal)
+        .copied()
+        .collect();
+    log::info!(
+        "replay: {} world draws ({} before main-camera filter, modal fbo {})",
+        world.len(), world_all.len(), modal.0
+    );
     if world.is_empty() {
         return false;
     }
@@ -358,6 +392,8 @@ pub fn run_replay(dump_dir: &str) -> bool {
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
 
     // preload resources + build per-draw bind groups
+    // strip->list expansions: per-draw override index buffers (mode==TRIANGLE_STRIP)
+    let mut strip_ib: HashMap<usize, (wgpu::Buffer, u32)> = HashMap::new();
     let mut ready: Vec<(usize, wgpu::BindGroup, (bool, bool, bool))> = Vec::new();
     let mut skipped = 0usize;
     for (i, d) in world.iter().enumerate() {
@@ -383,6 +419,40 @@ pub fn run_replay(dump_dir: &str) -> bool {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
+        if d.mode == 1 {
+            // TRIANGLE_STRIP -> list expansion (winding-corrected on odd tris)
+            let mut list: Vec<u16> = Vec::new();
+            let src: Vec<u16> = if d.indexed {
+                let bytes = std::fs::read(dir.join(format!("ib_{}.bin", d.ib))).unwrap_or_default();
+                let base = d.offset as usize;
+                (0..d.count as usize)
+                    .filter_map(|k| {
+                        let o = (base + k) * 2;
+                        bytes.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+                    })
+                    .collect()
+            } else {
+                (d.offset as u16..(d.offset + d.count) as u16).collect()
+            };
+            for k in 2..src.len() {
+                if k % 2 == 0 {
+                    list.extend_from_slice(&[src[k - 2], src[k - 1], src[k]]);
+                } else {
+                    list.extend_from_slice(&[src[k - 1], src[k - 2], src[k]]);
+                }
+            }
+            if list.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let n = list.len() as u32;
+            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("strip-list"),
+                contents: bytemuck::cast_slice(&list),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            strip_ib.insert(i, (buf, n));
+        }
         let key = (d.depth_test, d.depth_write, d.blend);
         pipelines.entry(key).or_insert_with(|| make_pipeline(key.0, key.1, key.2));
         ready.push((i, bind, key));
@@ -421,7 +491,10 @@ pub fn run_replay(dump_dir: &str) -> bool {
             rp.set_vertex_buffer(1, vbuf.slice(uv_off as u64..));
             let col_off = if offsets[TYPE_COLOR] != u32::MAX { offsets[TYPE_COLOR] } else { offsets[TYPE_VERTEX] };
             rp.set_vertex_buffer(2, vbuf.slice(col_off as u64..));
-            if d.indexed {
+            if let Some((sbuf, n)) = strip_ib.get(i) {
+                rp.set_index_buffer(sbuf.slice(..), wgpu::IndexFormat::Uint16);
+                rp.draw_indexed(0..*n, 0, 0..1);
+            } else if d.indexed {
                 let ibuf = gpu_bufs.get(&d.ib).unwrap();
                 rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint16);
                 rp.draw_indexed(d.offset..d.offset + d.count, 0, 0..1);
@@ -454,9 +527,10 @@ pub fn run_replay(dump_dir: &str) -> bool {
     readback.unmap();
     // strip row padding + flip vertically? GL viewport origin is bottom-left; our NDC handling
     // via MVP already matches GL clip space -- wgpu flips Y in viewport, so flip rows at output.
+    // no row flip: GL-proj clip space through wgpu's viewport already lands top-down
     let mut px = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
-        let src = ((h - 1 - y) * bpr) as usize;
+        let src = (y * bpr) as usize;
         let dst = (y * bpr_raw) as usize;
         px[dst..dst + bpr_raw as usize].copy_from_slice(&padded[src..src + bpr_raw as usize]);
     }

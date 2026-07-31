@@ -110,6 +110,8 @@ static __declspec(thread) GLint g_unpack_swap_bytes = 0;
 /* B4/B5: engine readback + clear-color forwarding (declared early -- glReadPixels
  * and glClearColor are defined above the shader-tracking section). */
 typedef int(__cdecl* fsr_readpx_early_t)(GLuint, GLuint, GLuint, GLuint, unsigned char*);
+typedef int(__cdecl* fsr_texdel_early_t)(GLuint);
+static fsr_texdel_early_t g_texdel = NULL;
 typedef int(__cdecl* fsr_clear_early_t)(float, float, float, float);
 static fsr_readpx_early_t g_readpx = NULL;
 static fsr_clear_early_t g_setclear = NULL;
@@ -124,6 +126,7 @@ static void get_readback(void)
         if (m)
         {
             g_readpx = (fsr_readpx_early_t)GetProcAddress(m, "fsr_read_pixels");
+            g_texdel = (fsr_texdel_early_t)GetProcAddress(m, "fsr_texture_delete");
             g_setclear = (fsr_clear_early_t)GetProcAddress(m, "fsr_set_clear_color");
         }
     }
@@ -558,7 +561,19 @@ NG_API void __stdcall glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboole
 }
 NG_API void __stdcall glCopyTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLint e, GLint f, GLsizei g, GLsizei h) { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
 NG_API void __stdcall glCullFace(GLenum m) { (void)m; }
-NG_API void __stdcall glDeleteTextures(GLsizei n, const GLuint* t) { (void)n; (void)t; }
+NG_API void __stdcall glDeleteTextures(GLsizei n, const GLuint* t)
+{
+    /* wave-6: textures lived FOREVER engine-side (monotonic VRAM growth ->
+     * oversubscription -> WDDM paging -> the whole desktop starves; recovery on
+     * close = the driver draining/releasing gigabytes). Forward deletions; ids
+     * are monotonic so a freed id can never alias a live texture. */
+    if (!t) return;
+    get_readback();
+    for (GLsizei i = 0; i < n; ++i)
+    {
+        if (g_texdel && t[i]) g_texdel(t[i]);
+    }
+}
 NG_API void __stdcall glDepthFunc(GLenum f) { (void)f; }
 NG_API void __stdcall glDepthMask(GLboolean f) { g_depth_mask = f ? 1 : 0; }
 NG_API void __stdcall glDisable(GLenum c) { cap_set(c, 0); }

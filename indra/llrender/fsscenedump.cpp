@@ -66,6 +66,8 @@ struct FsrDrawDesc
                      // a texture index (PBR/materials/avatar draws were mis-indexing)
     F32 min_alpha;   // MASK-mode alpha cutoff (-1 = disabled)
     U32 skin_id;     // C: nonzero = rigged draw, positions skin via this palette
+    U32 cull;        // wave-6: GL_CULL_FACE state -- cull_mode None shaded every
+                     // backface of every skinned vertex (GPU saturation)
 };
 typedef int(__cdecl* fsr_begin_t)();
 typedef int(__cdecl* fsr_submit_t)(const FsrDrawDesc*, const U8*, const U8*);
@@ -490,6 +492,7 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             // C: MAP_WEIGHT4 (bit 10) marks rigged draws; the typemask gate makes the
             // sticky skin id safe for every other draw.
             d.skin_id = (d.typemask & (1u << 10)) ? sCurrentSkinId : 0u;
+            d.cull = glIsEnabled(GL_CULL_FACE) ? 1u : 0u;
             // A2: only indexed programs interpret position.w as a texture index.
             d.indexed_ch = 0;
             // A4: MASK cutoff, read the DIFFUSE_COLOR way (cached wrapper uniforms).

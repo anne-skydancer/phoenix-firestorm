@@ -1280,6 +1280,7 @@ void LLVertexBuffer::destroyGLBuffer()
         //llassert(sVBOPool);
         if (sVBOPool)
         {
+            FSSceneDump::bufferDirty(mMappedData); // <FS:VkBridge> wave-6: drop engine copy
             sVBOPool->free(GL_ARRAY_BUFFER, mSize, mGLBuffer, mMappedData);
         }
 
@@ -1301,6 +1302,7 @@ void LLVertexBuffer::destroyGLIndices()
         //llassert(sVBOPool);
         if (sVBOPool)
         {
+            FSSceneDump::bufferDirty(mMappedIndexData); // <FS:VkBridge> wave-6
             sVBOPool->free(GL_ELEMENT_ARRAY_BUFFER, mIndicesSize, mGLIndices, mMappedIndexData);
         }
 

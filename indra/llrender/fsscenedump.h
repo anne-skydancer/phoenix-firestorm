@@ -26,6 +26,11 @@ namespace FSSceneDump
     // Called from the LLVertexBuffer draw entry points; no-op unless capturing.
     void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offset, bool indexed);
     bool active();
+    // <FS:VkBridge> P3c live bridge
+    bool liveActive();
+    void endFrame();
+    void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba);
+    void bufferDirty(const void* ptr);
 }
 
 #endif

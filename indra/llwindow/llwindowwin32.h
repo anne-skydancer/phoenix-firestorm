@@ -94,6 +94,7 @@ public:
     void gatherInput() override;
     void delayInputProcessing() override;
     void swapBuffers() override;
+    void fsrEnsureInit(); // <FS:VkBridge> P3c: bring fs_render up with the GL context
 
     // handy coordinate space conversion routines
     bool convertCoords(LLCoordScreen from, LLCoordWindow *to) override;

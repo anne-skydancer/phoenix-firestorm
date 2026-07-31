@@ -1482,6 +1482,19 @@ void LLVertexBuffer::flush_vbo(GLenum target, U32 start, U32 end, void* data, U8
     {
         llassert(target == GL_ARRAY_BUFFER ? sGLRenderBuffer == mGLBuffer : sGLRenderIndices == mGLIndices);
 
+        // <FS:VkBridge> ENGINE MODE: the CPU shadow is the engine's ONLY source of
+        // vertex data (glBufferSubData is a no-op under null-GL). The normal Windows
+        // path deliberately skips the shadow and streams straight to GL, which left
+        // LLRender-built (UI) buffers holding uninitialized memory -- measured as a
+        // stray pink triangle instead of the login UI. Mirror the Apple behaviour and
+        // keep the shadow authoritative while the engine renders.
+        if (dst && data && end >= start && FSSceneDump::liveActive())
+        {
+            memcpy(dst + start, data, (size_t)(end - start + 1));
+            FSSceneDump::bufferDirty(dst); // engine drops its cached GPU copy
+        }
+        // </FS:VkBridge>
+
         // skip mapped data and stream to GPU via glBufferSubData
         if (end != 0)
         {

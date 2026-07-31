@@ -1756,6 +1756,8 @@ const   S32   max_format  = (S32)num_formats - 1;
         return false;
     }
 
+    fsrEnsureInit(); // <FS:VkBridge> engine ready BEFORE fonts/textures are built
+
     // Setup Tracy gpu context
     {
         LL_PROFILER_GPU_CONTEXT;
@@ -3964,8 +3966,50 @@ namespace
     static fsr_init_t s_fsr_init = nullptr;
     static fsr_frame_t s_fsr_frame = nullptr;
     static fsr_resize_t s_fsr_resize = nullptr;
+    static fsr_frame_t s_fsr_end_frame = nullptr; // P3c: renders the live queue + presents
     static int s_engine_mode = -1; // -1 unknown, 0 off, 1 on, 2 on-but-failed
     static unsigned s_fsr_w = 0, s_fsr_h = 0;
+}
+
+// <FS:VkBridge> Bring the engine up as soon as the window/context exists. MEASURED:
+// fonts build their atlases ~2s BEFORE the first swapBuffers, so a lazy init there
+// silently dropped every early texture upload (blank/again-shapeless UI text).
+void LLWindowWin32::fsrEnsureInit()
+{
+    if (s_engine_mode != -1)
+    {
+        return;
+    }
+    s_engine_mode = 0;
+    char* env = getenv("FS_ENGINE_MODE");
+    if (!env || env[0] != '1')
+    {
+        return;
+    }
+    HMODULE dll = LoadLibraryA("fs_render.dll");
+    if (dll)
+    {
+        s_fsr_init = (fsr_init_t)GetProcAddress(dll, "fsr_init");
+        s_fsr_frame = (fsr_frame_t)GetProcAddress(dll, "fsr_frame");
+        s_fsr_resize = (fsr_resize_t)GetProcAddress(dll, "fsr_resize");
+        s_fsr_end_frame = (fsr_frame_t)GetProcAddress(dll, "fsr_end_frame");
+    }
+    RECT rc = { 0, 0, 0, 0 };
+    GetClientRect(mWindowHandle, &rc);
+    s_fsr_w = (unsigned)(rc.right - rc.left);
+    s_fsr_h = (unsigned)(rc.bottom - rc.top);
+    if (s_fsr_init && s_fsr_frame && s_fsr_init(mWindowHandle, s_fsr_w, s_fsr_h) == 1)
+    {
+        s_engine_mode = 1;
+        LL_INFOS("RenderInit") << "<FS:VkBridge> fs_render initialized on HWND ("
+                               << s_fsr_w << "x" << s_fsr_h << ") -- engine presents." << LL_ENDL;
+    }
+    else
+    {
+        s_engine_mode = 2;
+        LL_WARNS("RenderInit") << "<FS:VkBridge> engine mode requested but fs_render init failed "
+                               << "(dll=" << (void*)dll << ")." << LL_ENDL;
+    }
 }
 
 void LLWindowWin32::swapBuffers()
@@ -3983,6 +4027,7 @@ void LLWindowWin32::swapBuffers()
                 s_fsr_init = (fsr_init_t)GetProcAddress(dll, "fsr_init");
                 s_fsr_frame = (fsr_frame_t)GetProcAddress(dll, "fsr_frame");
                 s_fsr_resize = (fsr_resize_t)GetProcAddress(dll, "fsr_resize");
+                s_fsr_end_frame = (fsr_frame_t)GetProcAddress(dll, "fsr_end_frame");
             }
             RECT rc = { 0, 0, 0, 0 };
             GetClientRect(mWindowHandle, &rc);
@@ -4014,7 +4059,21 @@ void LLWindowWin32::swapBuffers()
             s_fsr_w = w;
             s_fsr_h = h;
         }
-        s_fsr_frame();
+        // P3c: end_frame renders everything submitted through the taps this frame and
+        // presents; fall back to the P3a clear-only path if the live ABI is missing.
+        if (s_fsr_end_frame)
+        {
+            int drawn = s_fsr_end_frame();
+            static unsigned s_n = 0;
+            if (++s_n % 120 == 0)
+            {
+                LL_INFOS("RenderInit") << "<FS:VkBridge> frame " << s_n << ": engine rendered " << drawn << " draws" << LL_ENDL;
+            }
+        }
+        else
+        {
+            s_fsr_frame();
+        }
         return;
     }
     // </FS:VkBridge>

@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lldrawpoolavatar.h"
+#include "fsscenedump.h" // <FS:VkBridge>
 #include "llskinningutil.h"
 #include "llrender.h"
 
@@ -890,7 +891,10 @@ void LLDrawPoolAvatar::renderAvatars(LLVOAvatar* single_avatar, S32 pass)
                     avatarp->mImpostor.bindTexture(1, specular_channel);
                 }
             }
-            avatarp->renderImpostor(avatarp->getMutedAVColor(), sDiffuseChannel);
+            if (!FSSceneDump::liveActive()) // <FS:VkBridge> C: impostor RT never crosses -> white cards
+            {
+                avatarp->renderImpostor(avatarp->getMutedAVColor(), sDiffuseChannel);
+            }
         }
         return;
     }

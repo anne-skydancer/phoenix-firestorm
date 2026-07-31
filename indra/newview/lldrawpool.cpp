@@ -677,6 +677,10 @@ bool LLRenderPass::uploadMatrixPalette(LLVOAvatar* avatar, const LLMeshSkinInfo*
         count,
         false,
         (GLfloat*)&(mpc.mGLMp[0]));
+    // <FS:VkBridge> C: ship the world-space palette across the bridge
+    FSSceneDump::setMatrixPalette(
+        skinInfo->mHash ^ (0x9E3779B97F4A7C15ull * (U64)(uintptr_t)avatar),
+        count, (const F32*)&(mpc.mGLMp[0]));
 
     return true;
 }
@@ -697,6 +701,16 @@ bool LLRenderPass::uploadMatrixPalette(LLVOAvatar* avatar, const LLMeshSkinInfo*
 
     if (avatar == lastAvatar && skinInfo->mHash == lastMeshId)
     {
+        // <FS:VkBridge> C: palette cached viewer-side, but the NEXT rigged draws still
+        // belong to this skin -- keep the sticky id current.
+        if (!skipLastSkin)
+        {
+            FSSceneDump::setCurrentSkin(skinInfo->mHash ^ (0x9E3779B97F4A7C15ull * (U64)(uintptr_t)avatar));
+        }
+        else
+        {
+            FSSceneDump::clearCurrentSkin();
+        }
         return !skipLastSkin;
     }
 
@@ -713,6 +727,14 @@ bool LLRenderPass::uploadMatrixPalette(LLVOAvatar* avatar, const LLMeshSkinInfo*
             count,
             false,
             (GLfloat*)&(mpc.mGLMp[0]));
+        // <FS:VkBridge> C: ship the world-space palette across the bridge
+        FSSceneDump::setMatrixPalette(
+            skinInfo->mHash ^ (0x9E3779B97F4A7C15ull * (U64)(uintptr_t)avatar),
+            count, (const F32*)&(mpc.mGLMp[0]));
+    }
+    else
+    {
+        FSSceneDump::clearCurrentSkin(); // <FS:VkBridge> C: skin not loaded
     }
 
     return !skipLastSkin;
@@ -734,6 +756,14 @@ bool LLRenderPass::uploadMatrixPalette(LLVOAvatar* avatar, const LLMeshSkinInfo*
 
     if (avatar == lastAvatar && skinInfo->mHash == lastMeshId && lastAvatarShader == LLGLSLShader::sCurBoundShaderPtr)
     {
+        if (!skipLastSkin)
+        {
+            FSSceneDump::setCurrentSkin(skinInfo->mHash ^ (0x9E3779B97F4A7C15ull * (U64)(uintptr_t)avatar)); // <FS:VkBridge> C
+        }
+        else
+        {
+            FSSceneDump::clearCurrentSkin(); // <FS:VkBridge> C
+        }
         return !skipLastSkin;
     }
 
@@ -751,6 +781,14 @@ bool LLRenderPass::uploadMatrixPalette(LLVOAvatar* avatar, const LLMeshSkinInfo*
             count,
             false,
             (GLfloat*)&(mpc.mGLMp[0]));
+        // <FS:VkBridge> C: ship the world-space palette across the bridge
+        FSSceneDump::setMatrixPalette(
+            skinInfo->mHash ^ (0x9E3779B97F4A7C15ull * (U64)(uintptr_t)avatar),
+            count, (const F32*)&(mpc.mGLMp[0]));
+    }
+    else
+    {
+        FSSceneDump::clearCurrentSkin(); // <FS:VkBridge> C: skin not loaded
     }
 
     return !skipLastSkin;

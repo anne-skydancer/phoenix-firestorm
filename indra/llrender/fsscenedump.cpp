@@ -65,6 +65,7 @@ struct FsrDrawDesc
     U32 indexed_ch;  // bound shader's mIndexedTextureChannels -- 0 = position.w is NOT
                      // a texture index (PBR/materials/avatar draws were mis-indexing)
     F32 min_alpha;   // MASK-mode alpha cutoff (-1 = disabled)
+    U32 skin_id;     // C: nonzero = rigged draw, positions skin via this palette
 };
 typedef int(__cdecl* fsr_begin_t)();
 typedef int(__cdecl* fsr_submit_t)(const FsrDrawDesc*, const U8*, const U8*);
@@ -85,6 +86,14 @@ static F32 sKhr[8] = { 1.f, 1.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f }; // identity KHR
 static U32 sMatTex[3] = { 0, 0, 0 };   // A5: staged diffuse/normal/spec (one-shot)
 static F32 sMatCutoff = -1.f;
 static bool sMatStaged = false;
+
+// C: skin-key interning + per-frame palette forwarding to the engine
+typedef int(__cdecl* fsr_palette_t)(U32, U32, const F32*);
+static fsr_palette_t sFsrPalette = nullptr;
+static std::unordered_map<U64, U32> sSkinIds;
+static std::unordered_map<U32, U32> sSkinSentFrame;
+static U32 sNextSkinId = 1;
+static U32 sCurrentSkinId = 0;
 static U64 sSubmitTicks = 0;   // perf: QPC ticks spent inside fsr_submit this frame
 static U32 sLiveDraws = 0;
 static U32 sLiveFrames = 0;   // increments every frame in live mode (login screen included)
@@ -107,6 +116,7 @@ static void bindLive()
     sFsrEnd = (fsr_end_t)GetProcAddress(dll, "fsr_end_frame");
     sFsrTexUpload = (fsr_texup_t)GetProcAddress(dll, "fsr_texture_upload");
     sFsrDirty = (fsr_dirty_t)GetProcAddress(dll, "fsr_buffer_dirty");
+    sFsrPalette = (fsr_palette_t)GetProcAddress(dll, "fsr_set_matrix_palette");
     sLive = (sFsrBegin && sFsrSubmit && sFsrEnd);
     LL_INFOS("SceneDump") << "P3c live bridge " << (sLive ? "ARMED" : "FAILED")
                           << " (begin=" << (void*)sFsrBegin << " submit=" << (void*)sFsrSubmit
@@ -157,6 +167,46 @@ void setAuxF4(U32 slot, const F32* v4)
     {
         memcpy(&sAuxF[slot * 4], v4, 4 * sizeof(F32));
     }
+}
+
+void setMatrixPalette(U64 skin_key, U32 joint_count, const F32* glmp12)
+{
+    if (!sLive || !glmp12 || joint_count == 0)
+    {
+        return;
+    }
+    U32 id;
+    auto it = sSkinIds.find(skin_key);
+    if (it == sSkinIds.end())
+    {
+        id = sNextSkinId++;
+        sSkinIds[skin_key] = id;
+    }
+    else
+    {
+        id = it->second;
+    }
+    sCurrentSkinId = id;
+    if (sFsrPalette)
+    {
+        auto sent = sSkinSentFrame.find(id);
+        if (sent == sSkinSentFrame.end() || sent->second != sLiveFrames)
+        {
+            sSkinSentFrame[id] = sLiveFrames;
+            sFsrPalette(id, joint_count, glmp12);
+        }
+    }
+}
+
+void setCurrentSkin(U64 skin_key)
+{
+    auto it = sSkinIds.find(skin_key);
+    sCurrentSkinId = (it != sSkinIds.end()) ? it->second : 0;
+}
+
+void clearCurrentSkin()
+{
+    sCurrentSkinId = 0;
 }
 
 void setMaterialBatch(U32 diffuse_id, U32 normal_id, U32 spec_id, F32 alpha_cutoff)
@@ -420,6 +470,9 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             memcpy(d.aux, sAuxF, sizeof(d.aux));
             memcpy(d.texmat, glm::value_ptr(gGL.getTextureMatrix0()), sizeof(d.texmat));
             memcpy(d.khr, khr_local, sizeof(d.khr));
+            // C: MAP_WEIGHT4 (bit 10) marks rigged draws; the typemask gate makes the
+            // sticky skin id safe for every other draw.
+            d.skin_id = (d.typemask & (1u << 10)) ? sCurrentSkinId : 0u;
             // A2: only indexed programs interpret position.w as a texture index.
             d.indexed_ch = 0;
             // A4: MASK cutoff, read the DIFFUSE_COLOR way (cached wrapper uniforms).

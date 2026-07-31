@@ -52,18 +52,18 @@
     <key>PartImageID</key> <!--This setting is ignored for the cloud, used instead for now is the hardcoded -->
         <string>0000000000000-0000-0000-000000000000</string><!-- skins/default/textures/cloud-particle.j2c -->
 
-    <key>StartColor</key><!-- RGBA -->
+    <key>StartColor</key><!-- RGBA --><!-- <FS:VkBridge> VulkanStorm teal, in homage to the engine's first light -->
         <array>
-            <real>0.666</real>
-            <real>0.228</real>
-            <real>0.13</real>
+            <real>0.10</real>
+            <real>0.55</real>
+            <real>0.55</real>
             <real>0.1</real>
         </array>
     <key>EndColor</key><!-- RGBA -->
         <array>
-            <real>0.766</real>
-            <real>0.328</real>
-            <real>0.23</real>
+            <real>0.15</real>
+            <real>0.75</real>
+            <real>0.75</real>
             <real>0.9</real>
         </array>
 

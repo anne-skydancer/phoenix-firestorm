@@ -3951,8 +3951,74 @@ bool LLWindowWin32::resetDisplayResolution()
     return success;
 }
 
+// <FS:VkBridge> P3b engine-mode handoff (rhi/PLAN.md Phase 3). In engine mode
+// (RenderGLBackend="vulkan" -> FS_ENGINE_MODE=1 + null-GL stub), fs_render.dll is
+// lazy-loaded on the first swap, handed the real HWND, and presents every frame in
+// Vulkan; GDI SwapBuffers is skipped (GL never rendered anything to swap). Restart-
+// gated like the Zink toggle; env unset = zero change to the GL path.
+namespace
+{
+    typedef int(__cdecl* fsr_init_t)(void*, unsigned, unsigned);
+    typedef int(__cdecl* fsr_frame_t)();
+    typedef void(__cdecl* fsr_resize_t)(unsigned, unsigned);
+    static fsr_init_t s_fsr_init = nullptr;
+    static fsr_frame_t s_fsr_frame = nullptr;
+    static fsr_resize_t s_fsr_resize = nullptr;
+    static int s_engine_mode = -1; // -1 unknown, 0 off, 1 on, 2 on-but-failed
+    static unsigned s_fsr_w = 0, s_fsr_h = 0;
+}
+
 void LLWindowWin32::swapBuffers()
 {
+    // <FS:VkBridge> engine mode: fs_render presents; GL swapped nothing.
+    if (s_engine_mode == -1)
+    {
+        s_engine_mode = 0;
+        char* env = getenv("FS_ENGINE_MODE");
+        if (env && env[0] == '1')
+        {
+            HMODULE dll = LoadLibraryA("fs_render.dll"); // exe dir via normal search
+            if (dll)
+            {
+                s_fsr_init = (fsr_init_t)GetProcAddress(dll, "fsr_init");
+                s_fsr_frame = (fsr_frame_t)GetProcAddress(dll, "fsr_frame");
+                s_fsr_resize = (fsr_resize_t)GetProcAddress(dll, "fsr_resize");
+            }
+            RECT rc = { 0, 0, 0, 0 };
+            GetClientRect(mWindowHandle, &rc);
+            s_fsr_w = (unsigned)(rc.right - rc.left);
+            s_fsr_h = (unsigned)(rc.bottom - rc.top);
+            if (s_fsr_init && s_fsr_frame && s_fsr_init(mWindowHandle, s_fsr_w, s_fsr_h) == 1)
+            {
+                s_engine_mode = 1;
+                LL_INFOS("RenderInit") << "<FS:VkBridge> fs_render initialized on HWND ("
+                                       << s_fsr_w << "x" << s_fsr_h << ") -- engine presents." << LL_ENDL;
+            }
+            else
+            {
+                s_engine_mode = 2;
+                LL_WARNS("RenderInit") << "<FS:VkBridge> engine mode requested but fs_render "
+                                       << "init failed (dll=" << (void*)dll << ") -- frames will not present." << LL_ENDL;
+            }
+        }
+    }
+    if (s_engine_mode == 1)
+    {
+        RECT rc = { 0, 0, 0, 0 };
+        GetClientRect(mWindowHandle, &rc);
+        unsigned w = (unsigned)(rc.right - rc.left);
+        unsigned h = (unsigned)(rc.bottom - rc.top);
+        if ((w != s_fsr_w || h != s_fsr_h) && w > 0 && h > 0 && s_fsr_resize)
+        {
+            s_fsr_resize(w, h);
+            s_fsr_w = w;
+            s_fsr_h = h;
+        }
+        s_fsr_frame();
+        return;
+    }
+    // </FS:VkBridge>
+
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_WIN32;
         SwapBuffers(mhDC);

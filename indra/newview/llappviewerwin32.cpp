@@ -1164,6 +1164,12 @@ bool LLAppViewerWin32::reportCustomToBugsplat(const std::string &description)
 // GL context is created in initWindow():
 //   "native" -> system GPU driver (System32\opengl32.dll)
 //   "zink"   -> bundled Mesa Zink (GL-over-Vulkan) in the exe's mesa\ subdir
+//   "vulkan" -> <FS:VkBridge> ENGINE MODE: the null-GL stub in the exe's nullgl\
+//               subdir (every GL call a harmless no-op) + fs_render.dll renders
+//               the frame natively in Vulkan on the same HWND (rhi/PLAN.md P3).
+//               Sets FS_ENGINE_MODE=1 in the process environment so the render
+//               taps / window handoff / About panel can check the mode without
+//               cross-layer plumbing.
 //   "auto"   -> zink if bundled (mesa\opengl32.dll present), else native
 // opengl32 is /DELAYLOAD-ed. For Zink we add the mesa\ subdir to the DLL search
 // path with SetDllDirectory so the delay-load's bare-name resolution of
@@ -1182,6 +1188,31 @@ void LLAppViewerWin32::selectGLBackend()
 
     const std::string mesa_dir = gDirUtilp->getExecutableDir() + "\\mesa";
     const bool have_mesa = gDirUtilp->fileExists(mesa_dir + "\\opengl32.dll");
+
+    // <FS:VkBridge> engine mode: null-GL stub + fs_render (Vulkan) renders.
+    if (backend == "vulkan")
+    {
+        const std::string nullgl_dir = gDirUtilp->getExecutableDir() + "\\nullgl";
+        if (gDirUtilp->fileExists(nullgl_dir + "\\opengl32.dll"))
+        {
+            std::wstring wnullgl = ll_convert<std::wstring>(nullgl_dir);
+            if (SetDllDirectoryW(wnullgl.c_str()))
+            {
+                _putenv_s("FS_ENGINE_MODE", "1");
+                LL_INFOS("RenderInit") << "GL backend: ENGINE MODE -- null-GL stub ('"
+                                       << nullgl_dir << "') + fs_render Vulkan." << LL_ENDL;
+                return;
+            }
+            LL_WARNS("RenderInit") << "GL backend: SetDllDirectory failed for '" << nullgl_dir
+                                   << "' (GetLastError=" << GetLastError()
+                                   << "); falling back to native opengl32." << LL_ENDL;
+            return;
+        }
+        LL_WARNS("RenderInit") << "GL backend: 'vulkan' requested but '" << nullgl_dir
+                               << "\\opengl32.dll' not found; using native opengl32." << LL_ENDL;
+        return;
+    }
+    // </FS:VkBridge>
 
     bool want_zink;
     if (backend == "native")    want_zink = false;

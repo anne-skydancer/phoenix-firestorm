@@ -233,7 +233,7 @@ static void* scratch(size_t want)
  * SAME GL name the draw taps report (gGL.getTexUnit(0)->getCurrTexture()), which is
  * the id our glGenTextures minted -- so ids match on both sides by construction. */
 typedef int(__cdecl* fsr_texup_t)(GLuint, GLuint, GLuint, const unsigned char*);
-typedef int(__cdecl* fsr_texsub_t)(GLuint, GLuint, GLuint, GLuint, GLuint, const unsigned char*);
+typedef int(__cdecl* fsr_texsub_t)(GLuint, GLuint, GLuint, GLuint, GLuint, GLuint, GLuint, const unsigned char*);
 static fsr_texup_t g_texup = NULL;
 static fsr_texsub_t g_texsub = NULL;
 static int g_texup_tried = 0;
@@ -242,6 +242,17 @@ static int g_texup_tried = 0;
  * "currently bound texture" lets the media thread and main thread stomp each other
  * and uploads land on the wrong texture -- the web panel cycling content/white/grey. */
 static __declspec(thread) GLuint g_bound2d = 0;
+
+/* Swizzle semantics for single/dual-channel uploads. llimagegl.cpp:1361-1383 converts
+ * deprecated formats to GL_RED/GL_RG and expresses the MEANING via a swizzle set just
+ * before upload: ALPHA={0,0,0,R}, LUMINANCE={R,R,R,1}, LUM_ALPHA={R,R,R,G}. Ignoring
+ * it made every RED upload use font semantics (white+alpha) -- grayscale HUD textures
+ * then rendered black-as-TRANSPARENT. Tracked per thread, latched per texture. */
+#define NG_SWIZ_DEFAULT 0
+#define NG_SWIZ_ALPHA 1
+#define NG_SWIZ_LUM 2
+#define NG_SWIZ_LUMA 3
+static __declspec(thread) int g_swiz_pending = NG_SWIZ_DEFAULT;
 
 static fsr_texup_t get_texup(void)
 {
@@ -349,12 +360,33 @@ static int to_rgba8_tight(GLenum format, GLenum type, GLsizei w, GLsizei h, cons
             dst[i * 4 + 3] = p[i];
         }
         return 1;
-    case 0x1903: /* GL_RED -- modern single channel; font atlases keep coverage here,
-                  * so present it as white-with-alpha exactly like GL_ALPHA did. */
-        for (size_t i = 0; i < n; ++i)
+    case 0x1903: /* GL_RED -- meaning depends on the swizzle the viewer just set:
+                  * LUMINANCE {R,R,R,1} -> opaque grayscale (the black-as-transparent
+                  * HUD fix), ALPHA {0,0,0,R} -> black + value in alpha, default ->
+                  * strict red channel. */
+        if (g_swiz_pending == NG_SWIZ_ALPHA)
         {
-            dst[i * 4 + 0] = 255; dst[i * 4 + 1] = 255; dst[i * 4 + 2] = 255;
-            dst[i * 4 + 3] = p[i];
+            for (size_t i = 0; i < n; ++i)
+            {
+                dst[i * 4 + 0] = 0; dst[i * 4 + 1] = 0; dst[i * 4 + 2] = 0;
+                dst[i * 4 + 3] = p[i];
+            }
+        }
+        else if (g_swiz_pending == NG_SWIZ_DEFAULT)
+        {
+            for (size_t i = 0; i < n; ++i)
+            {
+                dst[i * 4 + 0] = p[i]; dst[i * 4 + 1] = 0; dst[i * 4 + 2] = 0;
+                dst[i * 4 + 3] = 255;
+            }
+        }
+        else /* LUM (and LUMA arriving as RED): opaque grayscale */
+        {
+            for (size_t i = 0; i < n; ++i)
+            {
+                dst[i * 4 + 0] = p[i]; dst[i * 4 + 1] = p[i]; dst[i * 4 + 2] = p[i];
+                dst[i * 4 + 3] = 255;
+            }
         }
         return 1;
     case 0x8227: /* GL_RG -- this is the FONT ATLAS path (measured: id 2024, 512x512,
@@ -438,13 +470,12 @@ static void mirror_texture(GLenum target, GLint level, GLsizei w, GLsizei h, GLe
     NgTexReg* known = texreg_find(g_bound2d);
     if (!pixels)
     {
-        /* allocate/re-spec: only create if the engine has nothing of this size yet */
-        if (known && known->w == w && known->h == h) return;
-        size_t bytes = (size_t)w * h * 4;
-        unsigned char* zero = (unsigned char*)calloc(bytes, 1);
-        if (!zero) return;
-        up(g_bound2d, (GLuint)w, (GLuint)h, zero);
-        free(zero);
+        /* allocate/re-spec: record dimensions ONLY. Uploading zeros here cost
+         * 700-1600ms PER TEXTURE (113 events = ~90s of cumulative freeze, measured in
+         * fsr_perf.log) -- mostly screen-size FBO targets the engine never samples.
+         * The engine now creates textures lazily when the first REAL pixels arrive
+         * via fsr_texture_subupload, which ships full dims from this registry. */
+        (void)known;
         texreg_set(g_bound2d, w, h);
         return;
     }
@@ -473,7 +504,14 @@ static void mirror_subtexture(GLenum target, GLint level, GLint x, GLint y, GLsi
     if (!tmp) return;
     if (to_rgba8_strided(format, type, w, h, g_unpack_row_length, pixels, tmp))
     {
-        g_texsub(g_bound2d, (GLuint)x, (GLuint)y, (GLuint)w, (GLuint)h, tmp);
+        {
+            /* full dims from the registry: the engine creates the texture on first
+             * real content (NULL re-specs no longer upload anything) */
+            NgTexReg* reg = texreg_find(g_bound2d);
+            GLuint fw = reg ? (GLuint)reg->w : 0;
+            GLuint fh = reg ? (GLuint)reg->h : 0;
+            g_texsub(g_bound2d, (GLuint)x, (GLuint)y, (GLuint)w, (GLuint)h, fw, fh, tmp);
+        }
     }
     free(tmp);
 }
@@ -518,7 +556,17 @@ NG_API void __stdcall glScissor(GLint x, GLint y, GLsizei w, GLsizei h) { (void)
 NG_API void __stdcall glTexImage2D(GLenum a, GLint b, GLint c, GLsizei d, GLsizei e, GLint f, GLenum g, GLenum h, const void* p) { (void)c; (void)f; mirror_texture(a, b, d, e, g, h, p); }
 NG_API void __stdcall glTexParameterf(GLenum t, GLenum p, GLfloat v) { (void)t; (void)p; (void)v; }
 NG_API void __stdcall glTexParameteri(GLenum t, GLenum p, GLint v) { (void)t; (void)p; (void)v; }
-NG_API void __stdcall glTexParameteriv(GLenum t, GLenum p, const GLint* v) { (void)t; (void)p; (void)v; }
+NG_API void __stdcall glTexParameteriv(GLenum t, GLenum p, const GLint* v)
+{
+    (void)t;
+    if (p == 0x8E46 && v) /* GL_TEXTURE_SWIZZLE_RGBA */
+    {
+        if (v[0] == 0 && v[3] == 0x1903) g_swiz_pending = NG_SWIZ_ALPHA;          /* {0,0,0,R} */
+        else if (v[0] == 0x1903 && v[3] == 1) g_swiz_pending = NG_SWIZ_LUM;       /* {R,R,R,1} */
+        else if (v[0] == 0x1903 && v[3] == 0x1904) g_swiz_pending = NG_SWIZ_LUMA; /* {R,R,R,G} */
+        else g_swiz_pending = NG_SWIZ_DEFAULT;
+    }
+}
 NG_API void __stdcall glTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLsizei e, GLsizei f, GLenum g, GLenum h, const void* p) { mirror_subtexture(a, b, c, d, e, f, g, h, p); }
 NG_API void __stdcall glViewport(GLint x, GLint y, GLsizei w, GLsizei h) { (void)x; (void)y; (void)w; (void)h; }
 
@@ -770,8 +818,17 @@ static NgShader* shader_find(GLuint id)
 static NgProg* prog_find(GLuint id, int create)
 {
     for (int i = 0; i < g_nprogs; ++i) if (g_progs[i].id == id) return &g_progs[i];
-    if (!create || g_nprogs >= NG_MAX_PROGS) return NULL;
-    NgProg* p = &g_progs[g_nprogs++];
+    if (!create) return NULL;
+    NgProg* p = NULL;
+    for (int i = 0; i < g_nprogs; ++i)
+    {
+        if (g_progs[i].id == 0) { p = &g_progs[i]; break; } /* reuse vacated slot */
+    }
+    if (!p)
+    {
+        if (g_nprogs >= NG_MAX_PROGS) { log_once("cap", "g_progs exhausted"); return NULL; }
+        p = &g_progs[g_nprogs++];
+    }
     p->id = id; p->n = 0;
     return p;
 }
@@ -799,10 +856,73 @@ static void __stdcall ng_shader_source(GLuint shader, GLsizei count, const char*
     ng_lock();
     NgShader* sh = shader_find(shader);
     if (sh) { free(sh->src); sh->src = buf; }
-    else if (g_nshaders < NG_MAX_SHADERS) { g_shaders[g_nshaders].id = shader; g_shaders[g_nshaders].src = buf; g_nshaders++; }
-    else free(buf);
+    else
+    {
+        int slot = -1;
+        for (int i = 0; i < g_nshaders; ++i)
+        {
+            if (g_shaders[i].id == 0) { slot = i; break; } /* reuse vacated slot */
+        }
+        if (slot < 0 && g_nshaders < NG_MAX_SHADERS) slot = g_nshaders++;
+        if (slot >= 0) { g_shaders[slot].id = shader; g_shaders[slot].src = buf; }
+        else { free(buf); log_once("cap", "g_shaders exhausted"); }
+    }
     ng_unlock();
 }
+/* A1 (root cause of settings-change corruption): the viewer's setShaders() reload
+ * calls glDeleteProgram/glDeleteShader on EVERY program; as no-ops, the fixed-capacity
+ * append-only tables here exhausted on the SECOND full load -- after which every new
+ * program got GL_ACTIVE_UNIFORMS=0 / attrib locations -1 and bound textures nowhere
+ * (measured: camo paving, normal-maps-as-color after any settings change). Vacate
+ * slots on delete; creation paths reuse vacant slots. Ids are monotonic (next_id), so
+ * a vacated slot can never alias a live object. */
+static void __stdcall ng_delete_shader(GLuint shader)
+{
+    ng_lock();
+    NgShader* sh = shader_find(shader);
+    if (sh)
+    {
+        free(sh->src);
+        sh->src = NULL;
+        sh->id = 0; /* vacant */
+    }
+    ng_unlock();
+}
+
+static void proguni_vacate(GLuint prog); /* defined after the proguni table below */
+
+static void __stdcall ng_delete_program(GLuint program)
+{
+    ng_lock();
+    NgProg* pr = prog_find(program, 0);
+    if (pr)
+    {
+        pr->id = 0; /* vacant */
+        pr->n = 0;
+    }
+    proguni_vacate(program);
+    ng_unlock();
+}
+
+static void __stdcall ng_detach_shader(GLuint program, GLuint shader)
+{
+    ng_lock();
+    NgProg* pr = prog_find(program, 0);
+    if (pr)
+    {
+        for (int i = 0; i < pr->n; ++i)
+        {
+            if (pr->sh[i] == shader)
+            {
+                pr->sh[i] = pr->sh[pr->n - 1];
+                pr->n--;
+                break;
+            }
+        }
+    }
+    ng_unlock();
+}
+
 static void __stdcall ng_attach_shader(GLuint program, GLuint shader)
 {
     ng_lock();
@@ -932,10 +1052,44 @@ static void proguni_scan_src(NgProgUni* pu, const char* src)
     }
 }
 
+static void proguni_vacate(GLuint prog)
+{
+    /* caller holds g_lock */
+    for (int i = 0; i < g_nproguni; ++i)
+    {
+        if (g_proguni[i].prog == prog)
+        {
+            g_proguni[i].prog = 0; /* vacant */
+            g_proguni[i].n = 0;
+        }
+    }
+}
+
 static NgProgUni* proguni_get(GLuint prog)
 {
     for (int i = 0; i < g_nproguni; ++i) if (g_proguni[i].prog == prog) return &g_proguni[i];
-    if (g_nproguni >= NG_MAX_PROGUNIS) return NULL;
+    NgProgUni* vac = NULL;
+    for (int i = 0; i < g_nproguni; ++i)
+    {
+        if (g_proguni[i].prog == 0) { vac = &g_proguni[i]; break; } /* reuse vacated slot */
+    }
+    if (vac)
+    {
+        NgProgUni* pu = vac;
+        pu->prog = prog;
+        pu->n = 0;
+        NgProg* pr0 = prog_find(prog, 0);
+        if (pr0)
+        {
+            for (int i = 0; i < pr0->n; ++i)
+            {
+                NgShader* sh0 = shader_find(pr0->sh[i]);
+                if (sh0) proguni_scan_src(pu, sh0->src);
+            }
+        }
+        return pu;
+    }
+    if (g_nproguni >= NG_MAX_PROGUNIS) { log_once("cap", "g_proguni exhausted"); return NULL; }
     NgProgUni* pu = &g_proguni[g_nproguni++];
     pu->prog = prog;
     pu->n = 0;
@@ -1069,6 +1223,9 @@ static const NgEntry NG_SPECIAL[] = {
     { "glUniform4fv", (PROC)ng_uniform4fv },
     { "glGetAttribLocation", (PROC)ng_attrib_loc },
     { "glShaderSource", (PROC)ng_shader_source },
+    { "glDeleteShader", (PROC)ng_delete_shader },
+    { "glDeleteProgram", (PROC)ng_delete_program },
+    { "glDetachShader", (PROC)ng_detach_shader },
     { "glAttachShader", (PROC)ng_attach_shader },
     { "glGetUniformBlockIndex", (PROC)ng_blockidx },
     { "glCheckFramebufferStatus", (PROC)ng_fbstatus },

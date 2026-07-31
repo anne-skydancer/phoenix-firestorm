@@ -42,6 +42,14 @@ namespace FSSceneDump
     void setDrawClass(U32 c);
     void setAuxTex(U32 slot, U32 tex_id);        // slot < 8
     void setAuxF4(U32 slot, const F32* v4);      // slot < 2 (vec4 each)
+    // KHR_texture_transform (base color) for GLTF/PBR draws: planar-mapped mesh
+    // repeats live HERE, not in TEXCOORD0 (llface.cpp:1545 skips CPU baking for gltf)
+    // and not in texture_matrix0. packed8 = [sx,sy,rot,_, ox,oy,_,_].
+    // A5: authoritative per-batch Blinn-Phong material data (one-shot, consumed by
+    // the next recordDraw). Staged by LLDrawPoolMaterials right before its drawRange.
+    void setMaterialBatch(U32 diffuse_id, U32 normal_id, U32 spec_id, F32 alpha_cutoff);
+    void setKhrTexTransform(const F32* packed8);
+    void clearKhrTexTransform();
     void suppressPush();
     void suppressPop();
     struct SuppressScope

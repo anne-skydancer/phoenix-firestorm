@@ -50,6 +50,7 @@
 #include "llviewercamera.h"
 #include "lldrawpoolwlsky.h"
 #include "llglslshader.h"
+#include "fsscenedump.h" // <FS:VkBridge>
 #include "llglcommonfunc.h"
 #include "llvoavatar.h"
 #include "llviewershadermgr.h"
@@ -838,6 +839,7 @@ void LLRenderPass::pushGLTFBatch(LLDrawInfo& params)
     params.mVertexBuffer->drawRange(LLRender::TRIANGLES, params.mStart, params.mEnd, params.mCount, params.mOffset);
 
     teardown_texture_matrix(params);
+    FSSceneDump::clearKhrTexTransform(); // <FS:VkBridge>
 }
 
 // static
@@ -851,6 +853,7 @@ void LLRenderPass::pushUntexturedGLTFBatch(LLDrawInfo& params)
 
     params.mVertexBuffer->setBuffer();
     params.mVertexBuffer->drawRange(LLRender::TRIANGLES, params.mStart, params.mEnd, params.mCount, params.mOffset);
+    FSSceneDump::clearKhrTexTransform(); // <FS:VkBridge>
 }
 
 void LLRenderPass::pushRiggedGLTFBatches(U32 type, bool textured)
@@ -911,6 +914,7 @@ void LLRenderPass::pushRiggedGLTFBatch(LLDrawInfo& params, const LLVOAvatar*& la
     {
         pushGLTFBatch(params);
     }
+    FSSceneDump::clearKhrTexTransform(); // <FS:VkBridge>
 }
 
 // static

@@ -26,6 +26,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llfetchedgltfmaterial.h"
+#include "fsscenedump.h" // <FS:VkBridge>
 
 #include "llviewertexturelist.h"
 #include "llavatarappearancedefines.h"
@@ -94,6 +95,10 @@ void LLFetchedGLTFMaterial::bind(LLViewerTexture* media_tex)
     F32 base_color_packed[8];
     mTextureTransform[GLTF_TEXTURE_INFO_BASE_COLOR].getPacked(base_color_packed);
     shader->uniform4fv(LLShaderMgr::TEXTURE_BASE_COLOR_TRANSFORM, 2, (F32*)base_color_packed);
+    // <FS:VkBridge> planar-mesh scale lives in THIS uniform for GLTF faces (CPU baking
+    // skipped at llface.cpp:1545); mValue caches only the first vec4 of a 2-vec4
+    // uniform, so stage it for the tap here, at the single choke point.
+    FSSceneDump::setKhrTexTransform(base_color_packed);
 
     if (!LLPipeline::sShadowRender)
     {

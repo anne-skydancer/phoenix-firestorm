@@ -199,6 +199,10 @@ void display_startup()
     LLGLState::checkStates();
 
     glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // | GL_STENCIL_BUFFER_BIT);
+    // <FS:VkBridge> the post-login progress phase renders through THIS function, not
+    // display() -- without opening an engine frame every submit was rejected and the
+    // screen stayed at the raw clear color (measured: f_050 pure teal).
+    FSSceneDump::onFrame(false);
     LLGLSUIDefault gls_ui;
     gPipeline.disableLights();
 

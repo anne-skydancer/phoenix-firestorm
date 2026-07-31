@@ -59,6 +59,12 @@ struct FsrDrawDesc
     U32 draw_class;  // F7: 0 = generic, 1 = terrain (engine picks the pipeline)
     U32 tex_ex[8];   // per-class texture ids (terrain: detail0-3, alpha_ramp)
     F32 aux[8];      // per-class data (terrain: object_plane_s, object_plane_t)
+    F32 texmat[16];  // F5: texture_matrix0 -- llSetTextureAnim sheet-flips/scroll/rotate
+                     // and large-face planar all ride this; identity in the common case
+    F32 khr[8];      // KHR_texture_transform (base color): [sx,sy,rot,_, ox,oy,_,_]
+    U32 indexed_ch;  // bound shader's mIndexedTextureChannels -- 0 = position.w is NOT
+                     // a texture index (PBR/materials/avatar draws were mis-indexing)
+    F32 min_alpha;   // MASK-mode alpha cutoff (-1 = disabled)
 };
 typedef int(__cdecl* fsr_begin_t)();
 typedef int(__cdecl* fsr_submit_t)(const FsrDrawDesc*, const U8*, const U8*);
@@ -75,6 +81,10 @@ static S32 sSuppressDepth = 0; // F2: >0 while an offscreen pass renders
 static U32 sDrawClass = 0;     // F7: current draw class (set by the owning pool)
 static U32 sAuxTex[8] = { 0 };
 static F32 sAuxF[8] = { 0 };
+static F32 sKhr[8] = { 1.f, 1.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f }; // identity KHR transform
+static U32 sMatTex[3] = { 0, 0, 0 };   // A5: staged diffuse/normal/spec (one-shot)
+static F32 sMatCutoff = -1.f;
+static bool sMatStaged = false;
 static U64 sSubmitTicks = 0;   // perf: QPC ticks spent inside fsr_submit this frame
 static U32 sLiveDraws = 0;
 static U32 sLiveFrames = 0;   // increments every frame in live mode (login screen included)
@@ -147,6 +157,29 @@ void setAuxF4(U32 slot, const F32* v4)
     {
         memcpy(&sAuxF[slot * 4], v4, 4 * sizeof(F32));
     }
+}
+
+void setMaterialBatch(U32 diffuse_id, U32 normal_id, U32 spec_id, F32 alpha_cutoff)
+{
+    sMatTex[0] = diffuse_id;
+    sMatTex[1] = normal_id;
+    sMatTex[2] = spec_id;
+    sMatCutoff = alpha_cutoff;
+    sMatStaged = true;
+}
+
+void setKhrTexTransform(const F32* packed8)
+{
+    if (packed8)
+    {
+        memcpy(sKhr, packed8, sizeof(sKhr));
+    }
+}
+
+void clearKhrTexTransform()
+{
+    sKhr[0] = 1.f; sKhr[1] = 1.f; sKhr[2] = 0.f; sKhr[3] = 0.f;
+    sKhr[4] = 0.f; sKhr[5] = 0.f; sKhr[6] = 0.f; sKhr[7] = 0.f;
 }
 
 void suppressPush()
@@ -251,9 +284,26 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             d.tex0 = gGL.getTexUnit(0) ? gGL.getTexUnit(0)->getCurrTexture() : 0u;
             // sIndexedTextureChannels == 4: world batches bind four textures and select
             // per vertex from position.w (llvertexbuffer.cpp:1133). Capture all four.
+            // The diffuse sampler array is NOT guaranteed on units 0-3: channels are
+            // assigned per-program at link time, and a settings change swaps programs
+            // (measured: paving turned camo -- non-diffuse maps sampled as color).
+            // Resolve the shader's actual diffuseMap base channel.
+            U32 tex_base = 0;
+            if (LLGLSLShader* shd = LLGLSLShader::sCurBoundShaderPtr)
+            {
+                if ((size_t)LLShaderMgr::DIFFUSE_MAP < shd->mTexture.size())
+                {
+                    S32 ch = shd->mTexture[LLShaderMgr::DIFFUSE_MAP];
+                    if (ch >= 0)
+                    {
+                        tex_base = (U32)ch;
+                    }
+                }
+            }
             for (U32 ti = 0; ti < 4; ++ti)
             {
-                d.tex[ti] = gGL.getTexUnit(ti) ? gGL.getTexUnit(ti)->getCurrTexture() : 0u;
+                LLTexUnit* tu = gGL.getTexUnit(tex_base + ti);
+                d.tex[ti] = tu ? tu->getCurrTexture() : 0u;
             }
             d.depth_test = glIsEnabled(GL_DEPTH_TEST) ? 1u : 0u;
             GLint dm = 0;
@@ -347,6 +397,48 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             d.draw_class = sDrawClass;
             memcpy(d.tex_ex, sAuxTex, sizeof(d.tex_ex));
             memcpy(d.aux, sAuxF, sizeof(d.aux));
+            memcpy(d.texmat, glm::value_ptr(gGL.getTextureMatrix0()), sizeof(d.texmat));
+            memcpy(d.khr, sKhr, sizeof(d.khr));
+            // A3: KHR staging is one-shot -- it leaked from alpha-pool PBR binds into
+            // every subsequent non-PBR draw (that pool never cleared it).
+            clearKhrTexTransform();
+            // A2: only indexed programs interpret position.w as a texture index.
+            d.indexed_ch = 0;
+            // A4: MASK cutoff, read the DIFFUSE_COLOR way (cached wrapper uniforms).
+            d.min_alpha = -1.f;
+            if (LLGLSLShader* shi = LLGLSLShader::sCurBoundShaderPtr)
+            {
+                d.indexed_ch = (U32)llmax(0, (S32)shi->mFeatures.mIndexedTextureChannels);
+                if ((size_t)LLShaderMgr::MINIMUM_ALPHA < shi->mUniform.size())
+                {
+                    GLint mloc = shi->mUniform[LLShaderMgr::MINIMUM_ALPHA];
+                    if (mloc >= 0)
+                    {
+                        auto mit = shi->mValue.find(mloc);
+                        if (mit != shi->mValue.end())
+                        {
+                            d.min_alpha = mit->second.mV[0];
+                        }
+                    }
+                }
+            }
+            // A5: authoritative material batch (one-shot). The materials pool sets its
+            // per-batch uniforms with RAW glUniform calls (nothing in mValue), so the
+            // staged values are the only correct source for these draws.
+            if (sMatStaged)
+            {
+                d.tex[0] = sMatTex[0];
+                d.tex[1] = 0;
+                d.tex[2] = 0;
+                d.tex[3] = 0;
+                d.tex_ex[5] = sMatTex[1]; // normal (future lit path; slots 0-4 = terrain)
+                d.tex_ex[6] = sMatTex[2]; // specular
+                if (sMatCutoff >= 0.f)
+                {
+                    d.min_alpha = sMatCutoff;
+                }
+                sMatStaged = false;
+            }
             LARGE_INTEGER t0, t1;
             QueryPerformanceCounter(&t0);
             sFsrSubmit(&d, vdata, indexed ? idata : nullptr);

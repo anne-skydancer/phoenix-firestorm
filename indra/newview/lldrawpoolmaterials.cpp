@@ -28,6 +28,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lldrawpoolmaterials.h"
+#include "fsscenedump.h" // <FS:VkBridge> A5
 #include "llviewershadermgr.h"
 #include "pipeline.h"
 #include "llglcommonfunc.h"
@@ -276,6 +277,14 @@ void LLDrawPoolMaterials::renderDeferred(S32 pass)
             params.mGroup->rebuildMesh();
         }*/
 
+        // <FS:VkBridge> A5: authoritative material data for the bridge -- this pool
+        // binds via dynamically-assigned channels and raw glUniform calls, both
+        // invisible to the tap's unit scraping / mValue reads.
+        FSSceneDump::setMaterialBatch(
+            params.mTexture ? params.mTexture->getTexName() : 0,
+            params.mNormalMap ? params.mNormalMap->getTexName() : 0,
+            params.mSpecularMap ? params.mSpecularMap->getTexName() : 0,
+            params.mAlphaMaskCutoff);
         params.mVertexBuffer->setBuffer();
         params.mVertexBuffer->drawRange(LLRender::TRIANGLES, params.mStart, params.mEnd, params.mCount, params.mOffset);
 

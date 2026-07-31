@@ -403,6 +403,8 @@ public:
 
     const glm::mat4& getModelviewMatrix();
     const glm::mat4& getProjectionMatrix();
+    // <FS:VkBridge> F5: the CPU-side current texture matrix (llSetTextureAnim et al)
+    const glm::mat4& getTextureMatrix0() { return mMatrix[MM_TEXTURE0][mMatIdx[MM_TEXTURE0]]; }
 
     void syncMatrices();
     void syncLightState();

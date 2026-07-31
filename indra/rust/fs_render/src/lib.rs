@@ -29,6 +29,8 @@ struct Engine {
     /// B4: retained copy of the last presented frame (readback for snapshots and the
     /// saved login backdrop -- stub glReadPixels was zero-filling screen_last.png).
     last_frame: Option<(wgpu::Texture, u32, u32)>,
+    last_read_frame: u64,
+    read_cache: Option<(u64, u32, u32, Vec<u8>)>, // (frame, w, h, GL-ordered tight RGBA)
     /// B5: the viewer's glClearColor, forwarded by the stub; teal only in debug.
     clear_color: wgpu::Color,
     debug_teal: bool,
@@ -119,6 +121,8 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
             frame_open: false,
             adapter_desc: format!("{} ({} {})", info.name, info.driver, info.driver_info),
             last_frame: None,
+            last_read_frame: 0,
+            read_cache: None,
             clear_color: wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
             debug_teal: std::env::var("FS_ENGINE_DEBUG").map(|v| v == "1").unwrap_or(false),
             presented_once: false,
@@ -403,8 +407,10 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         } else {
             None
         };
-        // B4: retain a copy for readback (snapshots / saveFinalSnapshot backdrop)
-        {
+        // B4 + wave-5: retain only when a readback consumer is active (or on the
+        // every-4th-frame heartbeat) -- an every-present extra queue.submit caused
+        // FIFO deadline misses (the 60<->30 movement chop).
+        if (e.frames.wrapping_sub(e.last_read_frame) < 300) || (e.frames % 4 == 0) {
             let need_new = match &e.last_frame {
                 Some((_, lw, lh)) => *lw != w || *lh != h,
                 None => true,
@@ -500,6 +506,22 @@ pub extern "C" fn fsr_set_color(r: f32, g: f32, b: f32, a: f32) -> i32 {
     }
 }
 
+/// C: register/update a rigged-mesh joint palette (viewer mGLMp layout: joint_count
+/// x 12 floats, world-space). Draws reference it via DrawDesc.skin_id.
+/// # Safety: `floats` must hold joint_count*12 f32s.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_set_matrix_palette(skin_id: u32, joint_count: u32, floats: *const f32) -> i32 {
+    if floats.is_null() || skin_id == 0 || joint_count == 0 {
+        return 0;
+    }
+    let n = (joint_count as usize).min(110) * 12;
+    let slice = std::slice::from_raw_parts(floats, n);
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    e.live.set_palette(skin_id, joint_count.min(110), slice);
+    1
+}
+
 /// B5: the viewer's clear color (stub forwards glClearColor).
 #[no_mangle]
 pub extern "C" fn fsr_set_clear_color(r: f32, g: f32, b: f32, a: f32) -> i32 {
@@ -521,58 +543,75 @@ pub unsafe extern "C" fn fsr_read_pixels(x: u32, y: u32, w: u32, h: u32, out: *m
     }
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
-    let Some((lt, fw, fh)) = &e.last_frame else { return 0 };
-    let (fw, fh) = (*fw, *fh);
-    // GL origin is bottom-left; the texture's is top-left.
+    e.last_read_frame = e.frames;
+    let (fw, fh) = match &e.last_frame {
+        Some((_, a, b)) => (*a, *b),
+        None => return 0,
+    };
     if x + w > fw || y + h > fh {
         return 0;
     }
-    let tex_y = fh - y - h;
-    let stride = ((w * 4 + 255) / 256) * 256;
-    let buf = e.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readpx"),
-        size: (stride * h) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut enc = e.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readpx") });
-    enc.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture { texture: lt, mip_level: 0, origin: wgpu::Origin3d { x, y: tex_y, z: 0 }, aspect: wgpu::TextureAspect::All },
-        wgpu::ImageCopyBuffer {
-            buffer: &buf,
-            layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) },
-        },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-    );
-    e.queue.submit([enc.finish()]);
-    let slice = buf.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    e.device.poll(wgpu::Maintain::Wait);
-    if !matches!(rx.recv(), Ok(Ok(()))) {
-        return 0;
-    }
-    let data = slice.get_mapped_range();
-    let bgra = matches!(e.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
-    for row in 0..h {
-        // flip vertically: GL row 0 = bottom = texture row (h-1)
-        let src = &data[((h - 1 - row) * stride) as usize..((h - 1 - row) * stride + w * 4) as usize];
-        let dst = std::slice::from_raw_parts_mut(out.add((row * w * 4) as usize), (w * 4) as usize);
-        if bgra {
-            for px in 0..w as usize {
-                dst[px * 4] = src[px * 4 + 2];
-                dst[px * 4 + 1] = src[px * 4 + 1];
-                dst[px * 4 + 2] = src[px * 4];
-                dst[px * 4 + 3] = src[px * 4 + 3];
+    // Per-frame full-frame cache: rawSnapshot issues ONE glReadPixels PER SCANLINE
+    // (llviewerwindow.cpp:6362 loop) -- ~1080 full device drains per snapshot without
+    // this. One readback sync per frame, all rects served from the cache.
+    let cache_ok = matches!(&e.read_cache, Some((cf, cw, ch, _)) if *cf == e.frames && *cw == fw && *ch == fh);
+    if !cache_ok {
+        let Some((lt, _, _)) = &e.last_frame else { return 0 };
+        let stride = ((fw * 4 + 255) / 256) * 256;
+        let buf = e.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readpx"),
+            size: (stride * fh) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = e.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readpx") });
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: lt, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer {
+                buffer: &buf,
+                layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(fh) },
+            },
+            wgpu::Extent3d { width: fw, height: fh, depth_or_array_layers: 1 },
+        );
+        e.queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        e.device.poll(wgpu::Maintain::Wait);
+        if !matches!(rx.recv(), Ok(Ok(()))) {
+            return 0;
+        }
+        let data = slice.get_mapped_range();
+        let bgra = matches!(e.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut cache = vec![0u8; (fw * fh * 4) as usize];
+        for row in 0..fh {
+            let src = &data[((fh - 1 - row) * stride) as usize..((fh - 1 - row) * stride + fw * 4) as usize];
+            let dst = &mut cache[(row * fw * 4) as usize..((row + 1) * fw * 4) as usize];
+            if bgra {
+                for px in 0..fw as usize {
+                    dst[px * 4] = src[px * 4 + 2];
+                    dst[px * 4 + 1] = src[px * 4 + 1];
+                    dst[px * 4 + 2] = src[px * 4];
+                    dst[px * 4 + 3] = src[px * 4 + 3];
+                }
+            } else {
+                dst.copy_from_slice(src);
             }
-        } else {
+        }
+        drop(data);
+        buf.unmap();
+        e.read_cache = Some((e.frames, fw, fh, cache));
+    }
+    if let Some((_, _, _, cache)) = &e.read_cache {
+        for row in 0..h {
+            let src_row = (y + row) as usize;
+            let src = &cache[(src_row * fw as usize + x as usize) * 4..][..(w * 4) as usize];
+            let dst = std::slice::from_raw_parts_mut(out.add((row * w * 4) as usize), (w * 4) as usize);
             dst.copy_from_slice(src);
         }
     }
-    drop(data);
-    buf.unmap();
     1
 }
 

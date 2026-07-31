@@ -18,6 +18,11 @@ const TYPE_VERTEX: usize = 0;
 const TYPE_TEXCOORD0: usize = 2;
 const TYPE_COLOR: usize = 6;
 const TYPE_TEXCOORD1: usize = 3;
+const TYPE_WEIGHT4: usize = 10;
+/// LL_MAX_JOINTS_PER_MESH_OBJECT joints x 3 vec4 rows, 256-aligned ring stride.
+const PALETTE_FLOATS: usize = 110 * 12;
+const PALETTE_BYTES: usize = PALETTE_FLOATS * 4;   // 5280
+const PALETTE_STRIDE: usize = 5376;                // 256-aligned
 
 pub const CLASS_TERRAIN: u32 = 1;
 
@@ -48,6 +53,7 @@ pub struct DrawDesc {
     pub khr: [f32; 8],      // KHR base-color transform [sx,sy,rot,_, ox,oy,_,_]
     pub indexed_ch: u32,    // 0 = position.w is NOT a texture index for this draw
     pub min_alpha: f32,     // MASK cutoff (-1 = disabled)
+    pub skin_id: u32,       // nonzero = rigged draw; palette registered via fsr_set_matrix_palette
 }
 
 pub fn calc_offsets(typemask: u32, num_verts: u32) -> [u32; 14] {
@@ -77,13 +83,15 @@ pub fn depth_fix() -> Mat4 {
 struct Queued {
     bind_key: [u32; 4],
     ubo_off: u32,
+    pal_off: u32,
+    skinned: bool,
     draw_class: u32,
     terrain_key: [u32; 5],
     vptr: usize,
     iptr: Option<usize>,
     icount: u32,
     voffsets: [u32; 14],
-    pipe_key: (bool, bool, bool, bool), // depth_test, depth_write, blend, lines
+    pipe_key: (bool, bool, bool, bool, bool), // depth_test, depth_write, blend, lines, skinned
     first: u32,
     vcount: u32,
 }
@@ -93,7 +101,7 @@ pub struct LiveRenderer {
     layout: wgpu::PipelineLayout,
     vs: wgpu::ShaderModule,
     fs: wgpu::ShaderModule,
-    pipelines: HashMap<(bool, bool, bool, bool), wgpu::RenderPipeline>,
+    pipelines: HashMap<(bool, bool, bool, bool, bool), wgpu::RenderPipeline>,
     terrain_bgl: wgpu::BindGroupLayout,
     terrain_pipeline: Option<wgpu::RenderPipeline>,
     terrain_binds: HashMap<[u32; 5], wgpu::BindGroup>,
@@ -116,6 +124,13 @@ pub struct LiveRenderer {
     ubo_cap: u64,
     ubo_stage: Vec<u8>,
     binds: HashMap<[u32; 4], wgpu::BindGroup>, // keyed by the batch's 4 texture ids
+    /// Rigged skinning: palettes registered per skin id (viewer world-space mGLMp),
+    /// staged into a second dynamic-offset ring each frame they are drawn.
+    palettes: HashMap<u32, Vec<f32>>,
+    palette_ring: Option<wgpu::Buffer>,
+    palette_cap: u64,
+    palette_stage: Vec<u8>,
+    skin_slots: HashMap<u32, u32>, // skin id -> ring offset (this frame)
     slot: usize,
     // Neutral attribute fallbacks: when a draw's typemask lacks TEXCOORD0/COLOR, binding
     // the POSITION block in their place reinterprets float positions as uv/RGBA8 -- which
@@ -180,6 +195,18 @@ impl LiveRenderer {
                     binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // Joint palette ring (skinned pipelines read it; others ignore it --
+                // extra BGL entries beyond what a shader declares are valid).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
@@ -298,6 +325,11 @@ impl LiveRenderer {
             ubo_cap: 0,
             ubo_stage: Vec::new(),
             binds: HashMap::new(),
+            palettes: HashMap::new(),
+            palette_ring: None,
+            palette_cap: 0,
+            palette_stage: Vec::new(),
+            skin_slots: HashMap::new(),
             slot: 0,
             uv_zero,
             color_white,
@@ -386,6 +418,13 @@ impl LiveRenderer {
         true
     }
 
+    pub fn set_palette(&mut self, skin_id: u32, joint_count: u32, floats: &[f32]) {
+        let n = (joint_count as usize * 12).min(PALETTE_FLOATS).min(floats.len());
+        let mut v = vec![0f32; PALETTE_FLOATS];
+        v[..n].copy_from_slice(&floats[..n]);
+        self.palettes.insert(skin_id, v);
+    }
+
     pub fn queued_len(&self) -> usize {
         self.queued.len()
     }
@@ -394,6 +433,8 @@ impl LiveRenderer {
         self.queued.clear();
         self.slot = 0;
         self.ubo_stage.clear();
+        self.palette_stage.clear();
+        self.skin_slots.clear();
     }
 
     /// The viewer wrote to this CPU-shadow buffer: drop our GPU copy so it re-uploads once.
@@ -453,6 +494,21 @@ impl LiveRenderer {
             multiview: None,
         });
         self.terrain_pipeline = Some(p);
+    }
+
+    fn ensure_palette_ring(&mut self, device: &wgpu::Device, want: u64) {
+        if self.palette_cap >= want && self.palette_ring.is_some() {
+            return;
+        }
+        let cap = want.next_power_of_two().max((PALETTE_STRIDE * 16) as u64);
+        self.palette_ring = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("palette-ring"),
+            size: cap,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.palette_cap = cap;
+        self.binds.clear(); // generic bind groups reference the palette ring
     }
 
     fn ensure_ring(&mut self, device: &wgpu::Device, want: u64) {
@@ -591,10 +647,36 @@ impl LiveRenderer {
         self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
         let _ = queue;
 
+        // Rigged: stage this skin's palette once per frame; draws whose palette has
+        // not arrived are SKIPPED (unskinned bind-pose geometry would land at region
+        // origin -- the invisible-statue failure, worse than absence).
+        let mut pal_off = 0u32;
+        let mut skinned = false;
+        if d.skin_id != 0 {
+            if let Some(slot_off) = self.skin_slots.get(&d.skin_id) {
+                pal_off = *slot_off;
+                skinned = true;
+            } else if let Some(pal) = self.palettes.get(&d.skin_id) {
+                let off = self.palette_stage.len();
+                self.palette_stage.resize(off + PALETTE_STRIDE, 0);
+                self.palette_stage[off..off + PALETTE_BYTES].copy_from_slice(bytemuck::cast_slice(pal));
+                pal_off = off as u32;
+                self.skin_slots.insert(d.skin_id, pal_off);
+                skinned = true;
+            }
+            // no palette yet, or no WEIGHT4 stream: skip (bind-pose geometry at
+            // region origin is worse than a frame of absence)
+            if !skinned || d.typemask & (1u32 << TYPE_WEIGHT4) == 0 {
+                return;
+            }
+        }
+
         let bind_key = d.tex;
         if d.draw_class != CLASS_TERRAIN && !self.binds.contains_key(&bind_key) {
             self.ensure_ring(device, need.max(STRIDE * 1024) as u64);
+            self.ensure_palette_ring(device, (PALETTE_STRIDE * 16) as u64);
             let ring = self.ubo_ring.as_ref().unwrap();
+            let pal_ring = self.palette_ring.as_ref().unwrap();
             let tv: Vec<&wgpu::TextureView> = bind_key
                 .iter()
                 .map(|id| self.textures.get(id).map(|(_, v)| v).unwrap_or(&self.white))
@@ -616,13 +698,21 @@ impl LiveRenderer {
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(tv[2]) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(tv[3]) },
                     wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: pal_ring,
+                            offset: 0,
+                            size: std::num::NonZeroU64::new(PALETTE_BYTES as u64),
+                        }),
+                    },
                 ],
             });
             self.binds.insert(bind_key, bg);
         }
 
         let lines = matches!(d.mode, 4 | 5);
-        let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0, lines);
+        let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0, lines, skinned);
         let mut terrain_key = [0u32; 5];
         if d.draw_class == CLASS_TERRAIN {
             terrain_key.copy_from_slice(&d.tex_ex[..5]);
@@ -670,14 +760,14 @@ impl LiveRenderer {
             }
             o
         };
-        self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, draw_class: d.draw_class, terrain_key, vptr, iptr, icount, voffsets, pipe_key, first, vcount });
+        self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, pal_off, skinned, draw_class: d.draw_class, terrain_key, vptr, iptr, icount, voffsets, pipe_key, first, vcount });
     }
 
-    fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool)) {
+    fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool)) {
         if self.pipelines.contains_key(&key) {
             return;
         }
-        let vlayouts = [
+        let base_layouts = [
             wgpu::VertexBufferLayout {
                 array_stride: 16,
                 step_mode: wgpu::VertexStepMode::Vertex,
@@ -694,10 +784,28 @@ impl LiveRenderer {
                 attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 2, format: wgpu::VertexFormat::Unorm8x4 }],
             },
         ];
+        let weight_layout = wgpu::VertexBufferLayout {
+            array_stride: 16,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 3, format: wgpu::VertexFormat::Float32x4 }],
+        };
+        let skinned_layouts = [
+            base_layouts[0].clone(),
+            base_layouts[1].clone(),
+            base_layouts[2].clone(),
+            weight_layout,
+        ];
+        let skin_vs;
+        let (vmodule, vbuffers): (&wgpu::ShaderModule, &[wgpu::VertexBufferLayout]) = if key.4 {
+            skin_vs = device.create_shader_module(wgpu::include_spirv!("../shaders/skin.vert.spv"));
+            (&skin_vs, &skinned_layouts)
+        } else {
+            (&self.vs, &base_layouts)
+        };
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("live"),
             layout: Some(&self.layout),
-            vertex: wgpu::VertexState { module: &self.vs, entry_point: "main", buffers: &vlayouts },
+            vertex: wgpu::VertexState { module: vmodule, entry_point: "main", buffers: vbuffers },
             fragment: Some(wgpu::FragmentState {
                 module: &self.fs,
                 entry_point: "main",
@@ -772,6 +880,12 @@ impl LiveRenderer {
                 queue.write_buffer(ring, 0, &self.ubo_stage);
             }
         }
+        if !self.palette_stage.is_empty() {
+            self.ensure_palette_ring(device, self.palette_stage.len() as u64);
+            if let Some(pr) = &self.palette_ring {
+                queue.write_buffer(pr, 0, &self.palette_stage);
+            }
+        }
         self.ensure_depth(device, w, h);
         let depth_view = match &self.depth {
             Some((v, _, _)) => v,
@@ -820,7 +934,7 @@ impl LiveRenderer {
                 let Some(p) = self.pipelines.get(&q.pipe_key) else { continue };
                 let Some(bind) = self.binds.get(&q.bind_key) else { continue };
                 rp.set_pipeline(p);
-                rp.set_bind_group(0, bind, &[q.ubo_off]);
+                rp.set_bind_group(0, bind, &[q.ubo_off, q.pal_off]);
                 rp.set_vertex_buffer(0, vbuf.slice(vo[TYPE_VERTEX] as u64..));
                 if vo[TYPE_TEXCOORD0] != u32::MAX {
                     rp.set_vertex_buffer(1, vbuf.slice(vo[TYPE_TEXCOORD0] as u64..));
@@ -831,6 +945,10 @@ impl LiveRenderer {
                     rp.set_vertex_buffer(2, vbuf.slice(vo[TYPE_COLOR] as u64..));
                 } else {
                     rp.set_vertex_buffer(2, self.color_white.slice(..));
+                }
+                if q.skinned {
+                    let woff = if vo[TYPE_WEIGHT4] != u32::MAX { vo[TYPE_WEIGHT4] } else { vo[TYPE_VERTEX] };
+                    rp.set_vertex_buffer(3, vbuf.slice(woff as u64..));
                 }
                 if let Some(ip) = q.iptr {
                     let Some((ib, _)) = self.geo.get(&ip) else { continue };

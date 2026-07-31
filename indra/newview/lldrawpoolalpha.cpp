@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lldrawpoolalpha.h"
+#include "fsscenedump.h" // <FS:VkBridge>
 
 #include "llglheaders.h"
 #include "llviewercontrol.h"
@@ -209,7 +210,13 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
                 && !LLPipeline::sRenderingHUDs
                 && !LLPipeline::sImpostorRender
                 && !gCubeSnapshot
-                && render_alpha_oit;
+                && render_alpha_oit
+                // <FS:VkBridge> wave-8: WBOIT deliberately abandons alpha SORTING;
+                // its correctness (per-target weighted blends + composite resolve)
+                // never crosses the bridge, so the engine got an unsorted stream under
+                // painter semantics -- applier/onion layers broke beyond close-up.
+                // Legacy sorted alpha restores the ordering contract the engine renders.
+                && !FSSceneDump::liveActive();
 
     if (use_oit)
     {

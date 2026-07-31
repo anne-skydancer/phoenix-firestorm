@@ -58,7 +58,7 @@ struct FsrDrawDesc
     U32 tex[4];      // texture units 0..3 -- indexed textures pick per-vertex via position.w
     U32 draw_class;  // F7: 0 = generic, 1 = terrain (engine picks the pipeline)
     U32 tex_ex[8];   // per-class texture ids (terrain: detail0-3, alpha_ramp)
-    F32 aux[8];      // per-class data (terrain: object_plane_s, object_plane_t)
+    F32 aux[48];     // per-class data: terrain planes / water payload / sky EEP env
     F32 texmat[16];  // F5: texture_matrix0 -- llSetTextureAnim sheet-flips/scroll/rotate
                      // and large-face planar all ride this; identity in the common case
     F32 khr[8];      // KHR_texture_transform (base color): [sx,sy,rot,_, ox,oy,_,_]
@@ -68,6 +68,7 @@ struct FsrDrawDesc
     U32 skin_id;     // C: nonzero = rigged draw, positions skin via this palette
     U32 cull;        // wave-6: GL_CULL_FACE state -- cull_mode None shaded every
                      // backface of every skinned vertex (GPU saturation)
+    U32 blend_add;   // (SRC_ALPHA, ONE): stars/glow additive blending
 };
 typedef int(__cdecl* fsr_begin_t)();
 typedef int(__cdecl* fsr_submit_t)(const FsrDrawDesc*, const U8*, const U8*);
@@ -83,7 +84,7 @@ static bool sLive = false;
 static S32 sSuppressDepth = 0; // F2: >0 while an offscreen pass renders
 static U32 sDrawClass = 0;     // F7: current draw class (set by the owning pool)
 static U32 sAuxTex[8] = { 0 };
-static F32 sAuxF[8] = { 0 };
+static F32 sAuxF[32] = { 0 };
 static F32 sKhr[8] = { 1.f, 1.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f }; // identity KHR transform
 static U32 sMatTex[3] = { 0, 0, 0 };   // A5: staged diffuse/normal/spec (one-shot)
 static F32 sMatCutoff = -1.f;
@@ -166,7 +167,7 @@ void setAuxTex(U32 slot, U32 tex_id)
 
 void setAuxF4(U32 slot, const F32* v4)
 {
-    if (slot < 2 && v4)
+    if (slot < 8 && v4)
     {
         memcpy(&sAuxF[slot * 4], v4, 4 * sizeof(F32));
     }
@@ -486,13 +487,75 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             }
             d.draw_class = sDrawClass;
             memcpy(d.tex_ex, sAuxTex, sizeof(d.tex_ex));
-            memcpy(d.aux, sAuxF, sizeof(d.aux));
+            memset(d.aux, 0, sizeof(d.aux));
+            memcpy(d.aux, sAuxF, sizeof(sAuxF));
             memcpy(d.texmat, glm::value_ptr(gGL.getTextureMatrix0()), sizeof(d.texmat));
             memcpy(d.khr, khr_local, sizeof(d.khr));
             // C: MAP_WEIGHT4 (bit 10) marks rigged draws; the typemask gate makes the
             // sticky skin id safe for every other draw.
             d.skin_id = (d.typemask & (1u << 10)) ? sCurrentSkinId : 0u;
             d.cull = glIsEnabled(GL_CULL_FACE) ? 1u : 0u;
+            // stars/glow draw ADD_WITH_ALPHA; gGL's CPU blend cache is always current
+            d.blend_add = (gGL.getCurrBlendSFactor() == LLRender::BF_SOURCE_ALPHA
+                        && gGL.getCurrBlendDFactor() == LLRender::BF_ONE) ? 1u : 0u;
+            // SKY: pack the EEP env from the bound shader's mValue cache -- the sky's
+            // color IS this data (the dome has no texture at all).
+            if (sDrawClass >= DRAWCLASS_SKY_DOME && sDrawClass <= DRAWCLASS_SKY_STARS)
+            {
+                if (LLGLSLShader* sky = LLGLSLShader::sCurBoundShaderPtr)
+                {
+                    struct EnvSlot { U32 vec; S32 uni; U32 wuni; };
+                    static const EnvSlot slots[] = {
+                        { 0, LLShaderMgr::WL_CAMPOSLOCAL, LLShaderMgr::MAX_Y },
+                        { 1, LLShaderMgr::LIGHTNORM, LLShaderMgr::SUN_UP_FACTOR },
+                        { 2, LLShaderMgr::SUNLIGHT_COLOR, LLShaderMgr::DENSITY_MULTIPLIER },
+                        { 3, LLShaderMgr::MOONLIGHT_COLOR, LLShaderMgr::SUN_MOON_GLOW_FACTOR },
+                        { 4, LLShaderMgr::AMBIENT, LLShaderMgr::HAZE_DENSITY },
+                        { 5, LLShaderMgr::BLUE_HORIZON, LLShaderMgr::HAZE_HORIZON },
+                        { 6, LLShaderMgr::BLUE_DENSITY, LLShaderMgr::CLOUD_SHADOW },
+                        { 7, LLShaderMgr::GLOW, LLShaderMgr::BLEND_FACTOR },
+                    };
+                    for (const EnvSlot& es : slots)
+                    {
+                        LLVector4 v(0, 0, 0, 0);
+                        LLVector4 wv(0, 0, 0, 0);
+                        if ((size_t)es.uni < sky->mUniform.size())
+                        {
+                            GLint loc = sky->mUniform[es.uni];
+                            auto it = (loc >= 0) ? sky->mValue.find(loc) : sky->mValue.end();
+                            if (loc >= 0 && it != sky->mValue.end()) v = it->second;
+                        }
+                        if ((size_t)es.wuni < sky->mUniform.size())
+                        {
+                            GLint loc = sky->mUniform[es.wuni];
+                            auto it = (loc >= 0) ? sky->mValue.find(loc) : sky->mValue.end();
+                            if (loc >= 0 && it != sky->mValue.end()) wv = it->second;
+                        }
+                        d.aux[es.vec * 4 + 0] = v.mV[0];
+                        d.aux[es.vec * 4 + 1] = v.mV[1];
+                        d.aux[es.vec * 4 + 2] = v.mV[2];
+                        d.aux[es.vec * 4 + 3] = wv.mV[0];
+                    }
+                    if (sDrawClass == DRAWCLASS_SKY_DOME)
+                    {
+                        d.tex[0] = 0; d.tex[1] = 0; d.tex[2] = 0; d.tex[3] = 0;
+                    }
+                    if (sDrawClass == DRAWCLASS_SKY_MOON)
+                    {
+                        // moonF = tex.rgb * moon_brightness: fold into the color multiplier
+                        if ((size_t)LLShaderMgr::MOON_BRIGHTNESS < sky->mUniform.size())
+                        {
+                            GLint loc = sky->mUniform[LLShaderMgr::MOON_BRIGHTNESS];
+                            auto it = (loc >= 0) ? sky->mValue.find(loc) : sky->mValue.end();
+                            if (loc >= 0 && it != sky->mValue.end())
+                            {
+                                F32 b = it->second.mV[0];
+                                d.color[0] = b; d.color[1] = b; d.color[2] = b;
+                            }
+                        }
+                    }
+                }
+            }
             // A2: only indexed programs interpret position.w as a texture index.
             d.indexed_ch = 0;
             // A4: MASK cutoff, read the DIFFUSE_COLOR way (cached wrapper uniforms).

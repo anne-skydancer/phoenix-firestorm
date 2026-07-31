@@ -6451,6 +6451,14 @@ void LLAppViewer::idleShutdown()
 
 void LLAppViewer::sendLogoutRequest()
 {
+    // <FS:VkBridge> wave-7: flush settings NOW -- teardown after this point has a
+    // nonzero crash rate under the bridge, and settings otherwise only persist on a
+    // perfectly clean exit (measured: in-session changes lost across relogs).
+    if (gSavedSettings.getString("ClientSettingsFile").length())
+    {
+        gSavedSettings.saveToFile(gSavedSettings.getString("ClientSettingsFile"), true);
+    }
+
     if(!mLogoutRequestSent && gMessageSystem)
     {
         //Set internal status variables and marker files before actually starting the logout process

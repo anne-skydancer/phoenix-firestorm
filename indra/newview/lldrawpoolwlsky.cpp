@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lldrawpoolwlsky.h"
+#include "fsscenedump.h" // <FS:VkBridge>
 
 #include "llerror.h"
 #include "llface.h"
@@ -77,12 +78,12 @@ void LLDrawPoolWLSky::beginDeferredPass(S32 pass)
     cloud_shader = &gDeferredWLCloudProgram;
 
     sun_shader = &gDeferredWLSunProgram;
-
     moon_shader = &gDeferredWLMoonProgram;
 }
 
 void LLDrawPoolWLSky::endDeferredPass(S32 pass)
 {
+    FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_GENERIC); // <FS:VkBridge>
     sky_shader   = nullptr;
     cloud_shader = nullptr;
     sun_shader   = nullptr;
@@ -142,6 +143,7 @@ static bool use_hdri_sky()
 
 void LLDrawPoolWLSky::renderSkyHazeDeferred(const LLVector3& camPosLocal, F32 camHeightLocal) const
 {
+    FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_SKY_DOME); // <FS:VkBridge>
     if (!gSky.mVOSkyp)
     {
         return;
@@ -218,6 +220,7 @@ void LLDrawPoolWLSky::renderSkyHazeDeferred(const LLVector3& camPosLocal, F32 ca
 
 void LLDrawPoolWLSky::renderStarsDeferred(const LLVector3& camPosLocal) const
 {
+    FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_SKY_STARS); // <FS:VkBridge>
     if (!gSky.mVOSkyp || use_hdri_sky())
     {
         return;
@@ -354,6 +357,7 @@ void LLDrawPoolWLSky::renderSkyCloudsDeferred(const LLVector3& camPosLocal, F32 
 
 void LLDrawPoolWLSky::renderHeavenlyBodies()
 {
+    FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_SKY_SUN); // <FS:VkBridge> (moon switches below)
     if (!gSky.mVOSkyp || use_hdri_sky()) return;
 
     LLGLSPipelineBlendSkyBox gls_skybox(true, true); // SL-14113 we need moon to write to depth to clip stars behind
@@ -428,6 +432,7 @@ void LLDrawPoolWLSky::renderHeavenlyBodies()
 
         if (can_use_vertex_shaders && can_use_windlight_shaders && (tex_a || tex_b))
         {
+            FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_SKY_MOON); // <FS:VkBridge>
             moon_shader->bind();
 
             if (tex_a && (!tex_b || (tex_a == tex_b)))

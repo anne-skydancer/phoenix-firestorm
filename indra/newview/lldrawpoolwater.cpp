@@ -315,7 +315,37 @@ void LLDrawPoolWater::renderPostDeferred(S32 pass)
     // They also had the same exact state with the sole exception setting an edge water flag.
     // That flag was not actually used anywhere in the shaders.
     // - Geenz 2025-02-11
+    // <FS:VkBridge> tier-1 water payload for the engine: everything is in scope here.
+    {
+        FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_WATER);
+        FSSceneDump::setAuxTex(0, tex_a ? tex_a->getTexName() : 0);
+        FSSceneDump::setAuxTex(1, tex_b ? tex_b->getTexName() : 0);
+        LLVector3 cam_origin = LLViewerCamera::getInstance()->getOrigin();
+        F32 a0[4] = { cam_origin.mV[0], cam_origin.mV[1], cam_origin.mV[2], phase_time };
+        F32 a1[4] = { pwater->getWave1Dir().mV[0], pwater->getWave1Dir().mV[1],
+                      pwater->getWave2Dir().mV[0], pwater->getWave2Dir().mV[1] };
+        LLVector3 ns = pwater->getNormalScale();
+        F32 a2[4] = { ns.mV[0], ns.mV[1], ns.mV[2], pwater->getFresnelScale() };
+        F32 a3[4] = { pwater->getFresnelOffset(), fmaxf(0.f, pwater->getBlurMultiplier()) * 2.f,
+                      water_height, fog_density };
+        LLColor3 fog_c = pwater->getWaterFogColor();
+        F32 fog_ks = 1.f / llmax(light_dir.mV[2], 0.3f);
+        F32 a4[4] = { fog_c.mV[0], fog_c.mV[1], fog_c.mV[2], fog_ks };
+        F32 a5[4] = { light_dir.mV[0], light_dir.mV[1], light_dir.mV[2], underwater ? 1.f : 0.f };
+        F32 a6[4] = { light_diffuse.mV[0], light_diffuse.mV[1], light_diffuse.mV[2], blend_factor };
+        LLColor3 amb(psky->getTotalAmbient());
+        F32 a7[4] = { amb.mV[0], amb.mV[1], amb.mV[2], sun_up ? 1.f : 0.f };
+        FSSceneDump::setAuxF4(0, a0);
+        FSSceneDump::setAuxF4(1, a1);
+        FSSceneDump::setAuxF4(2, a2);
+        FSSceneDump::setAuxF4(3, a3);
+        FSSceneDump::setAuxF4(4, a4);
+        FSSceneDump::setAuxF4(5, a5);
+        FSSceneDump::setAuxF4(6, a6);
+        FSSceneDump::setAuxF4(7, a7);
+    }
     pushWaterPlanes(0);
+    FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_GENERIC); // <FS:VkBridge>
 
     // clean up
     gPipeline.unbindDeferredShader(*shader);

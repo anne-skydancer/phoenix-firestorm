@@ -460,7 +460,7 @@ static int to_rgba8_tight(GLenum format, GLenum type, GLsizei w, GLsizei h, cons
  * matters: glTexImage2D with NULL pixels is a re-spec/allocate. Uploading zeros for
  * those wiped textures that already had content (measured: whole UI vanished), so we
  * create-once and otherwise leave the engine's texture alone. */
-#define NG_TEXREG_MAX 8192
+#define NG_TEXREG_MAX 65536
 typedef struct { GLuint id; GLsizei w, h; } NgTexReg;
 static NgTexReg g_texreg[NG_TEXREG_MAX];
 static int g_ntexreg = 0;
@@ -475,15 +475,33 @@ static NgTexReg* texreg_find(GLuint id)
 }
 static void texreg_set(GLuint id, GLsizei w, GLsizei h)
 {
-    NgTexReg* r = texreg_find(id);
+    ng_lock();
+    NgTexReg* r = NULL;
+    for (int i = 0; i < g_ntexreg; ++i)
+    {
+        if (g_texreg[i].id == id) { r = &g_texreg[i]; break; }
+    }
     if (!r)
     {
-        if (g_ntexreg >= NG_TEXREG_MAX) return;
-        r = &g_texreg[g_ntexreg++];
-        r->id = id;
+        for (int i = 0; i < g_ntexreg; ++i)
+        {
+            if (g_texreg[i].id == 0) { r = &g_texreg[i]; break; } /* reuse vacated */
+        }
     }
+    if (!r)
+    {
+        if (g_ntexreg >= NG_TEXREG_MAX)
+        {
+            ng_unlock();
+            log_once("cap", "g_texreg exhausted");
+            return;
+        }
+        r = &g_texreg[g_ntexreg++];
+    }
+    r->id = id;
     r->w = w;
     r->h = h;
+    ng_unlock();
 }
 
 static void mirror_texture(GLenum target, GLint level, GLsizei w, GLsizei h, GLenum format, GLenum type, const void* pixels)
@@ -571,7 +589,22 @@ NG_API void __stdcall glDeleteTextures(GLsizei n, const GLuint* t)
     get_readback();
     for (GLsizei i = 0; i < n; ++i)
     {
-        if (g_texdel && t[i]) g_texdel(t[i]);
+        if (!t[i]) continue;
+        if (g_texdel) g_texdel(t[i]);
+        /* vacate the dims registry slot (same failure class as the A1 shader tables:
+         * append-only + never vacated = exhaustion; at high/ultra the discard-bias
+         * churn mints new ids fast enough to fill 8192 in one session -> sub-rows
+         * arrive with 0x0 dims -> engine refuses lazy create -> PERMANENT WHITE) */
+        ng_lock();
+        for (int k = 0; k < g_ntexreg; ++k)
+        {
+            if (g_texreg[k].id == t[i])
+            {
+                g_texreg[k].id = 0;
+                break;
+            }
+        }
+        ng_unlock();
     }
 }
 NG_API void __stdcall glDepthFunc(GLenum f) { (void)f; }
@@ -675,8 +708,12 @@ NG_API void __stdcall glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenu
      * full GPU sync (device.poll Wait per call) re-introduced the movement chop. They
      * got zeros before the readback existed -- keep that. Real readback only for
      * frame-sized reads (snapshots, saveFinalSnapshot's login backdrop). */
+    /* The engine caches the full frame per FRAME (read_cache), so cost is one drain
+     * per frame -- not per call. The gate only needs to exclude the per-frame 1x1
+     * hover picks; snapshot scanlines (w >= 256) must pass or screen_last.png stays
+     * black (rawSnapshot reads one row per call: 2560x1 < 4096 failed the old gate). */
     if (g_readpx && (bpp == 3 || bpp == 4) && x >= 0 && y >= 0
-        && ((size_t)w * (size_t)h >= 4096))
+        && ((size_t)w * (size_t)h >= 4096 || w >= 256))
     {
         unsigned char* tmp = (unsigned char*)malloc((size_t)w * h * 4);
         if (tmp && g_readpx((GLuint)x, (GLuint)y, (GLuint)w, (GLuint)h, tmp))

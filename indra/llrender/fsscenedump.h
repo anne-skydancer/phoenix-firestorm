@@ -39,9 +39,14 @@ namespace FSSceneDump
     // planes; recordDraw copies whatever is current into each DrawDesc.
     const U32 DRAWCLASS_GENERIC = 0;
     const U32 DRAWCLASS_TERRAIN = 1;
+    const U32 DRAWCLASS_WATER = 2;
+    const U32 DRAWCLASS_SKY_DOME = 3;
+    const U32 DRAWCLASS_SKY_SUN = 4;
+    const U32 DRAWCLASS_SKY_MOON = 5;
+    const U32 DRAWCLASS_SKY_STARS = 6;
     void setDrawClass(U32 c);
     void setAuxTex(U32 slot, U32 tex_id);        // slot < 8
-    void setAuxF4(U32 slot, const F32* v4);      // slot < 2 (vec4 each)
+    void setAuxF4(U32 slot, const F32* v4);      // slot < 8 (vec4 each)
     // KHR_texture_transform (base color) for GLTF/PBR draws: planar-mapped mesh
     // repeats live HERE, not in TEXCOORD0 (llface.cpp:1545 skips CPU baking for gltf)
     // and not in texture_matrix0. packed8 = [sx,sy,rot,_, ox,oy,_,_].

@@ -1008,8 +1008,19 @@ bool destroy_window_handler(HWND hWnd)
 
 // close() destroys all OS-specific code associated with a window.
 // Usually called from LLWindowManager::destroyWindow()
+void fsrShutdownEngine(); // <FS:VkBridge> fwd (defined near the bridge statics)
+
 void LLWindowWin32::close()
 {
+    // <FS:VkBridge> wave-7: deterministic engine teardown (env-gated; the mode
+    // statics live further down this file)
+    {
+        char* fs_em = getenv("FS_ENGINE_MODE");
+        if (fs_em && fs_em[0] == '1')
+        {
+            fsrShutdownEngine();
+        }
+    }
     LL_DEBUGS("Window") << "Closing LLWindowWin32" << LL_ENDL;
     // Is window is already closed?
     if (!mWindowHandle)
@@ -3974,6 +3985,24 @@ namespace
 // <FS:VkBridge> Bring the engine up as soon as the window/context exists. MEASURED:
 // fonts build their atlases ~2s BEFORE the first swapBuffers, so a lazy init there
 // silently dropped every early texture upload (blank/again-shapeless UI text).
+// <FS:VkBridge> wave-7: deterministic engine teardown. Relying on
+// DLL_PROCESS_DETACH left worker threads to die under loader lock -- a hung
+// teardown holds the exec marker => next launch thinks "second instance"/crash
+// (the minutes-to-relog symptom).
+void fsrShutdownEngine()
+{
+    HMODULE dll = GetModuleHandleA("fs_render.dll");
+    if (dll)
+    {
+        typedef void(__cdecl* fsr_shutdown_t)();
+        fsr_shutdown_t f = (fsr_shutdown_t)GetProcAddress(dll, "fsr_shutdown");
+        if (f)
+        {
+            f();
+        }
+    }
+}
+
 void LLWindowWin32::fsrEnsureInit()
 {
     if (s_engine_mode != -1)

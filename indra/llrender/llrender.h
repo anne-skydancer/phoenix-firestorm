@@ -405,6 +405,9 @@ public:
     const glm::mat4& getProjectionMatrix();
     // <FS:VkBridge> F5: the CPU-side current texture matrix (llSetTextureAnim et al)
     const glm::mat4& getTextureMatrix0() { return mMatrix[MM_TEXTURE0][mMatIdx[MM_TEXTURE0]]; }
+    // <FS:VkBridge> sky/glow: current blend factors (CPU cache, always current)
+    eBlendFactor getCurrBlendSFactor() const { return mCurrBlendColorSFactor; }
+    eBlendFactor getCurrBlendDFactor() const { return mCurrBlendColorDFactor; }
 
     void syncMatrices();
     void syncLightState();

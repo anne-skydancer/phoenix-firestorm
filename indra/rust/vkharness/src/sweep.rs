@@ -24,6 +24,27 @@
 
 use crate::SHADER_ROOT;
 
+// ---- A1 config matrix (PHASE2_PLAN.md) --
+pub struct SweepConfig {
+    pub name: &'static str,
+    pub remove: &'static [&'static str],
+    pub add: &'static [(&'static str, &'static str)],
+    pub nvidia: bool,
+    pub probes: bool,
+    pub ssr: bool,
+}
+pub const CONFIGS: &[SweepConfig] = &[
+    SweepConfig { name: "canonical",   remove: &[], add: &[], nvidia: false, probes: true, ssr: false },
+    SweepConfig { name: "ssr-on",      remove: &[], add: &[("SSR", "1")], nvidia: false, probes: true, ssr: true },
+    SweepConfig { name: "probes-off",  remove: &["REFMAP_LEVEL", "REF_SAMPLE_COUNT"], add: &[], nvidia: false, probes: false, ssr: false },
+    SweepConfig { name: "emissive-on", remove: &[], add: &[("HAS_EMISSIVE", "1")], nvidia: false, probes: true, ssr: false },
+    SweepConfig { name: "shadows-off", remove: &["SUN_SHADOW", "SPOT_SHADOW"], add: &[], nvidia: false, probes: true, ssr: false },
+    SweepConfig { name: "nvidia",      remove: &[], add: &[], nvidia: true, probes: true, ssr: false },
+];
+static CFG_IDX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+fn cfg() -> &'static SweepConfig { &CONFIGS[CFG_IDX.load(std::sync::atomic::Ordering::Relaxed)] }
+
+
 /// Name of a single-line global declaration (`uniform T name;`, `in vec4 name;`, `const T n = ..`).
 fn line_decl_name(head: &str) -> Option<String> {
     // last token BEFORE stripping arrays -- `out vec4[2] vary_coords;` must yield
@@ -327,13 +348,13 @@ fn fragment_attaches(f: &Features) -> Vec<(&'static str, i32)> {
         v.push(("deferred/gbufferUtil.glsl", 1));
     }
     if f.has_screen_space_reflections || f.has_reflection_probes {
-        v.push(("deferred/screenSpaceReflUtil.glsl", 1)); // ssr off -> level 1
+        v.push(("deferred/screenSpaceReflUtil.glsl", if cfg().ssr { 3 } else { 1 }));
     }
     if f.has_shadows {
         v.push(("deferred/shadowUtil.glsl", 1));
     }
     if f.has_reflection_probes {
-        v.push(("deferred/reflectionProbeF.glsl", 3)); // probes on -> level 3
+        v.push(("deferred/reflectionProbeF.glsl", if cfg().probes { 3 } else { 2 }));
     }
     if f.has_ambient_occlusion {
         v.push(("deferred/aoUtil.glsl", 1));
@@ -415,9 +436,13 @@ pub fn assemble(p: &ProgramDef, fragment: bool) -> (String, Vec<String>) {
     // program permutations WIN over canonical globals on collision (more specific source)
     let mut defines: Vec<(String, String)> = p.defines.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
     for (k, v) in global_defines() {
+        if cfg().remove.contains(&k) { continue; }
         if !defines.iter().any(|(dk, _)| dk == k) {
             defines.push((k.to_string(), v));
         }
+    }
+    for (k, v) in cfg().add {
+        if !defines.iter().any(|(dk, _)| dk == *k) { defines.push((k.to_string(), v.to_string())); }
     }
     defines.sort();
 
@@ -662,6 +687,10 @@ pub fn run_sweep() -> bool {
     let dump = std::env::temp_dir().join("sweep_fail");
     let _ = std::fs::create_dir_all(&dump);
     let table = crate::sweep_table::programs_full();
+    let mut total_fail = 0usize;
+    for (ci, c) in CONFIGS.iter().enumerate() {
+    CFG_IDX.store(ci, std::sync::atomic::Ordering::Relaxed);
+    log::info!("== config: {} ==", c.name);
     let mut pass = 0usize;
     let mut fail = 0usize;
     log::info!("PHASE 1 SWEEP -- {} programs x 2 stages (assemble -> transform -> shaderc Vulkan1.3 -> spirv-val)", table.len());
@@ -690,7 +719,7 @@ pub fn run_sweep() -> bool {
             match compile_vulkan(&transformed, fragment, &format!("{}.{stage}", p.name)) {
                 Ok(words) => match spirv_val(&words) {
                     Ok(()) => {
-                        log::info!("  {:<28} {}  OK  ({} ubo members, {} samplers, {} words)", p.name, stage, n_ubo, n_smp, words.len());
+                        log::debug!("  {:<28} {}  OK  ({} ubo members, {} samplers, {} words)", p.name, stage, n_ubo, n_smp, words.len());
                         pass += 1;
                     }
                     Err(e) => {
@@ -710,6 +739,9 @@ pub fn run_sweep() -> bool {
             }
         }
     }
-    log::info!("SWEEP: {pass} pass / {fail} fail (of {}). Failures dumped to {}", pass + fail, dump.display());
-    fail == 0
+    log::info!("  config {}: {pass} pass / {fail} fail (of {})", c.name, pass + fail);
+    total_fail += fail;
+    }
+    log::info!("SWEEP MATRIX: {} configs -- total failures {}. Dumps in {}", CONFIGS.len(), total_fail, dump.display());
+    total_fail == 0
 }

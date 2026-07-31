@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "fsscenedump.h" // <FS:VkBridge>
 
 #include "llreflectionmapmanager.h"
 
@@ -205,6 +206,13 @@ static bool check_priority(LLReflectionMap* a, LLReflectionMap* b)
 // helper class to seed octree with probes
 void LLReflectionMapManager::update()
 {
+    // <FS:VkBridge> DEFLATE: probe cube captures never reach the engine; skip the
+    // traversals entirely.
+    if (FSSceneDump::liveActive())
+    {
+        return;
+    }
+
     if (!LLPipeline::sReflectionProbesEnabled || gTeleportDisplay || LLStartUp::getStartupState() < STATE_STARTED)
     {
         return;

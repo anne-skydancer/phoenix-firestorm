@@ -6161,6 +6161,7 @@ bool LLViewerWindow::thumbnailSnapshot(LLImageRaw *raw, S32 preview_width, S32 p
 bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_height,
     bool keep_window_aspect, bool is_texture, bool show_ui, bool show_hud, bool do_rebuild, bool no_post, bool show_balance, LLSnapshotModel::ESnapshotLayerType type, S32 max_size)
 {
+    LL_INFOS("VkBridge") << "rawSnapshot ENTER" << LL_ENDL; // <FS:VkBridge> crash bracket
     if (!raw)
     {
         return false;

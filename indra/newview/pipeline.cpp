@@ -11096,6 +11096,14 @@ public:
 
 void LLPipeline::generateSunShadow(LLCamera& camera)
 {
+    // <FS:VkBridge> DEFLATE: the engine has no shadow maps; these are 4 full scene
+    // traversals per frame whose every draw the tap then suppressed. Remove the work,
+    // not the output.
+    if (FSSceneDump::liveActive())
+    {
+        return;
+    }
+
     if (!sRenderDeferred || RenderShadowDetail <= 0)
     {
         return;

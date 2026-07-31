@@ -246,6 +246,19 @@ static U64 blob_hash(const U8* p, size_t n)
 
 void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offset, bool indexed)
 {
+    // One-shot staging is retired HERE, unconditionally: a suppressed draw (shadow/
+    // probe/bake) that staged material or KHR data must not leak it onto the next
+    // unsuppressed draw of an unrelated pool (measured: one corrupted world draw per
+    // leaked staging, including across frame boundaries via probe updates).
+    bool mat_staged = sMatStaged;
+    sMatStaged = false;
+    U32 mat_tex0 = sMatTex[0];
+    U32 mat_tex1 = sMatTex[1];
+    U32 mat_tex2 = sMatTex[2];
+    F32 mat_cutoff = sMatCutoff;
+    F32 khr_local[8];
+    memcpy(khr_local, sKhr, sizeof(khr_local));
+    clearKhrTexTransform();
     // <FS:VkBridge> P3c live path: submit straight to the engine.
     // F2: offscreen passes (shadow/probe/water-copy/exclusion/haze/bakes) are suppressed --
     // replayed into the single screen pass they painted OVER the frame (the transparent-
@@ -291,7 +304,15 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             U32 tex_base = 0;
             if (LLGLSLShader* shd = LLGLSLShader::sCurBoundShaderPtr)
             {
-                if ((size_t)LLShaderMgr::DIFFUSE_MAP < shd->mTexture.size())
+                // INDEXED programs bind their diffuse array to units 0..N-1 by
+                // construction (post-link override, llglslshader.cpp:509-513) -- and
+                // their mTexture[DIFFUSE_MAP] is POISONED under the stub: the raw-text
+                // uniform scan sees the preprocessor-dead "uniform sampler2D diffuseMap"
+                // in fullbright shaders, a channel gets assigned, and the indexed
+                // override shifts it +4 -> capture read empty units 4..7 -> every HUD
+                // button rendered the white fallback (the Slab-A regression).
+                if (shd->mFeatures.mIndexedTextureChannels <= 0
+                    && (size_t)LLShaderMgr::DIFFUSE_MAP < shd->mTexture.size())
                 {
                     S32 ch = shd->mTexture[LLShaderMgr::DIFFUSE_MAP];
                     if (ch >= 0)
@@ -398,10 +419,7 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             memcpy(d.tex_ex, sAuxTex, sizeof(d.tex_ex));
             memcpy(d.aux, sAuxF, sizeof(d.aux));
             memcpy(d.texmat, glm::value_ptr(gGL.getTextureMatrix0()), sizeof(d.texmat));
-            memcpy(d.khr, sKhr, sizeof(d.khr));
-            // A3: KHR staging is one-shot -- it leaked from alpha-pool PBR binds into
-            // every subsequent non-PBR draw (that pool never cleared it).
-            clearKhrTexTransform();
+            memcpy(d.khr, khr_local, sizeof(d.khr));
             // A2: only indexed programs interpret position.w as a texture index.
             d.indexed_ch = 0;
             // A4: MASK cutoff, read the DIFFUSE_COLOR way (cached wrapper uniforms).
@@ -425,19 +443,18 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             // A5: authoritative material batch (one-shot). The materials pool sets its
             // per-batch uniforms with RAW glUniform calls (nothing in mValue), so the
             // staged values are the only correct source for these draws.
-            if (sMatStaged)
+            if (mat_staged)
             {
-                d.tex[0] = sMatTex[0];
+                d.tex[0] = mat_tex0;
                 d.tex[1] = 0;
                 d.tex[2] = 0;
                 d.tex[3] = 0;
-                d.tex_ex[5] = sMatTex[1]; // normal (future lit path; slots 0-4 = terrain)
-                d.tex_ex[6] = sMatTex[2]; // specular
-                if (sMatCutoff >= 0.f)
+                d.tex_ex[5] = mat_tex1; // normal (future lit path; slots 0-4 = terrain)
+                d.tex_ex[6] = mat_tex2; // specular
+                if (mat_cutoff >= 0.f)
                 {
-                    d.min_alpha = sMatCutoff;
+                    d.min_alpha = mat_cutoff;
                 }
-                sMatStaged = false;
             }
             LARGE_INTEGER t0, t1;
             QueryPerformanceCounter(&t0);

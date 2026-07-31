@@ -641,7 +641,12 @@ NG_API void __stdcall glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenu
     }
     /* B4: read the engine's last presented frame (RGBA8, GL row order), convert. */
     get_readback();
-    if (g_readpx && (bpp == 3 || bpp == 4) && x >= 0 && y >= 0)
+    /* Small reads are the viewer's PER-FRAME hover/color picks; servicing them with a
+     * full GPU sync (device.poll Wait per call) re-introduced the movement chop. They
+     * got zeros before the readback existed -- keep that. Real readback only for
+     * frame-sized reads (snapshots, saveFinalSnapshot's login backdrop). */
+    if (g_readpx && (bpp == 3 || bpp == 4) && x >= 0 && y >= 0
+        && ((size_t)w * (size_t)h >= 4096))
     {
         unsigned char* tmp = (unsigned char*)malloc((size_t)w * h * 4);
         if (tmp && g_readpx((GLuint)x, (GLuint)y, (GLuint)w, (GLuint)h, tmp))

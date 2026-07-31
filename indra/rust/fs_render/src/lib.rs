@@ -462,12 +462,13 @@ pub extern "C" fn fsr_end_frame() -> i32 {
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
                     use std::io::Write;
                     let (ntex, ngeo, npal) = e.live.stats();
+                let (tb, drops, pend) = e.live.mem_stats();
                 let _ = writeln!(
                     f,
-                    "frame {} draws {} flush_avg_ms {:.2} acquire_ms {:.2} tex {} geo {} pal {}",
+                    "frame {} draws {} flush_avg_ms {:.2} acquire_ms {:.2} tex {} geo {} pal {} texMB {} drops {} pend {}",
                     e.frames, n, acc as f64 / 300.0 / 1000.0,
                     t_acq.elapsed().as_micros() as f64 / 1000.0,
-                    ntex, ngeo, npal
+                    ntex, ngeo, npal, tb / (1024 * 1024), drops, pend
                 );
                 }
             }

@@ -127,6 +127,11 @@ pub struct LiveRenderer {
     /// The viewer tells us when one changes (flush_vbo -> fsr_buffer_dirty), so we upload
     /// each buffer ONCE instead of re-uploading megabytes every frame (the CPU hog).
     geo: HashMap<usize, (wgpu::Buffer, u64)>,
+    /// STRIP/FAN/LINE_STRIP expansions are cached under synthetic keys derived from the
+    /// source pointer; without tracking, invalidate() (which only knows the real ptr)
+    /// never reclaimed them and they leaked for the whole session. Map base ptr ->
+    /// derived keys so bufferDirty reclaims both.
+    geo_derived: HashMap<usize, Vec<usize>>,
     /// Reusable per-slot uniform buffers + bind groups (80 bytes each, thousands/frame).
     // One ring UBO for the whole frame: per-draw blocks at 256-byte stride, staged on
     // CPU and uploaded with a SINGLE write_buffer in flush. The old design (one tiny
@@ -164,6 +169,7 @@ pub struct LiveRenderer {
     format: wgpu::TextureFormat,
     pub submitted: u64,
     pub drawn: u64,
+    pub upload_drops: u64,
     /// Current diffuse colour (viewer's "color" uniform, captured by the null-GL stub).
     /// UI text/background colour lives here, not in vertex colours.
     pub cur_color: [f32; 4],
@@ -372,6 +378,7 @@ impl LiveRenderer {
             textures: HashMap::new(),
             queued: Vec::new(),
             geo: HashMap::new(),
+            geo_derived: HashMap::new(),
             ubo_ring: None,
             ubo_cap: 0,
             ubo_stage: Vec::new(),
@@ -398,6 +405,7 @@ impl LiveRenderer {
             format,
             submitted: 0,
             drawn: 0,
+            upload_drops: 0,
             cur_color: [1.0, 1.0, 1.0, 1.0],
         }
     }
@@ -419,9 +427,22 @@ impl LiveRenderer {
     pub fn upload_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: u32, w: u32, h: u32, rgba: &[u8]) {
         let bytes = (w as usize) * (h as usize) * 4;
         if self.frame_upload_bytes + bytes > 32 * 1024 * 1024 {
-            // over budget this frame: defer (latest content wins per id)
+            // over budget this frame: defer (latest content wins per id). The deferred
+            // queue is itself HARD-CAPPED at 256MB of host RAM -- an uncapped version
+            // moved the GPU debt into system memory (measured: 1.5GB free of 32GB,
+            // machine paging to death). Beyond cap the oldest entries drop; the viewer
+            // re-uploads on its own schedule.
             self.pending_uploads.retain(|(pid, _, _, _)| *pid != id);
             self.pending_uploads.push_back((id, w, h, rgba[..bytes.min(rgba.len())].to_vec()));
+            let mut total: usize = self.pending_uploads.iter().map(|(_, _, _, d)| d.len()).sum();
+            while total > 256 * 1024 * 1024 {
+                if let Some((_, _, _, dropped)) = self.pending_uploads.pop_front() {
+                    total -= dropped.len();
+                    self.upload_drops += 1;
+                } else {
+                    break;
+                }
+            }
             return;
         }
         self.frame_upload_bytes += bytes;
@@ -536,6 +557,11 @@ impl LiveRenderer {
         (self.textures.len(), self.geo.len(), self.palettes.len())
     }
 
+    pub fn mem_stats(&self) -> (usize, u64, usize) {
+        // engine texture bytes, cumulative upload drops, deferred-queue depth
+        (self.tex_bytes, self.upload_drops, self.pending_uploads.len())
+    }
+
     pub fn set_palette(&mut self, skin_id: u32, joint_count: u32, floats: &[f32]) {
         let n = (joint_count as usize * 12).min(PALETTE_FLOATS).min(floats.len());
         let mut v = vec![0f32; PALETTE_FLOATS];
@@ -549,23 +575,11 @@ impl LiveRenderer {
 
     pub fn begin(&mut self) {
         self.frame_no += 1;
-        // HARD CEILING: evict least-recently-used textures beyond the VRAM budget.
-        // Evicted textures re-stream on demand; a re-fetch beats a wedged machine.
-        if self.tex_bytes > self.tex_budget {
-            let mut by_age: Vec<(u64, u32)> = self
-                .tex_last_used
-                .iter()
-                .filter(|(_, used)| self.frame_no.saturating_sub(**used) > 2)
-                .map(|(id, used)| (*used, *id))
-                .collect();
-            by_age.sort_unstable();
-            for (_, id) in by_age {
-                if self.tex_bytes <= (self.tex_budget / 4) * 3 {
-                    break;
-                }
-                self.delete_texture(id);
-            }
-        }
+        // The blind LRU that lived here DELETED on-screen textures the viewer believed
+        // were resident, with no channel to re-request them -> permanent white. Removed.
+        // Texture residency is now governed by the VIEWER's discard machinery (fed a
+        // truthful, deflated VRAM budget) + real glDeleteTextures. delete_texture()
+        // remains, driven only by the viewer's own frees.
         self.queued.clear();
         self.slot = 0;
         self.ubo_stage.clear();
@@ -576,6 +590,11 @@ impl LiveRenderer {
     /// The viewer wrote to this CPU-shadow buffer: drop our GPU copy so it re-uploads once.
     pub fn invalidate(&mut self, ptr: usize) {
         self.geo.remove(&ptr);
+        if let Some(derived) = self.geo_derived.remove(&ptr) {
+            for k in derived {
+                self.geo.remove(&k);
+            }
+        }
     }
 
     fn ensure_pipeline_add(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool, bool)) {
@@ -797,6 +816,9 @@ impl LiveRenderer {
         self.ubo_cap = cap;
         self.binds.clear(); // existing bind groups reference the old ring buffer
         self.terrain_binds.clear();
+        self.skywater_binds.clear(); // WATER FIX: these also bind the ring UBO -- omitting
+        // this left a stale bind group pointing at the freed ring once draws>1024
+        // (ring realloc) -> yellow/green stripes -> freeze.
     }
 
     /// Upload-once helper: returns a cached GPU buffer for `ptr`, creating it if needed.
@@ -865,6 +887,7 @@ impl LiveRenderer {
                     if !self.geo_buffer(device, key, bytemuck::cast_slice(&list), wgpu::BufferUsages::INDEX) {
                         return;
                     }
+                    self.geo_derived.entry(base_ptr).or_default().push(key);
                     (Some(key), n, 0, 0)
                 }
             } else {
@@ -890,6 +913,7 @@ impl LiveRenderer {
                 if !self.geo_buffer(device, key, bytemuck::cast_slice(&list), wgpu::BufferUsages::INDEX) {
                     return;
                 }
+                self.geo_derived.entry(vptr).or_default().push(key);
                 (Some(key), n, 0, 0)
             }
         } else {

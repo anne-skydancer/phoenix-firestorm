@@ -25,6 +25,11 @@ const PALETTE_BYTES: usize = PALETTE_FLOATS * 4;   // 5280
 const PALETTE_STRIDE: usize = 5376;                // 256-aligned
 
 pub const CLASS_TERRAIN: u32 = 1;
+pub const CLASS_WATER: u32 = 2;
+pub const CLASS_SKY_DOME: u32 = 3;
+pub const CLASS_SKY_SUN: u32 = 4;
+pub const CLASS_SKY_MOON: u32 = 5;
+pub const CLASS_SKY_STARS: u32 = 6;
 
 /// The per-draw descriptor the viewer fills (POD, `#[repr(C)]`, mirrored in C++).
 #[repr(C)]
@@ -48,13 +53,14 @@ pub struct DrawDesc {
     pub tex: [u32; 4],      // texture units 0..3 (indexed textures, chosen by position.w)
     pub draw_class: u32,    // 0 = generic, 1 = terrain
     pub tex_ex: [u32; 8],   // terrain: detail0-3 + alpha_ramp
-    pub aux: [f32; 8],      // terrain: object_plane_s, object_plane_t
+    pub aux: [f32; 48],     // terrain planes / water payload / sky EEP env
     pub texmat: [f32; 16],  // texture_matrix0 (identity in the common case)
     pub khr: [f32; 8],      // KHR base-color transform [sx,sy,rot,_, ox,oy,_,_]
     pub indexed_ch: u32,    // 0 = position.w is NOT a texture index for this draw
     pub min_alpha: f32,     // MASK cutoff (-1 = disabled)
     pub skin_id: u32,       // nonzero = rigged draw; palette registered via fsr_set_matrix_palette
     pub cull: u32,          // GL_CULL_FACE at draw time
+    pub blend_add: u32,     // (SRC_ALPHA, ONE): stars/glow additive
 }
 
 pub fn calc_offsets(typemask: u32, num_verts: u32) -> [u32; 14] {
@@ -93,6 +99,7 @@ struct Queued {
     icount: u32,
     voffsets: [u32; 14],
     pipe_key: (bool, bool, bool, bool, bool, bool), // depth_test, depth_write, blend, lines, skinned, cull
+    blend_add: bool,
     first: u32,
     vcount: u32,
 }
@@ -103,9 +110,14 @@ pub struct LiveRenderer {
     vs: wgpu::ShaderModule,
     fs: wgpu::ShaderModule,
     pipelines: HashMap<(bool, bool, bool, bool, bool, bool), wgpu::RenderPipeline>,
+    pipelines_add: HashMap<(bool, bool, bool, bool, bool, bool), wgpu::RenderPipeline>,
     terrain_bgl: wgpu::BindGroupLayout,
     terrain_pipeline: Option<wgpu::RenderPipeline>,
     terrain_binds: HashMap<[u32; 5], wgpu::BindGroup>,
+    skywater_bgl: wgpu::BindGroupLayout,
+    sky_pipeline: Option<wgpu::RenderPipeline>,
+    water_pipeline: Option<wgpu::RenderPipeline>,
+    skywater_binds: HashMap<[u32; 2], wgpu::BindGroup>,
     sampler_clamp: wgpu::Sampler,
     sampler: wgpu::Sampler,
     white: wgpu::TextureView,
@@ -222,6 +234,29 @@ impl LiveRenderer {
             },
             count: None,
         };
+        let skywater_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("skywater-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                tex_entry(1),
+                tex_entry(2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
         let terrain_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("terrain-bgl"),
             entries: &[
@@ -313,9 +348,14 @@ impl LiveRenderer {
             vs,
             fs,
             pipelines: HashMap::new(),
+            pipelines_add: HashMap::new(),
             terrain_bgl,
             terrain_pipeline: None,
             terrain_binds: HashMap::new(),
+            skywater_bgl,
+            sky_pipeline: None,
+            water_pipeline: None,
+            skywater_binds: HashMap::new(),
             sampler_clamp,
             sampler,
             white: white_tex.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -379,7 +419,14 @@ impl LiveRenderer {
         // 700-1600ms; ~90s cumulative freeze). The first real sub-rect creates the
         // texture at the registered full size.
         if !self.textures.contains_key(&id) {
-            if full_w == 0 || full_h == 0 || x + w > full_w || y + h > full_h {
+            let (full_w, full_h) = if full_w == 0 || full_h == 0 {
+                // dims registry miss (exhaustion regression guard): partial content
+                // beats permanent white -- size to the covering pow2
+                ((x + w).next_power_of_two().max(64), (y + h).next_power_of_two().max(64))
+            } else {
+                (full_w, full_h)
+            };
+            if x + w > full_w || y + h > full_h {
                 return false;
             }
             let t = device.create_texture(&wgpu::TextureDescriptor {
@@ -452,6 +499,142 @@ impl LiveRenderer {
     /// The viewer wrote to this CPU-shadow buffer: drop our GPU copy so it re-uploads once.
     pub fn invalidate(&mut self, ptr: usize) {
         self.geo.remove(&ptr);
+    }
+
+    fn ensure_pipeline_add(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool, bool)) {
+        if self.pipelines_add.contains_key(&key) {
+            return;
+        }
+        // additive: SRC_ALPHA * src + 1 * dst (stars, ADD_WITH_ALPHA)
+        self.ensure_pipeline(device, key);
+        if let Some(base) = self.pipelines.get(&key) {
+            let _ = base; // template only; build the additive variant below
+        }
+        let add_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let vs_add;
+        let base_layouts = [
+            wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x4 }],
+            },
+            wgpu::VertexBufferLayout {
+                array_stride: 8,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 1, format: wgpu::VertexFormat::Float32x2 }],
+            },
+            wgpu::VertexBufferLayout {
+                array_stride: 4,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 2, format: wgpu::VertexFormat::Unorm8x4 }],
+            },
+        ];
+        let vmodule: &wgpu::ShaderModule = if key.4 {
+            vs_add = device.create_shader_module(wgpu::include_spirv!("../shaders/skin.vert.spv"));
+            &vs_add
+        } else {
+            &self.vs
+        };
+        let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("live-add"),
+            layout: Some(&self.layout),
+            vertex: wgpu::VertexState { module: vmodule, entry_point: "main", buffers: &base_layouts },
+            fragment: Some(wgpu::FragmentState {
+                module: &self.fs,
+                entry_point: "main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: self.format,
+                    blend: Some(add_blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: if key.3 { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList },
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: key.1,
+                depth_compare: if key.0 { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always },
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+        self.pipelines_add.insert(key, p);
+    }
+
+    fn ensure_skywater_pipelines(&mut self, device: &wgpu::Device) {
+        if self.sky_pipeline.is_some() {
+            return;
+        }
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("skywater-pl"),
+            bind_group_layouts: &[&self.skywater_bgl],
+            push_constant_ranges: &[],
+        });
+        let make = |device: &wgpu::Device, vs: wgpu::ShaderModule, fsm: wgpu::ShaderModule, slots: u32, depth_write: bool, format: wgpu::TextureFormat, layout: &wgpu::PipelineLayout| {
+            let l0 = wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x4 }],
+            };
+            let l1 = wgpu::VertexBufferLayout {
+                array_stride: 8,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 1, format: wgpu::VertexFormat::Float32x2 }],
+            };
+            let both = [l0.clone(), l1];
+            let one = [l0];
+            let buffers: &[wgpu::VertexBufferLayout] = if slots == 2 { &both } else { &one };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("skywater"),
+                layout: Some(layout),
+                vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fsm,
+                    entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: depth_write,
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            })
+        };
+        let sky_vs = device.create_shader_module(wgpu::include_spirv!("../shaders/sky.vert.spv"));
+        let sky_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/sky.frag.spv"));
+        self.sky_pipeline = Some(make(device, sky_vs, sky_fs, 2, false, self.format, &layout));
+        let water_vs = device.create_shader_module(wgpu::include_spirv!("../shaders/water.vert.spv"));
+        let water_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/water.frag.spv"));
+        self.water_pipeline = Some(make(device, water_vs, water_fs, 1, true, self.format, &layout));
     }
 
     fn ensure_terrain_pipeline(&mut self, device: &wgpu::Device) {
@@ -646,17 +829,27 @@ impl LiveRenderer {
             self.ubo_stage.resize(need, 0);
         }
         let mvp = depth_fix() * Mat4::from_cols_array(&d.mvp);
-        let mut block = [0f32; 56]; // mvp + color + planes + texmat + khr + flags
-        block[..16].copy_from_slice(&mvp.to_cols_array());
-        block[16..20].copy_from_slice(&d.color);
-        block[20..28].copy_from_slice(&d.aux);
-        block[28..44].copy_from_slice(&d.texmat);
-        block[44..52].copy_from_slice(&d.khr);
-        block[52] = if d.blend != 0 { 1.0 } else { 0.0 }; // flags.x: blending enabled
-        block[53] = if d.indexed_ch > 0 { 1.0 } else { 0.0 }; // flags.y: pos.w is a tex index
-        block[54] = d.min_alpha; // flags.z: MASK cutoff (-1 disabled)
-        let bytes: &[u8] = bytemuck::cast_slice(&block);
-        self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
+        let skywater = matches!(d.draw_class, CLASS_WATER | CLASS_SKY_DOME);
+        if skywater {
+            // dedicated slot layout: [mvp | 12 vec4 aux] = 256 bytes exactly
+            let mut block = [0f32; 64];
+            block[..16].copy_from_slice(&mvp.to_cols_array());
+            block[16..64].copy_from_slice(&d.aux);
+            let bytes: &[u8] = bytemuck::cast_slice(&block);
+            self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
+        } else {
+            let mut block = [0f32; 56]; // mvp + color + planes + texmat + khr + flags
+            block[..16].copy_from_slice(&mvp.to_cols_array());
+            block[16..20].copy_from_slice(&d.color);
+            block[20..28].copy_from_slice(&d.aux[..8]);
+            block[28..44].copy_from_slice(&d.texmat);
+            block[44..52].copy_from_slice(&d.khr);
+            block[52] = if d.blend != 0 { 1.0 } else { 0.0 }; // flags.x: blending enabled
+            block[53] = if d.indexed_ch > 0 { 1.0 } else { 0.0 }; // flags.y: pos.w is a tex index
+            block[54] = d.min_alpha; // flags.z: MASK cutoff (-1 disabled)
+            let bytes: &[u8] = bytemuck::cast_slice(&block);
+            self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
+        }
         let _ = queue;
 
         // Rigged: stage this skin's palette once per frame; draws whose palette has
@@ -724,7 +917,38 @@ impl LiveRenderer {
         }
 
         let lines = matches!(d.mode, 4 | 5);
-        let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0, lines, skinned, d.cull != 0);
+        if skywater {
+            let sw_key = [d.tex_ex[0], d.tex_ex[1]];
+            self.ensure_skywater_pipelines(device);
+            if !self.skywater_binds.contains_key(&sw_key) {
+                self.ensure_ring(device, need.max(STRIDE * 1024) as u64);
+                let ring = self.ubo_ring.as_ref().unwrap();
+                let t0 = self.textures.get(&sw_key[0]).map(|(_, v)| v).unwrap_or(&self.white);
+                let t1 = self.textures.get(&sw_key[1]).map(|(_, v)| v).unwrap_or(&self.white);
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("skywater-bind"),
+                    layout: &self.skywater_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: ring,
+                                offset: 0,
+                                size: std::num::NonZeroU64::new(256),
+                            }),
+                        },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(t0) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(t1) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    ],
+                });
+                self.skywater_binds.insert(sw_key, bg);
+            }
+        }
+        let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0 || d.blend_add != 0, lines, skinned, d.cull != 0);
+        if d.blend_add != 0 {
+            self.ensure_pipeline_add(device, pipe_key);
+        }
         let mut terrain_key = [0u32; 5];
         if d.draw_class == CLASS_TERRAIN {
             terrain_key.copy_from_slice(&d.tex_ex[..5]);
@@ -772,7 +996,12 @@ impl LiveRenderer {
             }
             o
         };
-        self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, pal_off, skinned, draw_class: d.draw_class, terrain_key, vptr, iptr, icount, voffsets, pipe_key, first, vcount });
+        let mut tk = terrain_key;
+        if skywater {
+            tk[0] = d.tex_ex[0];
+            tk[1] = d.tex_ex[1];
+        }
+        self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, pal_off, skinned, draw_class: d.draw_class, terrain_key: tk, vptr, iptr, icount, voffsets, pipe_key, first, vcount, blend_add: d.blend_add != 0 });
     }
 
     fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool, bool)) {
@@ -928,6 +1157,27 @@ impl LiveRenderer {
             for q in &self.queued {
                 let Some((vbuf, _)) = self.geo.get(&q.vptr) else { continue };
                 let vo = q.voffsets;
+                if q.draw_class == CLASS_SKY_DOME || q.draw_class == CLASS_WATER {
+                    let sw_key = [q.terrain_key[0], q.terrain_key[1]];
+                    let pipe = if q.draw_class == CLASS_SKY_DOME { self.sky_pipeline.as_ref() } else { self.water_pipeline.as_ref() };
+                    let Some(p) = pipe else { continue };
+                    let Some(bind) = self.skywater_binds.get(&sw_key) else { continue };
+                    rp.set_pipeline(p);
+                    rp.set_bind_group(0, bind, &[q.ubo_off]);
+                    rp.set_vertex_buffer(0, vbuf.slice(vo[TYPE_VERTEX] as u64..));
+                    if q.draw_class == CLASS_SKY_DOME {
+                        let uvo = if vo[TYPE_TEXCOORD0] != u32::MAX { vo[TYPE_TEXCOORD0] } else { vo[TYPE_VERTEX] };
+                        rp.set_vertex_buffer(1, vbuf.slice(uvo as u64..));
+                    }
+                    if let Some(ip) = q.iptr {
+                        let Some((ib, _)) = self.geo.get(&ip) else { continue };
+                        rp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint16);
+                        rp.draw_indexed(q.first..q.first + q.icount, 0, 0..1);
+                    } else {
+                        rp.draw(q.first..q.first + q.vcount, 0..1);
+                    }
+                    continue;
+                }
                 if q.draw_class == CLASS_TERRAIN {
                     let Some(p) = self.terrain_pipeline.as_ref() else { continue };
                     let Some(bind) = self.terrain_binds.get(&q.terrain_key) else { continue };
@@ -945,7 +1195,8 @@ impl LiveRenderer {
                     }
                     continue;
                 }
-                let Some(p) = self.pipelines.get(&q.pipe_key) else { continue };
+                let p_opt = if q.blend_add { self.pipelines_add.get(&q.pipe_key) } else { self.pipelines.get(&q.pipe_key) };
+                let Some(p) = p_opt else { continue };
                 let Some(bind) = self.binds.get(&q.bind_key) else { continue };
                 rp.set_pipeline(p);
                 rp.set_bind_group(0, bind, &[q.ubo_off, q.pal_off]);

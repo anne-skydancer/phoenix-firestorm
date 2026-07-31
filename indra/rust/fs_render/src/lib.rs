@@ -7,7 +7,10 @@
 //! draw path (the replay renderer, live). Handle/POD/no-panic-across-boundary per the
 //! llrust FFI house pattern.
 
+mod live;
+
 use std::ffi::c_void;
+use live::{DrawDesc, LiveRenderer};
 use std::sync::Mutex;
 
 use glam::Mat4;
@@ -19,8 +22,10 @@ struct Engine {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    frame_open: bool,
     frames: u64,
+    live: LiveRenderer,
+    frame_open: bool,
+    adapter_desc: String,
 }
 
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
@@ -91,14 +96,17 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
         };
         surface.configure(&device, &config);
         log::info!("fs_render: surface {}x{} {:?}", config.width, config.height, format);
+        let live = LiveRenderer::new(&device, &queue, config.format);
         Some(Engine {
             _instance: instance,
             surface,
             device,
             queue,
             config,
-            frame_open: false,
             frames: 0,
+            live,
+            frame_open: false,
+            adapter_desc: format!("{} ({} {})", info.name, info.driver, info.driver_info),
         })
     });
     match result {
@@ -191,8 +199,145 @@ pub extern "C" fn fsr_shutdown() {
     log::info!("fs_render: shutdown");
 }
 
-// keep glam/bytemuck linked ahead of the P3b draw path (matrices cross here next)
-#[allow(dead_code)]
-fn _phase3b_types(m: [f32; 16]) -> Mat4 {
-    Mat4::from_cols_array(&m)
+// ==========================  P3c: the live draw stream  =========================
+
+/// Begin a frame: clears the queue. Viewer calls this once per frame before draws.
+#[no_mangle]
+pub extern "C" fn fsr_begin_frame() -> i32 {
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    e.live.begin();
+    e.frame_open = true;
+    1
+}
+
+/// Submit one draw. `desc` is a DrawDesc; `vtx`/`idx` point at the viewer's CPU shadow
+/// (copied here -- the viewer reuses those buffers next frame).
+/// # Safety: pointers must be valid for the byte counts named in `desc`.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_submit(desc: *const DrawDesc, vtx: *const u8, idx: *const u8) -> i32 {
+    if desc.is_null() {
+        return 0;
+    }
+    let d = *desc;
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    if !e.frame_open {
+        return 0;
+    }
+    let vslice = if vtx.is_null() || d.vtx_bytes == 0 { &[][..] } else { std::slice::from_raw_parts(vtx, d.vtx_bytes as usize) };
+    let islice = if idx.is_null() || d.idx_bytes == 0 { &[][..] } else { std::slice::from_raw_parts(idx, d.idx_bytes as usize) };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Engine { device, queue, live, .. } = e;
+        live.submit(device, queue, &d, vslice, islice);
+    }));
+    if r.is_err() { 0 } else { 1 }
+}
+
+/// Mirror one decoded texture into the engine (viewer calls at upload time).
+/// # Safety: `rgba` must hold at least w*h*4 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_texture_upload(id: u32, w: u32, h: u32, rgba: *const u8) -> i32 {
+    if rgba.is_null() || w == 0 || h == 0 {
+        return 0;
+    }
+    let bytes = std::slice::from_raw_parts(rgba, (w as usize) * (h as usize) * 4);
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Engine { device, queue, live, .. } = e;
+        live.upload_texture(device, queue, id, w, h, bytes);
+    }));
+    if r.is_err() { 0 } else { 1 }
+}
+
+/// End the frame: render every queued draw to the swapchain and present.
+/// Returns the number of draws rendered (0 = nothing/failed).
+#[no_mangle]
+pub extern "C" fn fsr_end_frame() -> i32 {
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    e.frame_open = false;
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let frame = match e.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                e.surface.configure(&e.device, &e.config);
+                match e.surface.get_current_texture() {
+                    Ok(f) => f,
+                    Err(_) => return 0,
+                }
+            }
+            Err(_) => return 0,
+        };
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let (w, h) = (e.config.width, e.config.height);
+        let Engine { device, queue, live, .. } = e;
+        let n = live.flush(device, queue, &view, w, h);
+        frame.present();
+        e.frames += 1;
+        if e.frames % 300 == 1 {
+            log::info!("fs_render: frame {} -- {} draws rendered ({} submitted total)", e.frames, n, live.submitted);
+        }
+        n as i32
+    }));
+    r.unwrap_or(0)
+}
+
+/// The viewer wrote to a CPU-shadow buffer: drop the engine cached GPU copy so it
+/// re-uploads once, instead of re-uploading every buffer every frame.
+#[no_mangle]
+pub extern "C" fn fsr_buffer_dirty(ptr: usize) -> i32 {
+    if let Some(e) = ENGINE.lock().unwrap().as_mut() {
+        e.live.invalidate(ptr);
+        1
+    } else {
+        0
+    }
+}
+
+/// Patch a sub-rect of an existing texture (glTexSubImage2D path).
+/// # Safety: `rgba` must hold at least w*h*4 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_texture_subupload(id: u32, x: u32, y: u32, w: u32, h: u32, rgba: *const u8) -> i32 {
+    if rgba.is_null() || w == 0 || h == 0 {
+        return 0;
+    }
+    let bytes = std::slice::from_raw_parts(rgba, (w as usize) * (h as usize) * 4);
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Engine { queue, live, .. } = e;
+        live.upload_subtexture(queue, id, x, y, w, h, bytes)
+    }));
+    match r { Ok(true) => 1, _ => 0 }
+}
+
+/// Set the current diffuse colour (called by the null-GL stub when the viewer sets its
+/// "color" uniform -- that is where UI/text colour lives).
+#[no_mangle]
+pub extern "C" fn fsr_set_color(r: f32, g: f32, b: f32, a: f32) -> i32 {
+    if let Some(e) = ENGINE.lock().unwrap().as_mut() {
+        e.live.cur_color = [r, g, b, a];
+        1
+    } else {
+        0
+    }
+}
+
+/// Honest adapter identity for Help > About (NOT a spoofed GL string).
+/// # Safety: `out` must have room for `cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_adapter_info(out: *mut u8, cap: u32) -> i32 {
+    if out.is_null() || cap == 0 {
+        return 0;
+    }
+    let g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_ref() else { return 0 };
+    let s = format!("Vulkan (fs_render) -- {}", e.adapter_desc);
+    let b = s.as_bytes();
+    let n = b.len().min(cap as usize - 1);
+    std::ptr::copy_nonoverlapping(b.as_ptr(), out, n);
+    *out.add(n) = 0;
+    n as i32
 }

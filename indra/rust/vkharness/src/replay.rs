@@ -177,16 +177,44 @@ pub fn run_replay(dump_dir: &str) -> bool {
     let world_all: Vec<&Draw> = draws.iter().filter(|d| is_world_draw(d)).collect();
     // one frame contains MANY cameras (G-buffer, water reflection, impostors, previews).
     // Keep only the modal (fbo, projection) group = the main-camera pass.
-    let mut groups: HashMap<(i32, [u32; 4]), usize> = HashMap::new();
-    for d in &world_all {
-        *groups.entry((d.fbo, d.pkey)).or_default() += 1;
+    // (count, last stream index) per group: reflection/impostor passes render BEFORE the
+    // main G-buffer pass, so among substantial groups pick the one that renders LATEST.
+    let mut groups: HashMap<(i32, [u32; 4]), (usize, usize)> = HashMap::new();
+    for (idx, d) in world_all.iter().enumerate() {
+        let e = groups.entry((d.fbo, d.pkey)).or_insert((0, 0));
+        e.0 += 1;
+        e.1 = idx;
     }
+    let max_count = groups.values().map(|(c, _)| *c).max().unwrap_or(0);
     let mut gs: Vec<_> = groups.iter().collect();
-    gs.sort_by(|a, b| b.1.cmp(a.1));
-    for ((fbo, _), n) in gs.iter().take(5) {
-        log::info!("  pass group fbo={} -> {} draws", fbo, n);
+    gs.sort_by(|a, b| b.1 .1.cmp(&a.1 .1)); // latest first
+    for ((fbo, _), (n, last)) in gs.iter().take(5) {
+        log::info!("  pass group fbo={} -> {} draws (last idx {})", fbo, n, last);
     }
-    let modal = *gs[0].0;
+    // --fbo N: manual pass override for diagnosis
+    let fbo_override: Option<i32> = std::env::args()
+        .skip_while(|x| x != "--fbo")
+        .nth(1)
+        .and_then(|v| v.parse().ok());
+    let modal = if let Some(f) = fbo_override {
+        *gs.iter().filter(|((fbo, _), _)| *fbo == f).max_by_key(|(_, (c, _))| *c).map(|(k, _)| *k).unwrap_or(gs[0].0)
+    } else {
+        // MAIN CAMERA = largest group whose projection aspect (proj[5]/proj[0]) matches the
+        // viewport aspect. Probe cube faces + shadow maps use SQUARE projections (p0==p5) and
+        // can render after the main pass with more draws -- count and order both mislead.
+        let vp_aspect = w as f32 / h as f32;
+        let aspect_of = |k: &(i32, [u32; 4])| {
+            let p0 = f32::from_bits(k.1[0]);
+            let p5 = f32::from_bits(k.1[1]);
+            if p0.abs() > 1e-6 { (p5 / p0).abs() } else { 0.0 }
+        };
+        *gs.iter()
+            .filter(|(k, _)| (aspect_of(k) - vp_aspect).abs() / vp_aspect < 0.05)
+            .max_by_key(|(_, (c, _))| *c)
+            .map(|(k, _)| *k)
+            .or_else(|| gs.iter().find(|(_, (c, _))| *c * 4 >= max_count).map(|(k, _)| *k))
+            .unwrap_or(gs[0].0)
+    };
     let world: Vec<&Draw> = world_all
         .iter()
         .filter(|d| (d.fbo, d.pkey) == modal)

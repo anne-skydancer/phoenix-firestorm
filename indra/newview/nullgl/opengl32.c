@@ -276,6 +276,57 @@ NG_API HGLRC __stdcall wglCreateContext(HDC dc) { g_dc = dc; return (HGLRC)(uint
 NG_API BOOL __stdcall wglMakeCurrent(HDC dc, HGLRC rc) { if (dc) g_dc = dc; (void)rc; return TRUE; }
 NG_API BOOL __stdcall wglDeleteContext(HGLRC rc) { (void)rc; return TRUE; }
 NG_API HDC __stdcall wglGetCurrentDC(void) { return g_dc; }
+/* fs_render.dll itself imports this: wgpu links a GL backend we never use (we pin
+ * Backends::VULKAN), but its import must still resolve or LoadLibrary fails with
+ * "entry point wglGetCurrentContext could not be located" (measured, engine boot #2). */
+NG_API HGLRC __stdcall wglGetCurrentContext(void) { return (HGLRC)(uintptr_t)0xFEEDC0DE; }
+
+/* ---- GDI32-forwarded private entry points -------------------------------------
+ * GDI32's ChoosePixelFormat/SetPixelFormat/DescribePixelFormat/GetPixelFormat/
+ * SwapBuffers do NOT implement OpenGL pixel formats themselves -- they forward to
+ * these opengl32 exports. Without them GDI32 fails with ERROR_PROC_NOT_FOUND (127),
+ * which surfaces as the viewer's "Can't find suitable pixel format" (measured on the
+ * first engine-mode boot). We advertise exactly ONE format: 32-bit RGBA, 24-bit
+ * depth, 8-bit stencil, double-buffered, PFD_SUPPORT_OPENGL -- enough for the
+ * viewer's ChoosePixelFormat to succeed. Nothing GL ever draws into it; fs_render
+ * presents to the same HWND via Vulkan.
+ */
+#define NG_PF_INDEX 1
+
+NG_API int __stdcall wglDescribePixelFormat(HDC dc, int fmt, UINT bytes, PIXELFORMATDESCRIPTOR* ppfd)
+{
+    (void)dc; (void)fmt;
+    if (ppfd && bytes >= sizeof(PIXELFORMATDESCRIPTOR))
+    {
+        memset(ppfd, 0, sizeof(*ppfd));
+        ppfd->nSize = sizeof(PIXELFORMATDESCRIPTOR);
+        ppfd->nVersion = 1;
+        ppfd->dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+        ppfd->iPixelType = PFD_TYPE_RGBA;
+        ppfd->cColorBits = 32;
+        ppfd->cRedBits = 8; ppfd->cGreenBits = 8; ppfd->cBlueBits = 8; ppfd->cAlphaBits = 8;
+        ppfd->cRedShift = 16; ppfd->cGreenShift = 8; ppfd->cBlueShift = 0; ppfd->cAlphaShift = 24;
+        ppfd->cDepthBits = 24;
+        ppfd->cStencilBits = 8;
+        ppfd->iLayerType = PFD_MAIN_PLANE;
+    }
+    return NG_PF_INDEX; /* number of formats supported */
+}
+NG_API int __stdcall wglChoosePixelFormat(HDC dc, const PIXELFORMATDESCRIPTOR* ppfd)
+{
+    (void)dc; (void)ppfd;
+    return NG_PF_INDEX; /* our one format satisfies everything */
+}
+NG_API BOOL __stdcall wglSetPixelFormat(HDC dc, int fmt, const PIXELFORMATDESCRIPTOR* ppfd)
+{
+    (void)dc; (void)fmt; (void)ppfd;
+    return TRUE;
+}
+NG_API int __stdcall wglGetPixelFormat(HDC dc) { (void)dc; return NG_PF_INDEX; }
+NG_API BOOL __stdcall wglSwapBuffers(HDC dc) { (void)dc; return TRUE; } /* engine presents */
+NG_API BOOL __stdcall wglShareLists(HGLRC a, HGLRC b) { (void)a; (void)b; return TRUE; }
+NG_API BOOL __stdcall wglCopyContext(HGLRC a, HGLRC b, UINT m) { (void)a; (void)b; (void)m; return TRUE; }
+NG_API BOOL __stdcall wglSwapLayerBuffers(HDC dc, UINT planes) { (void)dc; (void)planes; return TRUE; }
 
 /* =====================  wglGetProcAddress special table  ====================== */
 static GLuint __stdcall ng_create(GLenum t) { (void)t; return next_id(); }

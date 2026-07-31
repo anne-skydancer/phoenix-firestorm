@@ -186,10 +186,25 @@ static GLint caps_value(GLenum pname)
     case 0x0D57: return 8;            /* GL_STENCIL_BITS */
     case 0x80A8: return 0;            /* GL_SAMPLE_BUFFERS */
     case 0x80A9: return 0;            /* GL_SAMPLES */
-    case 0x9047: return 16 * 1024 * 1024; /* NVX dedicated vidmem (KB) = 16GB */
-    case 0x9048: return 16 * 1024 * 1024; /* NVX total available */
-    case 0x9049: return 16 * 1024 * 1024; /* NVX current available */
-    case 0x87FC: return 16 * 1024 * 1024; /* ATI texture free memory */
+    /* TRUTHFUL, DEFLATED texture budget. The viewer sizes its resident texture set to
+     * mVRAM/2 straight off this (llviewertexture.cpp:534). Reporting the full card
+     * (16GB) made the viewer keep ~8GB of decoded images + 10k CPU vertex shadows
+     * resident until HOST RAM hit 1.5GB free of 32GB and the box froze. The viewer
+     * does NOT own the whole card here -- the engine holds its own copies in the same
+     * VRAM -- so a deflated number is the CORRECT budget, not a lie. Default 6GB
+     * (viewer budget 3GB), tunable via FS_ENGINE_VRAM_MB. */
+    case 0x9047: case 0x9048: case 0x9049: case 0x87FC:
+    {
+        static GLint s_vram_kb = 0;
+        if (s_vram_kb == 0)
+        {
+            const char* env = getenv("FS_ENGINE_VRAM_MB");
+            int mb = (env && env[0]) ? atoi(env) : 0;
+            if (mb <= 0) mb = 6144;
+            s_vram_kb = mb * 1024;
+        }
+        return s_vram_kb;
+    }
     case 0x0B93: return 0;            /* GL_TEXTURE_STACK_DEPTH-ish legacy: 0 */
     default:
     {

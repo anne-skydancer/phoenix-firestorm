@@ -17,6 +17,9 @@ const TYPE_SIZES: [u32; 14] = [16, 16, 8, 8, 8, 8, 4, 4, 16, 4, 16, 16, 8, 16];
 const TYPE_VERTEX: usize = 0;
 const TYPE_TEXCOORD0: usize = 2;
 const TYPE_COLOR: usize = 6;
+const TYPE_TEXCOORD1: usize = 3;
+
+pub const CLASS_TERRAIN: u32 = 1;
 
 /// The per-draw descriptor the viewer fills (POD, `#[repr(C)]`, mirrored in C++).
 #[repr(C)]
@@ -38,6 +41,9 @@ pub struct DrawDesc {
     pub offsets: [u32; 16], // the viewer's own mOffsets[] (authoritative layout)
     pub color: [f32; 4],    // the bound shader's diffuse colour for THIS draw
     pub tex: [u32; 4],      // texture units 0..3 (indexed textures, chosen by position.w)
+    pub draw_class: u32,    // 0 = generic, 1 = terrain
+    pub tex_ex: [u32; 8],   // terrain: detail0-3 + alpha_ramp
+    pub aux: [f32; 8],      // terrain: object_plane_s, object_plane_t
 }
 
 pub fn calc_offsets(typemask: u32, num_verts: u32) -> [u32; 14] {
@@ -65,7 +71,10 @@ pub fn depth_fix() -> Mat4 {
 
 /// One submitted draw, resources already uploaded.
 struct Queued {
-    bind_key: (usize, u32),
+    bind_key: u32,
+    ubo_off: u32,
+    draw_class: u32,
+    terrain_key: [u32; 5],
     vptr: usize,
     iptr: Option<usize>,
     icount: u32,
@@ -81,6 +90,10 @@ pub struct LiveRenderer {
     vs: wgpu::ShaderModule,
     fs: wgpu::ShaderModule,
     pipelines: HashMap<(bool, bool, bool), wgpu::RenderPipeline>,
+    terrain_bgl: wgpu::BindGroupLayout,
+    terrain_pipeline: Option<wgpu::RenderPipeline>,
+    terrain_binds: HashMap<[u32; 5], wgpu::BindGroup>,
+    sampler_clamp: wgpu::Sampler,
     sampler: wgpu::Sampler,
     white: wgpu::TextureView,
     textures: HashMap<u32, (wgpu::Texture, wgpu::TextureView)>,
@@ -90,8 +103,15 @@ pub struct LiveRenderer {
     /// each buffer ONCE instead of re-uploading megabytes every frame (the CPU hog).
     geo: HashMap<usize, (wgpu::Buffer, u64)>,
     /// Reusable per-slot uniform buffers + bind groups (80 bytes each, thousands/frame).
-    ubos: Vec<wgpu::Buffer>,
-    binds: HashMap<(usize, u32), wgpu::BindGroup>,
+    // One ring UBO for the whole frame: per-draw blocks at 256-byte stride, staged on
+    // CPU and uploaded with a SINGLE write_buffer in flush. The old design (one tiny
+    // buffer + write_buffer per draw, bind groups keyed by (slot, texture)) allocated
+    // hundreds of bind groups per frame because the viewer distance-sorts draws -- the
+    // slot<->texture pairing churns every frame. Measured: ~14fps at 2,700 draws.
+    ubo_ring: Option<wgpu::Buffer>,
+    ubo_cap: u64,
+    ubo_stage: Vec<u8>,
+    binds: HashMap<u32, wgpu::BindGroup>, // keyed by TEXTURE id only -- bounded
     slot: usize,
     // Neutral attribute fallbacks: when a draw's typemask lacks TEXCOORD0/COLOR, binding
     // the POSITION block in their place reinterprets float positions as uv/RGBA8 -- which
@@ -120,7 +140,7 @@ impl LiveRenderer {
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
+                        has_dynamic_offset: true, // ring UBO: one buffer, per-draw offsets
                         min_binding_size: None,
                     },
                     count: None,
@@ -139,6 +159,48 @@ impl LiveRenderer {
                 },
             ],
         });
+        let mut tex_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let terrain_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("terrain-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                tex_entry(1),
+                tex_entry(2),
+                tex_entry(3),
+                tex_entry(4),
+                tex_entry(5),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("live-pl"),
             bind_group_layouts: &[&bgl],
@@ -148,6 +210,15 @@ impl LiveRenderer {
         // shaders/live.{vert,frag} via: glslc --target-env=vulkan1.2 live.vert -o live.vert.spv
         let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/live.vert.spv"));
         let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/live.frag.spv"));
+        let sampler_clamp = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("live-samp-clamp"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("live-samp"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -189,12 +260,18 @@ impl LiveRenderer {
             vs,
             fs,
             pipelines: HashMap::new(),
+            terrain_bgl,
+            terrain_pipeline: None,
+            terrain_binds: HashMap::new(),
+            sampler_clamp,
             sampler,
             white: white_tex.create_view(&wgpu::TextureViewDescriptor::default()),
             textures: HashMap::new(),
             queued: Vec::new(),
             geo: HashMap::new(),
-            ubos: Vec::new(),
+            ubo_ring: None,
+            ubo_cap: 0,
+            ubo_stage: Vec::new(),
             binds: HashMap::new(),
             slot: 0,
             uv_zero,
@@ -227,6 +304,12 @@ impl LiveRenderer {
             &rgba[..(w * h * 4) as usize],
         );
         let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+        // F1 (gap G16): discard-level changes re-spec textures via glTexImage2D at a new
+        // size (llimagegl.cpp:1503) -- bind groups referencing the OLD view would pin it
+        // (or the white fallback) forever, leaving textures stuck stale/white. Evict every
+        // bind group that references this id so the next draw rebinds the new view.
+        self.binds.retain(|k, _| *k != id);
+        self.terrain_binds.retain(|k, _| !k.contains(&id));
         self.textures.insert(id, (t, v));
     }
 
@@ -259,11 +342,82 @@ impl LiveRenderer {
     pub fn begin(&mut self) {
         self.queued.clear();
         self.slot = 0;
+        self.ubo_stage.clear();
     }
 
     /// The viewer wrote to this CPU-shadow buffer: drop our GPU copy so it re-uploads once.
     pub fn invalidate(&mut self, ptr: usize) {
         self.geo.remove(&ptr);
+    }
+
+    fn ensure_terrain_pipeline(&mut self, device: &wgpu::Device) {
+        if self.terrain_pipeline.is_some() {
+            return;
+        }
+        let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain.vert.spv"));
+        let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain.frag.spv"));
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("terrain-pl"),
+            bind_group_layouts: &[&self.terrain_bgl],
+            push_constant_ranges: &[],
+        });
+        let vlayouts = [
+            wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x4 }],
+            },
+            wgpu::VertexBufferLayout {
+                array_stride: 8,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 1, format: wgpu::VertexFormat::Float32x2 }],
+            },
+        ];
+        let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("terrain"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &vlayouts },
+            fragment: Some(wgpu::FragmentState {
+                module: &fs,
+                entry_point: "main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: self.format,
+                    blend: Some(wgpu::BlendState::REPLACE), // terrain draws with blending OFF
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+        self.terrain_pipeline = Some(p);
+    }
+
+    fn ensure_ring(&mut self, device: &wgpu::Device, want: u64) {
+        if self.ubo_cap >= want && self.ubo_ring.is_some() {
+            return;
+        }
+        let cap = want.next_power_of_two().max(256 * 1024);
+        self.ubo_ring = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("live-ubo-ring"),
+            size: cap,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.ubo_cap = cap;
+        self.binds.clear(); // existing bind groups reference the old ring buffer
+        self.terrain_binds.clear();
     }
 
     /// Upload-once helper: returns a cached GPU buffer for `ptr`, creating it if needed.
@@ -307,9 +461,36 @@ impl LiveRenderer {
             let base_ptr = idx.as_ptr() as usize;
             if d.mode == 1 {
                 let key = base_ptr ^ 0x5311_D000 ^ (d.offset as usize) ^ ((d.count as usize) << 20);
-                let src: Vec<u16> = idx.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
-                let take: Vec<u16> = src.iter().skip(d.offset as usize).take(d.count as usize).copied().collect();
-                let list = strip_to_list(&take);
+                if let Some((_, len)) = self.geo.get(&key) {
+                    // cached: skip the per-submit expansion entirely (sky dome = strips
+                    // every frame; re-expanding was per-frame allocation churn)
+                    (Some(key), (*len / 2) as u32, 0, 0)
+                } else {
+                    let src: Vec<u16> = idx.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+                    let take: Vec<u16> = src.iter().skip(d.offset as usize).take(d.count as usize).copied().collect();
+                    let list = strip_to_list(&take);
+                    if list.is_empty() {
+                        return;
+                    }
+                    let n = list.len() as u32;
+                    if !self.geo_buffer(device, key, bytemuck::cast_slice(&list), wgpu::BufferUsages::INDEX) {
+                        return;
+                    }
+                    (Some(key), n, 0, 0)
+                }
+            } else {
+                if !self.geo_buffer(device, base_ptr, idx, wgpu::BufferUsages::INDEX) {
+                    return;
+                }
+                (Some(base_ptr), d.count, d.offset, 0)
+            }
+        } else if d.mode == 1 {
+            let key = 0xA51D_0000 ^ (d.offset as usize) ^ ((d.count as usize) << 20);
+            if let Some((_, len)) = self.geo.get(&key) {
+                (Some(key), (*len / 2) as u32, 0, 0)
+            } else {
+                let seq: Vec<u16> = (d.offset as u16..(d.offset + d.count) as u16).collect();
+                let list = strip_to_list(&seq);
                 if list.is_empty() {
                     return;
                 }
@@ -318,54 +499,46 @@ impl LiveRenderer {
                     return;
                 }
                 (Some(key), n, 0, 0)
-            } else {
-                if !self.geo_buffer(device, base_ptr, idx, wgpu::BufferUsages::INDEX) {
-                    return;
-                }
-                (Some(base_ptr), d.count, d.offset, 0)
             }
-        } else if d.mode == 1 {
-            let seq: Vec<u16> = (d.offset as u16..(d.offset + d.count) as u16).collect();
-            let list = strip_to_list(&seq);
-            if list.is_empty() {
-                return;
-            }
-            let key = 0xA51D_0000 ^ (d.offset as usize) ^ ((d.count as usize) << 20);
-            let n = list.len() as u32;
-            if !self.geo_buffer(device, key, bytemuck::cast_slice(&list), wgpu::BufferUsages::INDEX) {
-                return;
-            }
-            (Some(key), n, 0, 0)
         } else {
             (None, 0, d.offset, d.count)
         };
 
-        // Per-slot UBO + bind group, written (not allocated) each frame.
+        // Stage this draw's UBO block (mvp + colour) in the CPU ring at a 256-byte slot;
+        // ONE write_buffer uploads the whole frame in flush.
+        const STRIDE: usize = 256;
         let slot = self.slot;
         self.slot += 1;
-        if slot >= self.ubos.len() {
-            let b = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("live-ubo"),
-                size: 80,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.ubos.push(b);
+        let need = (slot + 1) * STRIDE;
+        if self.ubo_stage.len() < need {
+            self.ubo_stage.resize(need, 0);
         }
         let mvp = depth_fix() * Mat4::from_cols_array(&d.mvp);
-        let mut ubo_data = [0f32; 20];
-        ubo_data[..16].copy_from_slice(&mvp.to_cols_array());
-        ubo_data[16..].copy_from_slice(&d.color);
-        queue.write_buffer(&self.ubos[slot], 0, bytemuck::cast_slice(&ubo_data));
+        let mut block = [0f32; 28]; // mvp + color + plane_s + plane_t (terrain reads all)
+        block[..16].copy_from_slice(&mvp.to_cols_array());
+        block[16..20].copy_from_slice(&d.color);
+        block[20..28].copy_from_slice(&d.aux);
+        let bytes: &[u8] = bytemuck::cast_slice(&block);
+        self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
+        let _ = queue;
 
-        let bind_key = (slot, d.tex0);
-        if !self.binds.contains_key(&bind_key) {
+        let bind_key = d.tex0;
+        if d.draw_class != CLASS_TERRAIN && !self.binds.contains_key(&bind_key) {
+            self.ensure_ring(device, need.max(STRIDE * 1024) as u64);
+            let ring = self.ubo_ring.as_ref().unwrap();
             let tv = self.textures.get(&d.tex0).map(|(_, v)| v).unwrap_or(&self.white);
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("live-bind"),
                 layout: &self.bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.ubos[slot].as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: ring,
+                            offset: 0,
+                            size: std::num::NonZeroU64::new(80),
+                        }),
+                    },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tv) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 ],
@@ -374,7 +547,43 @@ impl LiveRenderer {
         }
 
         let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0);
-        self.ensure_pipeline(device, pipe_key);
+        let mut terrain_key = [0u32; 5];
+        if d.draw_class == CLASS_TERRAIN {
+            terrain_key.copy_from_slice(&d.tex_ex[..5]);
+            self.ensure_terrain_pipeline(device);
+            if !self.terrain_binds.contains_key(&terrain_key) {
+                self.ensure_ring(device, need.max(STRIDE * 1024) as u64);
+                let ring = self.ubo_ring.as_ref().unwrap();
+                let tv: Vec<&wgpu::TextureView> = terrain_key
+                    .iter()
+                    .map(|id| self.textures.get(id).map(|(_, v)| v).unwrap_or(&self.white))
+                    .collect();
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("terrain-bind"),
+                    layout: &self.terrain_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: ring,
+                                offset: 0,
+                                size: std::num::NonZeroU64::new(112),
+                            }),
+                        },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tv[0]) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(tv[1]) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(tv[2]) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(tv[3]) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(tv[4]) },
+                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                        wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.sampler_clamp) },
+                    ],
+                });
+                self.terrain_binds.insert(terrain_key, bg);
+            }
+        } else {
+            self.ensure_pipeline(device, pipe_key);
+        }
         let voffsets = {
             let mut o = [u32::MAX; 14];
             let has = d.offsets.iter().take(14).any(|&x| x != 0);
@@ -385,7 +594,7 @@ impl LiveRenderer {
             }
             o
         };
-        self.queued.push(Queued { bind_key, vptr, iptr, icount, voffsets, pipe_key, first, vcount });
+        self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, draw_class: d.draw_class, terrain_key, vptr, iptr, icount, voffsets, pipe_key, first, vcount });
     }
 
     fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool)) {
@@ -469,6 +678,12 @@ impl LiveRenderer {
         w: u32,
         h: u32,
     ) -> u64 {
+        if !self.ubo_stage.is_empty() {
+            self.ensure_ring(device, self.ubo_stage.len() as u64);
+            if let Some(ring) = &self.ubo_ring {
+                queue.write_buffer(ring, 0, &self.ubo_stage);
+            }
+        }
         self.ensure_depth(device, w, h);
         let depth_view = match &self.depth {
             Some((v, _, _)) => v,
@@ -495,12 +710,29 @@ impl LiveRenderer {
                 occlusion_query_set: None,
             });
             for q in &self.queued {
+                let Some((vbuf, _)) = self.geo.get(&q.vptr) else { continue };
+                let vo = q.voffsets;
+                if q.draw_class == CLASS_TERRAIN {
+                    let Some(p) = self.terrain_pipeline.as_ref() else { continue };
+                    let Some(bind) = self.terrain_binds.get(&q.terrain_key) else { continue };
+                    rp.set_pipeline(p);
+                    rp.set_bind_group(0, bind, &[q.ubo_off]);
+                    rp.set_vertex_buffer(0, vbuf.slice(vo[TYPE_VERTEX] as u64..));
+                    let tc1 = if vo[TYPE_TEXCOORD1] != u32::MAX { vo[TYPE_TEXCOORD1] } else { vo[TYPE_VERTEX] };
+                    rp.set_vertex_buffer(1, vbuf.slice(tc1 as u64..));
+                    if let Some(ip) = q.iptr {
+                        let Some((ib, _)) = self.geo.get(&ip) else { continue };
+                        rp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint16);
+                        rp.draw_indexed(q.first..q.first + q.icount, 0, 0..1);
+                    } else {
+                        rp.draw(q.first..q.first + q.vcount, 0..1);
+                    }
+                    continue;
+                }
                 let Some(p) = self.pipelines.get(&q.pipe_key) else { continue };
                 let Some(bind) = self.binds.get(&q.bind_key) else { continue };
-                let Some((vbuf, _)) = self.geo.get(&q.vptr) else { continue };
                 rp.set_pipeline(p);
-                rp.set_bind_group(0, bind, &[]);
-                let vo = q.voffsets;
+                rp.set_bind_group(0, bind, &[q.ubo_off]);
                 rp.set_vertex_buffer(0, vbuf.slice(vo[TYPE_VERTEX] as u64..));
                 if vo[TYPE_TEXCOORD0] != u32::MAX {
                     rp.set_vertex_buffer(1, vbuf.slice(vo[TYPE_TEXCOORD0] as u64..));

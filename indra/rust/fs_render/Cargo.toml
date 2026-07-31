@@ -11,6 +11,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+png = "0.17"
 wgpu = { version = "0.19", features = ["spirv"] }
 pollster = "0.3"
 bytemuck = { version = "1", features = ["derive"] }

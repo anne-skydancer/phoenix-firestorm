@@ -85,7 +85,7 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
             .find(|f| f.is_srgb())
             .unwrap_or(caps.formats[0]);
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, // frame grabber
             format,
             width: width.max(1),
             height: height.max(1),
@@ -186,6 +186,52 @@ pub extern "C" fn fsr_frame() -> i32 {
     result.unwrap_or(0)
 }
 
+const CAPTURE_REQ: &str = "C:\\fs\\fsr_capture.req";
+const CAPTURE_OUT: &str = "C:\\fs\\fsr_frame.png";
+
+fn write_capture(device: &wgpu::Device, buf: &wgpu::Buffer, stride: u32, w: u32, h: u32, fmt: wgpu::TextureFormat) {
+    let slice = buf.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    device.poll(wgpu::Maintain::Wait);
+    if !matches!(rx.recv(), Ok(Ok(()))) {
+        return;
+    }
+    let data = slice.get_mapped_range();
+    let bgra = matches!(
+        fmt,
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+    );
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for row in 0..h {
+        let src = &data[(row * stride) as usize..(row * stride + w * 4) as usize];
+        let dst = &mut rgba[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
+        if bgra {
+            for px in 0..w as usize {
+                dst[px * 4] = src[px * 4 + 2];
+                dst[px * 4 + 1] = src[px * 4 + 1];
+                dst[px * 4 + 2] = src[px * 4];
+                dst[px * 4 + 3] = 255;
+            }
+        } else {
+            dst.copy_from_slice(src);
+        }
+    }
+    drop(data);
+    buf.unmap();
+    if let Ok(f) = std::fs::File::create(CAPTURE_OUT) {
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        if let Ok(mut wr) = enc.write_header() {
+            let _ = wr.write_image_data(&rgba);
+        }
+    }
+    log::info!("fs_render: frame captured to {}", CAPTURE_OUT);
+}
+
 /// Frames presented so far (test/telemetry).
 #[no_mangle]
 pub extern "C" fn fsr_frame_count() -> u64 {
@@ -244,10 +290,18 @@ pub unsafe extern "C" fn fsr_texture_upload(id: u32, w: u32, h: u32, rgba: *cons
     let bytes = std::slice::from_raw_parts(rgba, (w as usize) * (h as usize) * 4);
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
+    let t0 = std::time::Instant::now();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Engine { device, queue, live, .. } = e;
         live.upload_texture(device, queue, id, w, h, bytes);
     }));
+    let ms = t0.elapsed().as_millis();
+    if ms > 5 {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "SLOWTEX id={} {}x{} {}ms", id, w, h, ms);
+        }
+    }
     if r.is_err() { 0 } else { 1 }
 }
 
@@ -272,12 +326,64 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (w, h) = (e.config.width, e.config.height);
+        let fmt = e.config.format;
         let Engine { device, queue, live, .. } = e;
+        let t0 = std::time::Instant::now();
         let n = live.flush(device, queue, &view, w, h);
+        let flush_us = t0.elapsed().as_micros() as u64;
+        // Frame grabber: when the trigger file exists, copy this frame out and write a
+        // PNG the assistant can Read -- a direct view of exactly what the engine
+        // presents, independent of OS screen-capture APIs. Trigger checked every 15
+        // frames (one fs metadata call), consumed on capture.
+        let cap = e.frames % 15 == 0 && std::path::Path::new(CAPTURE_REQ).exists();
+        let cap_buf = if cap {
+            let stride = ((w * 4 + 255) / 256) * 256;
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("grab"),
+                size: (stride * h) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc2 = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("grab") });
+            enc2.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture {
+                    texture: &frame.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyBuffer {
+                    buffer: &buf,
+                    layout: wgpu::ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(stride),
+                        rows_per_image: Some(h),
+                    },
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+            queue.submit([enc2.finish()]);
+            Some((buf, stride))
+        } else {
+            None
+        };
         frame.present();
+        if let Some((buf, stride)) = cap_buf {
+            write_capture(device, &buf, stride, w, h, fmt);
+            let _ = std::fs::remove_file(CAPTURE_REQ);
+        }
         e.frames += 1;
-        if e.frames % 300 == 1 {
-            log::info!("fs_render: frame {} -- {} draws rendered ({} submitted total)", e.frames, n, live.submitted);
+        {
+            static FLUSH_ACC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            FLUSH_ACC.fetch_add(flush_us, std::sync::atomic::Ordering::Relaxed);
+            if e.frames % 300 == 1 {
+                let acc = FLUSH_ACC.swap(0, std::sync::atomic::Ordering::Relaxed);
+                // Firestorm.log never sees Rust stderr -- write perf where it can be read.
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "frame {} draws {} flush_avg_ms {:.2}", e.frames, n, acc as f64 / 300.0 / 1000.0);
+                }
+            }
         }
         n as i32
     }));

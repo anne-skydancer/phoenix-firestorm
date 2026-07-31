@@ -13,14 +13,14 @@
 
 use std::collections::BTreeMap;
 
-fn extract_str<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+pub(crate) fn extract_str<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let pat = format!("\"{key}\":\"");
     let s = line.find(&pat)? + pat.len();
     let e = line[s..].find('"')? + s;
     Some(&line[s..e])
 }
 
-fn extract_i32(line: &str, key: &str) -> Option<i32> {
+pub(crate) fn extract_i32(line: &str, key: &str) -> Option<i32> {
     let pat = format!("\"{key}\":");
     let s = line.find(&pat)? + pat.len();
     let rest = &line[s..];
@@ -29,7 +29,7 @@ fn extract_i32(line: &str, key: &str) -> Option<i32> {
 }
 
 /// Extract the `[ ["a","b"], ["c","d"] ]` pair-array that FOLLOWS `"key":[`.
-fn extract_pairs(line: &str, key: &str) -> Vec<(String, String)> {
+pub(crate) fn extract_pairs(line: &str, key: &str) -> Vec<(String, String)> {
     let pat = format!("\"{key}\":[");
     let Some(mut i) = line.find(&pat).map(|p| p + pat.len()) else { return vec![] };
     let b = line.as_bytes();

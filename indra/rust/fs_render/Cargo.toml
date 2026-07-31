@@ -1,0 +1,24 @@
+# fs_render -- the live-bridge renderer (rhi/PLAN.md Phase 3, PHASE3_PLAN.md P3a).
+# cdylib by REQUIREMENT: a second Rust staticlib cannot co-link beside llrust
+# (duplicate libstd lang items); the viewer LoadLibrary()s this at runtime in
+# engine mode only. Standalone wgpu stack; shares no build artifacts with llrust.
+[package]
+name = "fs_render"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wgpu = { version = "0.19", features = ["spirv"] }
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.27"
+raw-window-handle = "0.6"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

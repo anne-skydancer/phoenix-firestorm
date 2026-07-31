@@ -106,6 +106,28 @@ static __declspec(thread) GLint g_unpack_row_length = 0;
 static __declspec(thread) GLint g_unpack_alignment = 4;
 static __declspec(thread) GLint g_unpack_swap_bytes = 0;
 
+/* B4/B5: engine readback + clear-color forwarding (declared early -- glReadPixels
+ * and glClearColor are defined above the shader-tracking section). */
+typedef int(__cdecl* fsr_readpx_early_t)(GLuint, GLuint, GLuint, GLuint, unsigned char*);
+typedef int(__cdecl* fsr_clear_early_t)(float, float, float, float);
+static fsr_readpx_early_t g_readpx = NULL;
+static fsr_clear_early_t g_setclear = NULL;
+static int g_read_tried = 0;
+static void get_readback(void)
+{
+    if (!g_read_tried)
+    {
+        g_read_tried = 1;
+        HMODULE m = GetModuleHandleA("fs_render.dll");
+        if (!m) m = LoadLibraryA("fs_render.dll");
+        if (m)
+        {
+            g_readpx = (fsr_readpx_early_t)GetProcAddress(m, "fsr_read_pixels");
+            g_setclear = (fsr_clear_early_t)GetProcAddress(m, "fsr_set_clear_color");
+        }
+    }
+}
+
 static char g_ext_copy[2048]; /* mutable copy for tokenized glGetStringi */
 static const char* g_ext_tok[128];
 static int g_next = -1;
@@ -521,7 +543,11 @@ static void mirror_subtexture(GLenum target, GLint level, GLint x, GLint y, GLsi
 NG_API void __stdcall glBindTexture(GLenum t, GLuint x) { if (t == 0x0DE1) g_bound2d = x; }
 NG_API void __stdcall glBlendFunc(GLenum a, GLenum b) { (void)a; (void)b; }
 NG_API void __stdcall glClear(unsigned int m) { (void)m; }
-NG_API void __stdcall glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) { (void)r; (void)g; (void)b; (void)a; }
+NG_API void __stdcall glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
+{
+    get_readback();
+    if (g_setclear) g_setclear(r, g, b, a);
+}
 NG_API void __stdcall glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) { (void)r; (void)g; (void)b; (void)a; }
 NG_API void __stdcall glCopyTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLint e, GLint f, GLsizei g, GLsizei h) { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
 NG_API void __stdcall glCullFace(GLenum m) { (void)m; }
@@ -604,24 +630,40 @@ NG_API GLboolean __stdcall glIsEnabled(GLenum cap) { return (GLboolean)cap_get(c
 NG_API void __stdcall glGenTextures(GLsizei n, GLuint* t) { gen_ids(n, t); }
 NG_API void __stdcall glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum fmt, GLenum type, void* px)
 {
-    (void)x; (void)y; (void)type;
-    /* Size from the REAL format. Snapshots read GL_RGB (3 bpp,
-     * llviewerwindow.cpp:6382); blindly zeroing w*h*4 overran the caller's buffer
-     * by w*h bytes -- 3.5MB of heap corruption at 2560x1369 (the snapshot crash). */
-    if (px && w > 0 && h > 0)
+    (void)type;
+    if (!px || w <= 0 || h <= 0) return;
+    size_t bpp;
+    switch (fmt)
     {
-        size_t bpp;
-        switch (fmt)
-        {
-        case 0x1907: case 0x80E0: bpp = 3; break;             /* RGB, BGR */
-        case 0x1908: case 0x80E1: bpp = 4; break;             /* RGBA, BGRA */
-        case 0x8227: case 0x190A: bpp = 2; break;             /* RG, LUMINANCE_ALPHA */
-        case 0x1903: case 0x1906: case 0x1909: bpp = 1; break; /* RED, ALPHA, LUM */
-        case 0x1902: bpp = 4; break;                          /* DEPTH_COMPONENT */
-        default: bpp = 1; break;                              /* unknown: underfill, never overrun */
-        }
-        memset(px, 0, (size_t)w * h * bpp);
+    case 0x1907: case 0x80E0: bpp = 3; break;             /* RGB, BGR */
+    case 0x1908: case 0x80E1: bpp = 4; break;             /* RGBA, BGRA */
+    default: bpp = 1; break;
     }
+    /* B4: read the engine's last presented frame (RGBA8, GL row order), convert. */
+    get_readback();
+    if (g_readpx && (bpp == 3 || bpp == 4) && x >= 0 && y >= 0)
+    {
+        unsigned char* tmp = (unsigned char*)malloc((size_t)w * h * 4);
+        if (tmp && g_readpx((GLuint)x, (GLuint)y, (GLuint)w, (GLuint)h, tmp))
+        {
+            unsigned char* dst = (unsigned char*)px;
+            size_t n = (size_t)w * h;
+            int bgr = (fmt == 0x80E0 || fmt == 0x80E1);
+            for (size_t i = 0; i < n; ++i)
+            {
+                unsigned char r = tmp[i * 4], g = tmp[i * 4 + 1], b = tmp[i * 4 + 2], a = tmp[i * 4 + 3];
+                if (bgr) { unsigned char t2 = r; r = b; b = t2; }
+                dst[i * bpp] = r;
+                dst[i * bpp + 1] = g;
+                dst[i * bpp + 2] = b;
+                if (bpp == 4) dst[i * bpp + 3] = a;
+            }
+            free(tmp);
+            return;
+        }
+        free(tmp);
+    }
+    memset(px, 0, (size_t)w * h * bpp);
 }
 NG_API void __stdcall glGetTexImage(GLenum t, GLint l, GLenum f, GLenum ty, void* px)
 {
@@ -728,6 +770,7 @@ static int g_nuni = 0;
 static GLint g_diffuse_loc = -1;
 
 typedef int(__cdecl* fsr_setcolor_t)(float, float, float, float);
+
 static fsr_setcolor_t g_setcolor = NULL;
 static int g_setcolor_tried = 0;
 static fsr_setcolor_t get_setcolor(void)

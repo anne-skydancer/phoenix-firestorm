@@ -199,6 +199,18 @@ void display_startup()
     LLGLState::checkStates();
 
     glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // | GL_STENCIL_BUFFER_BIT);
+    // <FS:VkBridge> B3: display_startup fires per pumped message (~100 call sites);
+    // under FIFO each render+swap costs a vsync wait, serializing login. Throttle to
+    // one render per ~16ms; skipped calls draw nothing and (B1) present nothing.
+    if (FSSceneDump::liveActive())
+    {
+        static LLTimer fs_startup_throttle;
+        if (fs_startup_throttle.getElapsedTimeF64() < 0.016)
+        {
+            return;
+        }
+        fs_startup_throttle.reset();
+    }
     // <FS:VkBridge> the post-login progress phase renders through THIS function, not
     // display() -- without opening an engine frame every submit was rejected and the
     // screen stayed at the raw clear color (measured: f_050 pure teal).

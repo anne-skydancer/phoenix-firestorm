@@ -137,6 +137,16 @@ pub struct LiveRenderer {
     ubo_cap: u64,
     ubo_stage: Vec<u8>,
     binds: HashMap<[u32; 4], wgpu::BindGroup>, // keyed by the batch's 4 texture ids
+    pending_uploads: std::collections::VecDeque<(u32, u32, u32, Vec<u8>)>,
+    frame_upload_bytes: usize,
+    /// HARD SAFETY CEILING: total texture bytes the engine may hold. Oversubscribing
+    /// VRAM forced WDDM paging and wedged the ENTIRE system (force-restart level).
+    /// Beyond budget, least-recently-used textures are evicted; they re-stream on
+    /// demand. Never again.
+    tex_bytes: usize,
+    tex_budget: usize,
+    tex_last_used: HashMap<u32, u64>,
+    frame_no: u64,
     /// Rigged skinning: palettes registered per skin id (viewer world-space mGLMp),
     /// staged into a second dynamic-offset ring each frame they are drawn.
     palettes: HashMap<u32, Vec<f32>>,
@@ -366,6 +376,16 @@ impl LiveRenderer {
             ubo_cap: 0,
             ubo_stage: Vec::new(),
             binds: HashMap::new(),
+            pending_uploads: std::collections::VecDeque::new(),
+            frame_upload_bytes: 0,
+            tex_bytes: 0,
+            tex_budget: std::env::var("FS_ENGINE_TEX_BUDGET_MB")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(4096)
+                * 1024 * 1024,
+            tex_last_used: HashMap::new(),
+            frame_no: 0,
             palettes: HashMap::new(),
             palette_ring: None,
             palette_cap: 0,
@@ -382,10 +402,42 @@ impl LiveRenderer {
         }
     }
 
+    /// DEFLATE: bounded upload budget. Unthrottled uploads during avatar-rez bursts
+    /// queued hundreds of MB of GPU copies with no backpressure -- the driver then
+    /// spends MINUTES draining the debt (the 2-minute post-crash desktop freeze).
+    /// Over-budget uploads defer to following frames.
+    pub fn drain_pending_uploads(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut budget: usize = 32 * 1024 * 1024;
+        while budget > 0 {
+            let Some((id, w, h, data)) = self.pending_uploads.pop_front() else { break };
+            budget = budget.saturating_sub(data.len());
+            self.upload_texture_now(device, queue, id, w, h, &data);
+        }
+        self.frame_upload_bytes = 0;
+    }
+
     pub fn upload_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: u32, w: u32, h: u32, rgba: &[u8]) {
+        let bytes = (w as usize) * (h as usize) * 4;
+        if self.frame_upload_bytes + bytes > 32 * 1024 * 1024 {
+            // over budget this frame: defer (latest content wins per id)
+            self.pending_uploads.retain(|(pid, _, _, _)| *pid != id);
+            self.pending_uploads.push_back((id, w, h, rgba[..bytes.min(rgba.len())].to_vec()));
+            return;
+        }
+        self.frame_upload_bytes += bytes;
+        self.upload_texture_now(device, queue, id, w, h, rgba);
+    }
+
+    fn upload_texture_now(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: u32, w: u32, h: u32, rgba: &[u8]) {
         if id == 0 || w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
             return;
         }
+        if let Some((old, _)) = self.textures.get(&id) {
+            let sz = old.size();
+            self.tex_bytes = self.tex_bytes.saturating_sub((sz.width * sz.height * 4) as usize);
+        }
+        self.tex_bytes += (w * h * 4) as usize;
+        self.tex_last_used.insert(id, self.frame_no);
         let t = device.create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
@@ -429,6 +481,8 @@ impl LiveRenderer {
             if x + w > full_w || y + h > full_h {
                 return false;
             }
+            self.tex_bytes += (full_w * full_h * 4) as usize;
+            self.tex_last_used.insert(id, self.frame_no);
             let t = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("live-tex-lazy"),
                 size: wgpu::Extent3d { width: full_w, height: full_h, depth_or_array_layers: 1 },
@@ -467,6 +521,11 @@ impl LiveRenderer {
     }
 
     pub fn delete_texture(&mut self, id: u32) {
+        if let Some((t, _)) = self.textures.get(&id) {
+            let sz = t.size();
+            self.tex_bytes = self.tex_bytes.saturating_sub((sz.width * sz.height * 4) as usize);
+        }
+        self.tex_last_used.remove(&id);
         if self.textures.remove(&id).is_some() {
             self.binds.retain(|k, _| !k.contains(&id));
             self.terrain_binds.retain(|k, _| !k.contains(&id));
@@ -489,6 +548,24 @@ impl LiveRenderer {
     }
 
     pub fn begin(&mut self) {
+        self.frame_no += 1;
+        // HARD CEILING: evict least-recently-used textures beyond the VRAM budget.
+        // Evicted textures re-stream on demand; a re-fetch beats a wedged machine.
+        if self.tex_bytes > self.tex_budget {
+            let mut by_age: Vec<(u64, u32)> = self
+                .tex_last_used
+                .iter()
+                .filter(|(_, used)| self.frame_no.saturating_sub(**used) > 2)
+                .map(|(id, used)| (*used, *id))
+                .collect();
+            by_age.sort_unstable();
+            for (_, id) in by_age {
+                if self.tex_bytes <= (self.tex_budget / 4) * 3 {
+                    break;
+                }
+                self.delete_texture(id);
+            }
+        }
         self.queued.clear();
         self.slot = 0;
         self.ubo_stage.clear();
@@ -877,6 +954,11 @@ impl LiveRenderer {
         }
 
         let bind_key = d.tex;
+        for id in bind_key.iter().chain(d.tex_ex[..5].iter()) {
+            if *id != 0 {
+                self.tex_last_used.insert(*id, self.frame_no);
+            }
+        }
         if d.draw_class != CLASS_TERRAIN && !self.binds.contains_key(&bind_key) {
             self.ensure_ring(device, need.max(STRIDE * 1024) as u64);
             self.ensure_palette_ring(device, (PALETTE_STRIDE * 16) as u64);

@@ -271,6 +271,10 @@ pub extern "C" fn fsr_shutdown() {
 pub extern "C" fn fsr_begin_frame() -> i32 {
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
+    {
+        let Engine { device, queue, live, .. } = e;
+        live.drain_pending_uploads(device, queue);
+    }
     e.live.begin();
     e.frame_open = true;
     1

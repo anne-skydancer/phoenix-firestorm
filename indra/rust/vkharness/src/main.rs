@@ -3588,7 +3588,12 @@ fn main() {
     }
     if std::env::args().skip(1).any(|a| a == "sweep") {
         // Phase 1 (rhi/PLAN.md): offline shader sweep gate. `cargo run -- sweep`.
-        let ok = sweep::run_sweep();
+        let ok = sweep::run_sweep(false);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if std::env::args().skip(1).any(|a| a == "sweep-split") {
+        // A2 (PHASE2_PLAN.md): separate-sampler split mode -- the wgpu-ready corpus.
+        let ok = sweep::run_sweep(true);
         std::process::exit(if ok { 0 } else { 1 });
     }
     if std::env::args().skip(1).any(|a| a == "h4") {

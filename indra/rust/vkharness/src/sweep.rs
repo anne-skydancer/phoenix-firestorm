@@ -194,6 +194,374 @@ fn vulkan_transform(src: &str) -> (String, usize, usize) {
     (out, members.len(), samplers)
 }
 
+// ---- A2: corpus-wide separate-sampler split (the wgpu-consumption shape) ---------
+// Combined samplers are legal Vulkan but wgpu has no combined binding type. Split mode
+// produces the wgpu-ready corpus: global `uniform samplerX s;` -> texture+sampler pair +
+// `#define s samplerX(s_tex, s_smp)` (constructor at point of use -- legal), PLUS the part
+// the #define can't do: functions taking sampler-typed PARAMS get their signatures
+// pair-expanded, their call sites pair-expanded (constructors are illegal as call args),
+// and in-body param uses reconstructed. Measured surface: 7 files / ~11 signatures, all
+// single-line, no sampler arrays (shadowUtil pcf*, screenSpaceReflUtil tap/trace, dof, rlv).
+
+fn split_sampler_ty(st: &str) -> (String, String) {
+    let smp = if st.contains("Shadow") { "samplerShadow" } else { "sampler" };
+    let (pfx, rest) = if let Some(r) = st.strip_prefix("isampler") {
+        ("itexture", r)
+    } else if let Some(r) = st.strip_prefix("usampler") {
+        ("utexture", r)
+    } else {
+        ("texture", st.strip_prefix("sampler").unwrap_or(st))
+    };
+    (format!("{pfx}{}", rest.replace("Shadow", "")), smp.to_string())
+}
+
+fn is_sampler_ty(t: &str) -> bool {
+    t.starts_with("sampler") || t.starts_with("isampler") || t.starts_with("usampler")
+}
+
+/// Replace whole-word occurrences of `name` (not preceded by '.' or '_'-joined) via `f`.
+fn replace_ident(text: &str, name: &str, with: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while let Some(pos) = text[i..].find(name) {
+        let s = i + pos;
+        let e = s + name.len();
+        let before_ok = s == 0 || {
+            let c = b[s - 1] as char;
+            !(c.is_alphanumeric() || c == '_' || c == '.')
+        };
+        let after_ok = e >= b.len() || {
+            let c = b[e] as char;
+            !(c.is_alphanumeric() || c == '_')
+        };
+        out.push_str(&text[i..s]);
+        if before_ok && after_ok {
+            out.push_str(with);
+        } else {
+            out.push_str(name);
+        }
+        i = e;
+    }
+    out.push_str(&text[i..]);
+    out
+}
+
+/// Pair-expand bare sampler identifiers appearing as top-level args in calls to `known` fns.
+/// Works on the whole text (calls may span lines); recurses into nested args.
+fn expand_call_args(text: &str, known: &std::collections::HashMap<String, ()>, entities: &std::collections::HashMap<String, String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let b = text.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() {
+        // find an identifier start
+        let c = b[i] as char;
+        if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < b.len() && ((b[i] as char).is_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            let ident = &text[start..i];
+            // skip whitespace to see if a call follows
+            let mut j = i;
+            while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
+                j += 1;
+            }
+            let prev_ok = start == 0 || (b[start - 1] as char) != '.';
+            if prev_ok && j < b.len() && b[j] == b'(' && known.contains_key(ident) {
+                // balanced-paren arg span
+                let args_start = j + 1;
+                let mut depth = 1i32;
+                let mut k = args_start;
+                while k < b.len() && depth > 0 {
+                    match b[k] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                let args_end = k - 1; // at ')'
+                let inner = expand_call_args(&text[args_start..args_end], known, entities);
+                // split top-level commas, expand bare sampler-entity idents
+                let mut rebuilt: Vec<String> = Vec::new();
+                let (mut d, mut last) = (0i32, 0usize);
+                let ib = inner.as_bytes();
+                for (idx, &ch) in ib.iter().enumerate() {
+                    match ch {
+                        b'(' | b'[' => d += 1,
+                        b')' | b']' => d -= 1,
+                        b',' if d == 0 => {
+                            rebuilt.push(inner[last..idx].to_string());
+                            last = idx + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                rebuilt.push(inner[last..].to_string());
+                let expanded: Vec<String> = rebuilt
+                    .into_iter()
+                    .map(|a| {
+                        let bare = a.trim();
+                        if entities.contains_key(bare) {
+                            let pad = &a[..a.len() - a.trim_start().len()];
+                            format!("{pad}{bare}_tex, {bare}_smp")
+                        } else {
+                            a
+                        }
+                    })
+                    .collect();
+                out.push_str(ident);
+                out.push_str(&text[i..j]); // preserved whitespace
+                out.push('(');
+                out.push_str(&expanded.join(","));
+                out.push(')');
+                i = k;
+            } else {
+                out.push_str(ident);
+            }
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Join multi-line function SIGNATURES into single logical lines (comment-stripped), so the
+/// signature passes see them whole. FXAA's FxaaPixelShader (~20 params, per-param comments),
+/// SMAA's sigs, and terrain utils all span lines -- the round-1 single-line assumption missed
+/// them (sig unrewritten while call sites/bodies were => both A2 failure shapes). Only lines
+/// whose head is exactly `TYPE IDENT (` with unbalanced parens are joined -- statements like
+/// `vec4 x = fn(` have a 3-token head and are left alone (calls are handled whole-text in P3).
+fn join_signatures(src: &str) -> String {
+    let code_of = |l: &str| l.split("//").next().unwrap_or("").to_string();
+    let paren_bal = |l: &str| {
+        let mut d = 0i32;
+        for c in code_of(l).chars() {
+            if c == '(' {
+                d += 1;
+            } else if c == ')' {
+                d -= 1;
+            }
+        }
+        d
+    };
+    let mut out = String::with_capacity(src.len());
+    let mut lines = src.lines().peekable();
+    while let Some(line) = lines.next() {
+        let t = line.trim_start();
+        let joinable = !t.starts_with('#') && !t.starts_with("//") && t.contains('(') && {
+            match t.find('(') {
+                Some(op) => {
+                    let head: Vec<&str> = t[..op].split_whitespace().collect();
+                    head.len() == 2
+                        && head[0].chars().next().is_some_and(|c| c.is_alphabetic())
+                        && head[1].chars().all(|c| c.is_alphanumeric() || c == '_')
+                }
+                None => false,
+            }
+        };
+        if joinable && paren_bal(line) > 0 {
+            let mut joined = code_of(line).trim_end().to_string();
+            let mut bal = paren_bal(line);
+            for cont in lines.by_ref() {
+                let piece = code_of(cont);
+                joined.push(' ');
+                joined.push_str(piece.trim());
+                bal += paren_bal(cont);
+                if bal <= 0 {
+                    break;
+                }
+            }
+            out.push_str(&joined);
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The A2 split transform: like vulkan_transform but samplers become separate pairs, with
+/// function-signature + call-site + body rewriting. Returns (src, ubo_members, samplers).
+fn split_transform(input: &str) -> (String, usize, usize) {
+    use std::collections::HashMap;
+    let src = &join_signatures(input);
+    // P1: collect sampler-param fn signatures (defs + prototypes; measured all single-line)
+    let mut known: HashMap<String, ()> = HashMap::new();
+    let mut fn_params: HashMap<String, Vec<(String, String)>> = HashMap::new(); // fn -> [(type,name)]
+    for line in src.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') || t.starts_with("//") || !t.contains('(') || !t.contains("sampler") {
+            continue;
+        }
+        let Some(op) = t.find('(') else { continue };
+        let Some(cp) = t.rfind(')') else { continue };
+        if cp < op {
+            continue;
+        }
+        let head: Vec<&str> = t[..op].split_whitespace().collect();
+        // "RET name(" -- reject control flow / calls (head must be exactly type + ident)
+        if head.len() != 2 || !head[0].chars().next().is_some_and(|c| c.is_alphabetic()) {
+            continue;
+        }
+        let fname = head[1];
+        let mut sam_params = Vec::new();
+        for p in t[op + 1..cp].split(',') {
+            let toks: Vec<&str> = p.split_whitespace().collect();
+            if toks.len() >= 2 && is_sampler_ty(toks[toks.len() - 2]) {
+                sam_params.push((toks[toks.len() - 2].to_string(), toks[toks.len() - 1].to_string()));
+            }
+        }
+        if !sam_params.is_empty() {
+            known.insert(fname.to_string(), ());
+            fn_params.insert(fname.to_string(), sam_params);
+        }
+    }
+
+    // P2: line pass -- UBO/base transform + global sampler split + signature rewrite
+    let mut members: Vec<String> = Vec::new();
+    let mut binding: u32 = 1;
+    let mut n_samplers = 0usize;
+    let mut globals: HashMap<String, String> = HashMap::new(); // name -> type
+    let mut depth: i32 = 0;
+    let mut body: Vec<String> = Vec::new();
+    for line in src.lines() {
+        let t = line.trim_start();
+        let mut out_line = line.to_string();
+        if depth == 0 && t.starts_with("uniform ") {
+            let ty = t.split_whitespace().nth(1).unwrap_or("");
+            if is_sampler_ty(ty) || ty.starts_with("image") {
+                let name = line_decl_name(t).unwrap_or_default();
+                let (tex_ty, smp_ty) = split_sampler_ty(ty);
+                let (b_tex, b_smp) = (binding, binding + 1);
+                binding += 2;
+                n_samplers += 1;
+                globals.insert(name.clone(), ty.to_string());
+                out_line = format!(
+                    "layout(set = 0, binding = {b_tex}) uniform {tex_ty} {name}_tex;\n\
+                     layout(set = 0, binding = {b_smp}) uniform {smp_ty} {name}_smp;\n\
+                     #define {name} {ty}({name}_tex, {name}_smp)"
+                );
+            } else if t.contains('=') {
+                out_line = line.replacen("uniform", "const", 1);
+            } else if t.contains(';') {
+                members.push(t.strip_prefix("uniform ").unwrap().trim().to_string());
+                out_line = format!("// [ubo] {t}");
+            } else {
+                out_line = format!("layout(set = 0, binding = {binding}) {t}");
+                binding += 1;
+            }
+        } else if depth == 0 && t.starts_with("layout") && t.contains("uniform") && !t.contains(';') && !t.contains("binding") {
+            out_line = format!("layout(set = 0, binding = {binding}) {t}");
+            binding += 1;
+        } else if !t.starts_with('#') && !t.starts_with("//") && t.contains('(') && t.contains("sampler") {
+            // signature rewrite (defs + prototypes): pair-expand sampler params
+            if let (Some(op), Some(cp)) = (t.find('('), t.rfind(')')) {
+                let head: Vec<&str> = t[..op].split_whitespace().collect();
+                if cp > op && head.len() == 2 && known.contains_key(head[1]) {
+                    let rebuilt: Vec<String> = t[op + 1..cp]
+                        .split(',')
+                        .map(|p| {
+                            let toks: Vec<&str> = p.split_whitespace().collect();
+                            if toks.len() >= 2 && is_sampler_ty(toks[toks.len() - 2]) {
+                                let (tex_ty, smp_ty) = split_sampler_ty(toks[toks.len() - 2]);
+                                let n = toks[toks.len() - 1];
+                                format!("{tex_ty} {n}_tex, {smp_ty} {n}_smp")
+                            } else {
+                                p.trim().to_string()
+                            }
+                        })
+                        .collect();
+                    let indent = &line[..line.len() - t.len()];
+                    out_line = format!("{indent}{} {}({}){}", head[0], head[1], rebuilt.join(", "), &t[cp + 1..]);
+                }
+            }
+        }
+        body.push(out_line);
+        depth += brace_delta(line);
+    }
+
+    // SweepBlock (same as vulkan_transform)
+    let mut block = String::new();
+    if !members.is_empty() {
+        block.push_str("layout(std140, set = 0, binding = 0) uniform SweepBlock {\n");
+        for m in &members {
+            block.push_str("    ");
+            block.push_str(m);
+            block.push('\n');
+        }
+        block.push_str("};\n");
+    }
+    let mut text = String::with_capacity(src.len() + block.len());
+    let mut injected = members.is_empty();
+    for l in &body {
+        let t = l.trim_start();
+        if !injected && !t.is_empty() && !t.starts_with('#') && !t.starts_with("//") {
+            text.push_str(&block);
+            injected = true;
+        }
+        text.push_str(l);
+        text.push('\n');
+    }
+    if !injected {
+        text.push_str(&block);
+    }
+
+    // P3: pair-expand bare sampler args in calls to known fns (params + globals in scope).
+    // Entities map = globals + every known fn's params (over-broad but names are unique).
+    let mut entities: HashMap<String, String> = globals.clone();
+    for ps in fn_params.values() {
+        for (ty, n) in ps {
+            entities.insert(n.clone(), ty.clone());
+        }
+    }
+    let text = expand_call_args(&text, &known, &entities);
+
+    // P4: inside each known fn body, reconstruct remaining bare param uses at point of use.
+    // Find the (rewritten) def line "RET name(...) " and rewrite until brace close.
+    let mut out = String::with_capacity(text.len());
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let t = line.trim_start();
+        let mut is_def = None;
+        if !t.starts_with('#') && !t.starts_with("//") && t.contains('(') {
+            if let Some(op) = t.find('(') {
+                let head: Vec<&str> = t[..op].split_whitespace().collect();
+                if head.len() == 2 && known.contains_key(head[1]) && t.contains(')') && !t.trim_end().ends_with(';') {
+                    is_def = Some(head[1].to_string());
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+        if let Some(fname) = is_def {
+            let params = fn_params.get(&fname).cloned().unwrap_or_default();
+            let mut d = brace_delta(line);
+            let started = d > 0;
+            let mut waiting = !started; // brace on a later line
+            for bl in lines.by_ref() {
+                let mut rl = bl.to_string();
+                for (ty, n) in &params {
+                    rl = replace_ident(&rl, n, &format!("{ty}({n}_tex, {n}_smp)"));
+                }
+                out.push_str(&rl);
+                out.push('\n');
+                d += brace_delta(bl);
+                if waiting && d > 0 {
+                    waiting = false;
+                }
+                if !waiting && d <= 0 {
+                    break;
+                }
+            }
+        }
+    }
+    (out, members.len(), n_samplers)
+}
+
 /// Run the shaderc preprocessor over the assembled TU (defines are in the source). This resolves
 /// #if branches BEFORE dedup -- the viewer's per-object compiles preprocessed first too, so
 /// textual dedup on unpreprocessed source drops decls the preprocessor would have kept
@@ -683,12 +1051,15 @@ fn spirv_val(words: &[u32]) -> Result<(), String> {
 }
 
 /// `cargo run -- sweep` -- run the Phase 1 gate over the program table.
-pub fn run_sweep() -> bool {
-    let dump = std::env::temp_dir().join("sweep_fail");
+pub fn run_sweep(split: bool) -> bool {
+    let dump = std::env::temp_dir().join(if split { "sweep_fail_split" } else { "sweep_fail" });
     let _ = std::fs::create_dir_all(&dump);
     let table = crate::sweep_table::programs_full();
     let mut total_fail = 0usize;
     for (ci, c) in CONFIGS.iter().enumerate() {
+        if split && ci > 0 {
+            break; // A2 gate = canonical config; matrix x split is a later cheap add
+        }
     CFG_IDX.store(ci, std::sync::atomic::Ordering::Relaxed);
     log::info!("== config: {} ==", c.name);
     let mut pass = 0usize;
@@ -715,7 +1086,11 @@ pub fn run_sweep() -> bool {
                 }
             };
             let (deduped, _) = flatten_dedup(&pre);
-            let (transformed, n_ubo, n_smp) = vulkan_transform(&deduped);
+            let (transformed, n_ubo, n_smp) = if split {
+                split_transform(&deduped)
+            } else {
+                vulkan_transform(&deduped)
+            };
             match compile_vulkan(&transformed, fragment, &format!("{}.{stage}", p.name)) {
                 Ok(words) => match spirv_val(&words) {
                     Ok(()) => {

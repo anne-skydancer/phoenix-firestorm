@@ -551,6 +551,53 @@ bool LLGLSLShader::createShader()
     setLabel(mName.c_str());
 #endif
 
+    // <FS:VkBridge> P2a shader-manifest dump (indra/rust/vkharness PHASE2_PLAN.md).
+    // Dev-only, gated on env var FS_SHADER_MANIFEST=<path>: appends one JSON line per
+    // successfully-created program -- the exact inputs the linker saw (post any level
+    // downgrade / feature writeback). Consumed by vkharness `table-diff` to validate its
+    // transcribed program table. Unset env var = zero effect; render path untouched.
+    if (success)
+    {
+        if (const char* manifest_path = getenv("FS_SHADER_MANIFEST"))
+        {
+            if (FILE* mf = fopen(manifest_path, "a"))
+            {
+                std::string files_json;
+                for (const auto& fp : mShaderFiles)
+                {
+                    const char* stage = fp.second == GL_VERTEX_SHADER ? "vert"
+                        : fp.second == GL_FRAGMENT_SHADER ? "frag" : "other";
+                    files_json += llformat("[\"%s\",\"%s\"],", fp.first.c_str(), stage);
+                }
+                if (!files_json.empty()) files_json.pop_back();
+                std::string defines_json;
+                for (const auto& kv : mDefines)
+                {
+                    defines_json += llformat("[\"%s\",\"%s\"],", kv.first.c_str(), kv.second.c_str());
+                }
+                if (!defines_json.empty()) defines_json.pop_back();
+                const LLShaderFeatures& ft = mFeatures;
+                fprintf(mf,
+                    "{\"name\":\"%s\",\"level\":%d,\"files\":[%s],\"defines\":[%s],"
+                    "\"features\":{\"idxch\":%d,\"calculatesLighting\":%d,\"calculatesAtmospherics\":%d,"
+                    "\"hasLighting\":%d,\"isAlphaLighting\":%d,\"isSpecular\":%d,\"hasSkinning\":%d,"
+                    "\"hasObjectSkinning\":%d,\"hasAtmospherics\":%d,\"hasGamma\":%d,\"hasShadows\":%d,"
+                    "\"hasAmbientOcclusion\":%d,\"hasSrgb\":%d,\"isDeferred\":%d,\"hasFullGBuffer\":%d,"
+                    "\"hasScreenSpaceReflections\":%d,\"hasAlphaMask\":%d,\"hasReflectionProbes\":%d,"
+                    "\"attachNothing\":%d,\"isPBRTerrain\":%d,\"hasTonemap\":%d}}\n",
+                    mName.c_str(), mShaderLevel, files_json.c_str(), defines_json.c_str(),
+                    ft.mIndexedTextureChannels, (int)ft.calculatesLighting, (int)ft.calculatesAtmospherics,
+                    (int)ft.hasLighting, (int)ft.isAlphaLighting, (int)ft.isSpecular, (int)ft.hasSkinning,
+                    (int)ft.hasObjectSkinning, (int)ft.hasAtmospherics, (int)ft.hasGamma, (int)ft.hasShadows,
+                    (int)ft.hasAmbientOcclusion, (int)ft.hasSrgb, (int)ft.isDeferred, (int)ft.hasFullGBuffer,
+                    (int)ft.hasScreenSpaceReflections, (int)ft.hasAlphaMask, (int)ft.hasReflectionProbes,
+                    (int)ft.attachNothing, (int)ft.isPBRTerrain, (int)ft.hasTonemap);
+                fclose(mf);
+            }
+        }
+    }
+    // </FS:VkBridge>
+
     return success;
 }
 

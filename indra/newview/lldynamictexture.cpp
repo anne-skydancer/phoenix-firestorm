@@ -30,6 +30,7 @@
 
 // Linden library includes
 #include "llglheaders.h"
+#include "fsscenedump.h" // <FS:VkBridge> F2
 #include "llwindow.h"           // getPosition()
 
 // Viewer includes
@@ -183,6 +184,7 @@ void LLViewerDynamicTexture::postRender(bool success)
 //-----------------------------------------------------------------------------
 bool LLViewerDynamicTexture::updateAllInstances()
 {
+    FSSceneDump::SuppressScope fs_suppress; // <FS:VkBridge> F2: bake/preview renders are offscreen
     LL_PROFILE_ZONE_SCOPED_CATEGORY_UI;
 
     sNumRenders = 0;

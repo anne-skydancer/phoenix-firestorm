@@ -33,6 +33,7 @@
 #include "llerror.h"
 #include "m3math.h"
 #include "llrender.h"
+#include "fsscenedump.h" // <FS:VkBridge> F2
 
 #include "llagent.h"        // for gAgent for getRegion for getWaterHeight
 #include "llcubemap.h"
@@ -110,6 +111,9 @@ S32 LLDrawPoolWater::getNumPostDeferredPasses()
 
 void LLDrawPoolWater::beginPostDeferredPass(S32 pass)
 {
+    // <FS:VkBridge> F2: the fullscreen copy triangle into mWaterDis is FBO-targeted;
+    // replayed on screen it smears the frame (the RenderTransparentWater corruption).
+    FSSceneDump::SuppressScope fs_suppress;
     LL_PROFILE_GPU_ZONE("water beginPostDeferredPass")
     gGL.setColorMask(true, true);
 

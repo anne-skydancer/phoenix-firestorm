@@ -57,6 +57,7 @@
 #include "llxmltree.h"
 #include "llslurl.h"
 #include "llrender.h"
+#include "fsscenedump.h" // <FS:VkBridge> F2
 
 #include "stringize.h"
 
@@ -6744,7 +6745,9 @@ bool LLViewerWindow::cubeSnapshot(const LLVector3& origin, LLCubeMapArray* cubea
 
         // actually render the scene
         gCubeSnapshot = true;
+        FSSceneDump::suppressPush(); // <FS:VkBridge> F2
         display_cube_face();
+        FSSceneDump::suppressPop(); // <FS:VkBridge> F2
         gCubeSnapshot = false;
     }
 

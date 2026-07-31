@@ -31,6 +31,24 @@ namespace FSSceneDump
     void endFrame();
     void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba);
     void bufferDirty(const void* ptr);
+    // <FS:VkBridge> F2 (gap G13): passes whose draws must NOT reach the engine's single
+    // screen pass (shadow cascades, probe faces, water copy/exclusion/haze, bake targets).
+    // <FS:VkBridge> F7/F8: draw-class tagging + per-class aux payload. Set by the draw
+    // pool that OWNS the pass (clean layering: pools know what they draw; the tap does
+    // not reach into newview). CLASS_TERRAIN ships detail0-3+ramp ids and the texgen
+    // planes; recordDraw copies whatever is current into each DrawDesc.
+    const U32 DRAWCLASS_GENERIC = 0;
+    const U32 DRAWCLASS_TERRAIN = 1;
+    void setDrawClass(U32 c);
+    void setAuxTex(U32 slot, U32 tex_id);        // slot < 8
+    void setAuxF4(U32 slot, const F32* v4);      // slot < 2 (vec4 each)
+    void suppressPush();
+    void suppressPop();
+    struct SuppressScope
+    {
+        SuppressScope() { suppressPush(); }
+        ~SuppressScope() { suppressPop(); }
+    };
 }
 
 #endif

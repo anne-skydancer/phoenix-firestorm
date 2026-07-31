@@ -45,6 +45,7 @@
 #include "llui.h"
 #include "llglheaders.h"
 #include "llrender.h"
+#include "fsscenedump.h" // <FS:VkBridge> F2
 #include "llstartup.h"
 #include "llwindow.h"   // swapBuffers()
 
@@ -915,6 +916,7 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
         LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("check reflection map setup"); // <FS:Beq/> improve Tracy scoping 
 
         gCubeSnapshot = true;
+        FSSceneDump::suppressPush(); // <FS:VkBridge> F2
 
         if (sReflectionProbesEnabled)
         {
@@ -934,6 +936,7 @@ bool LLPipeline::allocateScreenBufferInternal(U32 resX, U32 resY)
         }
 
         mRT = &mMainRT;
+        FSSceneDump::suppressPop(); // <FS:VkBridge> F2
         gCubeSnapshot = false;
     }
 
@@ -10140,6 +10143,7 @@ void LLPipeline::renderDeferredLighting()
 
 void LLPipeline::doAtmospherics()
 {
+    FSSceneDump::SuppressScope fs_suppress; // <FS:VkBridge> F2
     LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;
 
     if (sImpostorRender)
@@ -10205,6 +10209,7 @@ void LLPipeline::doAtmospherics()
 
 void LLPipeline::doWaterHaze()
 {
+    FSSceneDump::SuppressScope fs_suppress; // <FS:VkBridge> F2
     LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;
     if (sImpostorRender)
     { // do not attempt water haze on impostors
@@ -10289,6 +10294,7 @@ void LLPipeline::doWaterHaze()
 
 void LLPipeline::doWaterExclusionMask()
 {
+    FSSceneDump::SuppressScope fs_suppress; // <FS:VkBridge> F2
     mWaterExclusionMask.bindTarget();
     gGL.setClearColor(1, 1, 1, 1);
     mWaterExclusionMask.clear();
@@ -10658,6 +10664,7 @@ void LLPipeline::renderShadow(const glm::mat4& view, const glm::mat4& proj, LLCa
     LL_PROFILE_GPU_ZONE("renderShadow");
 
     LLPipeline::sShadowRender = true;
+    FSSceneDump::suppressPush(); // <FS:VkBridge> F2
 
     // disable occlusion culling during shadow render
     U32 saved_occlusion = sUseOcclusion;
@@ -10853,6 +10860,7 @@ void LLPipeline::renderShadow(const glm::mat4& view, const glm::mat4& proj, LLCa
 
     // reset occlusion culling flag
     sUseOcclusion = saved_occlusion;
+    FSSceneDump::suppressPop(); // <FS:VkBridge> F2
     LLPipeline::sShadowRender = false;
 }
 
@@ -12076,6 +12084,7 @@ void LLPipeline::generateImpostor(LLVOAvatar* avatar, bool preview_avatar, bool 
     sReflectionRender = ! sRenderDeferred;
 
     sShadowRender = true;
+    FSSceneDump::suppressPush(); // <FS:VkBridge> F2
     sImpostorRender = true;
 
     LLViewerCamera* viewer_camera = LLViewerCamera::getInstance();
@@ -12363,6 +12372,7 @@ void LLPipeline::generateImpostor(LLVOAvatar* avatar, bool preview_avatar, bool 
     sUseOcclusion = occlusion;
     sReflectionRender = false;
     sImpostorRender = false;
+    FSSceneDump::suppressPop(); // <FS:VkBridge> F2
     sShadowRender = false;
     popRenderTypeMask();
 

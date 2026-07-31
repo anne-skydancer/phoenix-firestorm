@@ -56,6 +56,9 @@ struct FsrDrawDesc
     U32 offsets[16]; // the VIEWER's own mOffsets[] -- never recomputed on the far side
     F32 color[4];    // the bound shader's CURRENT diffuse colour (per-draw, not global)
     U32 tex[4];      // texture units 0..3 -- indexed textures pick per-vertex via position.w
+    U32 draw_class;  // F7: 0 = generic, 1 = terrain (engine picks the pipeline)
+    U32 tex_ex[8];   // per-class texture ids (terrain: detail0-3, alpha_ramp)
+    F32 aux[8];      // per-class data (terrain: object_plane_s, object_plane_t)
 };
 typedef int(__cdecl* fsr_begin_t)();
 typedef int(__cdecl* fsr_submit_t)(const FsrDrawDesc*, const U8*, const U8*);
@@ -68,6 +71,11 @@ static fsr_end_t sFsrEnd = nullptr;
 static fsr_texup_t sFsrTexUpload = nullptr;
 static fsr_dirty_t sFsrDirty = nullptr;
 static bool sLive = false;
+static S32 sSuppressDepth = 0; // F2: >0 while an offscreen pass renders
+static U32 sDrawClass = 0;     // F7: current draw class (set by the owning pool)
+static U32 sAuxTex[8] = { 0 };
+static F32 sAuxF[8] = { 0 };
+static U64 sSubmitTicks = 0;   // perf: QPC ticks spent inside fsr_submit this frame
 static U32 sLiveDraws = 0;
 static U32 sLiveFrames = 0;   // increments every frame in live mode (login screen included)
 static U32 sLiveNoShadow = 0; // taps hit but no CPU shadow -> cannot submit
@@ -112,6 +120,45 @@ void bufferDirty(const void* ptr)
     if (sLive && sFsrDirty && ptr)
     {
         sFsrDirty((size_t)ptr);
+    }
+}
+
+void setDrawClass(U32 c)
+{
+    sDrawClass = c;
+    if (c == DRAWCLASS_GENERIC)
+    {
+        memset(sAuxTex, 0, sizeof(sAuxTex));
+        memset(sAuxF, 0, sizeof(sAuxF));
+    }
+}
+
+void setAuxTex(U32 slot, U32 tex_id)
+{
+    if (slot < 8)
+    {
+        sAuxTex[slot] = tex_id;
+    }
+}
+
+void setAuxF4(U32 slot, const F32* v4)
+{
+    if (slot < 2 && v4)
+    {
+        memcpy(&sAuxF[slot * 4], v4, 4 * sizeof(F32));
+    }
+}
+
+void suppressPush()
+{
+    ++sSuppressDepth;
+}
+
+void suppressPop()
+{
+    if (sSuppressDepth > 0)
+    {
+        --sSuppressDepth;
     }
 }
 
@@ -167,7 +214,10 @@ static U64 blob_hash(const U8* p, size_t n)
 void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offset, bool indexed)
 {
     // <FS:VkBridge> P3c live path: submit straight to the engine.
-    if (sLive && vb)
+    // F2: offscreen passes (shadow/probe/water-copy/exclusion/haze/bakes) are suppressed --
+    // replayed into the single screen pass they painted OVER the frame (the transparent-
+    // water corruption) and tripled submit volume.
+    if (sLive && sSuppressDepth == 0 && vb)
     {
         const U8* vdata = vb->getMappedData();
         const U8* idata = vb->getMappedIndices();
@@ -294,7 +344,14 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
                 const glm::mat4 mvp = gGL.getProjectionMatrix() * gGL.getModelviewMatrix();
                 memcpy(d.mvp, glm::value_ptr(mvp), sizeof(d.mvp));
             }
+            d.draw_class = sDrawClass;
+            memcpy(d.tex_ex, sAuxTex, sizeof(d.tex_ex));
+            memcpy(d.aux, sAuxF, sizeof(d.aux));
+            LARGE_INTEGER t0, t1;
+            QueryPerformanceCounter(&t0);
             sFsrSubmit(&d, vdata, indexed ? idata : nullptr);
+            QueryPerformanceCounter(&t1);
+            sSubmitTicks += (U64)(t1.QuadPart - t0.QuadPart);
             ++sLiveDraws;
         }
     }
@@ -462,8 +519,13 @@ void onFrame(bool in_world)
         ++sLiveFrames;
         if (sLiveFrames % 120 == 0)
         {
+            LARGE_INTEGER freq;
+            QueryPerformanceFrequency(&freq);
+            F64 submit_ms = (F64)sSubmitTicks * 1000.0 / (F64)freq.QuadPart / 120.0;
             LL_INFOS("SceneDump") << "P3c live frame " << sLiveFrames << ": submitted=" << sLiveDraws
-                                  << " no_cpu_shadow=" << sLiveNoShadow << LL_ENDL;
+                                  << " no_cpu_shadow=" << sLiveNoShadow
+                                  << " submit_ms/frame=" << submit_ms << LL_ENDL;
+            sSubmitTicks = 0;
         }
         sLiveDraws = 0;
         sLiveNoShadow = 0;

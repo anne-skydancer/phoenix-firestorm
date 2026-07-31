@@ -48,6 +48,7 @@
 #include "pipeline.h"
 #include "llviewershadermgr.h"
 #include "llrender.h"
+#include "fsscenedump.h" // <FS:VkBridge> F8
 #include "llenvironment.h"
 #include "llsettingsvo.h"
 
@@ -281,6 +282,14 @@ void LLDrawPoolTerrain::renderFullShaderTextures()
     shader->uniform4fv(LLShaderMgr::OBJECT_PLANE_S, 1, tp0.mV);
     shader->uniform4fv(LLShaderMgr::OBJECT_PLANE_T, 1, tp1.mV);
 
+    // <FS:VkBridge> F8: tag the upcoming terrain draws for the engine and ship the
+    // texgen planes now, while tp0/tp1 are in hand. Texture ids follow below as each
+    // unit binds.
+    FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_TERRAIN);
+    FSSceneDump::setAuxF4(0, tp0.mV);
+    FSSceneDump::setAuxF4(1, tp1.mV);
+    FSSceneDump::setAuxTex(0, detail_texture0p ? detail_texture0p->getTexName() : 0);
+
     LLSettingsWater::ptr_t pwater = LLEnvironment::instance().getCurrentWater();
 
     //
@@ -288,6 +297,7 @@ void LLDrawPoolTerrain::renderFullShaderTextures()
     //
     S32 detail1 = sShader->enableTexture(LLViewerShaderMgr::TERRAIN_DETAIL1);
     gGL.getTexUnit(detail1)->bind(detail_texture1p);
+    FSSceneDump::setAuxTex(1, detail_texture1p ? detail_texture1p->getTexName() : 0); // <FS:VkBridge> F8
     gGL.getTexUnit(detail1)->setTextureAddressMode(LLTexUnit::TAM_WRAP);
     gGL.getTexUnit(detail1)->activate();
 
@@ -295,6 +305,7 @@ void LLDrawPoolTerrain::renderFullShaderTextures()
     //
     S32 detail2 = sShader->enableTexture(LLViewerShaderMgr::TERRAIN_DETAIL2);
     gGL.getTexUnit(detail2)->bind(detail_texture2p);
+    FSSceneDump::setAuxTex(2, detail_texture2p ? detail_texture2p->getTexName() : 0); // <FS:VkBridge> F8
     gGL.getTexUnit(detail2)->setTextureAddressMode(LLTexUnit::TAM_WRAP);
     gGL.getTexUnit(detail2)->activate();
 
@@ -303,6 +314,7 @@ void LLDrawPoolTerrain::renderFullShaderTextures()
     //
     S32 detail3 = sShader->enableTexture(LLViewerShaderMgr::TERRAIN_DETAIL3);
     gGL.getTexUnit(detail3)->bind(detail_texture3p);
+    FSSceneDump::setAuxTex(3, detail_texture3p ? detail_texture3p->getTexName() : 0); // <FS:VkBridge> F8
     gGL.getTexUnit(detail3)->setTextureAddressMode(LLTexUnit::TAM_WRAP);
     gGL.getTexUnit(detail3)->activate();
 
@@ -311,12 +323,14 @@ void LLDrawPoolTerrain::renderFullShaderTextures()
     //
     S32 alpha_ramp = sShader->enableTexture(LLViewerShaderMgr::TERRAIN_ALPHARAMP);
     gGL.getTexUnit(alpha_ramp)->bind(m2DAlphaRampImagep);
+    FSSceneDump::setAuxTex(4, m2DAlphaRampImagep ? m2DAlphaRampImagep->getTexName() : 0); // <FS:VkBridge> F8
     gGL.getTexUnit(alpha_ramp)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
 
     // GL_BLEND disabled by default
     drawLoop();
 
     // Disable multitexture
+    FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_GENERIC); // <FS:VkBridge> F8
     sShader->disableTexture(LLViewerShaderMgr::TERRAIN_ALPHARAMP);
     sShader->disableTexture(LLViewerShaderMgr::TERRAIN_DETAIL0);
     sShader->disableTexture(LLViewerShaderMgr::TERRAIN_DETAIL1);
@@ -575,7 +589,32 @@ void LLDrawPoolTerrain::renderFullShaderPBR(bool use_local_materials)
     shader->uniform4f(LLShaderMgr::TERRAIN_MINIMUM_ALPHAS, minimum_alphas[0], minimum_alphas[1], minimum_alphas[2], minimum_alphas[3]);
 
     // GL_BLEND disabled by default
+    // <FS:VkBridge> F8-PBR: Isle-of-Repose-class regions use PBR terrain composition,
+    // so the legacy-path hooks never fire there (renderFullShader branches at :232/:241
+    // -- measured: terrain stayed white in-world). Phase-A approximation: ship the four
+    // BASE COLOR textures + the alpha ramp through the same terrain pipeline, with the
+    // legacy texgen planes recomputed here (PBR path does not set OBJECT_PLANE_*).
+    {
+        LLVector3d rog = gAgent.getRegion()->getOriginGlobal();
+        F32 off_x = (F32)fmod(rog.mdV[VX], 1.0 / (F64)sDetailScale) * sDetailScale;
+        F32 off_y = (F32)fmod(rog.mdV[VY], 1.0 / (F64)sDetailScale) * sDetailScale;
+        LLVector4 fs_tp0(sDetailScale, 0.0f, 0.0f, off_x);
+        LLVector4 fs_tp1(0.0f, sDetailScale, 0.0f, off_y);
+        FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_TERRAIN);
+        FSSceneDump::setAuxF4(0, fs_tp0.mV);
+        FSSceneDump::setAuxF4(1, fs_tp1.mV);
+        for (U32 fs_i = 0; fs_i < terrain_material_count && fs_i < 4; ++fs_i)
+        {
+            const LLFetchedGLTFMaterial* fs_mat = (*fetched_materials)[fs_i].get();
+            LLViewerTexture* fs_bc = fs_mat ? fs_mat->mBaseColorTexture.get() : nullptr;
+            FSSceneDump::setAuxTex(fs_i, fs_bc ? fs_bc->getTexName() : 0);
+        }
+        FSSceneDump::setAuxTex(4,
+            (paint_type == TERRAIN_PAINT_TYPE_HEIGHTMAP_WITH_NOISE && m2DAlphaRampImagep)
+                ? m2DAlphaRampImagep->getTexName() : 0);
+    }
     drawLoop();
+    FSSceneDump::setDrawClass(FSSceneDump::DRAWCLASS_GENERIC); // <FS:VkBridge> F8-PBR
 
     // Disable multitexture
 

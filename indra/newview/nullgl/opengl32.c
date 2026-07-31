@@ -556,8 +556,24 @@ NG_API GLboolean __stdcall glIsEnabled(GLenum cap) { return (GLboolean)cap_get(c
 NG_API void __stdcall glGenTextures(GLsizei n, GLuint* t) { gen_ids(n, t); }
 NG_API void __stdcall glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum fmt, GLenum type, void* px)
 {
-    (void)x; (void)y; (void)fmt; (void)type;
-    if (px && w > 0 && h > 0) memset(px, 0, (size_t)w * h * 4);
+    (void)x; (void)y; (void)type;
+    /* Size from the REAL format. Snapshots read GL_RGB (3 bpp,
+     * llviewerwindow.cpp:6382); blindly zeroing w*h*4 overran the caller's buffer
+     * by w*h bytes -- 3.5MB of heap corruption at 2560x1369 (the snapshot crash). */
+    if (px && w > 0 && h > 0)
+    {
+        size_t bpp;
+        switch (fmt)
+        {
+        case 0x1907: case 0x80E0: bpp = 3; break;             /* RGB, BGR */
+        case 0x1908: case 0x80E1: bpp = 4; break;             /* RGBA, BGRA */
+        case 0x8227: case 0x190A: bpp = 2; break;             /* RG, LUMINANCE_ALPHA */
+        case 0x1903: case 0x1906: case 0x1909: bpp = 1; break; /* RED, ALPHA, LUM */
+        case 0x1902: bpp = 4; break;                          /* DEPTH_COMPONENT */
+        default: bpp = 1; break;                              /* unknown: underfill, never overrun */
+        }
+        memset(px, 0, (size_t)w * h * bpp);
+    }
 }
 NG_API void __stdcall glGetTexImage(GLenum t, GLint l, GLenum f, GLenum ty, void* px)
 {

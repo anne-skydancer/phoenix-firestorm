@@ -30,6 +30,7 @@
 #include "linden_common.h"
 
 #include "llimagegl.h"
+#include "fsscenedump.h" // <FS:VkBridge> F3
 
 #include "llerror.h"
 #include "llfasttimer.h"
@@ -2511,6 +2512,13 @@ void LLImageGL::resetCurTexSizebar()
 
 bool LLImageGL::scaleDown(S32 desired_discard)
 {
+    // <FS:VkBridge> F3 (gap G17): the downscale is a render-to-self + glCopyTexSubImage2D,
+    // which the null-GL stub cannot service -- the NULL re-spec at the smaller size would
+    // wipe the engine's copy to black. Keep the full-res texture in engine mode.
+    if (FSSceneDump::liveActive())
+    {
+        return false;
+    }
     LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
 
     if (mTarget != GL_TEXTURE_2D

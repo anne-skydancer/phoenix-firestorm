@@ -504,6 +504,21 @@ static void update_tp_display(bool minimized)
 void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 {
     FSSceneDump::onFrame(LLStartUp::getStartupState() == STATE_STARTED); // <FS:VkBridge> P2b
+    // <FS:VkBridge> settings AUTOSAVE: bridge sessions can end in force-quit; the
+    // logout-time flush never runs then and in-session changes were lost (measured,
+    // repeatedly). Save every 60s; costs ~ms.
+    if (FSSceneDump::liveActive())
+    {
+        static LLTimer fs_settings_autosave;
+        if (fs_settings_autosave.getElapsedTimeF64() > 60.0)
+        {
+            fs_settings_autosave.reset();
+            if (gSavedSettings.getString("ClientSettingsFile").length())
+            {
+                gSavedSettings.saveToFile(gSavedSettings.getString("ClientSettingsFile"), true);
+            }
+        }
+    }
     LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("Render");
     LL_PROFILE_GPU_ZONE("Render");
 

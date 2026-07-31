@@ -386,6 +386,10 @@ impl LiveRenderer {
         true
     }
 
+    pub fn queued_len(&self) -> usize {
+        self.queued.len()
+    }
+
     pub fn begin(&mut self) {
         self.queued.clear();
         self.slot = 0;
@@ -750,6 +754,18 @@ impl LiveRenderer {
         w: u32,
         h: u32,
     ) -> u64 {
+        self.flush_clear(device, queue, target, w, h, wgpu::Color { r: 0.09, g: 0.35, b: 0.4, a: 1.0 })
+    }
+
+    pub fn flush_clear(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        w: u32,
+        h: u32,
+        clear: wgpu::Color,
+    ) -> u64 {
         if !self.ubo_stage.is_empty() {
             self.ensure_ring(device, self.ubo_stage.len() as u64);
             if let Some(ring) = &self.ubo_ring {
@@ -769,7 +785,7 @@ impl LiveRenderer {
                     view: target,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.09, g: 0.35, b: 0.4, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

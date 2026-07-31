@@ -26,6 +26,13 @@ struct Engine {
     live: LiveRenderer,
     frame_open: bool,
     adapter_desc: String,
+    /// B4: retained copy of the last presented frame (readback for snapshots and the
+    /// saved login backdrop -- stub glReadPixels was zero-filling screen_last.png).
+    last_frame: Option<(wgpu::Texture, u32, u32)>,
+    /// B5: the viewer's glClearColor, forwarded by the stub; teal only in debug.
+    clear_color: wgpu::Color,
+    debug_teal: bool,
+    presented_once: bool,
 }
 
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
@@ -111,6 +118,10 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
             live,
             frame_open: false,
             adapter_desc: format!("{} ({} {})", info.name, info.driver, info.driver_info),
+            last_frame: None,
+            clear_color: wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+            debug_teal: std::env::var("FS_ENGINE_DEBUG").map(|v| v == "1").unwrap_or(false),
+            presented_once: false,
         })
     });
     match result {
@@ -316,6 +327,13 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
     e.frame_open = false;
+    // B1: an empty frame would present the raw clear over a good image -- the whole
+    // teal-flash class (window resize swaps, startup states with no draws). Keep the
+    // last presented frame instead. The very first present still goes through so the
+    // window never shows stale desktop contents.
+    if e.live.queued_len() == 0 && e.presented_once {
+        return 0;
+    }
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let frame = match e.surface.get_current_texture() {
             Ok(f) => f,
@@ -340,9 +358,14 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (w, h) = (e.config.width, e.config.height);
         let fmt = e.config.format;
+        let clear = if e.debug_teal {
+            wgpu::Color { r: 0.08, g: 0.35, b: 0.4, a: 1.0 }
+        } else {
+            e.clear_color
+        };
         let Engine { device, queue, live, .. } = e;
         let t0 = std::time::Instant::now();
-        let n = live.flush(device, queue, &view, w, h);
+        let n = live.flush_clear(device, queue, &view, w, h, clear);
         let flush_us = t0.elapsed().as_micros() as u64;
         // Frame grabber: when the trigger file exists, copy this frame out and write a
         // PNG the assistant can Read -- a direct view of exactly what the engine
@@ -380,7 +403,40 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         } else {
             None
         };
+        // B4: retain a copy for readback (snapshots / saveFinalSnapshot backdrop)
+        {
+            let need_new = match &e.last_frame {
+                Some((_, lw, lh)) => *lw != w || *lh != h,
+                None => true,
+            };
+            if need_new {
+                e.last_frame = Some((
+                    device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("last-frame"),
+                        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: fmt,
+                        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[],
+                    }),
+                    w,
+                    h,
+                ));
+            }
+            if let Some((lt, _, _)) = &e.last_frame {
+                let mut enc3 = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("retain") });
+                enc3.copy_texture_to_texture(
+                    wgpu::ImageCopyTexture { texture: &frame.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    wgpu::ImageCopyTexture { texture: lt, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+                queue.submit([enc3.finish()]);
+            }
+        }
         frame.present();
+        e.presented_once = true;
         if let Some((buf, stride)) = cap_buf {
             write_capture(device, &buf, stride, w, h, fmt);
             let _ = std::fs::remove_file(CAPTURE_REQ);
@@ -442,6 +498,82 @@ pub extern "C" fn fsr_set_color(r: f32, g: f32, b: f32, a: f32) -> i32 {
     } else {
         0
     }
+}
+
+/// B5: the viewer's clear color (stub forwards glClearColor).
+#[no_mangle]
+pub extern "C" fn fsr_set_clear_color(r: f32, g: f32, b: f32, a: f32) -> i32 {
+    if let Some(e) = ENGINE.lock().unwrap().as_mut() {
+        e.clear_color = wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 };
+        1
+    } else {
+        0
+    }
+}
+
+/// B4: read back a region of the LAST PRESENTED frame as tightly-packed RGBA8 with
+/// GL semantics (y=0 = bottom row). Returns 1 on success.
+/// # Safety: `out` must hold w*h*4 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_read_pixels(x: u32, y: u32, w: u32, h: u32, out: *mut u8) -> i32 {
+    if out.is_null() || w == 0 || h == 0 {
+        return 0;
+    }
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    let Some((lt, fw, fh)) = &e.last_frame else { return 0 };
+    let (fw, fh) = (*fw, *fh);
+    // GL origin is bottom-left; the texture's is top-left.
+    if x + w > fw || y + h > fh {
+        return 0;
+    }
+    let tex_y = fh - y - h;
+    let stride = ((w * 4 + 255) / 256) * 256;
+    let buf = e.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readpx"),
+        size: (stride * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = e.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readpx") });
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: lt, mip_level: 0, origin: wgpu::Origin3d { x, y: tex_y, z: 0 }, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer {
+            buffer: &buf,
+            layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) },
+        },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    e.queue.submit([enc.finish()]);
+    let slice = buf.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    e.device.poll(wgpu::Maintain::Wait);
+    if !matches!(rx.recv(), Ok(Ok(()))) {
+        return 0;
+    }
+    let data = slice.get_mapped_range();
+    let bgra = matches!(e.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+    for row in 0..h {
+        // flip vertically: GL row 0 = bottom = texture row (h-1)
+        let src = &data[((h - 1 - row) * stride) as usize..((h - 1 - row) * stride + w * 4) as usize];
+        let dst = std::slice::from_raw_parts_mut(out.add((row * w * 4) as usize), (w * 4) as usize);
+        if bgra {
+            for px in 0..w as usize {
+                dst[px * 4] = src[px * 4 + 2];
+                dst[px * 4 + 1] = src[px * 4 + 1];
+                dst[px * 4 + 2] = src[px * 4];
+                dst[px * 4 + 3] = src[px * 4 + 3];
+            }
+        } else {
+            dst.copy_from_slice(src);
+        }
+    }
+    drop(data);
+    buf.unmap();
+    1
 }
 
 /// Honest adapter identity for Help > About (NOT a spoofed GL string).

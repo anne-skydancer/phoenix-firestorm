@@ -203,6 +203,18 @@ const PBR_TERRAIN_NAMES: [&str; 2] = [
 
 /// The complete program table (all ~132 createShader sites, loops expanded).
 pub fn programs_full() -> Vec<ProgramDef> {
+    // Early GPU-benchmark creation (llglsandbox.cpp:1058, gpu_benchmark): level 1,
+    // attachNothing -- created BEFORE setShaders; the later setShaders re-creation at
+    // level 2 is the separate "benchmark" entry below. Both are real viewer programs.
+    let mut v0: Vec<ProgramDef> = Vec::new();
+    v0.push(ProgramDef {
+        name: "benchmark_early",
+        level: 1,
+        features: Features { attach_nothing: true, ..Default::default() },
+        defines: vec![],
+        vert: vec!["interface/benchmarkV.glsl"],
+        frag: vec!["interface/benchmarkF.glsl"],
+    });
     let mut v: Vec<ProgramDef> = Vec::with_capacity(240);
 
     // =========================================================================
@@ -2232,7 +2244,8 @@ pub fn programs_full() -> Vec<ProgramDef> {
         frag: vec!["interface/irradianceGenF.glsl"],
     });
 
-    v
+    v0.extend(v);
+    v0
 }
 
 #[cfg(test)]

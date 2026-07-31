@@ -133,6 +133,32 @@ fn table_features(f: &crate::sweep::Features) -> BTreeMap<String, i32> {
 }
 
 pub fn run_table_diff(manifest_path: &str) -> bool {
+    // Settings-driven defines to normalize away (documented deltas between the manifest
+    // run's real settings and the table's canonical settings), via --ignore KEY args.
+    let ignore: Vec<String> = std::env::args()
+        .skip_while(|x| x != "--ignore")
+        .skip(1)
+        .take_while(|x| !x.starts_with("--"))
+        .collect();
+    let ignore_all: Vec<String> = {
+        let mut v = ignore;
+        let mut i = std::env::args().collect::<Vec<_>>();
+        // collect every occurrence of --ignore K
+        let mut extra = Vec::new();
+        while let Some(p) = i.iter().position(|x| x == "--ignore") {
+            if p + 1 < i.len() {
+                extra.push(i[p + 1].clone());
+            }
+            i.drain(..p + 1);
+        }
+        v.extend(extra);
+        v.sort();
+        v.dedup();
+        v
+    };
+    if !ignore_all.is_empty() {
+        log::info!("table-diff: normalizing away settings-driven defines: {:?}", ignore_all);
+    }
     let manifest = parse_manifest(manifest_path);
     if manifest.is_empty() {
         log::error!("table-diff: no entries parsed from {manifest_path}");
@@ -159,17 +185,35 @@ pub fn run_table_diff(manifest_path: &str) -> bool {
             continue;
         }
         // variant select: defines-exact
-        let exact = cands.iter().copied().find(|&i| {
-            let td: BTreeMap<String, String> =
-                table[i].defines.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-            td == m.defines
-        });
+        let mdef: BTreeMap<String, String> = m
+            .defines
+            .iter()
+            .filter(|(k, _)| !ignore_all.contains(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let def_match = |i: usize| {
+            let td: BTreeMap<String, String> = table[i]
+                .defines
+                .iter()
+                .filter(|(k, _)| !ignore_all.contains(&k.to_string()))
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect();
+            td == mdef
+        };
+        // prefer an UNMATCHED candidate on ties (twin entries with identical files+defines,
+        // e.g. benchmark_early vs benchmark, differ only in level/features)
+        let exact = cands
+            .iter()
+            .copied()
+            .find(|&i| !matched_table[i] && table[i].level == m.level && def_match(i))
+            .or_else(|| cands.iter().copied().find(|&i| !matched_table[i] && def_match(i)))
+            .or_else(|| cands.iter().copied().find(|&i| def_match(i)));
         let Some(ti) = exact else {
             let near = cands[0];
             let td: BTreeMap<String, String> =
                 table[near].defines.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-            let only_m: Vec<_> = m.defines.iter().filter(|(k, v)| td.get(*k) != Some(v)).collect();
-            let only_t: Vec<_> = td.iter().filter(|(k, v)| m.defines.get(*k) != Some(v)).collect();
+            let only_m: Vec<_> = mdef.iter().filter(|(k, v)| td.get(*k) != Some(v)).collect();
+            let only_t: Vec<_> = td.iter().filter(|(k, v)| mdef.get(*k) != Some(v)).collect();
             log::warn!(
                 "DEFINES   {:<40} (nearest {}): viewer-only {:?} | table-only {:?}",
                 m.name, table[near].name, only_m, only_t

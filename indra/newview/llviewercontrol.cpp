@@ -28,6 +28,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llviewercontrol.h"
+#include "fsscenedump.h" // <FS:VkBridge>
 
 // Library includes
 #include "llwindow.h"   // getGamma()
@@ -273,6 +274,12 @@ bool handleSetShaderChanged(const LLSD& newvalue)
 
     // else, leave terrain detail as is
     LLViewerShaderMgr::instance()->setShaders();
+    // <FS:VkBridge> persist immediately when a graphics setting changes -- bridge
+    // sessions can freeze/force-quit before any timer autosave, losing the change.
+    if (FSSceneDump::liveActive() && gSavedSettings.getString("ClientSettingsFile").length())
+    {
+        gSavedSettings.saveToFile(gSavedSettings.getString("ClientSettingsFile"), true);
+    }
     return true;
 }
 

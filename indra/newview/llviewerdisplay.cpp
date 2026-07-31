@@ -510,7 +510,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
     if (FSSceneDump::liveActive())
     {
         static LLTimer fs_settings_autosave;
-        if (fs_settings_autosave.getElapsedTimeF64() > 60.0)
+        if (fs_settings_autosave.getElapsedTimeF64() > 20.0)
         {
             fs_settings_autosave.reset();
             if (gSavedSettings.getString("ClientSettingsFile").length())

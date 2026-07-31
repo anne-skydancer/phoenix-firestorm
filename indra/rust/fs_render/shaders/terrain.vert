@@ -10,6 +10,10 @@ layout(set = 0, binding = 0) uniform U {
     vec4 color_u;
     vec4 plane_s;
     vec4 plane_t;
+    mat4 texmat; // unused by terrain (identity in the main pass)
+    vec4 khr_sr;
+    vec4 khr_off;
+    vec4 flags;
 } u;
 layout(location = 0) out vec2 v_detail;
 layout(location = 1) out vec4 v_ramp01;  // .xy = tc (alpha1), .zw = tc-(2,0) (alpha2)

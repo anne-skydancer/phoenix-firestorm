@@ -12,6 +12,10 @@ layout(set = 0, binding = 0) uniform U {
     vec4 color_u;
     vec4 plane_s;
     vec4 plane_t;
+    mat4 texmat; // unused by terrain (identity in the main pass)
+    vec4 khr_sr;
+    vec4 khr_off;
+    vec4 flags;
 } u;
 layout(set = 0, binding = 1) uniform texture2D detail0;
 layout(set = 0, binding = 2) uniform texture2D detail1;

@@ -44,6 +44,10 @@ pub struct DrawDesc {
     pub draw_class: u32,    // 0 = generic, 1 = terrain
     pub tex_ex: [u32; 8],   // terrain: detail0-3 + alpha_ramp
     pub aux: [f32; 8],      // terrain: object_plane_s, object_plane_t
+    pub texmat: [f32; 16],  // texture_matrix0 (identity in the common case)
+    pub khr: [f32; 8],      // KHR base-color transform [sx,sy,rot,_, ox,oy,_,_]
+    pub indexed_ch: u32,    // 0 = position.w is NOT a texture index for this draw
+    pub min_alpha: f32,     // MASK cutoff (-1 = disabled)
 }
 
 pub fn calc_offsets(typemask: u32, num_verts: u32) -> [u32; 14] {
@@ -71,7 +75,7 @@ pub fn depth_fix() -> Mat4 {
 
 /// One submitted draw, resources already uploaded.
 struct Queued {
-    bind_key: u32,
+    bind_key: [u32; 4],
     ubo_off: u32,
     draw_class: u32,
     terrain_key: [u32; 5],
@@ -79,7 +83,7 @@ struct Queued {
     iptr: Option<usize>,
     icount: u32,
     voffsets: [u32; 14],
-    pipe_key: (bool, bool, bool),
+    pipe_key: (bool, bool, bool, bool), // depth_test, depth_write, blend, lines
     first: u32,
     vcount: u32,
 }
@@ -89,7 +93,7 @@ pub struct LiveRenderer {
     layout: wgpu::PipelineLayout,
     vs: wgpu::ShaderModule,
     fs: wgpu::ShaderModule,
-    pipelines: HashMap<(bool, bool, bool), wgpu::RenderPipeline>,
+    pipelines: HashMap<(bool, bool, bool, bool), wgpu::RenderPipeline>,
     terrain_bgl: wgpu::BindGroupLayout,
     terrain_pipeline: Option<wgpu::RenderPipeline>,
     terrain_binds: HashMap<[u32; 5], wgpu::BindGroup>,
@@ -111,7 +115,7 @@ pub struct LiveRenderer {
     ubo_ring: Option<wgpu::Buffer>,
     ubo_cap: u64,
     ubo_stage: Vec<u8>,
-    binds: HashMap<u32, wgpu::BindGroup>, // keyed by TEXTURE id only -- bounded
+    binds: HashMap<[u32; 4], wgpu::BindGroup>, // keyed by the batch's 4 texture ids
     slot: usize,
     // Neutral attribute fallbacks: when a draw's typemask lacks TEXCOORD0/COLOR, binding
     // the POSITION block in their place reinterprets float positions as uv/RGBA8 -- which
@@ -145,6 +149,9 @@ impl LiveRenderer {
                     },
                     count: None,
                 },
+                // Four textures: batches select per-vertex via position.w's integer bit
+                // pattern (llface.cpp:2109); a flipped HUD button's texture lands on a
+                // channel != 0 that a unit-0-only layout can never show.
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -153,6 +160,24 @@ impl LiveRenderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -308,7 +333,7 @@ impl LiveRenderer {
         // size (llimagegl.cpp:1503) -- bind groups referencing the OLD view would pin it
         // (or the white fallback) forever, leaving textures stuck stale/white. Evict every
         // bind group that references this id so the next draw rebinds the new view.
-        self.binds.retain(|k, _| *k != id);
+        self.binds.retain(|k, _| !k.contains(&id));
         self.terrain_binds.retain(|k, _| !k.contains(&id));
         self.textures.insert(id, (t, v));
     }
@@ -316,7 +341,29 @@ impl LiveRenderer {
     /// Patch a sub-rect of an existing texture IN PLACE (glTexSubImage2D). Font atlases
     /// are built glyph-by-glyph this way; re-uploading a whole (re-zeroed) atlas per glyph
     /// erased every glyph already written -- measured as blank login fields.
-    pub fn upload_subtexture(&mut self, queue: &wgpu::Queue, id: u32, x: u32, y: u32, w: u32, h: u32, rgba: &[u8]) -> bool {
+    pub fn upload_subtexture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: u32, x: u32, y: u32, w: u32, h: u32, full_w: u32, full_h: u32, rgba: &[u8]) -> bool {
+        // Create-on-first-content: NULL re-specs no longer upload zeros (each cost
+        // 700-1600ms; ~90s cumulative freeze). The first real sub-rect creates the
+        // texture at the registered full size.
+        if !self.textures.contains_key(&id) {
+            if full_w == 0 || full_h == 0 || x + w > full_w || y + h > full_h {
+                return false;
+            }
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("live-tex-lazy"),
+                size: wgpu::Extent3d { width: full_w, height: full_h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+            self.binds.retain(|k, _| !k.contains(&id));
+            self.terrain_binds.retain(|k, _| !k.contains(&id));
+            self.textures.insert(id, (t, v));
+        }
         let Some((tex, _)) = self.textures.get(&id) else { return false };
         if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
             return false;
@@ -448,7 +495,12 @@ impl LiveRenderer {
     /// shadow is reused next frame, so we cannot hold the pointers).
     pub fn submit(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, d: &DrawDesc, vtx: &[u8], idx: &[u8]) {
         self.submitted += 1;
-        if !(d.mode == 0 || d.mode == 1) || d.num_verts == 0 || d.typemask & 1 == 0 || vtx.is_empty() {
+        // LLRender eGeomModes: TRIANGLES=0, STRIP=1, FAN=2, POINTS=3, LINES=4,
+        // LINE_STRIP=5, LINE_LOOP=6. The edit-tool manipulator arrows draw with FAN and
+        // LINES (measured missing); STRIP/FAN/LINE_STRIP expand to list forms, LINES
+        // passes through to a line-list pipeline. POINTS/LINE_LOOP remain unsupported.
+        let supported = matches!(d.mode, 0 | 1 | 2 | 4 | 5);
+        if !supported || d.num_verts == 0 || d.typemask & 1 == 0 || vtx.is_empty() {
             return;
         }
         // Geometry uploaded ONCE per buffer and reused until the viewer invalidates it
@@ -457,10 +509,15 @@ impl LiveRenderer {
         if !self.geo_buffer(device, vptr, vtx, wgpu::BufferUsages::VERTEX) {
             return;
         }
+        let needs_expand = matches!(d.mode, 1 | 2 | 5);
         let (iptr, icount, first, vcount) = if d.indexed != 0 && !idx.is_empty() {
             let base_ptr = idx.as_ptr() as usize;
-            if d.mode == 1 {
-                let key = base_ptr ^ 0x5311_D000 ^ (d.offset as usize) ^ ((d.count as usize) << 20);
+            if needs_expand {
+                let key = base_ptr
+                    ^ 0x5311_D000
+                    ^ (d.offset as usize)
+                    ^ ((d.count as usize) << 20)
+                    ^ ((d.mode as usize) << 40);
                 if let Some((_, len)) = self.geo.get(&key) {
                     // cached: skip the per-submit expansion entirely (sky dome = strips
                     // every frame; re-expanding was per-frame allocation churn)
@@ -468,7 +525,7 @@ impl LiveRenderer {
                 } else {
                     let src: Vec<u16> = idx.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
                     let take: Vec<u16> = src.iter().skip(d.offset as usize).take(d.count as usize).copied().collect();
-                    let list = strip_to_list(&take);
+                    let list = expand_to_list(d.mode, &take);
                     if list.is_empty() {
                         return;
                     }
@@ -484,13 +541,16 @@ impl LiveRenderer {
                 }
                 (Some(base_ptr), d.count, d.offset, 0)
             }
-        } else if d.mode == 1 {
-            let key = 0xA51D_0000 ^ (d.offset as usize) ^ ((d.count as usize) << 20);
+        } else if needs_expand {
+            let key = 0xA51D_0000
+                ^ (d.offset as usize)
+                ^ ((d.count as usize) << 20)
+                ^ ((d.mode as usize) << 40);
             if let Some((_, len)) = self.geo.get(&key) {
                 (Some(key), (*len / 2) as u32, 0, 0)
             } else {
                 let seq: Vec<u16> = (d.offset as u16..(d.offset + d.count) as u16).collect();
-                let list = strip_to_list(&seq);
+                let list = expand_to_list(d.mode, &seq);
                 if list.is_empty() {
                     return;
                 }
@@ -514,19 +574,27 @@ impl LiveRenderer {
             self.ubo_stage.resize(need, 0);
         }
         let mvp = depth_fix() * Mat4::from_cols_array(&d.mvp);
-        let mut block = [0f32; 28]; // mvp + color + plane_s + plane_t (terrain reads all)
+        let mut block = [0f32; 56]; // mvp + color + planes + texmat + khr + flags
         block[..16].copy_from_slice(&mvp.to_cols_array());
         block[16..20].copy_from_slice(&d.color);
         block[20..28].copy_from_slice(&d.aux);
+        block[28..44].copy_from_slice(&d.texmat);
+        block[44..52].copy_from_slice(&d.khr);
+        block[52] = if d.blend != 0 { 1.0 } else { 0.0 }; // flags.x: blending enabled
+        block[53] = if d.indexed_ch > 0 { 1.0 } else { 0.0 }; // flags.y: pos.w is a tex index
+        block[54] = d.min_alpha; // flags.z: MASK cutoff (-1 disabled)
         let bytes: &[u8] = bytemuck::cast_slice(&block);
         self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
         let _ = queue;
 
-        let bind_key = d.tex0;
+        let bind_key = d.tex;
         if d.draw_class != CLASS_TERRAIN && !self.binds.contains_key(&bind_key) {
             self.ensure_ring(device, need.max(STRIDE * 1024) as u64);
             let ring = self.ubo_ring.as_ref().unwrap();
-            let tv = self.textures.get(&d.tex0).map(|(_, v)| v).unwrap_or(&self.white);
+            let tv: Vec<&wgpu::TextureView> = bind_key
+                .iter()
+                .map(|id| self.textures.get(id).map(|(_, v)| v).unwrap_or(&self.white))
+                .collect();
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("live-bind"),
                 layout: &self.bgl,
@@ -536,17 +604,21 @@ impl LiveRenderer {
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: ring,
                             offset: 0,
-                            size: std::num::NonZeroU64::new(80),
+                            size: std::num::NonZeroU64::new(224),
                         }),
                     },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tv) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tv[0]) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(tv[1]) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(tv[2]) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(tv[3]) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 ],
             });
             self.binds.insert(bind_key, bg);
         }
 
-        let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0);
+        let lines = matches!(d.mode, 4 | 5);
+        let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0, lines);
         let mut terrain_key = [0u32; 5];
         if d.draw_class == CLASS_TERRAIN {
             terrain_key.copy_from_slice(&d.tex_ex[..5]);
@@ -567,7 +639,7 @@ impl LiveRenderer {
                             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                                 buffer: ring,
                                 offset: 0,
-                                size: std::num::NonZeroU64::new(112),
+                                size: std::num::NonZeroU64::new(224),
                             }),
                         },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tv[0]) },
@@ -597,7 +669,7 @@ impl LiveRenderer {
         self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, draw_class: d.draw_class, terrain_key, vptr, iptr, icount, voffsets, pipe_key, first, vcount });
     }
 
-    fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool)) {
+    fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool)) {
         if self.pipelines.contains_key(&key) {
             return;
         }
@@ -632,7 +704,7 @@ impl LiveRenderer {
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: if key.3 { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList },
                 cull_mode: None,
                 ..Default::default()
             },
@@ -758,6 +830,28 @@ impl LiveRenderer {
         self.drawn += n;
         self.queued.clear();
         n
+    }
+}
+
+/// Expand STRIP (1) / FAN (2) / LINE_STRIP (5) index sequences to list form.
+fn expand_to_list(mode: u32, src: &[u16]) -> Vec<u16> {
+    match mode {
+        1 => strip_to_list(src),
+        2 => {
+            let mut list = Vec::new();
+            for k in 1..src.len().saturating_sub(1) {
+                list.extend_from_slice(&[src[0], src[k], src[k + 1]]);
+            }
+            list
+        }
+        5 => {
+            let mut list = Vec::new();
+            for k in 1..src.len() {
+                list.extend_from_slice(&[src[k - 1], src[k]]);
+            }
+            list
+        }
+        _ => Vec::new(),
     }
 }
 

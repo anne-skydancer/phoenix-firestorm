@@ -89,7 +89,11 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
             format,
             width: width.max(1),
             height: height.max(1),
-            present_mode: caps.present_modes[0],
+            // FIFO = vsync. The first-listed mode is often IMMEDIATE: the viewer's main
+            // loop then spins flat-out (~120fps of no-op-GL scene traversal), saturating
+            // cores and starving other apps + its own decode threads -- the residual
+            // stutter after the upload fix. Fifo is guaranteed present on Vulkan.
+            present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -315,14 +319,23 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let frame = match e.surface.get_current_texture() {
             Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                e.surface.configure(&e.device, &e.config);
-                match e.surface.get_current_texture() {
-                    Ok(f) => f,
-                    Err(_) => return 0,
+            Err(err) => {
+                // alt-tab/occlusion diagnostics: name every surface hiccup in the perf log
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
+                    use std::io::Write;
+                    let _ = writeln!(f, "SURFACE frame {} err {:?}", e.frames, err);
+                }
+                match err {
+                    wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => {
+                        e.surface.configure(&e.device, &e.config);
+                        match e.surface.get_current_texture() {
+                            Ok(f) => f,
+                            Err(_) => return 0,
+                        }
+                    }
+                    _ => return 0,
                 }
             }
-            Err(_) => return 0,
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (w, h) = (e.config.width, e.config.height);
@@ -405,7 +418,7 @@ pub extern "C" fn fsr_buffer_dirty(ptr: usize) -> i32 {
 /// Patch a sub-rect of an existing texture (glTexSubImage2D path).
 /// # Safety: `rgba` must hold at least w*h*4 bytes.
 #[no_mangle]
-pub unsafe extern "C" fn fsr_texture_subupload(id: u32, x: u32, y: u32, w: u32, h: u32, rgba: *const u8) -> i32 {
+pub unsafe extern "C" fn fsr_texture_subupload(id: u32, x: u32, y: u32, w: u32, h: u32, full_w: u32, full_h: u32, rgba: *const u8) -> i32 {
     if rgba.is_null() || w == 0 || h == 0 {
         return 0;
     }
@@ -413,8 +426,8 @@ pub unsafe extern "C" fn fsr_texture_subupload(id: u32, x: u32, y: u32, w: u32, 
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Engine { queue, live, .. } = e;
-        live.upload_subtexture(queue, id, x, y, w, h, bytes)
+        let Engine { device, queue, live, .. } = e;
+        live.upload_subtexture(device, queue, id, x, y, w, h, full_w, full_h, bytes)
     }));
     match r { Ok(true) => 1, _ => 0 }
 }

@@ -54,6 +54,7 @@ pub struct DrawDesc {
     pub indexed_ch: u32,    // 0 = position.w is NOT a texture index for this draw
     pub min_alpha: f32,     // MASK cutoff (-1 = disabled)
     pub skin_id: u32,       // nonzero = rigged draw; palette registered via fsr_set_matrix_palette
+    pub cull: u32,          // GL_CULL_FACE at draw time
 }
 
 pub fn calc_offsets(typemask: u32, num_verts: u32) -> [u32; 14] {
@@ -91,7 +92,7 @@ struct Queued {
     iptr: Option<usize>,
     icount: u32,
     voffsets: [u32; 14],
-    pipe_key: (bool, bool, bool, bool, bool), // depth_test, depth_write, blend, lines, skinned
+    pipe_key: (bool, bool, bool, bool, bool, bool), // depth_test, depth_write, blend, lines, skinned, cull
     first: u32,
     vcount: u32,
 }
@@ -101,7 +102,7 @@ pub struct LiveRenderer {
     layout: wgpu::PipelineLayout,
     vs: wgpu::ShaderModule,
     fs: wgpu::ShaderModule,
-    pipelines: HashMap<(bool, bool, bool, bool, bool), wgpu::RenderPipeline>,
+    pipelines: HashMap<(bool, bool, bool, bool, bool, bool), wgpu::RenderPipeline>,
     terrain_bgl: wgpu::BindGroupLayout,
     terrain_pipeline: Option<wgpu::RenderPipeline>,
     terrain_binds: HashMap<[u32; 5], wgpu::BindGroup>,
@@ -418,6 +419,17 @@ impl LiveRenderer {
         true
     }
 
+    pub fn delete_texture(&mut self, id: u32) {
+        if self.textures.remove(&id).is_some() {
+            self.binds.retain(|k, _| !k.contains(&id));
+            self.terrain_binds.retain(|k, _| !k.contains(&id));
+        }
+    }
+
+    pub fn stats(&self) -> (usize, usize, usize) {
+        (self.textures.len(), self.geo.len(), self.palettes.len())
+    }
+
     pub fn set_palette(&mut self, skin_id: u32, joint_count: u32, floats: &[f32]) {
         let n = (joint_count as usize * 12).min(PALETTE_FLOATS).min(floats.len());
         let mut v = vec![0f32; PALETTE_FLOATS];
@@ -712,7 +724,7 @@ impl LiveRenderer {
         }
 
         let lines = matches!(d.mode, 4 | 5);
-        let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0, lines, skinned);
+        let pipe_key = (d.depth_test != 0, d.depth_write != 0, d.blend != 0, lines, skinned, d.cull != 0);
         let mut terrain_key = [0u32; 5];
         if d.draw_class == CLASS_TERRAIN {
             terrain_key.copy_from_slice(&d.tex_ex[..5]);
@@ -763,7 +775,7 @@ impl LiveRenderer {
         self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, pal_off, skinned, draw_class: d.draw_class, terrain_key, vptr, iptr, icount, voffsets, pipe_key, first, vcount });
     }
 
-    fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool)) {
+    fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool, bool)) {
         if self.pipelines.contains_key(&key) {
             return;
         }
@@ -817,7 +829,9 @@ impl LiveRenderer {
             }),
             primitive: wgpu::PrimitiveState {
                 topology: if key.3 { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList },
-                cull_mode: None,
+                // honor GL_CULL_FACE (GL winding conventions survive our passthrough
+                // matrices); shading every avatar backface saturated the GPU
+                cull_mode: if key.5 && !key.3 { Some(wgpu::Face::Back) } else { None },
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {

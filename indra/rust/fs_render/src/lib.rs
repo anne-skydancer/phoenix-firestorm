@@ -338,6 +338,7 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     if e.live.queued_len() == 0 && e.presented_once {
         return 0;
     }
+    let t_acq = std::time::Instant::now();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let frame = match e.surface.get_current_texture() {
             Ok(f) => f,
@@ -456,7 +457,14 @@ pub extern "C" fn fsr_end_frame() -> i32 {
                 // Firestorm.log never sees Rust stderr -- write perf where it can be read.
                 if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
                     use std::io::Write;
-                    let _ = writeln!(f, "frame {} draws {} flush_avg_ms {:.2}", e.frames, n, acc as f64 / 300.0 / 1000.0);
+                    let (ntex, ngeo, npal) = e.live.stats();
+                let _ = writeln!(
+                    f,
+                    "frame {} draws {} flush_avg_ms {:.2} acquire_ms {:.2} tex {} geo {} pal {}",
+                    e.frames, n, acc as f64 / 300.0 / 1000.0,
+                    t_acq.elapsed().as_micros() as f64 / 1000.0,
+                    ntex, ngeo, npal
+                );
                 }
             }
         }
@@ -500,6 +508,21 @@ pub unsafe extern "C" fn fsr_texture_subupload(id: u32, x: u32, y: u32, w: u32, 
 pub extern "C" fn fsr_set_color(r: f32, g: f32, b: f32, a: f32) -> i32 {
     if let Some(e) = ENGINE.lock().unwrap().as_mut() {
         e.live.cur_color = [r, g, b, a];
+        1
+    } else {
+        0
+    }
+}
+
+/// wave-6: forwarded glDeleteTextures -- without this every texture ever uploaded
+/// lived forever (monotonic VRAM growth, WDDM paging, desktop-wide starvation).
+#[no_mangle]
+pub extern "C" fn fsr_texture_delete(id: u32) -> i32 {
+    if id == 0 {
+        return 0;
+    }
+    if let Some(e) = ENGINE.lock().unwrap().as_mut() {
+        e.live.delete_texture(id);
         1
     } else {
         0

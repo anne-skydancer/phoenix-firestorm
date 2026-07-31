@@ -80,6 +80,10 @@ static fsr_submit_t sFsrSubmit = nullptr;
 static fsr_end_t sFsrEnd = nullptr;
 static fsr_texup_t sFsrTexUpload = nullptr;
 static fsr_dirty_t sFsrDirty = nullptr;
+typedef int(__cdecl* fsr_msaa_t)(U32);
+static fsr_msaa_t sFsrMsaa = nullptr;
+static U32 sLastMsaa = 0xFFFFFFFF;
+static U32 sPendingMsaa = 1;
 static bool sLive = false;
 static S32 sSuppressDepth = 0; // F2: >0 while an offscreen pass renders
 static U32 sDrawClass = 0;     // F7: current draw class (set by the owning pool)
@@ -121,6 +125,7 @@ static void bindLive()
     sFsrTexUpload = (fsr_texup_t)GetProcAddress(dll, "fsr_texture_upload");
     sFsrDirty = (fsr_dirty_t)GetProcAddress(dll, "fsr_buffer_dirty");
     sFsrPalette = (fsr_palette_t)GetProcAddress(dll, "fsr_set_matrix_palette");
+    sFsrMsaa = (fsr_msaa_t)GetProcAddress(dll, "fsr_set_msaa");
     sLive = (sFsrBegin && sFsrSubmit && sFsrEnd);
     LL_INFOS("SceneDump") << "P3c live bridge " << (sLive ? "ARMED" : "FAILED")
                           << " (begin=" << (void*)sFsrBegin << " submit=" << (void*)sFsrSubmit
@@ -205,6 +210,11 @@ void setMatrixPalette(U64 skin_key, U32 joint_count, const F32* glmp12)
 void setForceOpaque(bool on)
 {
     sForceOpaque = on;
+}
+
+void setMsaa(U32 samples)
+{
+    sPendingMsaa = samples;
 }
 
 void setCurrentSkin(U64 skin_key)
@@ -762,6 +772,13 @@ void onFrame(bool in_world)
     if (sLive && sFsrBegin)
     {
         ++sLiveFrames;
+        // Antialiasing: forward RenderFSAASamples (pushed from newview via setMsaa --
+        // llrender must not reach into gSavedSettings). Forward on change only.
+        if (sFsrMsaa && sPendingMsaa != sLastMsaa)
+        {
+            sLastMsaa = sPendingMsaa;
+            sFsrMsaa(sPendingMsaa);
+        }
         if (sLiveFrames % 120 == 0)
         {
             LARGE_INTEGER freq;

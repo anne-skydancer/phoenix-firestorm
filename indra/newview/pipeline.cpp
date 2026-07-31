@@ -4529,7 +4529,13 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
     if (!gCubeSnapshot)
     {
         // debug displays
-        renderHighlights();
+        // <FS:VkBridge> the hover/selection highlight replays as a bright disc through
+        // the engine's unlit path (the "brighter circle under the mouse"). Its shader
+        // glow doesn't cross the bridge; suppress until it's handled properly.
+        if (!FSSceneDump::liveActive())
+        {
+            renderHighlights();
+        }
         mHighlightFaces.clear();
 
         renderDebug();

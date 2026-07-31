@@ -509,6 +509,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
     // repeatedly). Save every 60s; costs ~ms.
     if (FSSceneDump::liveActive())
     {
+        FSSceneDump::setMsaa((U32)gSavedSettings.getU32("RenderFSAASamples")); // <FS:VkBridge> AA
         static LLTimer fs_settings_autosave;
         if (fs_settings_autosave.getElapsedTimeF64() > 20.0)
         {

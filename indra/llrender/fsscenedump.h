@@ -57,6 +57,7 @@ namespace FSSceneDump
     // C: rigged-mesh joint palette (world-space mat3x4 rows, llvoavatar mGLMp packing).
     void setMatrixPalette(U64 skin_key, U32 joint_count, const F32* glmp12);
     void setCurrentSkin(U64 skin_key);   // palette-cache hits: same skin, no re-upload
+    void setMsaa(U32 samples);           // RenderFSAASamples, pushed from newview
     void clearCurrentSkin();
     void setKhrTexTransform(const F32* packed8);
     void clearKhrTexTransform();

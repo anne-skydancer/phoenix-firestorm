@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llviewerdisplay.h"
+#include "fsscenedump.h" // <FS:VkBridge> P2b scene dump
 
 #include "fsyspath.h"
 #include "hexdump.h"
@@ -486,6 +487,7 @@ static void update_tp_display(bool minimized)
 // Paint the display!
 void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 {
+    FSSceneDump::onFrame(LLStartUp::getStartupState() == STATE_STARTED); // <FS:VkBridge> P2b
     LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("Render");
     LL_PROFILE_GPU_ZONE("Render");
 

@@ -29,6 +29,7 @@
 #include "llfasttimer.h"
 #include "llsys.h"
 #include "llvertexbuffer.h"
+#include "fsscenedump.h" // <FS:VkBridge> P2b scene dump
 // #include "llrender.h"
 #include "llglheaders.h"
 #include "llrender.h"
@@ -955,6 +956,7 @@ void LLVertexBuffer::clone(LLVertexBuffer& target) const
 
 void LLVertexBuffer::drawRange(U32 mode, U32 start, U32 end, U32 count, U32 indices_offset) const
 {
+    FSSceneDump::recordDraw(this, mode, count, indices_offset, true); // <FS:VkBridge> P2b
     llassert(validateRange(start, end, count, indices_offset));
     llassert(mGLBuffer == sGLRenderBuffer);
     llassert(mGLIndices == sGLRenderIndices);
@@ -967,6 +969,7 @@ void LLVertexBuffer::drawRange(U32 mode, U32 start, U32 end, U32 count, U32 indi
 
 void LLVertexBuffer::drawRangeFast(U32 mode, U32 start, U32 end, U32 count, U32 indices_offset) const
 {
+    FSSceneDump::recordDraw(this, mode, count, indices_offset, true); // <FS:VkBridge> P2b
     glDrawRangeElements(sGLMode[mode], start, end, count, mIndicesType,
         (GLvoid*)(indices_offset * (size_t)mIndicesStride));
 }
@@ -980,6 +983,7 @@ void LLVertexBuffer::draw(U32 mode, U32 count, U32 indices_offset) const
 
 void LLVertexBuffer::drawArrays(U32 mode, U32 first, U32 count) const
 {
+    FSSceneDump::recordDraw(this, mode, count, first, false); // <FS:VkBridge> P2b
     llassert(first + count <= mNumVerts);
     llassert(mGLBuffer == sGLRenderBuffer);
     llassert(mGLIndices == sGLRenderIndices);

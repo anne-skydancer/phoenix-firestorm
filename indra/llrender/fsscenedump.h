@@ -48,6 +48,7 @@ namespace FSSceneDump
     // A5: authoritative per-batch Blinn-Phong material data (one-shot, consumed by
     // the next recordDraw). Staged by LLDrawPoolMaterials right before its drawRange.
     void setMaterialBatch(U32 diffuse_id, U32 normal_id, U32 spec_id, F32 alpha_cutoff);
+    void setForceOpaque(bool on); // fullbright-shiny: shader forces alpha 1
     // C: rigged-mesh joint palette (world-space mat3x4 rows, llvoavatar mGLMp packing).
     void setMatrixPalette(U64 skin_key, U32 joint_count, const F32* glmp12);
     void setCurrentSkin(U64 skin_key);   // palette-cache hits: same skin, no re-upload

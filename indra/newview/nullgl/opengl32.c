@@ -97,6 +97,7 @@ static const char* NG_EXTENSIONS =
 
 /* Tracked GL state (defined early: caps_value reads it). See the state block below. */
 static GLint g_depth_mask = 1;
+static GLint g_color_mask[4] = { 1, 1, 1, 1 }; /* glow passes disable RGB writes */
 
 /* PIXEL STORE state -- REQUIRED, not optional. llimagegl.cpp:1190 sets
  * GL_UNPACK_ROW_LENGTH = data_width for every sub-rect upload, so the source rows are
@@ -548,7 +549,13 @@ NG_API void __stdcall glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a)
     get_readback();
     if (g_setclear) g_setclear(r, g, b, a);
 }
-NG_API void __stdcall glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) { (void)r; (void)g; (void)b; (void)a; }
+NG_API void __stdcall glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a)
+{
+    g_color_mask[0] = r ? 1 : 0;
+    g_color_mask[1] = g ? 1 : 0;
+    g_color_mask[2] = b ? 1 : 0;
+    g_color_mask[3] = a ? 1 : 0;
+}
 NG_API void __stdcall glCopyTexSubImage2D(GLenum a, GLint b, GLint c, GLint d, GLint e, GLint f, GLsizei g, GLsizei h) { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h; }
 NG_API void __stdcall glCullFace(GLenum m) { (void)m; }
 NG_API void __stdcall glDeleteTextures(GLsizei n, const GLuint* t) { (void)n; (void)t; }
@@ -613,6 +620,14 @@ NG_API const unsigned char* __stdcall glGetString(GLenum name)
 NG_API void __stdcall glGetIntegerv(GLenum pname, GLint* out)
 {
     if (!out) return;
+    if (pname == 0x0C23) /* GL_COLOR_WRITEMASK: 4 components */
+    {
+        out[0] = g_color_mask[0];
+        out[1] = g_color_mask[1];
+        out[2] = g_color_mask[2];
+        out[3] = g_color_mask[3];
+        return;
+    }
     if (pname == 0x0D3A) { out[0] = 16384; out[1] = 16384; return; } /* MAX_VIEWPORT_DIMS pair */
     out[0] = caps_value(pname);
 }

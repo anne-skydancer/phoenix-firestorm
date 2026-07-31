@@ -86,6 +86,7 @@ static F32 sKhr[8] = { 1.f, 1.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f }; // identity KHR
 static U32 sMatTex[3] = { 0, 0, 0 };   // A5: staged diffuse/normal/spec (one-shot)
 static F32 sMatCutoff = -1.f;
 static bool sMatStaged = false;
+static bool sForceOpaque = false; // scoped: fullbright-shiny pass
 
 // C: skin-key interning + per-frame palette forwarding to the engine
 typedef int(__cdecl* fsr_palette_t)(U32, U32, const F32*);
@@ -196,6 +197,11 @@ void setMatrixPalette(U64 skin_key, U32 joint_count, const F32* glmp12)
             sFsrPalette(id, joint_count, glmp12);
         }
     }
+}
+
+void setForceOpaque(bool on)
+{
+    sForceOpaque = on;
 }
 
 void setCurrentSkin(U64 skin_key)
@@ -313,7 +319,14 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
     // F2: offscreen passes (shadow/probe/water-copy/exclusion/haze/bakes) are suppressed --
     // replayed into the single screen pass they painted OVER the frame (the transparent-
     // water corruption) and tripled submit volume.
-    if (sLive && sSuppressDepth == 0 && vb)
+    // meshshape-1: glow passes write ALPHA ONLY (colorMask(false,true)); replaying
+    // them as full-color draws repainted/whited the faces underneath.
+    GLint fs_cmask[4] = { 1, 1, 1, 1 };
+    if (sLive)
+    {
+        glGetIntegerv(0x0C23 /*GL_COLOR_WRITEMASK*/, fs_cmask);
+    }
+    if (sLive && sSuppressDepth == 0 && vb && (fs_cmask[0] || fs_cmask[1] || fs_cmask[2]))
     {
         const U8* vdata = vb->getMappedData();
         const U8* idata = vb->getMappedIndices();
@@ -381,6 +394,10 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             glGetIntegerv(GL_DEPTH_WRITEMASK, &dm);
             d.depth_write = dm ? 1u : 0u;
             d.blend = glIsEnabled(GL_BLEND) ? 1u : 0u;
+            if (sForceOpaque)
+            {
+                d.blend = 0u; // engine's blend-off path = alpha 1, matching the shader
+            }
             // Diffuse colour, read from the bound shader's own cached uniform value.
             // LLRender::color4ub() sends UI colour either to a vertex attribute or to
             // this uniform (llrender.cpp:2090) depending on the shader's attribute mask,
@@ -496,7 +513,7 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             // A5: authoritative material batch (one-shot). The materials pool sets its
             // per-batch uniforms with RAW glUniform calls (nothing in mValue), so the
             // staged values are the only correct source for these draws.
-            if (mat_staged)
+            if (mat_staged && mat_tex0 != 0)
             {
                 d.tex[0] = mat_tex0;
                 d.tex[1] = 0;

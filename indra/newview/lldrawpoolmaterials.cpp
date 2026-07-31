@@ -284,7 +284,10 @@ void LLDrawPoolMaterials::renderDeferred(S32 pass)
             params.mTexture ? params.mTexture->getTexName() : 0,
             params.mNormalMap ? params.mNormalMap->getTexName() : 0,
             params.mSpecularMap ? params.mSpecularMap->getTexName() : 0,
-            params.mAlphaMaskCutoff);
+            // cutoff only means MASK for that alpha mode; punching holes in
+            // None/Emissive-mode faces ate mesh pieces
+            (params.mDiffuseAlphaMode == LLMaterial::DIFFUSE_ALPHA_MODE_MASK)
+                ? params.mAlphaMaskCutoff : -1.f);
         params.mVertexBuffer->setBuffer();
         params.mVertexBuffer->drawRange(LLRender::TRIANGLES, params.mStart, params.mEnd, params.mCount, params.mOffset);
 

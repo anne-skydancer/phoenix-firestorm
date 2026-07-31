@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lldrawpoolbump.h"
+#include "fsscenedump.h" // <FS:VkBridge>
 
 #include "llstl.h"
 #include "llviewercontrol.h"
@@ -284,6 +285,7 @@ void LLDrawPoolBump::unbindCubeMap(LLGLSLShader* shader, S32 shader_level, S32& 
 
 void LLDrawPoolBump::beginFullbrightShiny()
 {
+    FSSceneDump::setForceOpaque(true); // <FS:VkBridge> shader forces alpha 1
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL; //LL_RECORD_BLOCK_TIME(FTM_RENDER_SHINY);
 
     sVertexMask = VERTEX_MASK_SHINY | LLVertexBuffer::MAP_TEXCOORD0;
@@ -387,6 +389,7 @@ void LLDrawPoolBump::renderFullbrightShiny()
 
 void LLDrawPoolBump::endFullbrightShiny()
 {
+    FSSceneDump::setForceOpaque(false); // <FS:VkBridge>
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL; //LL_RECORD_BLOCK_TIME(FTM_RENDER_SHINY);
 
     LLCubeMap* cube_map = gSky.mVOSkyp ? gSky.mVOSkyp->getCubeMap() : NULL;
@@ -597,6 +600,9 @@ void LLDrawPoolBump::renderDeferred(S32 pass)
 
 void LLDrawPoolBump::renderPostDeferred(S32 pass)
 {
+    // <FS:VkBridge> the emboss overlay needs blend-func support the engine lacks;
+    // the base face is already drawn -- suppress only the wrong grey overlay.
+    FSSceneDump::SuppressScope fs_suppress_bump;
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL;
 
     S32 num_passes = LLPipeline::sRenderingHUDs ? 1 : 2; // skip rigged pass when rendering HUDs

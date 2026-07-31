@@ -5233,6 +5233,7 @@ void LLPipeline::endAlphaOITAccum()
 
 void LLPipeline::compositeAlphaOIT()
 {
+    FSSceneDump::SuppressScope fs_suppress_oit; // <FS:VkBridge> fullscreen RT composite, un-mirrored ids
     // Runs AFTER the residual pass, so screen.a already holds the emissive glow.
     gOITCompositeProgram.bind();
     mRT->oit.bindTexture(0, 0, LLTexUnit::TFO_POINT); // accum     -> unit 0

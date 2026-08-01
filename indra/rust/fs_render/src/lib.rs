@@ -463,12 +463,14 @@ pub extern "C" fn fsr_end_frame() -> i32 {
                     use std::io::Write;
                     let (ntex, ngeo, npal) = e.live.stats();
                 let (tb, drops, pend) = e.live.mem_stats();
+                let sky = e.live.sky_draws; let wat = e.live.water_draws;
+                e.live.sky_draws = 0; e.live.water_draws = 0;
                 let _ = writeln!(
                     f,
-                    "frame {} draws {} flush_avg_ms {:.2} acquire_ms {:.2} tex {} geo {} pal {} texMB {} drops {} pend {}",
+                    "frame {} draws {} flush_avg_ms {:.2} acquire_ms {:.2} tex {} geo {} pal {} texMB {} drops {} pend {} SKYdraws {} WATERdraws {}",
                     e.frames, n, acc as f64 / 300.0 / 1000.0,
                     t_acq.elapsed().as_micros() as f64 / 1000.0,
-                    ntex, ngeo, npal, tb / (1024 * 1024), drops, pend
+                    ntex, ngeo, npal, tb / (1024 * 1024), drops, pend, sky, wat
                 );
                 }
             }
@@ -513,6 +515,17 @@ pub unsafe extern "C" fn fsr_texture_subupload(id: u32, x: u32, y: u32, w: u32, 
 pub extern "C" fn fsr_set_color(r: f32, g: f32, b: f32, a: f32) -> i32 {
     if let Some(e) = ENGINE.lock().unwrap().as_mut() {
         e.live.cur_color = [r, g, b, a];
+        1
+    } else {
+        0
+    }
+}
+
+/// Antialiasing: the viewer's RenderFSAASamples (1/2/4/8). Rebuilds pipelines + targets.
+#[no_mangle]
+pub extern "C" fn fsr_set_msaa(samples: u32) -> i32 {
+    if let Some(e) = ENGINE.lock().unwrap().as_mut() {
+        e.live.set_msaa(samples);
         1
     } else {
         0

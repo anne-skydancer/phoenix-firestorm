@@ -78,10 +78,14 @@ pub fn calc_offsets(typemask: u32, num_verts: u32) -> [u32; 14] {
 
 /// GL clip [-1,1] -> wgpu [0,1] depth remap (proven in the replay).
 pub fn depth_fix() -> Mat4 {
+    // REVERSE-Z: GL clip z [-w,w] -> wgpu [w,0] (near=1, far=0). Combined with float32
+    // depth this gives near-uniform precision across the frustum instead of piling it
+    // at the far plane -- the fix for sub-mm decal/onion-layer separations dithering at
+    // distance. Requires clear=0.0 + GreaterEqual compare everywhere (done below).
     Mat4::from_cols_array(&[
         1.0, 0.0, 0.0, 0.0, //
         0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.5, 0.0, //
+        0.0, 0.0, -0.5, 0.0, //
         0.0, 0.0, 0.5, 1.0,
     ])
 }
@@ -165,11 +169,16 @@ pub struct LiveRenderer {
     // painted the login text red/orange. Bind these instead: uv (0,0), colour opaque white.
     uv_zero: wgpu::Buffer,
     color_white: wgpu::Buffer,
-    depth: Option<(wgpu::TextureView, u32, u32)>,
+    depth: Option<(wgpu::TextureView, u32, u32, u32)>, // view, w, h, samples
+    msaa: u32, // 1/2/4/8 -- from the viewer's RenderFSAASamples
+    msaa_color: Option<(wgpu::TextureView, u32, u32, u32)>, // MS resolve source
     format: wgpu::TextureFormat,
     pub submitted: u64,
     pub drawn: u64,
     pub upload_drops: u64,
+    pub sky_draws: u64,
+    pub water_draws: u64,
+    sky_dumped: bool,
     /// Current diffuse colour (viewer's "color" uniform, captured by the null-GL stub).
     /// UI text/background colour lives here, not in vertex colours.
     pub cur_color: [f32; 4],
@@ -402,10 +411,15 @@ impl LiveRenderer {
             uv_zero,
             color_white,
             depth: None,
+            msaa: 1,
+            msaa_color: None,
             format,
             submitted: 0,
             drawn: 0,
             upload_drops: 0,
+            sky_draws: 0,
+            water_draws: 0,
+            sky_dumped: false,
             cur_color: [1.0, 1.0, 1.0, 1.0],
         }
     }
@@ -569,6 +583,51 @@ impl LiveRenderer {
         self.palettes.insert(skin_id, v);
     }
 
+    pub fn set_msaa(&mut self, samples: u32) {
+        // SAFETY: the MSAA render path black-screened the moment AA was enabled. Keep
+        // the plumbing but force single-sample until it is fixed AND verified. Opt back
+        // in for testing via FS_ENGINE_MSAA=1.
+        let msaa_enabled = std::env::var("FS_ENGINE_MSAA").map(|v| v == "1").unwrap_or(false);
+        let s = if !msaa_enabled { 1 }
+            else if samples >= 8 { 8 } else if samples >= 4 { 4 } else if samples >= 2 { 2 } else { 1 };
+        if s == self.msaa {
+            return;
+        }
+        self.msaa = s;
+        // every pipeline baked the old sample count; force rebuild
+        self.pipelines.clear();
+        self.pipelines_add.clear();
+        self.terrain_pipeline = None;
+        self.sky_pipeline = None;
+        self.water_pipeline = None;
+        self.depth = None;
+        self.msaa_color = None;
+    }
+
+    fn ensure_msaa_color(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        if self.msaa <= 1 {
+            self.msaa_color = None;
+            return;
+        }
+        let need = match &self.msaa_color {
+            Some((_, cw, ch, cs)) => *cw != w || *ch != h || *cs != self.msaa,
+            None => true,
+        };
+        if need {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("live-msaa-color"),
+                size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: self.msaa,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            self.msaa_color = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), w, h, self.msaa));
+        }
+    }
+
     pub fn queued_len(&self) -> usize {
         self.queued.len()
     }
@@ -598,6 +657,7 @@ impl LiveRenderer {
     }
 
     fn ensure_pipeline_add(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool, bool)) {
+        let ms = self.msaa;
         if self.pipelines_add.contains_key(&key) {
             return;
         }
@@ -663,17 +723,18 @@ impl LiveRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: key.1,
-                depth_compare: if key.0 { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always },
+                depth_compare: if key.0 { wgpu::CompareFunction::GreaterEqual } else { wgpu::CompareFunction::Always },
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState { count: ms, ..Default::default() },
             multiview: None,
         });
         self.pipelines_add.insert(key, p);
     }
 
     fn ensure_skywater_pipelines(&mut self, device: &wgpu::Device) {
+        let ms = self.msaa;
         if self.sky_pipeline.is_some() {
             return;
         }
@@ -717,11 +778,11 @@ impl LiveRenderer {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: depth_write,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_compare: wgpu::CompareFunction::GreaterEqual,
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
-                multisample: wgpu::MultisampleState::default(),
+                multisample: wgpu::MultisampleState { count: ms, ..Default::default() },
                 multiview: None,
             })
         };
@@ -734,6 +795,7 @@ impl LiveRenderer {
     }
 
     fn ensure_terrain_pipeline(&mut self, device: &wgpu::Device) {
+        let ms = self.msaa;
         if self.terrain_pipeline.is_some() {
             return;
         }
@@ -777,11 +839,11 @@ impl LiveRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_compare: wgpu::CompareFunction::GreaterEqual,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState { count: ms, ..Default::default() },
             multiview: None,
         });
         self.terrain_pipeline = Some(p);
@@ -931,6 +993,17 @@ impl LiveRenderer {
         }
         let mvp = depth_fix() * Mat4::from_cols_array(&d.mvp);
         let skywater = matches!(d.draw_class, CLASS_WATER | CLASS_SKY_DOME);
+        if d.draw_class == CLASS_SKY_DOME { self.sky_draws += 1; }
+        if d.draw_class == CLASS_WATER { self.water_draws += 1; }
+        if d.draw_class == CLASS_SKY_DOME && !self.sky_dumped {
+            self.sky_dumped = true;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
+                use std::io::Write;
+                let e = &d.aux;
+                let _ = writeln!(f, "SKY_ENV camPos({:.1},{:.1},{:.1}) maxY {:.1} | lightnorm({:.2},{:.2},{:.2}) sunUp {:.1} | sunCol({:.2},{:.2},{:.2}) densMul {:.3} | blueHoriz({:.2},{:.2},{:.2}) hazeHoriz {:.2} | blueDens({:.2},{:.2},{:.2}) cloudShadow {:.2} | glow({:.2},{:.2},{:.2})",
+                    e[0],e[1],e[2],e[3], e[4],e[5],e[6],e[7], e[8],e[9],e[10],e[11], e[20],e[21],e[22],e[23], e[24],e[25],e[26],e[27], e[28],e[29],e[30]);
+            }
+        }
         if skywater {
             // dedicated slot layout: [mvp | 12 vec4 aux] = 256 bytes exactly
             let mut block = [0f32; 64];
@@ -1111,6 +1184,7 @@ impl LiveRenderer {
     }
 
     fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool, bool)) {
+        let ms = self.msaa;
         if self.pipelines.contains_key(&key) {
             return;
         }
@@ -1172,11 +1246,11 @@ impl LiveRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: key.1,
-                depth_compare: if key.0 { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always },
+                depth_compare: if key.0 { wgpu::CompareFunction::GreaterEqual } else { wgpu::CompareFunction::Always },
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState { count: ms, ..Default::default() },
             multiview: None,
         });
         self.pipelines.insert(key, p);
@@ -1184,7 +1258,7 @@ impl LiveRenderer {
 
     fn ensure_depth(&mut self, device: &wgpu::Device, w: u32, h: u32) {
         let need = match &self.depth {
-            Some((_, dw, dh)) => *dw != w || *dh != h,
+            Some((_, dw, dh, ds)) => *dw != w || *dh != h || *ds != self.msaa,
             None => true,
         };
         if need {
@@ -1192,13 +1266,13 @@ impl LiveRenderer {
                 label: Some("live-depth"),
                 size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
                 mip_level_count: 1,
-                sample_count: 1,
+                sample_count: self.msaa,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             });
-            self.depth = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), w, h));
+            self.depth = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), w, h, self.msaa));
         }
     }
 
@@ -1236,25 +1310,30 @@ impl LiveRenderer {
             }
         }
         self.ensure_depth(device, w, h);
+        self.ensure_msaa_color(device, w, h);
         let depth_view = match &self.depth {
-            Some((v, _, _)) => v,
+            Some((v, _, _, _)) => v,
             None => return 0,
         };
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("live") });
         {
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("live-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
-                        store: wgpu::StoreOp::Store,
+                color_attachments: &[Some(match &self.msaa_color {
+                    Some((ms_view, _, _, _)) => wgpu::RenderPassColorAttachment {
+                        view: ms_view,
+                        resolve_target: Some(target), // MSAA resolves into the swapchain
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Discard },
+                    },
+                    None => wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: depth_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,

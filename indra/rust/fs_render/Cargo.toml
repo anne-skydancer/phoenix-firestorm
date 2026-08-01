@@ -8,7 +8,9 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib: the viewer LoadLibrary()s this at runtime. rlib: lets the in-repo headless
+# harness (tests/) drive the real LiveRenderer offscreen for deterministic verification.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 png = "0.17"

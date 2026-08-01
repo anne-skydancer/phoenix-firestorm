@@ -7,7 +7,7 @@
 //! draw path (the replay renderer, live). Handle/POD/no-panic-across-boundary per the
 //! llrust FFI house pattern.
 
-mod live;
+pub mod live;
 
 use std::ffi::c_void;
 use live::{DrawDesc, LiveRenderer};

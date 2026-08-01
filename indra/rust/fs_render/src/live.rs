@@ -31,6 +31,12 @@ pub const CLASS_SKY_SUN: u32 = 4;
 pub const CLASS_SKY_MOON: u32 = 5;
 pub const CLASS_SKY_STARS: u32 = 6;
 
+/// Increment 1a: the linear-HDR scene-color format. World/sky/water/terrain render into
+/// an Rgba16Float target (no ROP encode) instead of straight to the sRGB swapchain, so a
+/// later resolve/tonemap can operate in linear HDR. This is the format the deferred
+/// G-buffer resolve (Phase 4) writes its lit output into.
+const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 /// The per-draw descriptor the viewer fills (POD, `#[repr(C)]`, mirrored in C++).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -172,6 +178,13 @@ pub struct LiveRenderer {
     depth: Option<(wgpu::TextureView, u32, u32, u32)>, // view, w, h, samples
     msaa: u32, // 1/2/4/8 -- from the viewer's RenderFSAASamples
     msaa_color: Option<(wgpu::TextureView, u32, u32, u32)>, // MS resolve source
+    /// Increment 1a: linear-HDR scene target. World/sky/water/terrain render here
+    /// (Rgba16Float, no ROP encode); the post pass then composites to the swapchain.
+    /// The deferred-lighting stage (Phase 4) will write its lit output into this target.
+    scene_hdr: Option<(wgpu::TextureView, u32, u32)>,
+    post_bgl: wgpu::BindGroupLayout,
+    post_pipeline: Option<wgpu::RenderPipeline>,
+    post_bind: Option<wgpu::BindGroup>,
     format: wgpu::TextureFormat,
     pub submitted: u64,
     pub drawn: u64,
@@ -367,6 +380,19 @@ impl LiveRenderer {
             contents: &vec![0xFFu8; FALLBACK_VERTS * 4],
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let post_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
         LiveRenderer {
             bgl,
             layout,
@@ -413,6 +439,10 @@ impl LiveRenderer {
             depth: None,
             msaa: 1,
             msaa_color: None,
+            scene_hdr: None,
+            post_bgl,
+            post_pipeline: None,
+            post_bind: None,
             format,
             submitted: 0,
             drawn: 0,
@@ -620,7 +650,7 @@ impl LiveRenderer {
                 mip_level_count: 1,
                 sample_count: self.msaa,
                 dimension: wgpu::TextureDimension::D2,
-                format: self.format,
+                format: SCENE_FORMAT,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             });
@@ -710,7 +740,7 @@ impl LiveRenderer {
                 module: &self.fs,
                 entry_point: "main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: self.format,
+                    format: SCENE_FORMAT,
                     blend: Some(add_blend),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -788,10 +818,10 @@ impl LiveRenderer {
         };
         let sky_vs = device.create_shader_module(wgpu::include_spirv!("../shaders/sky.vert.spv"));
         let sky_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/sky.frag.spv"));
-        self.sky_pipeline = Some(make(device, sky_vs, sky_fs, 2, false, self.format, &layout));
+        self.sky_pipeline = Some(make(device, sky_vs, sky_fs, 2, false, SCENE_FORMAT, &layout));
         let water_vs = device.create_shader_module(wgpu::include_spirv!("../shaders/water.vert.spv"));
         let water_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/water.frag.spv"));
-        self.water_pipeline = Some(make(device, water_vs, water_fs, 1, true, self.format, &layout));
+        self.water_pipeline = Some(make(device, water_vs, water_fs, 1, true, SCENE_FORMAT, &layout));
     }
 
     fn ensure_terrain_pipeline(&mut self, device: &wgpu::Device) {
@@ -826,7 +856,7 @@ impl LiveRenderer {
                 module: &fs,
                 entry_point: "main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: self.format,
+                    format: SCENE_FORMAT,
                     blend: Some(wgpu::BlendState::REPLACE), // terrain draws with blending OFF
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -1231,7 +1261,7 @@ impl LiveRenderer {
                 module: &self.fs,
                 entry_point: "main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: self.format,
+                    format: SCENE_FORMAT,
                     blend: if key.2 { Some(wgpu::BlendState::ALPHA_BLENDING) } else { Some(wgpu::BlendState::REPLACE) },
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -1276,6 +1306,79 @@ impl LiveRenderer {
         }
     }
 
+    /// Increment 1a: (re)create the linear-HDR scene target on size change. World geometry
+    /// renders into this instead of the swapchain; the post pass composites it out.
+    fn ensure_scene_hdr(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        let need = match &self.scene_hdr {
+            Some((_, sw, sh)) => *sw != w || *sh != h,
+            None => true,
+        };
+        if need {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("scene-hdr"),
+                size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: SCENE_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.scene_hdr = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), w, h));
+            self.post_bind = None; // stale: rebind against the new scene view
+        }
+    }
+
+    /// Increment 1a: the composite pipeline (fullscreen triangle) + its bind group. For now
+    /// this is an exact texelFetch copy of scene_hdr to the swapchain (provable identity);
+    /// 1b replaces the copy shader with tonemap+exposure. Pipeline targets the swapchain
+    /// format; the world pipelines target SCENE_FORMAT.
+    fn ensure_post(&mut self, device: &wgpu::Device) {
+        if self.post_pipeline.is_none() {
+            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/post_copy.frag.spv"));
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("post-pl"),
+                bind_group_layouts: &[&self.post_bgl],
+                push_constant_ranges: &[],
+            });
+            let swap_fmt = self.format;
+            self.post_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("post-copy"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: swap_fmt,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }));
+        }
+        if self.post_bind.is_none() {
+            let bgl = &self.post_bgl;
+            let bind = self.scene_hdr.as_ref().map(|(v, _, _)| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("post-bind"),
+                    layout: bgl,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) }],
+                })
+            });
+            self.post_bind = bind;
+        }
+    }
+
     /// Render every queued draw into `target` and return how many were drawn.
     pub fn flush(
         &mut self,
@@ -1311,8 +1414,14 @@ impl LiveRenderer {
         }
         self.ensure_depth(device, w, h);
         self.ensure_msaa_color(device, w, h);
+        self.ensure_scene_hdr(device, w, h);
+        self.ensure_post(device);
         let depth_view = match &self.depth {
             Some((v, _, _, _)) => v,
+            None => return 0,
+        };
+        let scene_view = match &self.scene_hdr {
+            Some((v, _, _)) => v,
             None => return 0,
         };
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("live") });
@@ -1322,11 +1431,11 @@ impl LiveRenderer {
                 color_attachments: &[Some(match &self.msaa_color {
                     Some((ms_view, _, _, _)) => wgpu::RenderPassColorAttachment {
                         view: ms_view,
-                        resolve_target: Some(target), // MSAA resolves into the swapchain
+                        resolve_target: Some(scene_view), // world MSAA resolves into scene_hdr
                         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
                     },
                     None => wgpu::RenderPassColorAttachment {
-                        view: target,
+                        view: scene_view, // world renders into the linear-HDR scene target
                         resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
                     },
@@ -1407,6 +1516,26 @@ impl LiveRenderer {
                 } else {
                     rp.draw(q.first..q.first + q.vcount, 0..1);
                 }
+            }
+        }
+        // Increment 1a: composite the linear-HDR scene target to the swapchain. Currently an
+        // exact texelFetch copy (identity); 1b swaps in tonemap + exposure here.
+        {
+            let mut pp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("post-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if let (Some(p), Some(b)) = (self.post_pipeline.as_ref(), self.post_bind.as_ref()) {
+                pp.set_pipeline(p);
+                pp.set_bind_group(0, b, &[]);
+                pp.draw(0..3, 0..1);
             }
         }
         queue.submit([enc.finish()]);

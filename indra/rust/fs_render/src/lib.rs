@@ -327,7 +327,54 @@ pub extern "C" fn fsr_scene_set_settings(s: *const scene::SettingsSnapshot) -> i
     }
 }
 
-/// End the typed frame. Returns the number of typed draws contributed (0 in P0/P1; the present
+/// P2 payload: the EEP atmospherics/sky block (`#[repr(C)]` = `scene::EepSkyBlock`), per frame.
+#[no_mangle]
+pub extern "C" fn fsr_scene_set_sky(sky: *const scene::EepSkyBlock) -> i32 {
+    if sky.is_null() {
+        return 0;
+    }
+    let s = unsafe { *sky };
+    let mut g = ENGINE.lock().unwrap();
+    if let Some(e) = g.as_mut() {
+        e.scene.set_sky(&s);
+        1
+    } else {
+        0
+    }
+}
+
+/// P2 payload: the EEP water block (`#[repr(C)]` = `scene::WaterBlock`), per frame.
+#[no_mangle]
+pub extern "C" fn fsr_scene_set_water(water: *const scene::WaterBlock) -> i32 {
+    if water.is_null() {
+        return 0;
+    }
+    let w = unsafe { *water };
+    let mut g = ENGINE.lock().unwrap();
+    if let Some(e) = g.as_mut() {
+        e.scene.set_water(&w);
+        1
+    } else {
+        0
+    }
+}
+
+/// P3 payload: the local point/spot lights for this frame (`count` x `scene::Light`), replacing
+/// the previous list. The viewer caps `count` at RenderLocalLightCount (from the settings snapshot).
+#[no_mangle]
+pub extern "C" fn fsr_scene_set_lights(count: u32, ptr: *const scene::Light) -> i32 {
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    if count == 0 || ptr.is_null() {
+        e.scene.set_lights(&[]);
+        return 1;
+    }
+    let lights = unsafe { std::slice::from_raw_parts(ptr, count as usize) };
+    e.scene.set_lights(lights);
+    1
+}
+
+/// End the typed frame. Returns the number of typed draws contributed (0 through P3; the present
 /// still happens in fsr_end_frame, which will render the typed frame once a phase fills it).
 #[no_mangle]
 pub extern "C" fn fsr_scene_end() -> i32 {

@@ -175,9 +175,91 @@ pub struct SettingsSnapshot {
     pub render_highlight_fade_time: f32,
 }
 
-/// The accumulating typed frame. Grows one payload per phase; carries the lifecycle, the
-/// camera (P1), and the settings snapshot (P1). Empty of GEOMETRY by default so it renders
-/// nothing until a subsystem phase contributes typed draws.
+/// P2: the EEP atmospherics/sky block. Fields are the atmospherics uniform set the sky +
+/// deferred-resolve shaders consume (the exact set the tap already scrapes from the bound sky
+/// shader: LIGHTNORM/SUNLIGHT/MOONLIGHT/AMBIENT/BLUE_HORIZON/BLUE_DENSITY/HAZE_*/DENSITY_MULT/
+/// MAX_Y/GLOW/CLOUD_SHADOW/SUN_MOON_GLOW/... + clouds/stars/celestial), sourced authoritatively
+/// from `LLSettingsSky` when the viewer wiring lands. World-space `sun_dir`/`moon_dir`; the
+/// engine transforms to eye space via the camera (no more sky-dome-modelview scrape). This is
+/// what the 12-float `frame_env` bottleneck destroyed -- the physical model, restored.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EepSkyBlock {
+    pub sun_dir: [f32; 3],
+    pub sun_color: [f32; 3],   // SUNLIGHT_COLOR (also the sun lighting term)
+    pub moon_dir: [f32; 3],
+    pub moon_color: [f32; 3],  // MOONLIGHT_COLOR
+    pub ambient: [f32; 3],     // AMBIENT
+    pub blue_horizon: [f32; 3],
+    pub blue_density: [f32; 3],
+    pub haze_density: f32,
+    pub haze_horizon: f32,
+    pub density_multiplier: f32,
+    pub distance_multiplier: f32,
+    pub max_y: f32,
+    pub gamma: f32,
+    pub glow: [f32; 3],        // GLOW (focus / size)
+    pub cloud_shadow: f32,
+    pub sun_moon_glow_factor: f32,
+    pub sun_up_factor: f32,
+    pub sky_hdr_scale: f32,    // reflection-probe ambiance / HDR scale (SKY_HDR_SCALE)
+    pub cloud_color: [f32; 3],
+    pub cloud_pos_density1: [f32; 3],
+    pub cloud_pos_density2: [f32; 3],
+    pub cloud_scale: f32,
+    pub cloud_variance: f32,
+    pub star_brightness: f32,
+    pub sun_scale: f32,
+    pub moon_scale: f32,
+    pub moon_brightness: f32,
+    pub moisture_level: f32, // rainbow/halo
+    pub droplet_radius: f32,
+    pub ice_level: f32,
+}
+
+/// P2: the EEP water block, from `LLSettingsWater` getters. Texture fields are UUID-derived
+/// handles resolved to engine texture ids when the material/texture subsystem lands.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WaterBlock {
+    pub fog_color: [f32; 3],
+    pub fog_density: f32,
+    pub underwater_fog_mod: f32,
+    pub fresnel_scale: f32,
+    pub fresnel_offset: f32,
+    pub scale_above: f32,
+    pub scale_below: f32,
+    pub blur_multiplier: f32,
+    pub normal_scale: [f32; 3],
+    pub wave1_dir: [f32; 2],
+    pub wave2_dir: [f32; 2],
+    pub water_height: f32,
+    pub normal_map_tex: u32,
+    pub transparent_tex: u32,
+}
+
+/// P3: a local point/spot light (the list the tap NEVER sent -- the single biggest cause of
+/// the "inside brighter than outside" unphysical resolve). From `LLPipeline::mNearbyLights` +
+/// `LLVOVolume` getLightRadius/getLightFalloff/getLightLinearColor/isLightSpotlight. Position
+/// in agent/world space; the engine transforms to eye space via the camera. 64 bytes (4 vec4).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Light {
+    pub pos: [f32; 3],
+    pub radius: f32,
+    pub color: [f32; 3], // linear
+    pub falloff: f32,
+    pub dir: [f32; 3], // spot direction
+    pub spot_cos_cutoff: f32,
+    pub spot_exponent: f32,
+    pub is_spot: u32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+}
+
+/// The accumulating typed frame. Grows one payload per phase. Per-frame data (camera, sky,
+/// water, lights, geometry) is cleared each `begin`; settings persist (change on event only).
+/// Empty of GEOMETRY until a subsystem phase feeds typed draws.
 #[derive(Default)]
 pub struct SceneFrame {
     /// Typed frames begun (telemetry / co-existence proof).
@@ -187,6 +269,12 @@ pub struct SceneFrame {
     /// P1: the render-settings snapshot. Always present (defaulted); the render code reads
     /// this, never a settings store. Atomically replaced by `set_settings` on any change.
     pub settings: SettingsSnapshot,
+    /// P2: the EEP atmospherics/sky block (per frame; day-cycle changes it every frame).
+    pub eep_sky: Option<EepSkyBlock>,
+    /// P2: the EEP water block (per frame).
+    pub water: Option<WaterBlock>,
+    /// P3: the local point/spot lights this frame (nearby-light list, capped scene-side).
+    pub lights: Vec<Light>,
 }
 
 impl SceneFrame {
@@ -194,12 +282,15 @@ impl SceneFrame {
         SceneFrame::default()
     }
 
-    /// Start a typed frame: clear the previous frame's per-frame data (camera + geometry).
-    /// Settings persist across frames (they change only on a settings event), so they are NOT
-    /// cleared here.
+    /// Start a typed frame: clear the previous frame's per-frame data (camera, sky, water,
+    /// lights, geometry). Settings persist across frames (they change only on a settings
+    /// event), so they are NOT cleared here.
     pub fn begin(&mut self) {
         self.frames = self.frames.wrapping_add(1);
         self.camera = None;
+        self.eep_sky = None;
+        self.water = None;
+        self.lights.clear();
     }
 
     pub fn set_camera(&mut self, cam: &CameraBlock) {
@@ -210,6 +301,22 @@ impl SceneFrame {
     /// per frame. Values are effective (feature-manager already applied).
     pub fn set_settings(&mut self, s: &SettingsSnapshot) {
         self.settings = *s;
+    }
+
+    /// P2: the EEP atmospherics/sky block for this frame.
+    pub fn set_sky(&mut self, sky: &EepSkyBlock) {
+        self.eep_sky = Some(*sky);
+    }
+
+    /// P2: the EEP water block for this frame.
+    pub fn set_water(&mut self, water: &WaterBlock) {
+        self.water = Some(*water);
+    }
+
+    /// P3: the local point/spot lights for this frame (replaces the list; capped scene-side).
+    pub fn set_lights(&mut self, lights: &[Light]) {
+        self.lights.clear();
+        self.lights.extend_from_slice(lights);
     }
 
     /// Whether this typed frame carries GEOMETRY to render. P0/P1 contribute none, so the tap
@@ -249,5 +356,22 @@ mod tests {
         assert!(s.camera.is_none());
         assert_eq!(s.settings.render_shadow_detail, 2, "settings persist across frames");
         assert_eq!(s.settings.render_far_clip, 512.0);
+
+        // P2/P3 payloads round-trip and clear on begin(); settings still persist.
+        s.set_sky(&EepSkyBlock { max_y: 1000.0, gamma: 1.0, ..Default::default() });
+        s.set_water(&WaterBlock { water_height: 20.0, fresnel_scale: 0.4, ..Default::default() });
+        s.set_lights(&[
+            Light { radius: 5.0, is_spot: 0, ..Default::default() },
+            Light { radius: 8.0, is_spot: 1, ..Default::default() },
+        ]);
+        assert_eq!(s.eep_sky.unwrap().max_y, 1000.0);
+        assert_eq!(s.water.unwrap().water_height, 20.0);
+        assert_eq!(s.lights.len(), 2);
+        assert_eq!(s.lights[1].is_spot, 1);
+
+        s.begin();
+        assert!(s.eep_sky.is_none() && s.water.is_none() && s.lights.is_empty(), "per-frame data cleared");
+        assert_eq!(s.settings.render_shadow_detail, 2, "settings survive the frame reset");
+        assert!(s.is_empty(), "still no geometry -> tap renders the scene");
     }
 }

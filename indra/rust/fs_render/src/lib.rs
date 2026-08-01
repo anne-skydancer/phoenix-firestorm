@@ -465,6 +465,12 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
     e.frame_open = false;
+    // P3 (consumption): when the typed EEP sky + camera are present, route the CORRECT
+    // eye-space sun/ambient to the deferred resolve (world sun -> eye via the camera view),
+    // overriding the self-derived sky-dome-modelview fallback that gave the wrong direction.
+    if let Some(env) = e.scene.resolve_env() {
+        e.live.set_frame_env(&env);
+    }
     // B1: an empty frame would present the raw clear over a good image -- the whole
     // teal-flash class (window resize swaps, startup states with no draws). Keep the
     // last presented frame instead. The very first present still goes through so the

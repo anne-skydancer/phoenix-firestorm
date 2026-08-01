@@ -319,6 +319,24 @@ impl SceneFrame {
         self.lights.extend_from_slice(lights);
     }
 
+    /// P3 (consumption): derive the deferred resolve's sun/ambient env from the TYPED EEP sky +
+    /// camera -- the world-space sun goes to EYE space via the camera view matrix (the correct
+    /// transform), replacing the sky-dome-modelview scrape that gave the wrong direction. Returns
+    /// `[sun_dir_eye(3), _, sunlight(3), _, ambient(3), _]` (12 floats, the resolve Env layout),
+    /// or `None` if sky or camera is absent (the engine then keeps its self-derived fallback).
+    pub fn resolve_env(&self) -> Option<[f32; 12]> {
+        let sky = self.eep_sky.as_ref()?;
+        let cam = self.camera.as_ref()?;
+        let view = glam::Mat4::from_cols_array(&cam.view);
+        let sun_world = glam::Vec3::new(sky.sun_dir[0], sky.sun_dir[1], sky.sun_dir[2]);
+        let sun_eye = (glam::Mat3::from_mat4(view) * sun_world).normalize_or_zero();
+        Some([
+            sun_eye.x, sun_eye.y, sun_eye.z, 0.0,
+            sky.sun_color[0], sky.sun_color[1], sky.sun_color[2], 0.0,
+            sky.ambient[0], sky.ambient[1], sky.ambient[2], 0.0,
+        ])
+    }
+
     /// Whether this typed frame carries GEOMETRY to render. P0/P1 contribute none, so the tap
     /// still renders the whole scene. A subsystem phase flips this once it feeds typed draws.
     pub fn is_empty(&self) -> bool {
@@ -373,5 +391,18 @@ mod tests {
         assert!(s.eep_sky.is_none() && s.water.is_none() && s.lights.is_empty(), "per-frame data cleared");
         assert_eq!(s.settings.render_shadow_detail, 2, "settings survive the frame reset");
         assert!(s.is_empty(), "still no geometry -> tap renders the scene");
+    }
+
+    #[test]
+    fn resolve_env_uses_camera_transform() {
+        let mut s = SceneFrame::new();
+        assert!(s.resolve_env().is_none(), "no env without sky + camera");
+        s.set_camera(&CameraBlock { view: glam::Mat4::IDENTITY.to_cols_array(), ..Default::default() });
+        s.set_sky(&EepSkyBlock { sun_dir: [0.0, 0.0, 1.0], sun_color: [1.0, 0.9, 0.8], ambient: [0.2, 0.2, 0.25], ..Default::default() });
+        let env = s.resolve_env().expect("sky + camera present");
+        // identity view -> the world sun (0,0,1) stays (0,0,1) in eye space.
+        assert!(env[0].abs() < 1e-5 && env[1].abs() < 1e-5 && (env[2] - 1.0).abs() < 1e-5, "sun eye {:?}", &env[0..3]);
+        assert_eq!([env[4], env[5], env[6]], [1.0, 0.9, 0.8], "sunlight");
+        assert_eq!([env[8], env[9], env[10]], [0.2, 0.2, 0.25], "ambient");
     }
 }

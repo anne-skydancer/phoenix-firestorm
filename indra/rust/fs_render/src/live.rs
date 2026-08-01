@@ -15,6 +15,7 @@ use wgpu::util::DeviceExt;
 // LLVertexBuffer type sizes (llvertexbuffer.cpp:714) — SoA block strides
 const TYPE_SIZES: [u32; 14] = [16, 16, 8, 8, 8, 8, 4, 4, 16, 4, 16, 16, 8, 16];
 const TYPE_VERTEX: usize = 0;
+const TYPE_NORMAL: usize = 1;
 const TYPE_TEXCOORD0: usize = 2;
 const TYPE_COLOR: usize = 6;
 const TYPE_TEXCOORD1: usize = 3;
@@ -186,6 +187,7 @@ pub struct LiveRenderer {
     // painted the login text red/orange. Bind these instead: uv (0,0), colour opaque white.
     uv_zero: wgpu::Buffer,
     color_white: wgpu::Buffer,
+    normal_up: wgpu::Buffer,
     depth: Option<(wgpu::TextureView, u32, u32, u32)>, // view, w, h, samples
     msaa: u32, // 1/2/4/8 -- from the viewer's RenderFSAASamples
     msaa_color: Option<(wgpu::TextureView, u32, u32, u32)>, // MS resolve source
@@ -391,6 +393,12 @@ impl LiveRenderer {
             contents: &vec![0xFFu8; FALLBACK_VERTS * 4],
             usage: wgpu::BufferUsages::VERTEX,
         });
+        // #3: fallback eye-space normal (0,0,1) for generic draws whose SoA lacks a NORMAL block.
+        let normal_up = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("normal-up"),
+            contents: bytemuck::cast_slice(&vec![[0.0f32, 0.0, 1.0, 0.0]; FALLBACK_VERTS]),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         let post_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -447,6 +455,7 @@ impl LiveRenderer {
             slot: 0,
             uv_zero,
             color_white,
+            normal_up,
             depth: None,
             msaa: 1,
             msaa_color: None,
@@ -735,6 +744,12 @@ impl LiveRenderer {
                 array_stride: 4,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 2, format: wgpu::VertexFormat::Unorm8x4 }],
+            },
+            // #3: eye-space normal source (SoA NORMAL block, 16B stride; fallback normal_up)
+            wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 3, format: wgpu::VertexFormat::Float32x3 }],
             },
         ];
         let vmodule: &wgpu::ShaderModule = if key.4 {
@@ -1025,7 +1040,7 @@ impl LiveRenderer {
 
         // Stage this draw's UBO block (mvp + colour) in the CPU ring at a 256-byte slot;
         // ONE write_buffer uploads the whole frame in flush.
-        const STRIDE: usize = 256;
+        const STRIDE: usize = 512;
         let slot = self.slot;
         self.slot += 1;
         let need = (slot + 1) * STRIDE;
@@ -1053,7 +1068,7 @@ impl LiveRenderer {
             let bytes: &[u8] = bytemuck::cast_slice(&block);
             self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
         } else {
-            let mut block = [0f32; 56]; // mvp + color + planes + texmat + khr + flags
+            let mut block = [0f32; 68]; // mvp + color + planes + texmat + khr + flags + normal_mat(std140 mat3)
             block[..16].copy_from_slice(&mvp.to_cols_array());
             block[16..20].copy_from_slice(&d.color);
             block[20..28].copy_from_slice(&d.aux[..8]);
@@ -1062,6 +1077,13 @@ impl LiveRenderer {
             block[52] = if d.blend != 0 { 1.0 } else { 0.0 }; // flags.x: blending enabled
             block[53] = if d.indexed_ch > 0 { 1.0 } else { 0.0 }; // flags.y: pos.w is a tex index
             block[54] = d.min_alpha; // flags.z: MASK cutoff (-1 disabled)
+            // #3: normal matrix = inverse-transpose of the modelview upper-3x3, std140 mat3
+            // (3 columns each padded to vec4). Unused by live.frag; read by live_gb.frag.
+            let nm = glam::Mat3::from_mat4(Mat4::from_cols_array(&d.modelview)).inverse().transpose();
+            let nc = nm.to_cols_array();
+            block[56] = nc[0]; block[57] = nc[1]; block[58] = nc[2];
+            block[60] = nc[3]; block[61] = nc[4]; block[62] = nc[5];
+            block[64] = nc[6]; block[65] = nc[7]; block[66] = nc[8];
             let bytes: &[u8] = bytemuck::cast_slice(&block);
             self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
         }
@@ -1244,6 +1266,12 @@ impl LiveRenderer {
                 array_stride: 4,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 2, format: wgpu::VertexFormat::Unorm8x4 }],
+            },
+            // #3: eye-space normal source (SoA NORMAL block, 16B stride; fallback normal_up)
+            wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 3, format: wgpu::VertexFormat::Float32x3 }],
             },
         ];
         let weight_layout = wgpu::VertexBufferLayout {
@@ -1519,6 +1547,13 @@ impl LiveRenderer {
                 if q.skinned {
                     let woff = if vo[TYPE_WEIGHT4] != u32::MAX { vo[TYPE_WEIGHT4] } else { vo[TYPE_VERTEX] };
                     rp.set_vertex_buffer(3, vbuf.slice(woff as u64..));
+                } else {
+                    // #3: normal at slot 3 for live.vert (SoA NORMAL block, else the (0,0,1) fallback)
+                    if vo[TYPE_NORMAL] != u32::MAX {
+                        rp.set_vertex_buffer(3, vbuf.slice(vo[TYPE_NORMAL] as u64..));
+                    } else {
+                        rp.set_vertex_buffer(3, self.normal_up.slice(..));
+                    }
                 }
                 if let Some(ip) = q.iptr {
                     let Some((ib, _)) = self.geo.get(&ip) else { continue };

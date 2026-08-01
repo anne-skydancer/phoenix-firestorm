@@ -7,6 +7,7 @@ layout(set = 0, binding = 0) uniform U {
     vec4 khr_sr;   // KHR scale.xy, rotation, _
     vec4 khr_off;  // KHR offset.xy
     vec4 flags;    // .x = blending enabled at draw time
+    mat3 normal_mat; // #3: unused here; declared so the UBO layout matches live.vert/live_gb.frag
 } u;
 layout(set = 0, binding = 1) uniform texture2D tex0;
 layout(set = 0, binding = 2) uniform texture2D tex1;

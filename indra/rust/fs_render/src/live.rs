@@ -455,7 +455,7 @@ impl LiveRenderer {
         });
         let env_ubo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("resolve-env"),
-            size: 48, // 3 x vec4 (sun_dir, sunlight, ambient)
+            size: 64, // 4 x vec4 (sun_dir, sunlight, ambient, bg)
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1105,6 +1105,20 @@ impl LiveRenderer {
         let skywater = matches!(d.draw_class, CLASS_WATER | CLASS_SKY_DOME);
         if d.draw_class == CLASS_SKY_DOME { self.sky_draws += 1; }
         if d.draw_class == CLASS_WATER { self.water_draws += 1; }
+        if d.draw_class == CLASS_SKY_DOME {
+            // #4: self-derive the deferred sun/atmospherics from the sky dome's EEP env.
+            // aux[4..6]=LIGHTNORM, aux[8..10]=SUNLIGHT_COLOR, aux[16..18]=AMBIENT (packed by
+            // the tap). LIGHTNORM -> eye space via the sky's modelview (sky model ~= view).
+            // Space/sign confirmed at the in-world eyeball; iterate here (DLL-only) if off.
+            let ln = glam::Vec3::new(d.aux[4], d.aux[5], d.aux[6]);
+            let mv3 = glam::Mat3::from_mat4(Mat4::from_cols_array(&d.modelview));
+            let eye_sun = (mv3 * ln).normalize_or_zero();
+            self.frame_env = [
+                eye_sun.x, eye_sun.y, eye_sun.z, 0.0,
+                d.aux[8], d.aux[9], d.aux[10], 0.0,
+                d.aux[16], d.aux[17], d.aux[18], 0.0,
+            ];
+        }
         if d.draw_class == CLASS_SKY_DOME && !self.sky_dumped {
             self.sky_dumped = true;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
@@ -1641,7 +1655,14 @@ impl LiveRenderer {
             self.ensure_resolve(device);
         }
         {
-            let env = self.frame_env;
+            // Env UBO = sun_dir, sunlight, ambient (frame_env) + bg (the viewer clear, so the
+            // resolve can paint the background before the forward pass draws sky over it).
+            let mut env = [0f32; 16];
+            env[..12].copy_from_slice(&self.frame_env);
+            env[12] = clear.r as f32;
+            env[13] = clear.g as f32;
+            env[14] = clear.b as f32;
+            env[15] = clear.a as f32;
             queue.write_buffer(&self.env_ubo, 0, bytemuck::cast_slice(&env));
         }
         let depth_view = match &self.depth {
@@ -1696,6 +1717,28 @@ impl LiveRenderer {
                 }
             }
         }
+        // #3/#4 PASS 2: deferred resolve -- light the G-buffer into scene_hdr (lit opaque
+        // where HAS_ATMOS, the viewer background elsewhere). Runs BEFORE the forward pass, so
+        // the forward sky/terrain/water/UI draw over it with depth-test (correct occlusion --
+        // forward geometry in front of opaque generic hides it, geometry behind does not).
+        if has_gb {
+            if let (Some(p), Some(bind)) = (self.resolve_pipeline.as_ref(), self.resolve_bind.as_ref()) {
+                let mut rp2 = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("resolve-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: scene_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                rp2.set_pipeline(p);
+                rp2.set_bind_group(0, bind, &[]);
+                rp2.draw(0..3, 0..1);
+            }
+        }
         {
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("live-pass"),
@@ -1703,12 +1746,12 @@ impl LiveRenderer {
                     Some((ms_view, _, _, _)) => wgpu::RenderPassColorAttachment {
                         view: ms_view,
                         resolve_target: Some(scene_view), // world MSAA resolves into scene_hdr
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations { load: if has_gb { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(clear) }, store: wgpu::StoreOp::Store },
                     },
                     None => wgpu::RenderPassColorAttachment {
-                        view: scene_view, // world renders into the linear-HDR scene target
+                        view: scene_view, // #3: LOAD the resolve's output when it ran; else clear
                         resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations { load: if has_gb { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(clear) }, store: wgpu::StoreOp::Store },
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1790,27 +1833,6 @@ impl LiveRenderer {
                 } else {
                     rp.draw(q.first..q.first + q.vcount, 0..1);
                 }
-            }
-        }
-        // #4 PASS 3: deferred resolve -- light the G-buffer into scene_hdr. resolve.frag
-        // discards non-HAS_ATMOS pixels so the forward background (sky etc.) shows through;
-        // lit opaque generic is composited over it. Outputs linear HDR.
-        if has_gb {
-            if let (Some(p), Some(bind)) = (self.resolve_pipeline.as_ref(), self.resolve_bind.as_ref()) {
-                let mut rp2 = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("resolve-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: scene_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                rp2.set_pipeline(p);
-                rp2.set_bind_group(0, bind, &[]);
-                rp2.draw(0..3, 0..1);
             }
         }
         // Increment 1a: composite the linear-HDR scene target to the swapchain. Currently an

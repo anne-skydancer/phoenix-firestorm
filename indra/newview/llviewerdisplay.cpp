@@ -506,8 +506,11 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 {
     FSSceneDump::onFrame(LLStartUp::getStartupState() == STATE_STARTED); // <FS:VkBridge> P2b
     // <FS:VkBridge> P3 (ground-up data bridge): feed the typed camera + EEP sky to the engine.
-    // newview owns LLViewerCamera / LLEnvironment; FSSceneDump forwards to fs_render's fsr_scene_*.
-    // The engine derives its eye-space sun (view * world-sun), curing the wrong-direction lighting.
+    // ONLY in-world -- LLEnvironment / LLViewerCamera are not ready during early startup, and
+    // touching them there is a straight CTD (observed at STATE_FETCH_GRID_INFO). newview owns
+    // these classes; FSSceneDump forwards to fs_render's fsr_scene_*. Engine derives eye-space
+    // sun = view * world-sun, curing the wrong-direction lighting.
+    if (LLStartUp::getStartupState() == STATE_STARTED)
     {
         LLViewerCamera* pcam = LLViewerCamera::getInstance();
         if (pcam)

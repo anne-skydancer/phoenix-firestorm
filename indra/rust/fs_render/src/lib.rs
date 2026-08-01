@@ -8,6 +8,7 @@
 //! llrust FFI house pattern.
 
 pub mod live;
+pub mod scene; // P0: typed scene-bridge scaffold (GROUNDUP_VULKAN_ENGINE_PLAN.md)
 
 use std::ffi::c_void;
 use live::{DrawDesc, LiveRenderer};
@@ -24,6 +25,9 @@ struct Engine {
     config: wgpu::SurfaceConfiguration,
     frames: u64,
     live: LiveRenderer,
+    /// P0: the typed scene-bridge frame, accumulated beside the tap. Empty until a migration
+    /// phase fills it; the tap renders the whole scene until then.
+    scene: scene::SceneFrame,
     frame_open: bool,
     adapter_desc: String,
     /// B4: retained copy of the last presented frame (readback for snapshots and the
@@ -118,6 +122,7 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
             config,
             frames: 0,
             live,
+            scene: scene::SceneFrame::new(),
             frame_open: false,
             adapter_desc: format!("{} ({} {})", info.name, info.driver, info.driver_info),
             last_frame: None,
@@ -267,6 +272,48 @@ pub extern "C" fn fsr_set_frame_env(ptr: *const f32) -> i32 {
     } else {
         0
     }
+}
+
+// ---- P0: typed scene-bridge lifecycle (GROUNDUP_VULKAN_ENGINE_PLAN.md) ----
+// Co-exists with the GL-draw tap in the same frame:
+//   fsr_begin_frame -> [fsr_scene_* typed feeders] + [fsr_submit tap draws] -> fsr_end_frame
+// Until a migration phase fills the typed frame it contributes NOTHING and the tap renders
+// the whole scene unchanged. The viewer wiring lands with P1 (its first real payload).
+
+/// Begin the typed frame: reset last frame's accumulated typed data.
+#[no_mangle]
+pub extern "C" fn fsr_scene_begin() -> i32 {
+    let mut g = ENGINE.lock().unwrap();
+    if let Some(e) = g.as_mut() {
+        e.scene.begin();
+        1
+    } else {
+        0
+    }
+}
+
+/// P1 payload: the frame camera (view/proj/origin/near/far/fov/aspect/viewport), `#[repr(C)]`
+/// = `scene::CameraBlock`. The engine derives its own reverse-Z projection from near/far.
+#[no_mangle]
+pub extern "C" fn fsr_scene_set_camera(cam: *const scene::CameraBlock) -> i32 {
+    if cam.is_null() {
+        return 0;
+    }
+    let c = unsafe { *cam };
+    let mut g = ENGINE.lock().unwrap();
+    if let Some(e) = g.as_mut() {
+        e.scene.set_camera(&c);
+        1
+    } else {
+        0
+    }
+}
+
+/// End the typed frame. Returns the number of typed draws contributed (0 in P0; the present
+/// still happens in fsr_end_frame, which will render the typed frame once a phase fills it).
+#[no_mangle]
+pub extern "C" fn fsr_scene_end() -> i32 {
+    0
 }
 
 /// Frames presented so far (test/telemetry).

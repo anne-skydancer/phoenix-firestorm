@@ -589,7 +589,7 @@ impl LiveRenderer {
         // in for testing via FS_ENGINE_MSAA=1.
         let msaa_enabled = std::env::var("FS_ENGINE_MSAA").map(|v| v == "1").unwrap_or(false);
         let s = if !msaa_enabled { 1 }
-            else if samples >= 8 { 8 } else if samples >= 4 { 4 } else if samples >= 2 { 2 } else { 1 };
+            else if samples >= 4 { 4 } else if samples >= 2 { 2 } else { 1 }; // cap 4x (8x not universal)
         if s == self.msaa {
             return;
         }
@@ -1323,7 +1323,7 @@ impl LiveRenderer {
                     Some((ms_view, _, _, _)) => wgpu::RenderPassColorAttachment {
                         view: ms_view,
                         resolve_target: Some(target), // MSAA resolves into the swapchain
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Discard },
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
                     },
                     None => wgpu::RenderPassColorAttachment {
                         view: target,

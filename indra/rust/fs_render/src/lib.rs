@@ -309,7 +309,25 @@ pub extern "C" fn fsr_scene_set_camera(cam: *const scene::CameraBlock) -> i32 {
     }
 }
 
-/// End the typed frame. Returns the number of typed draws contributed (0 in P0; the present
+/// P1 payload: the render-settings snapshot (`#[repr(C)]` = `scene::SettingsSnapshot`). Called
+/// on any settings change (not per frame); the engine reads this instead of scraping GL state
+/// (honoring mechanisms 1 & 2). Values are effective (LLFeatureManager already applied).
+#[no_mangle]
+pub extern "C" fn fsr_scene_set_settings(s: *const scene::SettingsSnapshot) -> i32 {
+    if s.is_null() {
+        return 0;
+    }
+    let snap = unsafe { *s };
+    let mut g = ENGINE.lock().unwrap();
+    if let Some(e) = g.as_mut() {
+        e.scene.set_settings(&snap);
+        1
+    } else {
+        0
+    }
+}
+
+/// End the typed frame. Returns the number of typed draws contributed (0 in P0/P1; the present
 /// still happens in fsr_end_frame, which will render the typed frame once a phase fills it).
 #[no_mangle]
 pub extern "C" fn fsr_scene_end() -> i32 {

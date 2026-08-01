@@ -251,6 +251,24 @@ fn write_capture(device: &wgpu::Device, buf: &wgpu::Buffer, stride: u32, w: u32,
     log::info!("fs_render: frame captured to {}", CAPTURE_OUT);
 }
 
+/// #4: push the per-frame sun/atmospherics env (12 floats: eye-space sun_dir, sunlight,
+/// ambient -- each a vec4). The tap calls this once per frame before submitting draws; the
+/// deferred resolve reads it. No-op until the viewer wires it (engine uses its default).
+#[no_mangle]
+pub extern "C" fn fsr_set_frame_env(ptr: *const f32) -> i32 {
+    if ptr.is_null() {
+        return 0;
+    }
+    let env = unsafe { std::slice::from_raw_parts(ptr, 12) };
+    let mut g = ENGINE.lock().unwrap();
+    if let Some(e) = g.as_mut() {
+        e.live.set_frame_env(env);
+        1
+    } else {
+        0
+    }
+}
+
 /// Frames presented so far (test/telemetry).
 #[no_mangle]
 pub extern "C" fn fsr_frame_count() -> u64 {

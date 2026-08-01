@@ -15,6 +15,12 @@ use wgpu::util::DeviceExt;
 // LLVertexBuffer type sizes (llvertexbuffer.cpp:714) — SoA block strides
 const TYPE_SIZES: [u32; 14] = [16, 16, 8, 8, 8, 8, 4, 4, 16, 4, 16, 16, 8, 16];
 const TYPE_VERTEX: usize = 0;
+const TYPE_NORMAL: usize = 1;
+
+/// #3: G-buffer attachment formats. RT0 = albedo.rgb + gbufferFlag.a; RT1 = eye-space
+/// normal. 16-bit normal is required for the encode; albedo is 8-bit like stock.
+const GBUF_ALBEDO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+const GBUF_NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const TYPE_TEXCOORD0: usize = 2;
 const TYPE_COLOR: usize = 6;
 const TYPE_TEXCOORD1: usize = 3;
@@ -123,6 +129,7 @@ struct Queued {
     blend_add: bool,
     first: u32,
     vcount: u32,
+    is_gb: bool, // #3: opaque generic WITH a normal -> deferred G-buffer fill, not forward
 }
 
 pub struct LiveRenderer {
@@ -196,6 +203,17 @@ pub struct LiveRenderer {
     post_bgl: wgpu::BindGroupLayout,
     post_pipeline: Option<wgpu::RenderPipeline>,
     post_bind: Option<wgpu::BindGroup>,
+    // ---- #3/#4: deferred G-buffer + resolve + tonemap ----
+    normal_up: wgpu::Buffer, // (0,0,1) fallback for G-buffer draws lacking a NORMAL block
+    gbuf_albedo: Option<(wgpu::TextureView, u32, u32)>, // RT0 albedo.rgb + flag.a
+    gbuf_normal: Option<(wgpu::TextureView, u32, u32)>, // RT1 eye-space normal
+    gb_pipeline: Option<wgpu::RenderPipeline>,          // live_gb.vert + live_gb.frag
+    resolve_bgl: wgpu::BindGroupLayout,
+    resolve_pipeline: Option<wgpu::RenderPipeline>,     // fullscreen: G-buffer -> lit scene_hdr
+    resolve_bind: Option<wgpu::BindGroup>,
+    env_ubo: wgpu::Buffer,                              // sun_dir + sunlight + ambient (std140)
+    frame_env: [f32; 12],                               // CPU copy pushed to env_ubo each flush
+    tonemap_pipeline: Option<wgpu::RenderPipeline>,     // post.vert + post_tonemap.frag
     format: wgpu::TextureFormat,
     pub submitted: u64,
     pub drawn: u64,
@@ -404,6 +422,43 @@ impl LiveRenderer {
                 count: None,
             }],
         });
+        // #3: (0,0,1) fallback normal for G-buffer draws whose SoA lacks a NORMAL block.
+        let normal_up = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("normal-up"),
+            contents: bytemuck::cast_slice(&vec![[0.0f32, 0.0, 1.0, 0.0]; FALLBACK_VERTS]),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        // #4: resolve bind group = Env UBO (sun/ambient) + the two G-buffer textures
+        // (sampled via texelFetch, so no sampler entry).
+        let resolve_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("resolve-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+            ],
+        });
+        let env_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resolve-env"),
+            size: 48, // 3 x vec4 (sun_dir, sunlight, ambient)
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         LiveRenderer {
             bgl,
             layout,
@@ -454,6 +509,20 @@ impl LiveRenderer {
             post_bgl,
             post_pipeline: None,
             post_bind: None,
+            normal_up,
+            gbuf_albedo: None,
+            gbuf_normal: None,
+            gb_pipeline: None,
+            resolve_bgl,
+            resolve_pipeline: None,
+            resolve_bind: None,
+            env_ubo,
+            frame_env: [
+                0.3, 0.5, 0.8, 0.0,    // sun_dir (eye-space default; the viewer overrides)
+                1.0, 1.0, 1.0, 0.0,    // sunlight (linear)
+                0.25, 0.25, 0.30, 0.0, // ambient (linear)
+            ],
+            tonemap_pipeline: None,
             format,
             submitted: 0,
             drawn: 0,
@@ -1025,7 +1094,7 @@ impl LiveRenderer {
 
         // Stage this draw's UBO block (mvp + colour) in the CPU ring at a 256-byte slot;
         // ONE write_buffer uploads the whole frame in flush.
-        const STRIDE: usize = 256;
+        const STRIDE: usize = 512;
         let slot = self.slot;
         self.slot += 1;
         let need = (slot + 1) * STRIDE;
@@ -1053,7 +1122,7 @@ impl LiveRenderer {
             let bytes: &[u8] = bytemuck::cast_slice(&block);
             self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
         } else {
-            let mut block = [0f32; 56]; // mvp + color + planes + texmat + khr + flags
+            let mut block = [0f32; 68]; // mvp + color + planes + texmat + khr + flags + normal_mat(std140 mat3)
             block[..16].copy_from_slice(&mvp.to_cols_array());
             block[16..20].copy_from_slice(&d.color);
             block[20..28].copy_from_slice(&d.aux[..8]);
@@ -1062,6 +1131,13 @@ impl LiveRenderer {
             block[52] = if d.blend != 0 { 1.0 } else { 0.0 }; // flags.x: blending enabled
             block[53] = if d.indexed_ch > 0 { 1.0 } else { 0.0 }; // flags.y: pos.w is a tex index
             block[54] = d.min_alpha; // flags.z: MASK cutoff (-1 disabled)
+            // #3: normal matrix = inverse-transpose of the modelview upper-3x3, std140 mat3
+            // (3 columns each padded to vec4). Read by live_gb.vert; ignored by live.frag.
+            let nm = glam::Mat3::from_mat4(Mat4::from_cols_array(&d.modelview)).inverse().transpose();
+            let nc = nm.to_cols_array();
+            block[56] = nc[0]; block[57] = nc[1]; block[58] = nc[2];
+            block[60] = nc[3]; block[61] = nc[4]; block[62] = nc[5];
+            block[64] = nc[6]; block[65] = nc[7]; block[66] = nc[8];
             let bytes: &[u8] = bytemuck::cast_slice(&block);
             self.ubo_stage[slot * STRIDE..slot * STRIDE + bytes.len()].copy_from_slice(bytes);
         }
@@ -1112,10 +1188,12 @@ impl LiveRenderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
+                        // 272 = 68-float generic block (incl. #3 normal_mat, std140 mat3).
+                        // The forward live.vert reads only the first 224; live_gb.vert reads all 272.
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: ring,
                             offset: 0,
-                            size: std::num::NonZeroU64::new(224),
+                            size: std::num::NonZeroU64::new(272),
                         }),
                     },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tv[0]) },
@@ -1221,7 +1299,14 @@ impl LiveRenderer {
             tk[0] = d.tex_ex[0];
             tk[1] = d.tex_ex[1];
         }
-        self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, pal_off, skinned, draw_class: d.draw_class, terrain_key: tk, vptr, iptr, icount, voffsets, pipe_key, first, vcount, blend_add: d.blend_add != 0 });
+        // #3: opaque generic with a NORMAL block -> deferred G-buffer fill (not forward).
+        let is_gb = d.draw_class == 0
+            && d.blend == 0
+            && d.blend_add == 0
+            && d.skin_id == 0
+            && (d.typemask & (1u32 << TYPE_NORMAL)) != 0
+            && matches!(d.mode, 0 | 1 | 2);
+        self.queued.push(Queued { bind_key, ubo_off: (slot * STRIDE) as u32, pal_off, skinned, draw_class: d.draw_class, terrain_key: tk, vptr, iptr, icount, voffsets, pipe_key, first, vcount, blend_add: d.blend_add != 0, is_gb });
     }
 
     fn ensure_pipeline(&mut self, device: &wgpu::Device, key: (bool, bool, bool, bool, bool, bool)) {
@@ -1402,6 +1487,127 @@ impl LiveRenderer {
         self.flush_clear(device, queue, target, w, h, wgpu::Color { r: 0.09, g: 0.35, b: 0.4, a: 1.0 })
     }
 
+    /// #4: the viewer's per-frame sun/atmospherics (eye-space sun_dir, sunlight, ambient),
+    /// 12 floats (3 x vec4). Consumed by the deferred resolve. Default set in new().
+    pub fn set_frame_env(&mut self, env: &[f32]) {
+        let n = env.len().min(12);
+        self.frame_env[..n].copy_from_slice(&env[..n]);
+    }
+
+    /// #3: (re)create the G-buffer attachments on size change.
+    fn ensure_gbuffer(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        let need = match &self.gbuf_albedo {
+            Some((_, gw, gh)) => *gw != w || *gh != h,
+            None => true,
+        };
+        if need {
+            let mk = |fmt: wgpu::TextureFormat, label: &str| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some(label),
+                        size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: fmt,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            };
+            self.gbuf_albedo = Some((mk(GBUF_ALBEDO_FORMAT, "gbuf-albedo"), w, h));
+            self.gbuf_normal = Some((mk(GBUF_NORMAL_FORMAT, "gbuf-normal"), w, h));
+            self.resolve_bind = None; // rebind against the new G-buffer views
+        }
+    }
+
+    /// #3: the deferred G-buffer fill pipeline (live_gb.vert + live_gb.frag). Reuses the
+    /// generic bind layout; 4 vertex buffers (pos, uv, color, normal); writes [albedo, normal].
+    fn ensure_pipeline_gb(&mut self, device: &wgpu::Device) {
+        if self.gb_pipeline.is_some() {
+            return;
+        }
+        let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/live_gb.vert.spv"));
+        let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/live_gb.frag.spv"));
+        let vlayouts = [
+            wgpu::VertexBufferLayout { array_stride: 16, step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x4 }] },
+            wgpu::VertexBufferLayout { array_stride: 8, step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 1, format: wgpu::VertexFormat::Float32x2 }] },
+            wgpu::VertexBufferLayout { array_stride: 4, step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 2, format: wgpu::VertexFormat::Unorm8x4 }] },
+            wgpu::VertexBufferLayout { array_stride: 16, step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[wgpu::VertexAttribute { offset: 0, shader_location: 3, format: wgpu::VertexFormat::Float32x3 }] },
+        ];
+        self.gb_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("gbuffer"),
+            layout: Some(&self.layout),
+            vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &vlayouts },
+            fragment: Some(wgpu::FragmentState {
+                module: &fs,
+                entry_point: "main",
+                targets: &[
+                    Some(wgpu::ColorTargetState { format: GBUF_ALBEDO_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                    Some(wgpu::ColorTargetState { format: GBUF_NORMAL_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                ],
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        }));
+    }
+
+    /// #4: the deferred resolve pipeline (fullscreen post.vert + resolve.frag) + its bind
+    /// group (Env UBO + the two G-buffer textures).
+    fn ensure_resolve(&mut self, device: &wgpu::Device) {
+        if self.resolve_pipeline.is_none() {
+            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/resolve.frag.spv"));
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("resolve-pl"),
+                bind_group_layouts: &[&self.resolve_bgl],
+                push_constant_ranges: &[],
+            });
+            self.resolve_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("resolve"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState { format: SCENE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }));
+        }
+        if self.resolve_bind.is_none() {
+            let bgl = &self.resolve_bgl;
+            let env = &self.env_ubo;
+            if let (Some((alb, _, _)), Some((nrm, _, _))) = (self.gbuf_albedo.as_ref(), self.gbuf_normal.as_ref()) {
+                let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("resolve-bind"),
+                    layout: bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: env.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(alb) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(nrm) },
+                    ],
+                });
+                self.resolve_bind = Some(bind);
+            }
+        }
+    }
+
     pub fn flush_clear(
         &mut self,
         device: &wgpu::Device,
@@ -1427,6 +1633,17 @@ impl LiveRenderer {
         self.ensure_msaa_color(device, w, h);
         self.ensure_scene_hdr(device, w, h);
         self.ensure_post(device);
+        // #3/#4: any opaque generic-with-normal draws this frame -> build the deferred path.
+        let has_gb = self.queued.iter().any(|q| q.is_gb);
+        if has_gb {
+            self.ensure_gbuffer(device, w, h);
+            self.ensure_pipeline_gb(device);
+            self.ensure_resolve(device);
+        }
+        {
+            let env = self.frame_env;
+            queue.write_buffer(&self.env_ubo, 0, bytemuck::cast_slice(&env));
+        }
         let depth_view = match &self.depth {
             Some((v, _, _, _)) => v,
             None => return 0,
@@ -1435,7 +1652,50 @@ impl LiveRenderer {
             Some((v, _, _)) => v,
             None => return 0,
         };
+        let gb_alb = self.gbuf_albedo.as_ref().map(|(v, _, _)| v);
+        let gb_nrm = self.gbuf_normal.as_ref().map(|(v, _, _)| v);
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("live") });
+        // #3 PASS 1: deferred G-buffer fill (opaque generic-with-normal draws) into
+        // [albedo, normal] + depth. Everything else stays forward (next pass).
+        if has_gb {
+            if let (Some(alb), Some(nrm), Some(p)) = (gb_alb, gb_nrm, self.gb_pipeline.as_ref()) {
+                let mut gp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("gbuffer-pass"),
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment { view: alb, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+                        Some(wgpu::RenderPassColorAttachment { view: nrm, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+                    ],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: depth_view,
+                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                for q in &self.queued {
+                    if !q.is_gb { continue; }
+                    let Some((vbuf, _)) = self.geo.get(&q.vptr) else { continue };
+                    let Some(bind) = self.binds.get(&q.bind_key) else { continue };
+                    let vo = q.voffsets;
+                    gp.set_pipeline(p);
+                    gp.set_bind_group(0, bind, &[q.ubo_off, q.pal_off]);
+                    gp.set_vertex_buffer(0, vbuf.slice(vo[TYPE_VERTEX] as u64..));
+                    if vo[TYPE_TEXCOORD0] != u32::MAX { gp.set_vertex_buffer(1, vbuf.slice(vo[TYPE_TEXCOORD0] as u64..)); } else { gp.set_vertex_buffer(1, self.uv_zero.slice(..)); }
+                    if vo[TYPE_COLOR] != u32::MAX { gp.set_vertex_buffer(2, vbuf.slice(vo[TYPE_COLOR] as u64..)); } else { gp.set_vertex_buffer(2, self.color_white.slice(..)); }
+                    if vo[TYPE_NORMAL] != u32::MAX { gp.set_vertex_buffer(3, vbuf.slice(vo[TYPE_NORMAL] as u64..)); } else { gp.set_vertex_buffer(3, self.normal_up.slice(..)); }
+                    if let Some(ip) = q.iptr {
+                        let Some((ib, _)) = self.geo.get(&ip) else { continue };
+                        gp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint16);
+                        gp.draw_indexed(q.first..q.first + q.icount, 0, 0..1);
+                    } else {
+                        gp.draw(q.first..q.first + q.vcount, 0..1);
+                    }
+                }
+            }
+        }
         {
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("live-pass"),
@@ -1453,13 +1713,16 @@ impl LiveRenderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: depth_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                    // #3: when the G-buffer pass ran it already wrote opaque depth -- LOAD it so
+                    // forward draws occlude against opaque generic; otherwise clear it here.
+                    depth_ops: Some(wgpu::Operations { load: if has_gb { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) }, store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
             for q in &self.queued {
+                if q.is_gb { continue; } // #3: opaque generic-with-normal is drawn in the G-buffer pass
                 let Some((vbuf, _)) = self.geo.get(&q.vptr) else { continue };
                 let vo = q.voffsets;
                 if q.draw_class == CLASS_SKY_DOME || q.draw_class == CLASS_WATER {
@@ -1529,8 +1792,29 @@ impl LiveRenderer {
                 }
             }
         }
+        // #4 PASS 3: deferred resolve -- light the G-buffer into scene_hdr. resolve.frag
+        // discards non-HAS_ATMOS pixels so the forward background (sky etc.) shows through;
+        // lit opaque generic is composited over it. Outputs linear HDR.
+        if has_gb {
+            if let (Some(p), Some(bind)) = (self.resolve_pipeline.as_ref(), self.resolve_bind.as_ref()) {
+                let mut rp2 = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("resolve-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: scene_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                rp2.set_pipeline(p);
+                rp2.set_bind_group(0, bind, &[]);
+                rp2.draw(0..3, 0..1);
+            }
+        }
         // Increment 1a: composite the linear-HDR scene target to the swapchain. Currently an
-        // exact texelFetch copy (identity); 1b swaps in tonemap + exposure here.
+        // exact texelFetch copy (identity); the filmic tonemap lands with the post tier.
         {
             let mut pp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post-pass"),

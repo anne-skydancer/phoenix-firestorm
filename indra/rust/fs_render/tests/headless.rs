@@ -193,3 +193,96 @@ fn generic_draw_exercises_normal_binding() {
     drop(data);
     buf.unmap();
 }
+
+/// BLOCKER #4 lighting verification: submit an opaque generic quad WITH a normal (so it
+/// takes the deferred G-buffer -> resolve path) and confirm the resolve applies N.L sun
+/// shading. Same albedo, two normals: one facing the sun (bright), one facing away (ambient
+/// only). Proves the whole chain -- normal encode via modelview, G-buffer fill, resolve
+/// lighting -- end to end.
+#[test]
+fn deferred_resolve_applies_ndl_shading() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping deferred lighting test");
+        return;
+    };
+    let fmt = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut live = LiveRenderer::new(&device, &queue, fmt);
+    // Sun pointing straight out of the screen (+z eye space); white sun, dim ambient.
+    live.set_frame_env(&[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.1, 0.1, 0.1, 0.0]);
+
+    // SoA: 3 positions (vec4) then 3 normals (vec4-padded, read as vec3). Both buffers kept
+    // alive so their distinct pointers don't alias in the geometry cache.
+    let pos: [[f32; 4]; 3] = [[-0.6, -0.6, 0.0, 1.0], [0.6, -0.6, 0.0, 1.0], [0.0, 0.6, 0.0, 1.0]];
+    let mk_vtx = |n: [f32; 4]| -> Vec<u8> {
+        let nrm: [[f32; 4]; 3] = [n, n, n];
+        let mut v: Vec<u8> = bytemuck::cast_slice(&pos).to_vec();
+        v.extend_from_slice(bytemuck::cast_slice(&nrm));
+        v
+    };
+    let bright_vtx = mk_vtx([0.0, 0.0, 1.0, 0.0]);  // faces the sun
+    let dark_vtx = mk_vtx([0.0, 0.0, -1.0, 0.0]);   // faces away
+
+    let mut render = |live: &mut LiveRenderer, vtx: &[u8]| -> [u8; 3] {
+        let (w, h) = (64u32, 64u32);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("t"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut d: DrawDesc = unsafe { std::mem::zeroed() };
+        d.mode = 0;
+        d.count = 3;
+        d.typemask = 1 | 2; // VERTEX | NORMAL -> is_gb (deferred)
+        d.num_verts = 3;
+        d.vtx_bytes = vtx.len() as u32;
+        d.depth_test = 1;
+        d.depth_write = 1;
+        let id = glam::Mat4::IDENTITY.to_cols_array();
+        d.mvp = id;
+        d.modelview = id;
+        d.color = [1.0, 1.0, 1.0, 1.0];
+        d.min_alpha = -1.0;
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        live.begin();
+        live.submit(&device, &queue, &d, vtx, &[]);
+        let n = live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "wgpu validation error in deferred path: {:?}", err);
+        assert_eq!(n, 1, "the quad was queued and flushed");
+
+        let stride = ((w * 4 + 255) / 256) * 256;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rb"), size: (stride * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+        queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let off = ((h / 2) * stride + (w / 2) * 4) as usize;
+        let out = [data[off + 2], data[off + 1], data[off]]; // R,G,B from BGRA
+        drop(data);
+        buf.unmap();
+        out
+    };
+
+    let bright = render(&mut live, &bright_vtx);
+    let dark = render(&mut live, &dark_vtx);
+
+    assert!(bright[0] > 180, "sun-facing quad should be bright, got {:?}", bright);
+    assert!(dark[0] < 130, "away-facing quad should fall to ambient, got {:?}", dark);
+    assert!(
+        bright[0] as i32 > dark[0] as i32 + 60,
+        "N.L must brighten the lit side vs the dark side: bright {:?} dark {:?}", bright, dark
+    );
+}

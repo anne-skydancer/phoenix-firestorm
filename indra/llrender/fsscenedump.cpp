@@ -549,6 +549,18 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
                     if (sDrawClass == DRAWCLASS_SKY_DOME)
                     {
                         d.tex[0] = 0; d.tex[1] = 0; d.tex[2] = 0; d.tex[3] = 0;
+                        // sky_hdr_scale (EEP-driven, softenLightF SKIP_ATMOS multiply) --
+                        // WITHOUT this + srgb_to_linear the tonemapper input is wrong-
+                        // colorspace and ~2x too bright -> dome blows to white for every
+                        // preset. a8.x = aux[32].
+                        F32 hdr = 1.f;
+                        if ((size_t)LLShaderMgr::SKY_HDR_SCALE < sky->mUniform.size())
+                        {
+                            GLint loc = sky->mUniform[LLShaderMgr::SKY_HDR_SCALE];
+                            auto it = (loc >= 0) ? sky->mValue.find(loc) : sky->mValue.end();
+                            if (loc >= 0 && it != sky->mValue.end()) hdr = it->second.mV[0];
+                        }
+                        d.aux[32] = (hdr > 0.f) ? hdr : 1.f;
                     }
                     if (sDrawClass == DRAWCLASS_SKY_MOON)
                     {

@@ -8,7 +8,7 @@
 //! Requires a Vulkan adapter; if none is present the tests no-op (skip) rather than fail,
 //! so CI on a headless box without Vulkan does not spuriously break.
 
-use fs_render::live::LiveRenderer;
+use fs_render::live::{DrawDesc, LiveRenderer};
 
 fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -113,6 +113,83 @@ fn scene_hdr_copy_is_identity() {
     assert!((g8 as i32 - eg as i32).abs() <= 2, "G {} vs expected {}", g8, eg);
     assert!((b8 as i32 - eb as i32).abs() <= 2, "B {} vs expected {}", b8, eb);
 
+    drop(data);
+    buf.unmap();
+}
+
+/// BLOCKER #3 draw-level verification: submit a real triangle through the generic pipeline
+/// and confirm it renders WITHOUT a wgpu validation error. Uses typemask = VERTEX only, so
+/// uv, color, AND the new normal all take their fallbacks -- this exercises exactly the
+/// slot-3 normal_up binding + the 512-byte UBO (normal_mat) added this stage. A malformed
+/// vertex layout (e.g. the normal attribute not matching) would raise a validation error
+/// (caught by the scope) or fail to draw.
+#[test]
+fn generic_draw_exercises_normal_binding() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping headless draw test");
+        return;
+    };
+    let fmt = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut live = LiveRenderer::new(&device, &queue, fmt);
+    let (w, h) = (64u32, 64u32);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("t"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: fmt,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Opaque white triangle covering the centre. VERTEX-only SoA (3 x vec4 positions).
+    let verts: [[f32; 4]; 3] = [[-0.5, -0.5, 0.0, 1.0], [0.5, -0.5, 0.0, 1.0], [0.0, 0.5, 0.0, 1.0]];
+    let vtx: Vec<u8> = bytemuck::cast_slice(&verts).to_vec();
+
+    let mut d: DrawDesc = unsafe { std::mem::zeroed() };
+    d.mode = 0;            // TRIANGLES
+    d.count = 3;
+    d.typemask = 1;        // VERTEX only -> uv/color/normal all fall back
+    d.num_verts = 3;
+    d.vtx_bytes = vtx.len() as u32;
+    d.depth_test = 1;
+    d.depth_write = 1;
+    let id = glam::Mat4::IDENTITY.to_cols_array();
+    d.mvp = id;
+    d.modelview = id;
+    d.color = [1.0, 1.0, 1.0, 1.0];
+    d.min_alpha = -1.0;    // MASK disabled
+
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    live.begin();
+    live.submit(&device, &queue, &d, &vtx, &[]);
+    let n = live.flush_clear(&device, &queue, &view, w, h,
+        wgpu::Color { r: 0.09, g: 0.35, b: 0.40, a: 1.0 });
+    let err = pollster::block_on(device.pop_error_scope());
+    assert!(err.is_none(), "wgpu validation error during generic draw: {:?}", err);
+    assert_eq!(n, 1, "the triangle was queued and flushed");
+
+    // Centre pixel is inside the triangle -> white, not the teal clear.
+    let stride = ((w * 4 + 255) / 256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("rb"), size: (stride * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+    queue.submit([enc.finish()]);
+    let slice = buf.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::Maintain::Wait);
+    let data = slice.get_mapped_range();
+    let off = ((h / 2) * stride + (w / 2) * 4) as usize;
+    let (b8, g8, r8) = (data[off], data[off + 1], data[off + 2]);
+    assert!(r8 > 200 && g8 > 200 && b8 > 200,
+        "centre should be the white triangle, got BGR ({},{},{})", b8, g8, r8);
     drop(data);
     buf.unmap();
 }

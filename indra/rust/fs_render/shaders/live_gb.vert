@@ -2,15 +2,18 @@
 layout(location = 0) in vec4 pos;
 layout(location = 1) in vec2 uv;
 layout(location = 2) in vec4 color;
+layout(location = 3) in vec3 a_normal;   // #3: SoA NORMAL block (fallback (0,0,1) if absent)
 layout(set = 0, binding = 0) uniform U {
     mat4 mvp; vec4 color_u; vec4 plane_s; vec4 plane_t; mat4 texmat;
     vec4 khr_sr;   // KHR scale.xy, rotation, _
     vec4 khr_off;  // KHR offset.xy
     vec4 flags;    // .x = blending enabled at draw time
+    mat3 normal_mat; // #3: inverse-transpose of the modelview upper-3x3 (CPU-computed)
 } u;
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out vec4 v_color;
 layout(location = 2) flat out int v_texidx;
+layout(location = 3) out vec3 v_normal;  // #3: eye-space normal for the G-buffer fill
 
 // Faithful to textureUtilV.glsl texture_transform(): SL anim matrix first, then the
 // KHR transform (offset_mat * rotation_mat * scale_mat) in a y-flipped frame.
@@ -38,5 +41,6 @@ void main() {
     // avatar draws .w is real data and indexing it sampled stale neighbor units
     // (the settings-change texture swap).
     v_texidx = (u.flags.y > 0.5) ? clamp(floatBitsToInt(pos.w), 0, 3) : 0;
+    v_normal = u.normal_mat * a_normal; // eye-space; normalized in the fragment
     gl_Position = u.mvp * vec4(pos.xyz, 1.0);
 }

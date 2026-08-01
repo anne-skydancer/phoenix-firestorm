@@ -43,6 +43,7 @@
 #include "lldrawpoolwater.h"
 #include "lldynamictexture.h"
 #include "llenvironment.h"
+#include "llsettingssky.h" // <FS:VkBridge> P3: LLSettingsSky getters for the typed sky feed
 #include "llfasttimer.h"
 #include "llfeaturemanager.h"
 #include "llfloatertools.h"
@@ -504,6 +505,29 @@ static void update_tp_display(bool minimized)
 void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
 {
     FSSceneDump::onFrame(LLStartUp::getStartupState() == STATE_STARTED); // <FS:VkBridge> P2b
+    // <FS:VkBridge> P3 (ground-up data bridge): feed the typed camera + EEP sky to the engine.
+    // newview owns LLViewerCamera / LLEnvironment; FSSceneDump forwards to fs_render's fsr_scene_*.
+    // The engine derives its eye-space sun (view * world-sun), curing the wrong-direction lighting.
+    {
+        LLViewerCamera* pcam = LLViewerCamera::getInstance();
+        if (pcam)
+        {
+            LLVector3 o = pcam->getOrigin();
+            LLVector3 at = pcam->getAtAxis();
+            LLVector3 up = pcam->getUpAxis();
+            FSSceneDump::setSceneCamera(o.mV, at.mV, up.mV, pcam->getNear(), pcam->getFar(),
+                                        pcam->getView(), pcam->getAspect());
+        }
+        LLSettingsSky::ptr_t psky = LLEnvironment::instance().getCurrentSky();
+        if (psky)
+        {
+            LLVector4 lightnorm = LLEnvironment::instance().getClampedLightNorm();
+            LLColor3 suncol = psky->getSunlightColor();
+            LLColor3 ambient = psky->getAmbientColor();
+            FSSceneDump::setSceneSky(lightnorm.mV, suncol.mV, ambient.mV,
+                                     psky->getMaxY(), psky->getGamma());
+        }
+    }
     // <FS:VkBridge> settings AUTOSAVE: bridge sessions can end in force-quit; the
     // logout-time flush never runs then and in-session changes were lost (measured,
     // repeatedly). Save every 60s; costs ~ms.

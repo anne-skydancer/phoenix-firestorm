@@ -61,6 +61,14 @@ namespace FSSceneDump
     void clearCurrentSkin();
     void setKhrTexTransform(const F32* packed8);
     void clearKhrTexTransform();
+    // <FS:VkBridge> P3 (ground-up data bridge): ship the typed camera + EEP sky to the engine
+    // (forwarded to fs_render's fsr_scene_* ABI). PLAIN FLOATS only -- llrender must not include
+    // newview headers, so newview (which owns LLViewerCamera / LLEnvironment) extracts the data
+    // and calls these once per frame. The engine derives its eye-space sun from view * sun_dir.
+    void setSceneCamera(const float origin[3], const float at[3], const float up[3],
+                        float near_clip, float far_clip, float fov_y, float aspect);
+    void setSceneSky(const float sun_dir[3], const float sun_color[3], const float ambient[3],
+                     float max_y, float gamma);
     void suppressPush();
     void suppressPop();
     struct SuppressScope

@@ -13,6 +13,7 @@
 #include "llrendertarget.h"
 #include "llgl.h"
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_transform.hpp> // P3: glm::lookAt for the typed camera view
 
 #include <cstdio>
 #include <cstdlib>
@@ -80,6 +81,54 @@ struct FsrDrawDesc
     U32 emissive_tex;      // #2b: emissive texture id
     U32 flags2;            // #4: bit0 = UI pass (bypass tonemap); else reserved
 };
+
+// <FS:VkBridge> P3 (ground-up data bridge): #[repr(C)] mirrors of scene::CameraBlock /
+// scene::EepSkyBlock (fs_render/src/scene.rs). Field order + types MUST match the Rust exactly.
+struct FsrCameraBlock
+{
+    F32 view[16];
+    F32 proj[16];
+    F32 origin[3];
+    F32 near_clip; // 'near'/'far' are Windows macros -- must not name the fields that
+    F32 far_clip;
+    F32 fov_y;
+    F32 aspect;
+    F32 viewport_w;
+    F32 viewport_h;
+};
+struct FsrEepSkyBlock
+{
+    F32 sun_dir[3];
+    F32 sun_color[3];
+    F32 moon_dir[3];
+    F32 moon_color[3];
+    F32 ambient[3];
+    F32 blue_horizon[3];
+    F32 blue_density[3];
+    F32 haze_density;
+    F32 haze_horizon;
+    F32 density_multiplier;
+    F32 distance_multiplier;
+    F32 max_y;
+    F32 gamma;
+    F32 glow[3];
+    F32 cloud_shadow;
+    F32 sun_moon_glow_factor;
+    F32 sun_up_factor;
+    F32 sky_hdr_scale;
+    F32 cloud_color[3];
+    F32 cloud_pos_density1[3];
+    F32 cloud_pos_density2[3];
+    F32 cloud_scale;
+    F32 cloud_variance;
+    F32 star_brightness;
+    F32 sun_scale;
+    F32 moon_scale;
+    F32 moon_brightness;
+    F32 moisture_level;
+    F32 droplet_radius;
+    F32 ice_level;
+};
 typedef int(__cdecl* fsr_begin_t)();
 typedef int(__cdecl* fsr_submit_t)(const FsrDrawDesc*, const U8*, const U8*);
 typedef int(__cdecl* fsr_end_t)();
@@ -108,6 +157,13 @@ static bool sForceOpaque = false; // scoped: fullbright-shiny pass
 // C: skin-key interning + per-frame palette forwarding to the engine
 typedef int(__cdecl* fsr_palette_t)(U32, U32, const F32*);
 static fsr_palette_t sFsrPalette = nullptr;
+// <FS:VkBridge> P3 typed scene bridge
+typedef int(__cdecl* fsr_scene_begin_t)();
+typedef int(__cdecl* fsr_scene_camera_t)(const FsrCameraBlock*);
+typedef int(__cdecl* fsr_scene_sky_t)(const FsrEepSkyBlock*);
+static fsr_scene_begin_t sFsrSceneBegin = nullptr;
+static fsr_scene_camera_t sFsrSceneCamera = nullptr;
+static fsr_scene_sky_t sFsrSceneSky = nullptr;
 static std::unordered_map<U64, U32> sSkinIds;
 static std::unordered_map<U32, U32> sSkinSentFrame;
 static U32 sNextSkinId = 1;
@@ -136,6 +192,9 @@ static void bindLive()
     sFsrDirty = (fsr_dirty_t)GetProcAddress(dll, "fsr_buffer_dirty");
     sFsrPalette = (fsr_palette_t)GetProcAddress(dll, "fsr_set_matrix_palette");
     sFsrMsaa = (fsr_msaa_t)GetProcAddress(dll, "fsr_set_msaa");
+    sFsrSceneBegin = (fsr_scene_begin_t)GetProcAddress(dll, "fsr_scene_begin");
+    sFsrSceneCamera = (fsr_scene_camera_t)GetProcAddress(dll, "fsr_scene_set_camera");
+    sFsrSceneSky = (fsr_scene_sky_t)GetProcAddress(dll, "fsr_scene_set_sky");
     sLive = (sFsrBegin && sFsrSubmit && sFsrEnd);
     LL_INFOS("SceneDump") << "P3c live bridge " << (sLive ? "ARMED" : "FAILED")
                           << " (begin=" << (void*)sFsrBegin << " submit=" << (void*)sFsrSubmit
@@ -768,6 +827,38 @@ static void finalize()
     sTexSeen.clear();
 }
 
+// <FS:VkBridge> P3: forward the typed camera + EEP sky to the engine (called once per frame
+// from newview, which owns LLViewerCamera / LLEnvironment). Builds the view via glm::lookAt so
+// the engine gets a column-major RH view matrix; the engine derives eye-space sun = view*sun.
+void setSceneCamera(const float origin[3], const float at[3], const float up[3],
+                    float near_clip, float far_clip, float fov_y, float aspect)
+{
+    if (!sFsrSceneCamera) return;
+    FsrCameraBlock cb;
+    memset(&cb, 0, sizeof(cb));
+    glm::vec3 eye(origin[0], origin[1], origin[2]);
+    glm::vec3 ctr = eye + glm::vec3(at[0], at[1], at[2]);
+    glm::vec3 upv(up[0], up[1], up[2]);
+    glm::mat4 view = glm::lookAt(eye, ctr, upv);
+    memcpy(cb.view, glm::value_ptr(view), sizeof(cb.view));
+    cb.origin[0] = origin[0]; cb.origin[1] = origin[1]; cb.origin[2] = origin[2];
+    cb.near_clip = near_clip; cb.far_clip = far_clip; cb.fov_y = fov_y; cb.aspect = aspect;
+    sFsrSceneCamera(&cb);
+}
+void setSceneSky(const float sun_dir[3], const float sun_color[3], const float ambient[3],
+                 float max_y, float gamma)
+{
+    if (!sFsrSceneSky) return;
+    FsrEepSkyBlock sb;
+    memset(&sb, 0, sizeof(sb));
+    sb.sun_dir[0] = sun_dir[0]; sb.sun_dir[1] = sun_dir[1]; sb.sun_dir[2] = sun_dir[2];
+    sb.sun_color[0] = sun_color[0]; sb.sun_color[1] = sun_color[1]; sb.sun_color[2] = sun_color[2];
+    sb.ambient[0] = ambient[0]; sb.ambient[1] = ambient[1]; sb.ambient[2] = ambient[2];
+    sb.max_y = max_y;
+    sb.gamma = gamma;
+    sFsrSceneSky(&sb);
+}
+
 void onFrame(bool in_world)
 {
     if (sDone)
@@ -825,6 +916,9 @@ void onFrame(bool in_world)
         sLiveDraws = 0;
         sLiveNoShadow = 0;
         sFsrBegin();
+        // P3: open the typed scene frame (clears last frame's camera/sky/lights); newview
+        // fills camera + EEP sky right after this onFrame call.
+        if (sFsrSceneBegin) sFsrSceneBegin();
     }
     if (!sArmed)
     {

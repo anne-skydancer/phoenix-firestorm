@@ -67,6 +67,17 @@ pub struct DrawDesc {
     pub skin_id: u32,       // nonzero = rigged draw; palette registered via fsr_set_matrix_palette
     pub cull: u32,          // GL_CULL_FACE at draw time
     pub blend_add: u32,     // (SRC_ALPHA, ONE): stars/glow additive
+    // ---- BLOCKER #2 (deferred foundation): geometry + material plumbing ----
+    // Appended to the struct (ABI-matched with C++ FsrDrawDesc). The current viewer must be
+    // rebuilt in lockstep with any engine that READS these -- old-viewer + new-engine would
+    // read past the smaller struct. Append-only keeps old-engine + new-viewer safe.
+    pub modelview: [f32; 16],     // #2a: GL modelview (view*model) -> normal matrix + eye-space pos
+    pub material_model: u32,      // #2b: 0=simple/generic, 1=legacy-material, 2=PBR
+    pub pbr: [f32; 4],            // #2b: metallic, roughness, emissive_scale, env_intensity
+    pub emissive_color: [f32; 4], // #2b: emissive rgb + _
+    pub orm_tex: u32,             // #2b: occlusion-roughness-metallic texture id
+    pub emissive_tex: u32,        // #2b: emissive texture id
+    pub flags2: u32,              // #4: bit0 = UI pass (bypass tonemap); else reserved
 }
 
 pub fn calc_offsets(typemask: u32, num_verts: u32) -> [u32; 14] {

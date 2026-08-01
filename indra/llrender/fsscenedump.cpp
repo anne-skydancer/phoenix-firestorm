@@ -69,6 +69,16 @@ struct FsrDrawDesc
     U32 cull;        // wave-6: GL_CULL_FACE state -- cull_mode None shaded every
                      // backface of every skinned vertex (GPU saturation)
     U32 blend_add;   // (SRC_ALPHA, ONE): stars/glow additive blending
+    // ---- BLOCKER #2 (deferred foundation): geometry + material plumbing ----
+    // Appended (ABI-matched with Rust DrawDesc). Viewer + engine rebuild in lockstep on any
+    // change here; append-only so an old engine safely ignores the tail.
+    F32 modelview[16];     // #2a: GL modelview (view*model) -> normal matrix + eye-space pos
+    U32 material_model;    // #2b: 0 simple/generic, 1 legacy-material, 2 PBR
+    F32 pbr[4];            // #2b: metallic, roughness, emissive_scale, env_intensity
+    F32 emissive_color[4]; // #2b: emissive rgb + _
+    U32 orm_tex;           // #2b: occlusion-roughness-metallic texture id
+    U32 emissive_tex;      // #2b: emissive texture id
+    U32 flags2;            // #4: bit0 = UI pass (bypass tonemap); else reserved
 };
 typedef int(__cdecl* fsr_begin_t)();
 typedef int(__cdecl* fsr_submit_t)(const FsrDrawDesc*, const U8*, const U8*);
@@ -494,7 +504,18 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
             {
                 const glm::mat4 mvp = gGL.getProjectionMatrix() * gGL.getModelviewMatrix();
                 memcpy(d.mvp, glm::value_ptr(mvp), sizeof(d.mvp));
+                // #2a: ship the modelview alone (view*model) so the engine can build the
+                // normal matrix (inverse-transpose of its upper 3x3) and eye-space positions.
+                // Same LLRender stack as mvp -- correct for world and UI alike.
+                memcpy(d.modelview, glm::value_ptr(gGL.getModelviewMatrix()), sizeof(d.modelview));
             }
+            // #2b material fields: reserved/zeroed until the PBR + legacy-material path lands.
+            d.material_model = 0u;
+            d.pbr[0] = d.pbr[1] = d.pbr[2] = d.pbr[3] = 0.f;
+            d.emissive_color[0] = d.emissive_color[1] = d.emissive_color[2] = d.emissive_color[3] = 0.f;
+            d.orm_tex = 0u;
+            d.emissive_tex = 0u;
+            d.flags2 = 0u;
             d.draw_class = sDrawClass;
             memcpy(d.tex_ex, sAuxTex, sizeof(d.tex_ex));
             memset(d.aux, 0, sizeof(d.aux));

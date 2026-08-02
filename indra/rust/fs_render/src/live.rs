@@ -215,6 +215,7 @@ pub struct LiveRenderer {
     // Metered auto-exposure (v1): a measure pass averages scene_hdr luminance into a 1x1 target;
     // the tonemap samples it to normalize the HDR before the clamp (replaces the fixed exp_scale).
     exp_lum: Option<wgpu::TextureView>,          // 1x1 R16Float avg scene luminance
+    exp_lum_tex: Option<wgpu::Texture>,          // same texture, kept for the diagnostic readback
     exp_bgl: wgpu::BindGroupLayout,              // measure pass bindings: scene_hdr texture + sampler
     exp_pipeline: Option<wgpu::RenderPipeline>,  // post.vert + exposure_measure.frag
     exp_bind: Option<wgpu::BindGroup>,           // rebuilt when scene_hdr changes
@@ -622,6 +623,7 @@ impl LiveRenderer {
             post_pipeline: None,
             post_bind: None,
             exp_lum: None,
+            exp_lum_tex: None,
             exp_bgl,
             exp_pipeline: None,
             exp_bind: None,
@@ -859,6 +861,39 @@ impl LiveRenderer {
     pub fn sky_fs_enabled(&self) -> bool { self.sky_fs_enabled }
     pub fn msaa_samples(&self) -> u32 { self.msaa }
     pub fn post_diag(&self) -> (f32, f32, f32) { (self.post_exposure, self.post_exp_scale, self.post_tonemap_mix) }
+
+    /// Flash diagnostic: read back the 1x1 measured avg scene luminance (what the tonemap uses to
+    /// derive auto_exp). NaN => the scene shader produced NaN (bad camera/UBO under motion); a
+    /// near-zero value => the meter read dark and auto_exp clamps high -> over-exposure. -1 if n/a.
+    pub fn read_exp_lum(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> f32 {
+        let Some(tex) = self.exp_lum_tex.as_ref() else { return -1.0 };
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("exp-read"), size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("exp-read") });
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: Some(1) } },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let v = {
+            let data = buf.slice(..).get_mapped_range();
+            let bits = u16::from_le_bytes([data[0], data[1]]);
+            let sign = ((bits >> 15) & 1) as u32;
+            let exp = ((bits >> 10) & 0x1f) as i32;
+            let mant = (bits & 0x3ff) as u32;
+            let f = if exp == 0 { (mant as f32) * (2.0f32).powi(-24) }
+                else if exp == 0x1f { if mant == 0 { f32::INFINITY } else { f32::NAN } }
+                else { (1.0 + (mant as f32) / 1024.0) * (2.0f32).powi(exp - 15) };
+            if sign == 1 { -f } else { f }
+        };
+        buf.unmap();
+        v
+    }
 
     fn ensure_msaa_color(&mut self, device: &wgpu::Device, w: u32, h: u32) {
         if self.msaa <= 1 {
@@ -1662,10 +1697,11 @@ impl LiveRenderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::R16Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
             self.exp_lum = Some(t.create_view(&wgpu::TextureViewDescriptor::default()));
+            self.exp_lum_tex = Some(t);
         }
         if self.exp_pipeline.is_none() {
             let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));

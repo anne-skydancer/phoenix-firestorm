@@ -213,7 +213,7 @@ pub extern "C" fn fsr_frame() -> i32 {
 const CAPTURE_REQ: &str = "C:\\fs\\fsr_capture.req";
 const CAPTURE_OUT: &str = "C:\\fs\\fsr_frame.png";
 
-fn write_capture(device: &wgpu::Device, buf: &wgpu::Buffer, stride: u32, w: u32, h: u32, fmt: wgpu::TextureFormat) {
+fn write_capture(device: &wgpu::Device, buf: &wgpu::Buffer, stride: u32, w: u32, h: u32, fmt: wgpu::TextureFormat, out: &str) {
     let slice = buf.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -245,7 +245,7 @@ fn write_capture(device: &wgpu::Device, buf: &wgpu::Buffer, stride: u32, w: u32,
     }
     drop(data);
     buf.unmap();
-    if let Ok(f) = std::fs::File::create(CAPTURE_OUT) {
+    if let Ok(f) = std::fs::File::create(out) {
         let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
@@ -253,7 +253,7 @@ fn write_capture(device: &wgpu::Device, buf: &wgpu::Buffer, stride: u32, w: u32,
             let _ = wr.write_image_data(&rgba);
         }
     }
-    log::info!("fs_render: frame captured to {}", CAPTURE_OUT);
+    log::info!("fs_render: frame captured to {}", out);
 }
 
 /// #4: push the per-frame sun/atmospherics env (12 floats: eye-space sun_dir, sunlight,
@@ -668,9 +668,30 @@ pub extern "C" fn fsr_end_frame() -> i32 {
                     let tag = if avg > 0.90 { "FLASH" } else { "ROWAVG" };
                     let fs = live.sky_fs_enabled();
                     let (exp, exps, mix) = live.post_diag();
+                    let meas = live.read_exp_lum(device, queue); // the avg the tonemap metered (NaN? near-0?)
                     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
                         use std::io::Write;
-                        let _ = writeln!(f, "{} frame {} row_avg={:.3} sky_fs={} exp={:.2} exp_scale={:.2} mix={:.2}", tag, e.frames, avg, fs, exp, exps, mix);
+                        let _ = writeln!(f, "{} frame {} row_avg={:.3} meas_lum={:.5} sky_fs={} exp={:.2} exp_scale={:.2} mix={:.2}", tag, e.frames, avg, meas, fs, exp, exps, mix);
+                    }
+                    // Auto-save the FIRST flash frame (full grab) to a separate file so we can SEE
+                    // exactly what is whitening the screen -- image beats inference.
+                    static FLASH_SAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if avg > 0.90 && !FLASH_SAVED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        let gstride = ((w * 4 + 255) / 256) * 256;
+                        let gbuf = device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("flash-grab"),
+                            size: (gstride * h) as u64,
+                            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                            mapped_at_creation: false,
+                        });
+                        let mut encg = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flash-grab") });
+                        encg.copy_texture_to_buffer(
+                            wgpu::ImageCopyTexture { texture: &frame.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                            wgpu::ImageCopyBuffer { buffer: &gbuf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(gstride), rows_per_image: Some(h) } },
+                            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        );
+                        queue.submit([encg.finish()]);
+                        write_capture(device, &gbuf, gstride, w, h, fmt, "C:\\fs\\fsr_flash.png");
                     }
                 }
             }
@@ -748,7 +769,7 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         frame.present();
         e.presented_once = true;
         if let Some((buf, stride)) = cap_buf {
-            write_capture(device, &buf, stride, w, h, fmt);
+            write_capture(device, &buf, stride, w, h, fmt, CAPTURE_OUT);
             let _ = std::fs::remove_file(CAPTURE_REQ);
         }
         e.frames += 1;

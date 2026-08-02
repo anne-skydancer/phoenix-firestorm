@@ -626,6 +626,55 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         let t0 = std::time::Instant::now();
         let n = live.flush_clear(device, queue, &view, w, h, clear);
         let flush_us = t0.elapsed().as_micros() as u64;
+        // Flash detector (debug tool, FS_ENGINE_FLASHLOG set). With metered auto-exposure the SCENE
+        // can no longer blow out (it measures + compensates the same frame), so a white flash lives
+        // in the FINAL composite -- a UI announcement rendering opaque-white, or a transition frame.
+        // Read back a middle ROW of the presented frame (a cheap proxy for a full-screen flash) and,
+        // when it's near-white, log the frame number + the sky/exposure state so a transient becomes
+        // a timestamped record with its cause attached. Env-gated (it stalls); zero cost when off.
+        {
+            static FLASH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let flash_on = *FLASH.get_or_init(|| std::env::var("FS_ENGINE_FLASHLOG").is_ok());
+            if flash_on && w >= 4 {
+                let row_stride = ((w * 4 + 255) / 256) * 256;
+                let fbuf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("flash-row"),
+                    size: row_stride as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                let mut encf = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flash") });
+                encf.copy_texture_to_buffer(
+                    wgpu::ImageCopyTexture { texture: &frame.texture, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: h / 2, z: 0 }, aspect: wgpu::TextureAspect::All },
+                    wgpu::ImageCopyBuffer { buffer: &fbuf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(row_stride), rows_per_image: Some(1) } },
+                    wgpu::Extent3d { width: w, height: 1, depth_or_array_layers: 1 },
+                );
+                queue.submit([encf.finish()]);
+                fbuf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                device.poll(wgpu::Maintain::Wait);
+                let avg = {
+                    let data = fbuf.slice(..).get_mapped_range();
+                    let mut sum = 0u64;
+                    for i in 0..(w as usize) {
+                        let p = i * 4;
+                        sum += data[p] as u64 + data[p + 1] as u64 + data[p + 2] as u64;
+                    }
+                    sum as f32 / (w as f32 * 3.0 * 255.0)
+                };
+                fbuf.unmap();
+                // FLASH on a near-white row; ROWAVG baseline every 120 frames (confirms the readback
+                // returns sane values -- a blue sky reads ~0.4 -- and gives a brightness timeline).
+                if avg > 0.90 || e.frames % 120 == 0 {
+                    let tag = if avg > 0.90 { "FLASH" } else { "ROWAVG" };
+                    let fs = live.sky_fs_enabled();
+                    let (exp, exps, mix) = live.post_diag();
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
+                        use std::io::Write;
+                        let _ = writeln!(f, "{} frame {} row_avg={:.3} sky_fs={} exp={:.2} exp_scale={:.2} mix={:.2}", tag, e.frames, avg, fs, exp, exps, mix);
+                    }
+                }
+            }
+        }
         // Frame grabber: when the trigger file exists, copy this frame out and write a
         // PNG the assistant can Read -- a direct view of exactly what the engine
         // presents, independent of OS screen-capture APIs. Trigger checked every 15

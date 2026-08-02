@@ -506,6 +506,31 @@ pub unsafe extern "C" fn fsr_texture_upload(id: u32, w: u32, h: u32, rgba: *cons
     if r.is_err() { 0 } else { 1 }
 }
 
+/// Phase A.3: reset the per-frame UI list. Call once at frame start, before any fsr_ui_submit.
+#[no_mangle]
+pub extern "C" fn fsr_ui_begin() -> i32 {
+    if let Some(e) = ENGINE.lock().unwrap().as_mut() { e.live.ui_begin(); 1 } else { 0 }
+}
+
+/// Phase A.3: submit one LLRender::flush as a native-VK UI draw. `mvp` = 16 f32 (the viewer's OWN
+/// projection*modelview, column-major), `verts` = `vtx_count` interleaved vertices of
+/// {f32 x,y,z; f32 u,v; u8 r,g,b,a} (24 bytes each), `mode` = LLRender::eGeomModes, `tex_id` = the
+/// bound GL texture id (0/unknown -> 1x1 white). No glGet: honest state only.
+/// # Safety: `mvp` -> 16 f32; `verts` -> `vtx_count*24` bytes, both valid for the call.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_ui_submit(mvp: *const f32, tex_id: u32, mode: u32, vtx_count: u32, verts: *const u8) -> i32 {
+    if mvp.is_null() || verts.is_null() || vtx_count == 0 { return 0; }
+    let mut m = [0f32; 16];
+    m.copy_from_slice(std::slice::from_raw_parts(mvp, 16));
+    let vbytes = std::slice::from_raw_parts(verts, vtx_count as usize * 24);
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        e.live.ui_submit(&m, tex_id, mode, vbytes);
+    }));
+    if r.is_err() { 0 } else { 1 }
+}
+
 /// End the frame: render every queued draw to the swapchain and present.
 /// Returns the number of draws rendered (0 = nothing/failed).
 #[no_mangle]
@@ -532,7 +557,7 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     // teal-flash class (window resize swaps, startup states with no draws). Keep the
     // last presented frame instead. The very first present still goes through so the
     // window never shows stale desktop contents.
-    if e.live.queued_len() == 0 && e.presented_once {
+    if !e.live.has_content() && e.presented_once {
         return 0;
     }
     let t_acq = std::time::Instant::now();

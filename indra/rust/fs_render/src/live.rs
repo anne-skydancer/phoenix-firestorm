@@ -132,6 +132,15 @@ struct Queued {
     is_gb: bool, // #3: opaque generic WITH a normal -> deferred G-buffer fill, not forward
 }
 
+/// Phase A.3: one native-VK UI draw -- the honest snapshot of a single LLRender::flush.
+struct UiDraw {
+    mvp: [f32; 16],     // the viewer's OWN projection * modelview (mMatrix), not glGet
+    tex_id: u32,        // getTexUnit(0)->mCurrTexture; 0 or unknown -> 1x1 white
+    first_vertex: u32,  // into ui_verts (post mode-expansion)
+    vertex_count: u32,
+    line: bool,         // LINES/LINE_STRIP -> line pipeline; else triangle pipeline
+}
+
 pub struct LiveRenderer {
     bgl: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
@@ -230,6 +239,16 @@ pub struct LiveRenderer {
     sky_fs_ubo: wgpu::Buffer,        // inv_view_proj(16) + a0..a8(36) = 52 floats (std140, 208B)
     sky_fs_data: [f32; 52],
     sky_fs_enabled: bool,
+    // Phase A.3: native-VK UI. Honest feed from LLRender::flush (its own matrices + verts, no
+    // glGet). One ortho pass over the tonemapped swapchain, painter's order, alpha-blended.
+    ui_bgl: Option<wgpu::BindGroupLayout>,
+    ui_tri_pipeline: Option<wgpu::RenderPipeline>,  // TRIANGLES/STRIP/FAN (expanded to list)
+    ui_line_pipeline: Option<wgpu::RenderPipeline>, // LINES/LINE_STRIP (expanded to list)
+    ui_sampler: Option<wgpu::Sampler>,
+    ui_verts: Vec<u8>,                 // interleaved {vec3 pos, vec2 uv, u8x4 color} = 24B/vtx
+    ui_draws: Vec<UiDraw>,             // per-flush draw records, in submission (painter's) order
+    ui_vbuf: Option<(wgpu::Buffer, u64)>, // (buffer, capacity bytes) -- grown as needed
+    ui_ubo: Option<(wgpu::Buffer, u64)>,  // per-draw mvp ring, 256-aligned slots
     format: wgpu::TextureFormat,
     pub submitted: u64,
     pub drawn: u64,
@@ -586,6 +605,14 @@ impl LiveRenderer {
             sky_fs_ubo,
             sky_fs_data: [0.0; 52],
             sky_fs_enabled: false,
+            ui_bgl: None,
+            ui_tri_pipeline: None,
+            ui_line_pipeline: None,
+            ui_sampler: None,
+            ui_verts: Vec::new(),
+            ui_draws: Vec::new(),
+            ui_vbuf: None,
+            ui_ubo: None,
             format,
             submitted: 0,
             drawn: 0,
@@ -803,6 +830,13 @@ impl LiveRenderer {
 
     pub fn queued_len(&self) -> usize {
         self.queued.len()
+    }
+
+    /// Phase A.3: is there anything to present? Under native-vulkan the tapped world is empty
+    /// (queued==0) but the parallel sky and the native UI must still present every frame -- the
+    /// old "queued==0 -> skip present" guard would blank the whole viewer otherwise.
+    pub fn has_content(&self) -> bool {
+        !self.queued.is_empty() || self.sky_fs_enabled || !self.ui_draws.is_empty()
     }
 
     pub fn begin(&mut self) {
@@ -1756,6 +1790,127 @@ impl LiveRenderer {
         }
     }
 
+    /// Phase A.3: reset the per-frame UI list. Called at frame start (fsr_ui_begin).
+    pub fn ui_begin(&mut self) {
+        self.ui_verts.clear();
+        self.ui_draws.clear();
+    }
+
+    /// Phase A.3: record one LLRender::flush as a UI draw. `verts` is interleaved
+    /// {vec3 pos, vec2 uv, u8x4 color} (24B/vtx); `mode` is LLRender::eGeomModes. Strips/fans are
+    /// expanded to lists so one triangle (or line) pipeline covers the whole frame in painter's
+    /// order. `mvp` is the viewer's OWN projection*modelview -- no glGet, no tap.
+    pub fn ui_submit(&mut self, mvp: &[f32; 16], tex_id: u32, mode: u32, verts: &[u8]) {
+        const STRIDE: usize = 24;
+        let n = verts.len() / STRIDE;
+        if n == 0 { return; }
+        let first_vertex = (self.ui_verts.len() / STRIDE) as u32;
+        let line = mode == 4 || mode == 5;
+        let dst = &mut self.ui_verts;
+        let mut push = |i: usize| { if i < n { dst.extend_from_slice(&verts[i * STRIDE..(i + 1) * STRIDE]); } };
+        match mode {
+            0 => { for k in (0..n - (n % 3)).step_by(3) { push(k); push(k + 1); push(k + 2); } } // TRIANGLES
+            1 => { for k in 2..n { if k % 2 == 0 { push(k - 2); push(k - 1); push(k); } else { push(k - 1); push(k - 2); push(k); } } } // STRIP
+            2 => { for k in 1..n.saturating_sub(1) { push(0); push(k); push(k + 1); } } // FAN
+            4 => { for k in (0..n - (n % 2)).step_by(2) { push(k); push(k + 1); } } // LINES
+            5 => { for k in 1..n { push(k - 1); push(k); } } // LINE_STRIP
+            _ => { return; } // POINTS etc: not used by the 2D UI
+        }
+        let vertex_count = (self.ui_verts.len() / STRIDE) as u32 - first_vertex;
+        if vertex_count == 0 { return; }
+        self.ui_draws.push(UiDraw { mvp: *mvp, tex_id, first_vertex, vertex_count, line });
+    }
+
+    /// Phase A.3: lazily build the UI bind-group layout, sampler, and the two pipelines
+    /// (triangle-list + line-list), both targeting the swapchain format with straight-alpha blend.
+    fn ensure_ui(&mut self, device: &wgpu::Device) {
+        if self.ui_bgl.is_none() {
+            self.ui_bgl = Some(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ui-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: wgpu::BufferSize::new(64),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            }));
+        }
+        if self.ui_sampler.is_none() {
+            self.ui_sampler = Some(device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("ui-sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            }));
+        }
+        if self.ui_tri_pipeline.is_none() {
+            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/ui.vert.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/ui.frag.spv"));
+            let bgl = self.ui_bgl.as_ref().unwrap();
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("ui-pl"),
+                bind_group_layouts: &[bgl],
+                push_constant_ranges: &[],
+            });
+            let attrs = [
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 12, shader_location: 1 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 20, shader_location: 2 },
+            ];
+            let blend = wgpu::BlendState {
+                color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+                alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+            };
+            let fmt = self.format;
+            let mk = |topo: wgpu::PrimitiveTopology, label: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &vs,
+                    entry_point: "main",
+                    buffers: &[wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState { format: fmt, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState { topology: topo, cull_mode: None, ..Default::default() },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            });
+            self.ui_tri_pipeline = Some(mk(wgpu::PrimitiveTopology::TriangleList, "ui-tri"));
+            self.ui_line_pipeline = Some(mk(wgpu::PrimitiveTopology::LineList, "ui-line"));
+        }
+    }
+
     pub fn flush_clear(
         &mut self,
         device: &wgpu::Device,
@@ -2029,10 +2184,87 @@ impl LiveRenderer {
                 pp.draw(0..3, 0..1);
             }
         }
+        // Phase A.3: native-VK UI pass -- the honest LLRender::flush feed, painter's order, drawn
+        // OVER the tonemapped swapchain (LDR; not tonemapped again). Zero tap, zero glGet. This is
+        // the whole reason native-vulkan is usable: real menus/text, not a stub.
+        if !self.ui_draws.is_empty() {
+            self.ensure_ui(device);
+            const ALIGN: u64 = 256;
+            let vbytes = self.ui_verts.len() as u64;
+            let grow_vb = self.ui_vbuf.as_ref().map_or(true, |(_, cap)| *cap < vbytes);
+            if grow_vb {
+                let cap = vbytes.next_power_of_two().max(64 * 1024);
+                self.ui_vbuf = Some((device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("ui-vbuf"), size: cap,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }), cap));
+            }
+            let ubo_need = self.ui_draws.len() as u64 * ALIGN;
+            let grow_ubo = self.ui_ubo.as_ref().map_or(true, |(_, cap)| *cap < ubo_need);
+            if grow_ubo {
+                let cap = ubo_need.next_power_of_two().max(64 * 1024);
+                self.ui_ubo = Some((device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("ui-ubo"), size: cap,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }), cap));
+            }
+            let mut ubo_bytes = vec![0u8; self.ui_draws.len() * ALIGN as usize];
+            for (i, d) in self.ui_draws.iter().enumerate() {
+                let off = i * ALIGN as usize;
+                ubo_bytes[off..off + 64].copy_from_slice(bytemuck::cast_slice(&d.mvp));
+            }
+            let ui_vbuf = &self.ui_vbuf.as_ref().unwrap().0;
+            let ui_ubo = &self.ui_ubo.as_ref().unwrap().0;
+            queue.write_buffer(ui_vbuf, 0, &self.ui_verts);
+            queue.write_buffer(ui_ubo, 0, &ubo_bytes);
+            // One bind group per unique texture id; all share the mvp ring (dynamic offset per
+            // draw selects the mvp). Immutable self borrows only -> no aliasing with the encoder.
+            let bgl = self.ui_bgl.as_ref().unwrap();
+            let sampler = self.ui_sampler.as_ref().unwrap();
+            let mut binds: HashMap<u32, wgpu::BindGroup> = HashMap::new();
+            for d in &self.ui_draws {
+                if binds.contains_key(&d.tex_id) { continue; }
+                let tv = self.textures.get(&d.tex_id).map(|(_, v)| v).unwrap_or(&self.white);
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("ui-bind"),
+                    layout: bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: ui_ubo, offset: 0, size: wgpu::BufferSize::new(64) }) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tv) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                    ],
+                });
+                binds.insert(d.tex_id, bg);
+            }
+            let tri = self.ui_tri_pipeline.as_ref().unwrap();
+            let line = self.ui_line_pipeline.as_ref().unwrap();
+            let mut up = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ui-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            up.set_vertex_buffer(0, ui_vbuf.slice(..));
+            for (i, d) in self.ui_draws.iter().enumerate() {
+                let Some(bind) = binds.get(&d.tex_id) else { continue };
+                up.set_pipeline(if d.line { line } else { tri });
+                up.set_bind_group(0, bind, &[(i as u64 * ALIGN) as u32]);
+                up.draw(d.first_vertex..d.first_vertex + d.vertex_count, 0..1);
+            }
+        }
         queue.submit([enc.finish()]);
         let n = self.queued.len() as u64;
         self.drawn += n;
         self.queued.clear();
+        self.ui_verts.clear();
+        self.ui_draws.clear();
         n
     }
 }

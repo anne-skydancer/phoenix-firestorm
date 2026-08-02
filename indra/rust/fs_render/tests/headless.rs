@@ -870,3 +870,103 @@ fn deferred_resolve_applies_ndl_shading() {
         "N.L must brighten the lit side vs the dark side: bright {:?} dark {:?}", bright, dark
     );
 }
+
+// ===== A.3 native-VK UI oracle =====
+
+/// Pack one interleaved UI vertex: {f32 x,y,z; f32 u,v; u8 r,g,b,a} = 24 bytes (the fsr_ui_submit
+/// wire format, matching shaders/ui.vert's vertex layout).
+fn ui_vtx(out: &mut Vec<u8>, x: f32, y: f32, u: f32, v: f32, c: [u8; 4]) {
+    out.extend_from_slice(&x.to_le_bytes());
+    out.extend_from_slice(&y.to_le_bytes());
+    out.extend_from_slice(&0f32.to_le_bytes());
+    out.extend_from_slice(&u.to_le_bytes());
+    out.extend_from_slice(&v.to_le_bytes());
+    out.extend_from_slice(&c);
+}
+
+/// A.3 ORACLE: the native-VK UI pass renders honest LLRender::flush draws over the tonemapped
+/// swapchain -- a TEXTURED quad (bound texture id, white vertex color -> the texture's color) and
+/// a SOLID quad (tex_id 0 -> the engine's 1x1 white fallback -> the vertex color). Proves the full
+/// UI path end to end: the {pos,uv,color} vertex layout, the per-draw dynamic-mvp UBO, one
+/// bind-group per texture id, straight-alpha blend, and painter's order -- with ZERO glGet, pure
+/// typed submit. This is the mechanism that makes native-vulkan a usable viewer (real menus/text).
+#[test]
+fn ui_pass_renders_textured_and_solid_quads() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping headless UI test");
+        return;
+    };
+    let fmt = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut live = LiveRenderer::new(&device, &queue, fmt);
+
+    // A 2x2 solid-red texture (id 42); straight RGBA bytes.
+    let red_tex = [255u8, 0, 0, 255].repeat(4);
+    live.upload_texture(&device, &queue, 42, 2, 2, &red_tex);
+
+    // Identity mvp -> positions are already NDC. Left half [-1,0] = textured (red), right half
+    // [0,1] = solid green. TRIANGLES (mode 0), two tris each. Textured quad uses WHITE vertex
+    // color so out = texture (red); solid quad uses GREEN with tex_id 0 (white fallback -> green).
+    let identity: [f32; 16] = [1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.];
+    let white = [255u8, 255, 255, 255];
+    let green = [0u8, 255, 0, 255];
+    let mut left = Vec::new();
+    for &(x, y, u, v) in &[(-1f32,-1f32,0f32,1f32), (0.,-1.,1.,1.), (0.,1.,1.,0.),
+                           (-1.,-1.,0.,1.), (0.,1.,1.,0.), (-1.,1.,0.,0.)] {
+        ui_vtx(&mut left, x, y, u, v, white);
+    }
+    let mut right = Vec::new();
+    for &(x, y, u, v) in &[(0f32,-1f32,0f32,1f32), (1.,-1.,1.,1.), (1.,1.,1.,0.),
+                           (0.,-1.,0.,1.), (1.,1.,1.,0.), (0.,1.,0.,0.)] {
+        ui_vtx(&mut right, x, y, u, v, green);
+    }
+
+    live.begin();
+    live.ui_begin();
+    live.ui_submit(&identity, 42, 0, &left);  // textured red (left)
+    live.ui_submit(&identity, 0, 0, &right);  // solid green (right, white fallback)
+
+    let (w, h) = (64u32, 48u32);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ui-target"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: fmt,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0., g: 0., b: 0., a: 1. });
+
+    let stride = ((w * 4 + 255) / 256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ui-rb"), size: (stride * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ui-rb") });
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    queue.submit([enc.finish()]);
+    let slice = buf.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::Maintain::Wait);
+    let data = slice.get_mapped_range();
+    // Bgra8UnormSrgb byte order: B, G, R, A. Sample left-quarter and right-quarter, mid-height.
+    let px = |cx: u32, cy: u32| -> [u8; 3] {
+        let off = (cy * stride + cx * 4) as usize;
+        [data[off + 2], data[off + 1], data[off]] // R, G, B
+    };
+    let lft = px(w / 4, h / 2);
+    let rgt = px(3 * w / 4, h / 2);
+    drop(data);
+    buf.unmap();
+
+    assert!(lft[0] > 200 && lft[1] < 60 && lft[2] < 60,
+        "textured-quad pixel should be red (texture color through white vertex), got {:?}", lft);
+    assert!(rgt[1] > 200 && rgt[0] < 60 && rgt[2] < 60,
+        "solid-quad pixel should be green (vertex color through white-texture fallback), got {:?}", rgt);
+}

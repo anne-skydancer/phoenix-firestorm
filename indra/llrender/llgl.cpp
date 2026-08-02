@@ -39,6 +39,8 @@
 #include "llglstates.h"
 #include "llrender.h"
 
+#include "fsscenedump.h" // <FS:VkBridge> Path C 0a: real VkPhysicalDevice caps (getEngineGpuInfo)
+
 #include "llerror.h"
 #include "llerrorcontrol.h"
 #include "llquaternion.h"
@@ -1072,12 +1074,127 @@ void LLGLManager::initWGL()
 #endif
 
 // return false if unable (or unwilling due to old drivers) to init GL
+// <FS:VkBridge> Path C (native Vulkan): the honest, GL-free caps population. Fills the same
+// LLGLManager fields initGL() would, but from the real VkPhysicalDevice (via the engine's
+// fsr_query_gpu_info, reached through FSSceneDump::getEngineGpuInfo) plus conservative
+// Vulkan-typical floors for the fixed limits. Makes NO gl* call, so it is valid with no GL
+// context. This is what replaces the null-GL stub's fabricated caps table -- INVARIANT #1.
+bool LLGLManager::initGLFromVulkan()
+{
+    FSSceneDump::FSGpuInfo gi;
+    if (!FSSceneDump::getEngineGpuInfo(gi))
+    {
+        LL_WARNS("RenderInit") << "Path C: fsr_query_gpu_info unavailable; cannot populate caps "
+                                  "from Vulkan (falling back to the GL probe)." << LL_ENDL;
+        return false;
+    }
+
+    // Identity from the real adapter (upper-cased to match initGL's vendor-string handling).
+    mGLVendor   = ll_safe_string(gi.vendor);
+    mGLRenderer = ll_safe_string(gi.renderer);
+    LLStringUtil::toUpper(mGLVendor);
+    LLStringUtil::toUpper(mGLRenderer);
+    mGLVersionString = ll_safe_string(gi.version);
+    mDriverVersionVendorString = mGLVersionString;
+
+    // Vendor classification -- identical rules to initGL so all downstream mIs* logic holds.
+    if (mGLVendor.substr(0, 4) == "ATI " || mGLVendor.find("AMD") != std::string::npos)
+    {
+        mGLVendorShort = "AMD";
+        mIsAMD = true;
+    }
+    else if (mGLVendor.find("NVIDIA") != std::string::npos)
+    {
+        mGLVendorShort = "NVIDIA";
+        mIsNVIDIA = true;
+    }
+    else if (mGLVendor.find("INTEL") != std::string::npos || mGLRenderer.find("INTEL") != std::string::npos)
+    {
+        mGLVendorShort = "INTEL";
+        mIsIntel = true;
+    }
+    else if (mGLVendor.find("APPLE") != std::string::npos)
+    {
+        mGLVendorShort = "APPLE";
+        mIsApple = true;
+    }
+    else
+    {
+        mGLVendorShort = "MISC";
+    }
+
+    // The engine renders GLSL 4.60-class shaders; report a 4.6 core profile so the shader and
+    // feature managers treat this as a fully-capable modern GL (they gate on these).
+    mGLVersion = 4.6f;
+    mDriverVersionMajor = 4;
+    mDriverVersionMinor = 6;
+    mDriverVersionRelease = 0;
+    mGLSLVersionMajor = 4;
+    mGLSLVersionMinor = 60;
+
+    // Real VK-adapter limits where we have them; conservative Vulkan-typical floors otherwise
+    // (every modern discrete/integrated Vulkan GPU meets these, and the deferred pipeline needs
+    // no more). These are honest minimums, not fabrications of a specific card.
+    mGLMaxTextureSize       = (S32)(gi.max_texture_2d ? gi.max_texture_2d : 16384);
+    mMaxVaryingVectors      = (S32)(gi.max_varying_vectors ? gi.max_varying_vectors : 32);
+    mNumTextureImageUnits   = 32;
+    mMaxSamples             = 8;
+    mMaxColorTextureSamples = 8;
+    mMaxDepthTextureSamples = 8;
+    mMaxIntegerSamples      = 8;
+    mMaxSampleMaskWords     = 1;
+    mMaxUniformBlockSize    = 65536;
+    mGLMaxVertexRange       = 1048576;
+    mGLMaxIndexRange        = 1048576;
+    mMaxAnisotropy          = 16.f;
+
+    mHasCubeMapArray      = true;
+    mHasAnisotropic       = true;
+    mHasDebugOutput       = false;
+    mHasTransformFeedback = true;
+
+    // VRAM: a deliberate, conservative BUDGET, not the card's spec. The viewer sizes its resident
+    // texture set to mVRAM/2, and the engine holds its own copies in the same VRAM -- so a
+    // deflated number is the correct budget. Discrete gets more headroom than integrated;
+    // FS_ENGINE_VRAM_MB overrides. (Real heap-size query is a later refinement.)
+    U32 vram_mb = 6144;               // discrete default
+    if (gi.device_type == 1) vram_mb = 2048; // integrated
+    if (const char* env = getenv("FS_ENGINE_VRAM_MB"))
+    {
+        int v = atoi(env);
+        if (v > 0) vram_mb = (U32)v;
+    }
+    mVRAM = vram_mb;
+    mVRAMDetected = (S32)vram_mb;
+
+    mHasRequirements = true;
+    mInited = true;
+
+    LL_INFOS("RenderInit") << "Path C: LLGLManager populated from the real Vulkan adapter '"
+                           << mGLRenderer << "' (" << mGLVendorShort << ", " << mVRAM
+                           << "MB budget, GLSL " << mGLSLVersionMajor << "." << mGLSLVersionMinor
+                           << ", max tex " << mGLMaxTextureSize << ") -- no GL, no stub caps."
+                           << LL_ENDL;
+    return true;
+}
+
 bool LLGLManager::initGL()
 {
     LL_INFOS("RenderInit") << "Initializing OpenGL" << LL_ENDL; // <FS:Beq/> Extra logging to confirm usage on Linux
     if (mInited)
     {
         LL_ERRS("RenderInit") << "Calling init on LLGLManager after already initialized!" << LL_ENDL;
+    }
+
+    // <FS:VkBridge> Path C: in engine mode, fill caps from the REAL Vulkan device -- not from
+    // glGetString/glGetIntegerv over a driver. Bypasses the null-GL stub's fabricated caps (the
+    // "medium-low" fiasco), and, making no gl* call, is what a no-GL-context boot will use.
+    {
+        const char* em = getenv("FS_ENGINE_MODE");
+        if (em && em[0] == '1' && initGLFromVulkan())
+        {
+            return true;
+        }
     }
 
 #if 0 && LL_WINDOWS

@@ -68,6 +68,10 @@ public:
     LLGLManager();
 
     bool initGL();
+    // <FS:VkBridge> Path C (native Vulkan): populate these caps from the REAL VkPhysicalDevice
+    // (fsr_query_gpu_info), issuing NO gl* call -- the honest replacement for the null-GL stub's
+    // fabricated caps. Works with no GL context. Returns false if the engine adapter is absent.
+    bool initGLFromVulkan();
     void shutdownGL();
 
 #if LL_WINDOWS

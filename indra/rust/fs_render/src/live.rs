@@ -1795,11 +1795,13 @@ impl LiveRenderer {
     }
 
     /// Phase A.1: the fullscreen sky UBO, packed by the caller from the typed camera +
-    /// EepSkyBlock: `inv_view_proj`(16) + a0..a8(36) = 52 floats. Layout matches
+    /// EepSkyBlock: `inv_view_proj`(16) + a0..a10(44) = 60 floats. Layout matches
     /// sky_fullscreen.frag. Enables the parallel-read sky pass this frame. Pass an empty slice
     /// (or never call it) to leave the sky off (e.g. the tap path).
+    /// NOTE: a9 (sun_dir) and a10 (moon_dir) live at floats 52..60 -- copy the FULL 60 or the
+    /// sun/moon discs and the star night-gate silently read zero (bug fixed 2026-08-02: was min(52)).
     pub fn set_fullscreen_sky(&mut self, ubo: &[f32]) {
-        let n = ubo.len().min(52);
+        let n = ubo.len().min(60);
         self.sky_fs_data[..n].copy_from_slice(&ubo[..n]);
         self.sky_fs_enabled = n >= 52;
     }

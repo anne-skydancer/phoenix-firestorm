@@ -568,10 +568,10 @@ pub extern "C" fn fsr_end_frame() -> i32 {
             let sky = e.scene.has_sky();
             let ubo_opt = e.scene.fullscreen_sky_ubo();
             let ubo = ubo_opt.is_some();
-            let (sun, amb, hdr, maxy, bh, sun_alt, sun_up) = match ubo_opt {
-                // sun_color, ambient, sky_hdr_scale, max_y, blue_horizon, sun_dir.z (altitude, <0=below horizon), sun_up_factor
-                Some(u) => ((u[24], u[25], u[26]), (u[32], u[33], u[34]), u[48], u[19], (u[36], u[37], u[38]), u[54], u[23]),
-                None => ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0, 0.0, (0.0, 0.0, 0.0), 0.0, 0.0),
+            let (sun, amb, hdr, maxy, bh, sundir, sun_up, moondir) = match ubo_opt {
+                // sun_color, ambient, sky_hdr_scale, max_y, blue_horizon, FULL sun_dir(xyz), sun_up_factor, FULL moon_dir(xyz)
+                Some(u) => ((u[24], u[25], u[26]), (u[32], u[33], u[34]), u[48], u[19], (u[36], u[37], u[38]), (u[52], u[53], u[54]), u[23], (u[56], u[57], u[58])),
+                None => ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0, 0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0, (0.0, 0.0, 0.0)),
             };
             let fs = e.live.sky_fs_enabled();
             let ms = e.live.msaa_samples();
@@ -579,8 +579,8 @@ pub extern "C" fn fsr_end_frame() -> i32 {
             let c = e.clear_color;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
                 use std::io::Write;
-                let _ = writeln!(f, "SKYDIAG cam={} sky={} ubo={} sky_fs={} msaa={} clear=({:.2},{:.2},{:.2}) exp={:.3} exp_scale={:.3} mix={:.2} sun=({:.2},{:.2},{:.2}) amb=({:.2},{:.2},{:.2}) bh=({:.2},{:.2},{:.2}) sun_alt={:.3} sun_up={:.1} hdr={:.2} maxy={:.1}",
-                    cam, sky, ubo, fs, ms, c.r, c.g, c.b, exp, exps, mix, sun.0, sun.1, sun.2, amb.0, amb.1, amb.2, bh.0, bh.1, bh.2, sun_alt, sun_up, hdr, maxy);
+                let _ = writeln!(f, "SKYDIAG cam={} sky={} ubo={} sky_fs={} msaa={} clear=({:.2},{:.2},{:.2}) exp={:.3} exp_scale={:.3} mix={:.2} sun=({:.2},{:.2},{:.2}) amb=({:.2},{:.2},{:.2}) bh=({:.2},{:.2},{:.2}) sundir=({:.3},{:.3},{:.3}) moondir=({:.3},{:.3},{:.3}) sun_up={:.1} hdr={:.2} maxy={:.1}",
+                    cam, sky, ubo, fs, ms, c.r, c.g, c.b, exp, exps, mix, sun.0, sun.1, sun.2, amb.0, amb.1, amb.2, bh.0, bh.1, bh.2, sundir.0, sundir.1, sundir.2, moondir.0, moondir.1, moondir.2, sun_up, hdr, maxy);
             }
         }
     }

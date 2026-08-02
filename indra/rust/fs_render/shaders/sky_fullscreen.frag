@@ -63,7 +63,13 @@ void main() {
     vec3 world_pos = camPosLocal + dir * 1.0e6;
 
     // ==== skyV.glsl integral, verbatim (sky.vert:43-80), pos -> world_pos ====
-    vec3 rel_pos = world_pos - camPosLocal + vec3(0.0, 50.0, 0.0);
+    // COORD FIX (2026-08-02): this is stock's Y-up "OGL dome" integral, and lightnorm is fed
+    // swizzled SL(x,y,z)->OGL(y,z,x) via toLightNorm (llenvironment.cpp:1664) -- so lightnorm.y is
+    // the true up. The view ray is reconstructed in SL world (Z-up), so it MUST be swizzled to the
+    // same OGL frame (.yzx) or the haze integrates around world-Y (horizontal) -> a ring centered on
+    // world-Y, obvious looking up at night. The sun/moon discs + stars below stay SL Z-up (they dot
+    // the SL dir with SL sun/moon dirs -- already correct), so ONLY the integral ray is swizzled.
+    vec3 rel_pos = (world_pos - camPosLocal).yzx + vec3(0.0, 50.0, 0.0);
     if (rel_pos.y > 0.0) { rel_pos *= (max_y / rel_pos.y); }
     if (rel_pos.y < 0.0) { rel_pos *= (-32000.0 / rel_pos.y); }
 
@@ -107,19 +113,41 @@ void main() {
     // Bright additive where the view ray aligns with the body direction; faded below the horizon.
     vec3 sun_dir_w  = u.a9.xyz;
     vec3 moon_dir_w = u.a10.xyz;
+    // WL disables the ATMOSPHERIC sun/moon glow at night (getSunMoonGlowFactor<1 -> haze_glow=0),
+    // so stock draws each body's halo from its BILLBOARD. We reproduce that here: a bright limb-darkened
+    // body PLUS a soft pow(cos,N) glow corona, so the body reads as a glowing object and bridges the
+    // hard rim into the bare sky around it (this is what was missing at the zenith).
     if (dot(sun_dir_w, sun_dir_w) > 0.25) {
         vec3 sd = normalize(sun_dir_w);
-        float sc = dot(dir, sd);
-        float disc  = smoothstep(0.99955, 0.99975, sc);   // ~1.7 deg radius, soft limb
-        float above = smoothstep(-0.06, 0.02, sd.z);      // fade out below the horizon
-        color += sunlight_color * (disc * above * 8.0);   // bright sun body (tonemap clamps to white)
+        float sc = dot(dir, sd);                           // cos(angle from sun)
+        float above = smoothstep(-0.06, 0.02, sd.z);       // fade out below the horizon
+        float disc  = smoothstep(0.99955, 0.99975, sc);    // ~1.7 deg body
+        float halo  = pow(max(sc, 0.0), 300.0);            // corona, falls off over ~5-6 deg
+        color += sunlight_color * above * (disc * 8.0 + halo * 1.5);
     }
     if (dot(moon_dir_w, moon_dir_w) > 0.25) {
         vec3 md = normalize(moon_dir_w);
-        float mc = dot(dir, md);
-        float disc  = smoothstep(0.9993, 0.99955, mc);
-        float above = smoothstep(-0.06, 0.02, md.z);
-        color += moonlight_color * (disc * above * 1.5);  // dimmer moon body
+        float mc = dot(dir, md);                           // cos(angle from moon)
+        float above = smoothstep(-0.06, 0.03, md.z);       // fade below the horizon
+        float disc  = smoothstep(0.99955, 0.99975, mc);    // ~1.3 deg body, soft limb (was ~5 deg -- too big)
+        float halo  = pow(max(mc, 0.0), 900.0) * 0.9       // tight inner glow (~3 deg)
+                    + pow(max(mc, 0.0), 120.0) * 0.35;     // soft outer moonglow (~12 deg)
+        color += vec3(0.85, 0.87, 0.98) * above * (disc * 3.5 + halo);
+    }
+
+    // ==== procedural stars (night-gated) -- fade in as the sun drops below the horizon ====
+    float star_vis = smoothstep(0.12, -0.12, sun_dir_w.z);  // sun_dir.z < 0 => night
+    if (star_vis > 0.001) {
+        vec3 sd_n = normalize(dir);
+        vec3 sp   = sd_n * 260.0;              // grid on a sphere shell -> stars fixed to the sky dome
+        vec3 cell = floor(sp);
+        float rnd = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+        if (rnd > 0.9935) {                    // sparse
+            vec3 sc = cell + vec3(0.5) + 0.35 * vec3(fract(rnd * 17.0), fract(rnd * 31.0), fract(rnd * 47.0));
+            float star  = smoothstep(0.55, 0.0, length(sp - sc));
+            float bright = 0.4 + 0.6 * fract(rnd * 91.0);
+            color += vec3(star * bright) * (star_vis * max(0.0, sd_n.z) * 1.3);
+        }
     }
 
     vec3 c = min(color * 2.0, vec3(5.0));

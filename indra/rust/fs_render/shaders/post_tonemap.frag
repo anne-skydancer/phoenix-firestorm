@@ -105,9 +105,21 @@ vec3 toneMap(vec3 color) {
     return clamp(color, 0.0, 1.0);
 }
 
+// Interleaved-gradient-noise hash (Jimenez 2014), returns [0,1). Per-pixel, static (no temporal flicker).
+float ign(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
 void main() {
     vec3 hdr = texelFetch(scene, ivec2(gl_FragCoord.xy), 0).rgb;
     vec3 disp = linear_to_srgb(toneMap(hdr));
     if (post.legacy_gamma != 0) disp = legacyGamma(disp);
+    // Dither in the sRGB display domain to break 8-bit quantization banding on shallow gradients.
+    // The WL night-haze airmass ramp spans only ~1 output level across the whole sky, so the ROP
+    // posterizes it into ONE hard contour -- the "ring of non-hazed sky". Triangular-PDF, ~+-1 LSB,
+    // per-pixel; it integrates back to a smooth gradient. Applied to `disp` because the sRGB swapchain
+    // ROP quantizes exactly that value (we emit its linear pre-image).
+    float t = (ign(gl_FragCoord.xy) + ign(gl_FragCoord.xy + 113.0) - 1.0) / 255.0;
+    disp = clamp(disp + t, 0.0, 1.0);
     frag = vec4(srgb_to_linear(disp), 1.0);
 }

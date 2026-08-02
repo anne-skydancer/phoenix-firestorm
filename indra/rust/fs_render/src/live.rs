@@ -213,7 +213,23 @@ pub struct LiveRenderer {
     resolve_bind: Option<wgpu::BindGroup>,
     env_ubo: wgpu::Buffer,                              // sun_dir + sunlight + ambient (std140)
     frame_env: [f32; 12],                               // CPU copy pushed to env_ubo each flush
+    // S1: Post-params UBO consumed by post_tonemap.frag (std140, 32 bytes).
+    post_ubo: wgpu::Buffer,
+    post_exposure: f32,    // RenderExposure clamp[0.5,4]
+    post_exp_scale: f32,   // auto-exposure meter; 1.0 = fixed (D2)
+    post_tonemap_mix: f32, // 0 = legacy passthrough, else RenderTonemapMix
+    post_gamma: f32,       // sky gamma -> legacyGamma soft-clip
+    post_tonemap_type: i32,// 0 = PBRNeutral, 1 = ACES Hill
+    post_legacy_gamma: i32,// 1 = apply legacyGamma (legacy skies)
     tonemap_pipeline: Option<wgpu::RenderPipeline>,     // post.vert + post_tonemap.frag
+    // Phase A.1: fullscreen procedural sky, parallel-read from the typed camera + EepSkyBlock
+    // (no tap, no dome mesh). post.vert + sky_fullscreen.frag into scene_hdr as the background.
+    sky_fs_bgl: wgpu::BindGroupLayout,
+    sky_fs_pipeline: Option<wgpu::RenderPipeline>,
+    sky_fs_bind: Option<wgpu::BindGroup>,
+    sky_fs_ubo: wgpu::Buffer,        // inv_view_proj(16) + a0..a8(36) = 52 floats (std140, 208B)
+    sky_fs_data: [f32; 52],
+    sky_fs_enabled: bool,
     format: wgpu::TextureFormat,
     pub submitted: u64,
     pub drawn: u64,
@@ -411,16 +427,25 @@ impl LiveRenderer {
         });
         let post_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("post-bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                // S1: Post-params UBO (exposure/exp_scale/tonemap_mix/gamma/tonemap_type/legacy_gamma).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
         });
         // #3: (0,0,1) fallback normal for G-buffer draws whose SoA lacks a NORMAL block.
         let normal_up = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -456,6 +481,28 @@ impl LiveRenderer {
         let env_ubo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("resolve-env"),
             size: 64, // 4 x vec4 (sun_dir, sunlight, ambient, bg)
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let post_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("post-params"),
+            size: 32, // 6 scalars + pad (std140)
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // Phase A.1: fullscreen sky -- one UBO binding (inv_view_proj + WL params + camera).
+        let sky_fs_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sky-fs-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let sky_fs_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sky-fs-ubo"),
+            size: 208, // mat4(64) + 9 x vec4(144)
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -522,7 +569,23 @@ impl LiveRenderer {
                 1.0, 1.0, 1.0, 0.0,    // sunlight (linear)
                 0.25, 0.25, 0.30, 0.0, // ambient (linear)
             ],
+            post_ubo,
+            // S1 defaults: non-legacy baseline (settings.xml RenderExposure=1, TonemapType=1
+            // ACES, TonemapMix=0.7). S3 overrides these per sky regime (legacy => mix=0,
+            // legacy_gamma=1, sky-driven gamma).
+            post_exposure: 1.0,
+            post_exp_scale: 1.0,
+            post_tonemap_mix: 0.7,
+            post_gamma: 1.0,
+            post_tonemap_type: 1,
+            post_legacy_gamma: 0,
             tonemap_pipeline: None,
+            sky_fs_bgl,
+            sky_fs_pipeline: None,
+            sky_fs_bind: None,
+            sky_fs_ubo,
+            sky_fs_data: [0.0; 52],
+            sky_fs_enabled: false,
             format,
             submitted: 0,
             drawn: 0,
@@ -1439,14 +1502,16 @@ impl LiveRenderer {
         }
     }
 
-    /// Increment 1a: the composite pipeline (fullscreen triangle) + its bind group. For now
-    /// this is an exact texelFetch copy of scene_hdr to the swapchain (provable identity);
-    /// 1b replaces the copy shader with tonemap+exposure. Pipeline targets the swapchain
-    /// format; the world pipelines target SCENE_FORMAT.
+    /// The final composite pass (fullscreen triangle) + its bind group. Reads the linear-HDR
+    /// scene target and tonemaps it (PBRNeutral) to the sRGB swapchain -- the swapchain ROP
+    /// applies the sRGB encode (single encode site; the shader outputs linear). This is the
+    /// mandatory HDR->LDR step whose absence caused the earlier full-bright blowout: without
+    /// it, HDR radiance > 1.0 hard-clamps to white across every bright pixel. The 1a identity
+    /// copy (post_copy.frag) is retired; exposure is fixed at 1.0 until the post tier.
     fn ensure_post(&mut self, device: &wgpu::Device) {
         if self.post_pipeline.is_none() {
             let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));
-            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/post_copy.frag.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/post_tonemap.frag.spv"));
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("post-pl"),
                 bind_group_layouts: &[&self.post_bgl],
@@ -1454,7 +1519,7 @@ impl LiveRenderer {
             });
             let swap_fmt = self.format;
             self.post_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("post-copy"),
+                label: Some("post-tonemap"),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
                 fragment: Some(wgpu::FragmentState {
@@ -1482,7 +1547,10 @@ impl LiveRenderer {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("post-bind"),
                     layout: bgl,
-                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) }],
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) },
+                        wgpu::BindGroupEntry { binding: 1, resource: self.post_ubo.as_entire_binding() },
+                    ],
                 })
             });
             self.post_bind = bind;
@@ -1506,6 +1574,38 @@ impl LiveRenderer {
     pub fn set_frame_env(&mut self, env: &[f32]) {
         let n = env.len().min(12);
         self.frame_env[..n].copy_from_slice(&env[..n]);
+    }
+
+    /// S1: the tonemap/exposure/gamma params consumed by post_tonemap.frag. Wired to the sky
+    /// regime by S3 (legacy classic => tonemap_mix=0, legacy_gamma=1, sky-driven gamma;
+    /// advanced => full ACES/PBRNeutral). exp_scale stays 1.0 until auto-exposure (S6).
+    pub fn set_post_params(&mut self, exposure: f32, exp_scale: f32, tonemap_mix: f32,
+                           gamma: f32, tonemap_type: i32, legacy_gamma: i32) {
+        self.post_exposure = exposure.clamp(0.5, 4.0);
+        self.post_exp_scale = exp_scale;
+        self.post_tonemap_mix = tonemap_mix.clamp(0.0, 1.0);
+        self.post_gamma = gamma;
+        self.post_tonemap_type = tonemap_type;
+        self.post_legacy_gamma = legacy_gamma;
+    }
+
+    /// S3b: consume a derived `SkyRegime` (from `SceneFrame::sky_regime()`) -- drive the tonemap
+    /// post-params from the regime instead of defaults, so the global tonemap uses the SAME
+    /// legacy/advanced regime the viewer used for the sky. exp_scale stays 1.0 (fixed exposure,
+    /// D2) until auto-exposure (S6). `classic_mode`/scales/`sky_hdr_scale` drive the resolve (S4);
+    /// the sky pass's own `sky_hdr_scale` still arrives via the tap aux (already the viewer value).
+    pub fn apply_sky_regime(&mut self, r: &crate::scene::SkyRegime) {
+        self.set_post_params(r.exposure, 1.0, r.tonemap_mix, r.gamma, r.tonemap_type as i32, r.legacy_gamma as i32);
+    }
+
+    /// Phase A.1: the fullscreen sky UBO, packed by the caller from the typed camera +
+    /// EepSkyBlock: `inv_view_proj`(16) + a0..a8(36) = 52 floats. Layout matches
+    /// sky_fullscreen.frag. Enables the parallel-read sky pass this frame. Pass an empty slice
+    /// (or never call it) to leave the sky off (e.g. the tap path).
+    pub fn set_fullscreen_sky(&mut self, ubo: &[f32]) {
+        let n = ubo.len().min(52);
+        self.sky_fs_data[..n].copy_from_slice(&ubo[..n]);
+        self.sky_fs_enabled = n >= 52;
     }
 
     /// #3: (re)create the G-buffer attachments on size change.
@@ -1622,6 +1722,40 @@ impl LiveRenderer {
         }
     }
 
+    /// Phase A.1: the fullscreen sky pipeline (post.vert + sky_fullscreen.frag) + its bind group.
+    fn ensure_sky_fs(&mut self, device: &wgpu::Device) {
+        if self.sky_fs_pipeline.is_none() {
+            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/sky_fullscreen.frag.spv"));
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("sky-fs-pl"),
+                bind_group_layouts: &[&self.sky_fs_bgl],
+                push_constant_ranges: &[],
+            });
+            self.sky_fs_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sky-fs"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState { format: SCENE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }));
+        }
+        if self.sky_fs_bind.is_none() {
+            self.sky_fs_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("sky-fs-bind"),
+                layout: &self.sky_fs_bgl,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.sky_fs_ubo.as_entire_binding() }],
+            }));
+        }
+    }
+
     pub fn flush_clear(
         &mut self,
         device: &wgpu::Device,
@@ -1647,6 +1781,23 @@ impl LiveRenderer {
         self.ensure_msaa_color(device, w, h);
         self.ensure_scene_hdr(device, w, h);
         self.ensure_post(device);
+        // S1: push the Post-params UBO (std140: 4 floats + 2 ints, 24 bytes used, 32 alloc)
+        // consumed by post_tonemap.frag every frame, before the composite pass runs.
+        {
+            let mut pp = [0u8; 32];
+            pp[0..4].copy_from_slice(&self.post_exposure.to_le_bytes());
+            pp[4..8].copy_from_slice(&self.post_exp_scale.to_le_bytes());
+            pp[8..12].copy_from_slice(&self.post_tonemap_mix.to_le_bytes());
+            pp[12..16].copy_from_slice(&self.post_gamma.to_le_bytes());
+            pp[16..20].copy_from_slice(&self.post_tonemap_type.to_le_bytes());
+            pp[20..24].copy_from_slice(&self.post_legacy_gamma.to_le_bytes());
+            queue.write_buffer(&self.post_ubo, 0, &pp);
+        }
+        // Phase A.1: the fullscreen sky UBO (parallel-read camera + EepSkyBlock), pushed when set.
+        if self.sky_fs_enabled {
+            self.ensure_sky_fs(device);
+            queue.write_buffer(&self.sky_fs_ubo, 0, bytemuck::cast_slice(&self.sky_fs_data));
+        }
         // #3/#4: any opaque generic-with-normal draws this frame -> build the deferred path.
         let has_gb = self.queued.iter().any(|q| q.is_gb);
         if has_gb {
@@ -1739,19 +1890,42 @@ impl LiveRenderer {
                 rp2.draw(0..3, 0..1);
             }
         }
+        // Phase A.1: fullscreen procedural sky into scene_hdr (the background), parallel-read from
+        // the typed camera + EepSkyBlock -- no tap, no dome. The forward pass then LOADs scene_hdr
+        // so the sky survives. (Phase B reorders this as the true background under geometry; the
+        // MSAA-resolve path is single-sample for now.)
+        if self.sky_fs_enabled {
+            if let (Some(p), Some(bind)) = (self.sky_fs_pipeline.as_ref(), self.sky_fs_bind.as_ref()) {
+                let mut sp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("sky-fs-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: scene_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                sp.set_pipeline(p);
+                sp.set_bind_group(0, bind, &[]);
+                sp.draw(0..3, 0..1);
+            }
+        }
         {
+            let load_scene = has_gb || self.sky_fs_enabled;
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("live-pass"),
                 color_attachments: &[Some(match &self.msaa_color {
                     Some((ms_view, _, _, _)) => wgpu::RenderPassColorAttachment {
                         view: ms_view,
                         resolve_target: Some(scene_view), // world MSAA resolves into scene_hdr
-                        ops: wgpu::Operations { load: if has_gb { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(clear) }, store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations { load: if load_scene { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(clear) }, store: wgpu::StoreOp::Store },
                     },
                     None => wgpu::RenderPassColorAttachment {
                         view: scene_view, // #3: LOAD the resolve's output when it ran; else clear
                         resolve_target: None,
-                        ops: wgpu::Operations { load: if has_gb { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(clear) }, store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations { load: if load_scene { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(clear) }, store: wgpu::StoreOp::Store },
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1835,8 +2009,8 @@ impl LiveRenderer {
                 }
             }
         }
-        // Increment 1a: composite the linear-HDR scene target to the swapchain. Currently an
-        // exact texelFetch copy (identity); the filmic tonemap lands with the post tier.
+        // Final composite: tonemap the linear-HDR scene target (PBRNeutral) to the sRGB
+        // swapchain. The mandatory HDR->LDR step; the swapchain ROP does the sRGB encode.
         {
             let mut pp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("post-pass"),

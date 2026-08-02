@@ -343,6 +343,54 @@ pub extern "C" fn fsr_scene_set_sky(sky: *const scene::EepSkyBlock) -> i32 {
     }
 }
 
+/// S3b: the sky-regime settings subset (`#[repr(C)]`, mirrored C++-side as `FsrRegimeSettings`).
+/// A focused feed so the viewer need not mirror the full 120-field `SettingsSnapshot` yet: these
+/// are exactly the `gSavedSettings` the regime derivation (`SceneFrame::sky_regime`) reads. The
+/// values land in the engine's `SettingsSnapshot` regime fields; a future full settings feed (P4)
+/// supersedes this with the same values.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RegimeSettings {
+    pub sky_auto_adjust_legacy: u32,
+    pub sky_sunlight_scale: f32,
+    pub hdr_sky_sunlight_scale: f32,
+    pub sky_ambient_scale: f32,
+    pub sky_auto_adjust_ambient_scale: f32,
+    pub sky_auto_adjust_hdr_scale: f32,
+    pub sun_dynamic_range: f32,
+    pub tonemap_mix: f32,
+    pub tonemap_type: u32,
+    pub exposure: f32,
+    pub hdr_enabled: u32,
+    pub reflection_probes_enabled: u32,
+}
+
+/// S3b: apply the sky-regime settings subset into the engine's settings snapshot. Called by the
+/// viewer when these change (or per frame -- idempotent). Drives `sky_regime()` -> the tonemap.
+#[no_mangle]
+pub extern "C" fn fsr_scene_set_regime(rs: *const RegimeSettings) -> i32 {
+    if rs.is_null() {
+        return 0;
+    }
+    let r = unsafe { *rs };
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    let s = &mut e.scene.settings;
+    s.render_sky_auto_adjust_legacy = r.sky_auto_adjust_legacy;
+    s.render_sky_sunlight_scale = r.sky_sunlight_scale;
+    s.render_hdr_sky_sunlight_scale = r.hdr_sky_sunlight_scale;
+    s.render_sky_ambient_scale = r.sky_ambient_scale;
+    s.render_sky_auto_adjust_ambient_scale = r.sky_auto_adjust_ambient_scale;
+    s.render_sky_auto_adjust_hdr_scale = r.sky_auto_adjust_hdr_scale;
+    s.render_sun_dynamic_range = r.sun_dynamic_range;
+    s.render_tonemap_mix = r.tonemap_mix;
+    s.render_tonemap_type = r.tonemap_type;
+    s.render_exposure = r.exposure;
+    s.render_hdr_enabled = r.hdr_enabled;
+    s.render_reflection_probes_enabled = r.reflection_probes_enabled;
+    1
+}
+
 /// P2 payload: the EEP water block (`#[repr(C)]` = `scene::WaterBlock`), per frame.
 #[no_mangle]
 pub extern "C" fn fsr_scene_set_water(water: *const scene::WaterBlock) -> i32 {
@@ -465,10 +513,21 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
     e.frame_open = false;
-    // P3 (consumption) REVERTED: feeding the real EEP sun/ambient (HDR-scaled) into a resolve
-    // with no tonemap/exposure/atmospherics blew everything to full-white ("no sun, full bright").
-    // The correct-sun fix needs the atmospheric model + tonemap first -- deferred to those phases.
-    // The typed camera/sky still flow (SceneFrame) for shadows etc.; just not into this resolve.
+    // S3b: consume the derived sky regime -- drive the global tonemap's exposure/mix/gamma/
+    // legacy-gamma from the SAME legacy-vs-advanced regime the viewer used for the sky. This is
+    // the piece the reverted P3 consumption lacked (a tonemap at all); now the model + tonemap
+    // exist (S1/S2/S3a) and the regime is oracle-tested, so this is safe. `None` (no typed sky
+    // fed yet) leaves the post defaults; the sky's own sky_hdr_scale still comes via the tap aux.
+    if let Some(r) = e.scene.sky_regime() {
+        e.live.apply_sky_regime(&r);
+    }
+    // Phase A.2: the engine derives the fullscreen sky UBO from the typed camera + EEP sky it was
+    // fed, and renders the sky itself (parallel-read) -- no tapped dome draw needed.
+    if let Some(sky_ubo) = e.scene.fullscreen_sky_ubo() {
+        e.live.set_fullscreen_sky(&sky_ubo);
+    }
+    // P3 (resolve consumption) still deferred to S4: the opaque lighting resolve is a stub;
+    // reconstruct-from-depth + calcAtmosphericVars land there. The sky + tonemap are live now.
     // B1: an empty frame would present the raw clear over a good image -- the whole
     // teal-flash class (window resize swaps, startup states with no draws). Keep the
     // last presented frame instead. The very first present still goes through so the
@@ -787,6 +846,97 @@ pub unsafe extern "C" fn fsr_read_pixels(x: u32, y: u32, w: u32, h: u32, out: *m
             dst.copy_from_slice(src);
         }
     }
+    1
+}
+
+/// The REAL Vulkan-adapter capabilities the viewer's GPU detection needs, `#[repr(C)]` (mirrored
+/// C++-side in llgl.cpp as `FsrGpuInfo`). The null-GL stub reports a FABRICATED identity
+/// ("FSVulkan" / "fs_render null-GL bridge") -> the viewer classifies the GPU as unrecognized
+/// "MISC" and resets graphics to medium-low. `LLGLManager::initGL` calls `fsr_query_gpu_info`
+/// to replace that lie with the truth. Strings are NUL-terminated; `gl_vendor` is a
+/// GL-recognizable name (e.g. "ATI Technologies Inc.") so the vendor classifier sets mIsAMD/etc.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FsrGpuInfo {
+    pub gl_renderer: [u8; 128], // real adapter name, e.g. "AMD Radeon RX 9070 XT"
+    pub gl_vendor: [u8; 64],    // GL-recognizable vendor from the PCI id
+    pub gl_version: [u8; 64],
+    pub vendor_id: u32,         // PCI vendor id (0x1002 AMD / 0x10DE NVIDIA / 0x8086 Intel)
+    pub device_id: u32,
+    pub device_type: u32,       // 0 Other / 1 Integrated / 2 Discrete / 3 Virtual / 4 Cpu
+    pub max_texture_2d: u32,
+    pub max_varying_vectors: u32,
+}
+
+fn cstr_into(dst: &mut [u8], s: &str) {
+    let b = s.as_bytes();
+    let n = b.len().min(dst.len().saturating_sub(1));
+    dst[..n].copy_from_slice(&b[..n]);
+    for x in dst[n..].iter_mut() {
+        *x = 0;
+    }
+}
+
+/// Enumerate the real Vulkan adapter and capture its capabilities. Standalone -- creates its own
+/// transient instance/adapter (no surface, no device), so it works BEFORE `fsr_init` (the viewer
+/// reads GPU caps before the engine's device is up). Result is cached (enumeration is ~ms).
+fn query_gpu_info() -> FsrGpuInfo {
+    let mut gi: FsrGpuInfo = unsafe { std::mem::zeroed() };
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..Default::default()
+    });
+    if let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    })) {
+        let info = adapter.get_info();
+        let limits = adapter.limits();
+        cstr_into(&mut gi.gl_renderer, &info.name);
+        let vendor = match info.vendor {
+            0x1002 => "ATI Technologies Inc.", // AMD/ATI -- classifier keys on "ATI " / "AMD"
+            0x10DE => "NVIDIA Corporation",
+            0x8086 => "Intel",
+            0x13B5 => "ARM",
+            0x5143 => "Qualcomm",
+            _ => "Vulkan",
+        };
+        cstr_into(&mut gi.gl_vendor, vendor);
+        cstr_into(&mut gi.gl_version, "4.6.0 (fs_render Vulkan)");
+        gi.vendor_id = info.vendor;
+        gi.device_id = info.device;
+        gi.device_type = match info.device_type {
+            wgpu::DeviceType::Other => 0,
+            wgpu::DeviceType::IntegratedGpu => 1,
+            wgpu::DeviceType::DiscreteGpu => 2,
+            wgpu::DeviceType::VirtualGpu => 3,
+            wgpu::DeviceType::Cpu => 4,
+        };
+        gi.max_texture_2d = limits.max_texture_dimension_2d;
+        // GL_MAX_VARYING_VECTORS: wgpu doesn't expose the GL value; the viewer only cares that it
+        // exceeds 16 (else it force-downgrades). Any Vulkan-capable GPU supports >= 32 varyings;
+        // derive from the adapter's inter-stage limit, floored to a truthful hardware minimum.
+        let from_limit = limits.max_inter_stage_shader_components / 4;
+        gi.max_varying_vectors = from_limit.max(32);
+    }
+    gi
+}
+
+/// Fill `out` with the real Vulkan-adapter capabilities. Returns 1 on success, 0 if no adapter
+/// (then the viewer keeps the stub's values). Cached after the first call.
+/// # Safety: `out` must point to a valid `FsrGpuInfo`.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_query_gpu_info(out: *mut FsrGpuInfo) -> i32 {
+    if out.is_null() {
+        return 0;
+    }
+    static GPU_INFO: std::sync::OnceLock<FsrGpuInfo> = std::sync::OnceLock::new();
+    let gi = GPU_INFO.get_or_init(query_gpu_info);
+    if gi.gl_renderer[0] == 0 {
+        return 0; // enumeration failed -- no adapter
+    }
+    *out = *gi;
     1
 }
 

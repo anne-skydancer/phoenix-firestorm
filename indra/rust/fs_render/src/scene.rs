@@ -173,6 +173,18 @@ pub struct SettingsSnapshot {
     pub render_highlight_color: [f32; 4],
     pub render_highlight_thickness: f32,
     pub render_highlight_fade_time: f32,
+
+    // ---- sky/atmospherics regime (S3: llsettingsvo.cpp applySpecial 790-868) ----
+    // The engine derives the classic-vs-advanced regime from these + the EEP sky discriminators
+    // (SkyRegime, sky_regime()). Ships the settings RAW; the derivation lives in ONE place so it
+    // is oracle-tested (mis-routing legacy->advanced is the proven "blew to white" cause).
+    pub render_sky_auto_adjust_legacy: u32,      // RenderSkyAutoAdjustLegacy (default false)
+    pub render_sky_sunlight_scale: f32,          // RenderSkySunlightScale (1.5)
+    pub render_hdr_sky_sunlight_scale: f32,      // RenderHDRSkySunlightScale (1.5)
+    pub render_sky_ambient_scale: f32,           // RenderSkyAmbientScale (1.5)
+    pub render_sky_auto_adjust_ambient_scale: f32, // RenderSkyAutoAdjustAmbientScale (0.75)
+    pub render_sky_auto_adjust_hdr_scale: f32,   // RenderSkyAutoAdjustHDRScale (2.0)
+    pub render_sun_dynamic_range: f32,           // RenderSunDynamicRange (1.0)
 }
 
 /// P2: the EEP atmospherics/sky block. Fields are the atmospherics uniform set the sky +
@@ -215,6 +227,35 @@ pub struct EepSkyBlock {
     pub moisture_level: f32, // rainbow/halo
     pub droplet_radius: f32,
     pub ice_level: f32,
+
+    // ---- S3 regime discriminators (raw viewer getters; drive sky_regime()) ----
+    // NOTE: `sky_hdr_scale` above is now DERIVED by the engine (sky_regime), not a viewer input.
+    pub can_auto_adjust: u32,           // psky->canAutoAdjust() = sky lacks a probe-ambiance KEY
+    pub reflection_probe_ambiance: f32, // raw mReflectionProbeAmbiance value (0 for legacy skies)
+    pub lightnorm: [f32; 3],            // getClampedLightNorm swizzle (y,z,x), z>=-0.1 -- NOT sun_dir
+}
+
+/// S3: `LLSettingsSky::DEFAULT_AUTO_ADJUST_PROBE_AMBIANCE` / `sAutoAdjustProbeAmbiance`.
+pub const AUTO_ADJUST_PROBE_AMBIANCE: f32 = 1.0;
+
+/// S3: the derived sky regime -- the classic-vs-advanced bundle the sky/resolve/tonemap consume.
+/// Computed ONCE by `SceneFrame::sky_regime()` (faithful transcription of llsettingsvo.cpp
+/// applySpecial 790-868 + getReflectionProbeAmbiance + pipeline.cpp legacy-gamma selection), so
+/// the mis-routing that blew the scene to white is caught by a single unit test rather than an
+/// in-world surprise. Engine-internal (not shipped over the C ABI); drives set_post_params + the
+/// resolve uniforms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyRegime {
+    pub classic_mode: u32,          // canAutoAdjust && !RenderSkyAutoAdjustLegacy
+    pub sky_hdr_scale: f32,         // DERIVED: 1.0 legacy / sqrt(gamma)*2 probe / 2.0 auto-adjust
+    pub sky_sunlight_scale: f32,    // 1.5 (hdr variant when RenderHDREnabled)
+    pub sky_ambient_scale: f32,     // 1.5
+    pub scene_light_strength: f32,  // 2*(0.75 + sun_dynamic_range*max(sun.z,0))
+    pub tonemap_mix: f32,           // 0 for classic legacy (curve bypassed), else RenderTonemapMix
+    pub legacy_gamma: u32,          // getReflectionProbeAmbiance(should_auto)==0 -> classic soft-clip
+    pub exposure: f32,              // clamp(RenderExposure, 0.5, 4.0)
+    pub tonemap_type: u32,          // 0 PBRNeutral / 1 ACES Hill
+    pub gamma: f32,                 // sky gamma -> legacyGamma
 }
 
 /// P2: the EEP water block, from `LLSettingsWater` getters. Texture fields are UUID-derived
@@ -337,6 +378,97 @@ impl SceneFrame {
         ])
     }
 
+    /// S3: derive the sky regime (classic vs advanced) from the EEP sky discriminators + the
+    /// settings snapshot. Faithful transcription of llsettingsvo.cpp applySpecial (790-868),
+    /// LLSettingsSky::getReflectionProbeAmbiance (1823-1831) and getTonemapMix, and the
+    /// pipeline.cpp legacy-gamma program selection (8131/8196). `None` until the sky is fed.
+    pub fn sky_regime(&self) -> Option<SkyRegime> {
+        let sky = self.eep_sky.as_ref()?;
+        let s = &self.settings;
+        let can_auto = sky.can_auto_adjust != 0;                 // psky->canAutoAdjust()
+        let should_auto = s.render_sky_auto_adjust_legacy != 0;  // RenderSkyAutoAdjustLegacy
+        let hdr = s.render_hdr_enabled != 0;                     // RenderHDREnabled
+        let g = sky.gamma;
+        let raw_probe = sky.reflection_probe_ambiance;           // mReflectionProbeAmbiance
+
+        // "classic" = pre-SL-7.0 shading (llsettingsvo.cpp:810).
+        let classic_mode = can_auto && !should_auto;
+
+        // getTonemapMix(should_auto): 0 when (canAutoAdjust && !should_auto), else mTonemapMix,
+        // and the non-classic path sets mTonemapMix = RenderTonemapMix (applySpecial:814).
+        let tonemap_mix = if can_auto && !should_auto { 0.0 } else { s.render_tonemap_mix };
+
+        let sky_sunlight_scale = if hdr { s.render_hdr_sky_sunlight_scale } else { s.render_sky_sunlight_scale };
+        let sky_ambient_scale = s.render_sky_ambient_scale;
+
+        // SKY_HDR_SCALE branch (applySpecial:831-858) -- on the RAW probe ambiance.
+        let sky_hdr_scale = if raw_probe != 0.0 {
+            g.max(0.0).sqrt() * 2.0
+        } else if can_auto && should_auto {
+            s.render_sky_auto_adjust_hdr_scale
+        } else {
+            1.0
+        };
+
+        // legacy_gamma = getReflectionProbeAmbiance(should_auto) == 0 (pipeline.cpp:8131/8196).
+        let eff_probe = if should_auto && can_auto { AUTO_ADJUST_PROBE_AMBIANCE } else { raw_probe };
+        let legacy_gamma = (eff_probe == 0.0) as u32;
+
+        // mSceneLightStrength (llsettingsvo.cpp:665-676). sun_dir is world-space; z is "up".
+        let dp = sky.sun_dir[2].max(0.0);
+        let sdr = s.render_sun_dynamic_range.max(0.0001);
+        let scene_light_strength = 2.0 * (0.75 + sdr * dp);
+
+        Some(SkyRegime {
+            classic_mode: classic_mode as u32,
+            sky_hdr_scale,
+            sky_sunlight_scale,
+            sky_ambient_scale,
+            scene_light_strength,
+            tonemap_mix,
+            legacy_gamma,
+            exposure: s.render_exposure.clamp(0.5, 4.0), // pipeline.cpp:8164
+            tonemap_type: s.render_tonemap_type,
+            gamma: g,
+        })
+    }
+
+    /// Phase A.2: pack the fullscreen-sky UBO (52 floats) consumed by sky_fullscreen.frag,
+    /// derived ENTIRELY from the typed camera + EEP sky (parallel-read; no tap, no dome). Layout:
+    /// `inv_view_proj`(16) + a0..a8(36). The projection is rebuilt from fov/aspect/near/far --
+    /// only the frustum xy matters for the sky ray, so depth convention (reverse-Z etc.) is
+    /// irrelevant. `sky_hdr_scale` comes from the derived regime. `None` until camera + sky are fed.
+    pub fn fullscreen_sky_ubo(&self) -> Option<[f32; 52]> {
+        let cam = self.camera.as_ref()?;
+        let sky = self.eep_sky.as_ref()?;
+        let view = glam::Mat4::from_cols_array(&cam.view);
+        let proj = glam::Mat4::perspective_rh(cam.fov_y, cam.aspect, cam.near, cam.far);
+        let inv_vp = (proj * view).inverse();
+        let sky_hdr_scale = self.sky_regime().map(|r| r.sky_hdr_scale).unwrap_or(1.0);
+
+        let mut u = [0.0f32; 52];
+        u[0..16].copy_from_slice(&inv_vp.to_cols_array());
+        // a0: camPosLocal.xyz, max_y
+        u[16] = cam.origin[0]; u[17] = cam.origin[1]; u[18] = cam.origin[2]; u[19] = sky.max_y;
+        // a1: lightnorm.xyz, sun_up_factor
+        u[20] = sky.lightnorm[0]; u[21] = sky.lightnorm[1]; u[22] = sky.lightnorm[2]; u[23] = sky.sun_up_factor;
+        // a2: sunlight_color.xyz, density_multiplier
+        u[24] = sky.sun_color[0]; u[25] = sky.sun_color[1]; u[26] = sky.sun_color[2]; u[27] = sky.density_multiplier;
+        // a3: moonlight_color.xyz, sun_moon_glow_factor
+        u[28] = sky.moon_color[0]; u[29] = sky.moon_color[1]; u[30] = sky.moon_color[2]; u[31] = sky.sun_moon_glow_factor;
+        // a4: ambient_color.xyz, haze_density
+        u[32] = sky.ambient[0]; u[33] = sky.ambient[1]; u[34] = sky.ambient[2]; u[35] = sky.haze_density;
+        // a5: blue_horizon.xyz, haze_horizon
+        u[36] = sky.blue_horizon[0]; u[37] = sky.blue_horizon[1]; u[38] = sky.blue_horizon[2]; u[39] = sky.haze_horizon;
+        // a6: blue_density.xyz, cloud_shadow
+        u[40] = sky.blue_density[0]; u[41] = sky.blue_density[1]; u[42] = sky.blue_density[2]; u[43] = sky.cloud_shadow;
+        // a7: glow.xyz, _
+        u[44] = sky.glow[0]; u[45] = sky.glow[1]; u[46] = sky.glow[2]; u[47] = 0.0;
+        // a8: sky_hdr_scale, _, viewport_w, viewport_h
+        u[48] = sky_hdr_scale; u[49] = 0.0; u[50] = cam.viewport_w; u[51] = cam.viewport_h;
+        Some(u)
+    }
+
     /// Whether this typed frame carries GEOMETRY to render. P0/P1 contribute none, so the tap
     /// still renders the whole scene. A subsystem phase flips this once it feeds typed draws.
     pub fn is_empty(&self) -> bool {
@@ -391,6 +523,79 @@ mod tests {
         assert!(s.eep_sky.is_none() && s.water.is_none() && s.lights.is_empty(), "per-frame data cleared");
         assert_eq!(s.settings.render_shadow_detail, 2, "settings survive the frame reset");
         assert!(s.is_empty(), "still no geometry -> tap renders the scene");
+    }
+
+    /// A settings snapshot with the real stock defaults for the regime inputs (Default is all
+    /// zero, which would misderive; the viewer ships real values, and the oracle sets them).
+    fn regime_settings() -> SettingsSnapshot {
+        SettingsSnapshot {
+            render_sky_auto_adjust_legacy: 0,
+            render_sky_sunlight_scale: 1.5,
+            render_hdr_sky_sunlight_scale: 1.5,
+            render_sky_ambient_scale: 1.5,
+            render_sky_auto_adjust_ambient_scale: 0.75,
+            render_sky_auto_adjust_hdr_scale: 2.0,
+            render_sun_dynamic_range: 1.0,
+            render_tonemap_mix: 0.7,
+            render_tonemap_type: 1,
+            render_exposure: 1.0,
+            render_hdr_enabled: 0,
+            render_reflection_probes_enabled: 1,
+            ..Default::default()
+        }
+    }
+
+    /// S3 REGIME ORACLE: the classic-vs-advanced derivation matches stock across the three
+    /// branches. Mis-routing legacy -> advanced is the proven "blew to white / wrong sun" cause,
+    /// so this pins the bundle as one atomic unit.
+    #[test]
+    fn sky_regime_matches_stock_branches() {
+        // (1) Legacy classic sky (no probe-ambiance key), auto-adjust-legacy OFF (default).
+        let mut s = SceneFrame::new();
+        s.set_settings(&regime_settings());
+        s.set_sky(&EepSkyBlock {
+            gamma: 1.0, sun_dir: [0.0, 0.0, 0.7], can_auto_adjust: 1, reflection_probe_ambiance: 0.0,
+            ..Default::default()
+        });
+        let r = s.sky_regime().expect("sky present");
+        assert_eq!(r.classic_mode, 1, "legacy sky renders classic by default");
+        assert_eq!(r.sky_hdr_scale, 1.0, "classic sky_hdr_scale = 1.0");
+        assert_eq!(r.tonemap_mix, 0.0, "classic bypasses the tonemap curve");
+        assert_eq!(r.legacy_gamma, 1, "classic gets the legacyGamma soft-clip");
+        assert_eq!(r.sky_sunlight_scale, 1.5);
+        assert_eq!(r.sky_ambient_scale, 1.5);
+        assert!((r.scene_light_strength - 2.0 * (0.75 + 1.0 * 0.7)).abs() < 1e-6);
+
+        // (2) Advanced PBR sky: carries reflection_probe_ambiance (key present -> can_auto=0).
+        let mut s = SceneFrame::new();
+        s.set_settings(&regime_settings());
+        s.set_sky(&EepSkyBlock {
+            gamma: 2.2, sun_dir: [0.0, 0.0, 0.5], can_auto_adjust: 0, reflection_probe_ambiance: 0.5,
+            ..Default::default()
+        });
+        let r = s.sky_regime().unwrap();
+        assert_eq!(r.classic_mode, 0, "probe-ambiance sky is not classic");
+        assert!((r.sky_hdr_scale - (2.2_f32).sqrt() * 2.0).abs() < 1e-6, "advanced sky_hdr_scale = sqrt(gamma)*2");
+        assert_eq!(r.tonemap_mix, 0.7, "advanced uses the full tonemap curve");
+        assert_eq!(r.legacy_gamma, 0, "advanced has no legacyGamma");
+
+        // (3) Auto-adjust-legacy: legacy sky (can_auto=1) but RenderSkyAutoAdjustLegacy ON.
+        let mut s = SceneFrame::new();
+        let mut set = regime_settings();
+        set.render_sky_auto_adjust_legacy = 1;
+        s.set_settings(&set);
+        s.set_sky(&EepSkyBlock {
+            gamma: 1.0, sun_dir: [0.0, 0.0, 0.9], can_auto_adjust: 1, reflection_probe_ambiance: 0.0,
+            ..Default::default()
+        });
+        let r = s.sky_regime().unwrap();
+        assert_eq!(r.classic_mode, 0, "auto-adjust disables classic");
+        assert_eq!(r.sky_hdr_scale, 2.0, "auto-adjust sky_hdr_scale = 2.0");
+        assert_eq!(r.legacy_gamma, 0, "auto-adjust injects probe ambiance -> no legacyGamma");
+        assert_eq!(r.tonemap_mix, 0.7, "auto-adjust uses the tonemap curve");
+
+        // No sky -> no regime.
+        assert!(SceneFrame::new().sky_regime().is_none());
     }
 
     #[test]

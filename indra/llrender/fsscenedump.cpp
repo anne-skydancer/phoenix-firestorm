@@ -930,6 +930,7 @@ void setSceneSky(const FSSkyParams& p)
     for (int i = 0; i < 3; ++i)
     {
         sb.sun_dir[i]      = p.sun_dir[i];
+        sb.moon_dir[i]     = p.moon_dir[i];
         sb.sun_color[i]    = p.sun_color[i];
         sb.moon_color[i]   = p.moon_color[i];
         sb.ambient[i]      = p.ambient[i];

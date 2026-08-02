@@ -87,7 +87,8 @@ namespace FSSceneDump
     // LLSettingsSky and passes it once per frame.
     struct FSSkyParams
     {
-        float sun_dir[3];       // (fed lightnorm today; drives scene_light_strength)
+        float sun_dir[3];       // REAL world-space sun direction (LLEnvironment::getSunDirection) -- sun disc + scene_light_strength
+        float moon_dir[3];      // REAL world-space moon direction (LLEnvironment::getMoonDirection) -- moon disc
         float sun_color[3];
         float moon_color[3];
         float ambient[3];

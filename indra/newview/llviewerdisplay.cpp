@@ -528,6 +528,8 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
             // is a pure function of these + the camera. Mis-routing legacy->advanced (canAutoAdjust /
             // raw probe ambiance) is the proven blowout, so those ride along too.
             LLVector4 lightnorm    = LLEnvironment::instance().getClampedLightNorm();
+            LLVector3 sundir       = LLEnvironment::instance().getSunDirection();  // real world-space
+            LLVector3 moondir      = LLEnvironment::instance().getMoonDirection(); // real world-space
             LLColor3 suncol        = psky->getSunlightColor();
             LLColor3 mooncol       = psky->getMoonlightColor();
             LLColor3 ambient       = psky->getAmbientColor();
@@ -538,7 +540,8 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
             memset(&p, 0, sizeof(p));
             for (int i = 0; i < 3; ++i)
             {
-                p.sun_dir[i]      = lightnorm.mV[i]; // drives scene_light_strength (S4)
+                p.sun_dir[i]      = sundir.mV[i];   // real world-space sun dir (sun disc + scene_light_strength)
+                p.moon_dir[i]     = moondir.mV[i];  // real world-space moon dir (moon disc)
                 p.sun_color[i]    = suncol.mV[i];
                 p.moon_color[i]   = mooncol.mV[i];
                 p.ambient[i]      = ambient.mV[i];

@@ -88,11 +88,14 @@ vec3 legacyGamma(vec3 color) {
 // toneMap() tonemapUtilF.glsl:121-151 -- mixes the EXPOSED-linear input with the tonemapped
 // result (tonemap_mix=0 => exposure+clamp only, the legacy path).
 vec3 toneMap(vec3 color) {
-    // Metered auto-exposure: normalize the HDR scene toward a mid-gray key from the measured
-    // average luminance, so HDR radiance (sky ~1-43) doesn't hard-clamp to white. post.exp_scale
-    // is a manual multiplier (tuning / FS_ENGINE_EXPOSURE); post.exposure is the RenderExposure clamp.
+    // Exposure. FAITHFUL to stock: in CLASSIC mode (tonemap_mix==0, canAutoAdjust && !legacy)
+    // stock's dynamic exposure is DISABLED -- getHDROffset=1.0, HDRMin=HDRMax=0 -> a CONSTANT
+    // exposure of 1.0. My earlier mid-gray auto-exposure was wrong on two counts: it normalized
+    // (flattening the daycycle day<->night) AND stock doesn't meter at all here. So classic uses a
+    // constant; only the advanced path meters (bounded, later). post.exp_scale = manual multiplier
+    // (FS_ENGINE_EXPOSURE tuning); post.exposure = RenderExposure clamp.
     float avg_lum = max(texelFetch(exp_lum, ivec2(0, 0), 0).r, 1e-4);
-    float auto_exp = clamp(0.18 / avg_lum, 0.001, 8.0);
+    float auto_exp = (post.tonemap_mix <= 0.0) ? 1.0 : clamp(0.18 / avg_lum, 0.001, 8.0);
     float final_exposure = post.exposure * post.exp_scale * auto_exp;
     vec3 exposed = color * final_exposure;
     vec3 tonemapped;

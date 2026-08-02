@@ -568,9 +568,10 @@ pub extern "C" fn fsr_end_frame() -> i32 {
             let sky = e.scene.has_sky();
             let ubo_opt = e.scene.fullscreen_sky_ubo();
             let ubo = ubo_opt.is_some();
-            let (sun, amb, hdr, maxy) = match ubo_opt {
-                Some(u) => ((u[24], u[25], u[26]), (u[32], u[33], u[34]), u[48], u[19]),
-                None => ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0, 0.0),
+            let (sun, amb, hdr, maxy, bh, sun_alt, sun_up) = match ubo_opt {
+                // sun_color, ambient, sky_hdr_scale, max_y, blue_horizon, sun_dir.z (altitude, <0=below horizon), sun_up_factor
+                Some(u) => ((u[24], u[25], u[26]), (u[32], u[33], u[34]), u[48], u[19], (u[36], u[37], u[38]), u[54], u[23]),
+                None => ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0, 0.0, (0.0, 0.0, 0.0), 0.0, 0.0),
             };
             let fs = e.live.sky_fs_enabled();
             let ms = e.live.msaa_samples();
@@ -578,8 +579,8 @@ pub extern "C" fn fsr_end_frame() -> i32 {
             let c = e.clear_color;
             if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
                 use std::io::Write;
-                let _ = writeln!(f, "SKYDIAG cam={} sky={} ubo={} sky_fs={} msaa={} clear=({:.2},{:.2},{:.2}) exp={:.3} exp_scale={:.3} mix={:.2} sun=({:.2},{:.2},{:.2}) amb=({:.2},{:.2},{:.2}) hdr={:.2} maxy={:.1}",
-                    cam, sky, ubo, fs, ms, c.r, c.g, c.b, exp, exps, mix, sun.0, sun.1, sun.2, amb.0, amb.1, amb.2, hdr, maxy);
+                let _ = writeln!(f, "SKYDIAG cam={} sky={} ubo={} sky_fs={} msaa={} clear=({:.2},{:.2},{:.2}) exp={:.3} exp_scale={:.3} mix={:.2} sun=({:.2},{:.2},{:.2}) amb=({:.2},{:.2},{:.2}) bh=({:.2},{:.2},{:.2}) sun_alt={:.3} sun_up={:.1} hdr={:.2} maxy={:.1}",
+                    cam, sky, ubo, fs, ms, c.r, c.g, c.b, exp, exps, mix, sun.0, sun.1, sun.2, amb.0, amb.1, amb.2, bh.0, bh.1, bh.2, sun_alt, sun_up, hdr, maxy);
             }
         }
     }
@@ -672,6 +673,14 @@ pub extern "C" fn fsr_end_frame() -> i32 {
                     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
                         use std::io::Write;
                         let _ = writeln!(f, "{} frame {} row_avg={:.3} meas_lum={:.5} sky_fs={} exp={:.2} exp_scale={:.2} mix={:.2}", tag, e.frames, avg, meas, fs, exp, exps, mix);
+                    }
+                    // On a flash, dump the large UI draws to ID the full-screen leaker (LLRender::flush).
+                    if avg > 0.90 {
+                        let dump = live.dump_ui_large();
+                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
+                            use std::io::Write;
+                            let _ = write!(f, "FLASH-UI frame {} large draws:\n{}", e.frames, dump);
+                        }
                     }
                     // Auto-save the FIRST flash frame (full grab) to a separate file so we can SEE
                     // exactly what is whitening the screen -- image beats inference.

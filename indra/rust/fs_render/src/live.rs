@@ -244,8 +244,8 @@ pub struct LiveRenderer {
     sky_fs_bgl: wgpu::BindGroupLayout,
     sky_fs_pipeline: Option<wgpu::RenderPipeline>,
     sky_fs_bind: Option<wgpu::BindGroup>,
-    sky_fs_ubo: wgpu::Buffer,        // inv_view_proj(16) + a0..a8(36) = 52 floats (std140, 208B)
-    sky_fs_data: [f32; 52],
+    sky_fs_ubo: wgpu::Buffer,        // inv_view_proj(16) + a0..a10(44) = 60 floats (std140, 240B)
+    sky_fs_data: [f32; 60],
     sky_fs_enabled: bool,
     // Phase A.3: native-VK UI. Honest feed from LLRender::flush (its own matrices + verts, no
     // glGet). One ortho pass over the tonemapped swapchain, painter's order, alpha-blended.
@@ -568,7 +568,7 @@ impl LiveRenderer {
         });
         let sky_fs_ubo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sky-fs-ubo"),
-            size: 208, // mat4(64) + 9 x vec4(144)
+            size: 240, // mat4(64) + 11 x vec4(176)
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -656,7 +656,7 @@ impl LiveRenderer {
             sky_fs_pipeline: None,
             sky_fs_bind: None,
             sky_fs_ubo,
-            sky_fs_data: [0.0; 52],
+            sky_fs_data: [0.0; 60],
             sky_fs_enabled: false,
             ui_bgl: None,
             ui_tri_pipeline: None,
@@ -1981,6 +1981,40 @@ impl LiveRenderer {
         let vertex_count = (self.ui_verts.len() / STRIDE) as u32 - first_vertex;
         if vertex_count == 0 { return; }
         self.ui_draws.push(UiDraw { mvp: *mvp, tex_id, first_vertex, vertex_count, line });
+    }
+
+    /// Flash diagnostic: dump the LARGE UI draws (screen coverage > 0.3) captured this frame, to
+    /// identify a full-screen draw leaking into the overlay via the LLRender::flush hook (the white
+    /// flash). Reports each draw's texture id, vertex count, NDC bbox, coverage, and average color.
+    pub fn dump_ui_large(&self) -> String {
+        const STRIDE: usize = 24;
+        let mut out = String::new();
+        for (i, d) in self.ui_draws.iter().enumerate() {
+            let mvp = glam::Mat4::from_cols_array(&d.mvp);
+            let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            let (mut cr, mut cg, mut cb, mut ca) = (0u32, 0u32, 0u32, 0u32);
+            let base = d.first_vertex as usize * STRIDE;
+            let n = d.vertex_count as usize;
+            for v in 0..n {
+                let o = base + v * STRIDE;
+                if o + 24 > self.ui_verts.len() { break; }
+                let px = f32::from_le_bytes([self.ui_verts[o], self.ui_verts[o + 1], self.ui_verts[o + 2], self.ui_verts[o + 3]]);
+                let py = f32::from_le_bytes([self.ui_verts[o + 4], self.ui_verts[o + 5], self.ui_verts[o + 6], self.ui_verts[o + 7]]);
+                let pz = f32::from_le_bytes([self.ui_verts[o + 8], self.ui_verts[o + 9], self.ui_verts[o + 10], self.ui_verts[o + 11]]);
+                let clip = mvp * glam::Vec4::new(px, py, pz, 1.0);
+                let (nx, ny) = if clip.w.abs() > 1e-6 { (clip.x / clip.w, clip.y / clip.w) } else { (clip.x, clip.y) };
+                minx = minx.min(nx); maxx = maxx.max(nx); miny = miny.min(ny); maxy = maxy.max(ny);
+                cr += self.ui_verts[o + 20] as u32; cg += self.ui_verts[o + 21] as u32; cb += self.ui_verts[o + 22] as u32; ca += self.ui_verts[o + 23] as u32;
+            }
+            let cov = ((maxx - minx).max(0.0) * (maxy - miny).max(0.0)) / 4.0;
+            if cov > 0.3 && n > 0 {
+                let nn = n as u32;
+                out.push_str(&format!("  [{}] tex={} nv={} ndc=({:.2},{:.2})..({:.2},{:.2}) cov={:.2} avgcol=({},{},{},{})\n",
+                    i, d.tex_id, n, minx, miny, maxx, maxy, cov, cr / nn, cg / nn, cb / nn, ca / nn));
+            }
+        }
+        if out.is_empty() { out.push_str("  (no large UI draws)\n"); }
+        out
     }
 
     /// Phase A.3: lazily build the UI bind-group layout, sampler, and the two pipelines

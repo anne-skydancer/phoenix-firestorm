@@ -438,7 +438,7 @@ impl SceneFrame {
     /// `inv_view_proj`(16) + a0..a8(36). The projection is rebuilt from fov/aspect/near/far --
     /// only the frustum xy matters for the sky ray, so depth convention (reverse-Z etc.) is
     /// irrelevant. `sky_hdr_scale` comes from the derived regime. `None` until camera + sky are fed.
-    pub fn fullscreen_sky_ubo(&self) -> Option<[f32; 52]> {
+    pub fn fullscreen_sky_ubo(&self) -> Option<[f32; 60]> {
         let cam = self.camera.as_ref()?;
         let sky = self.eep_sky.as_ref()?;
         let view = glam::Mat4::from_cols_array(&cam.view);
@@ -446,7 +446,7 @@ impl SceneFrame {
         let inv_vp = (proj * view).inverse();
         let sky_hdr_scale = self.sky_regime().map(|r| r.sky_hdr_scale).unwrap_or(1.0);
 
-        let mut u = [0.0f32; 52];
+        let mut u = [0.0f32; 60];
         u[0..16].copy_from_slice(&inv_vp.to_cols_array());
         // a0: camPosLocal.xyz, max_y
         u[16] = cam.origin[0]; u[17] = cam.origin[1]; u[18] = cam.origin[2]; u[19] = sky.max_y;
@@ -466,6 +466,9 @@ impl SceneFrame {
         u[44] = sky.glow[0]; u[45] = sky.glow[1]; u[46] = sky.glow[2]; u[47] = 0.0;
         // a8: sky_hdr_scale, _, viewport_w, viewport_h
         u[48] = sky_hdr_scale; u[49] = 0.0; u[50] = cam.viewport_w; u[51] = cam.viewport_h;
+        // a9: sun_dir.xyz, _ ; a10: moon_dir.xyz, _ (REAL world-space, for the sun/moon discs)
+        u[52] = sky.sun_dir[0]; u[53] = sky.sun_dir[1]; u[54] = sky.sun_dir[2]; u[55] = 0.0;
+        u[56] = sky.moon_dir[0]; u[57] = sky.moon_dir[1]; u[58] = sky.moon_dir[2]; u[59] = 0.0;
         Some(u)
     }
 

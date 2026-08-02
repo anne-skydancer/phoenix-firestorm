@@ -19,6 +19,8 @@ layout(set = 0, binding = 0) uniform U {
     vec4 a6;  // blue_density.xyz, cloud_shadow
     vec4 a7;  // glow.xyz, _
     vec4 a8;  // sky_hdr_scale, _, viewport_w, viewport_h
+    vec4 a9;  // sun_dir.xyz (REAL world-space), _
+    vec4 a10; // moon_dir.xyz (REAL world-space), _
 } u;
 layout(location = 0) out vec4 frag;
 
@@ -101,6 +103,25 @@ void main() {
 
     // skyF.glsl + softenLightF SKIP_ATMOS branch (sky.frag): haze*2 clamp[0,5] -> linearize
     // -> * sky_hdr_scale. LINEAR HDR out; the S1 global tonemap bounds it.
+    // ==== sun + moon discs (REAL world-space dirs a9/a10) -- the bodies, on top of the haze glow.
+    // Bright additive where the view ray aligns with the body direction; faded below the horizon.
+    vec3 sun_dir_w  = u.a9.xyz;
+    vec3 moon_dir_w = u.a10.xyz;
+    if (dot(sun_dir_w, sun_dir_w) > 0.25) {
+        vec3 sd = normalize(sun_dir_w);
+        float sc = dot(dir, sd);
+        float disc  = smoothstep(0.99955, 0.99975, sc);   // ~1.7 deg radius, soft limb
+        float above = smoothstep(-0.06, 0.02, sd.z);      // fade out below the horizon
+        color += sunlight_color * (disc * above * 8.0);   // bright sun body (tonemap clamps to white)
+    }
+    if (dot(moon_dir_w, moon_dir_w) > 0.25) {
+        vec3 md = normalize(moon_dir_w);
+        float mc = dot(dir, md);
+        float disc  = smoothstep(0.9993, 0.99955, mc);
+        float above = smoothstep(-0.06, 0.02, md.z);
+        color += moonlight_color * (disc * above * 1.5);  // dimmer moon body
+    }
+
     vec3 c = min(color * 2.0, vec3(5.0));
     c = srgb_to_linear(c);
     c *= sky_hdr_scale;

@@ -18,6 +18,7 @@
 #include "stdtypes.h"
 
 class LLVertexBuffer;
+class LLVertexBufferData;
 
 namespace FSSceneDump
 {
@@ -36,6 +37,12 @@ namespace FSSceneDump
     bool uiActive();
     void uiBegin();
     void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8* verts);
+    // <FS:VkBridge> UI-complete: the cached-font path (LLFontVertexBuffer) replays glyph geometry
+    // via LLVertexBufferData::draw() -> LLVertexBuffer::drawArrays, which NEVER calls LLRender::flush
+    // -- so the flush hook structurally cannot see cached text (button labels, editors, list rows,
+    // read-only text). This captures that replay from the retained CPU vertex buffer + the CURRENT
+    // gGL matrix (the UI ortho renderBuffers set) + the bound atlas id. Called from renderBuffers.
+    void uiSubmitBufferData(const LLVertexBufferData& d);
     void endFrame();
     void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba);
     void bufferDirty(const void* ptr);

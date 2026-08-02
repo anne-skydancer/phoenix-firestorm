@@ -249,6 +249,37 @@ void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8*
     if (sFsrUiSubmit) sFsrUiSubmit(mvp16, tex_id, mode, vtx_count, verts);
 }
 
+// <FS:VkBridge> UI-complete: capture a cached-font replay (LLFontVertexBuffer::renderBuffers) that
+// would otherwise bypass LLRender::flush. Reads the retained CPU vertex bytes from the buffer's own
+// LLVertexBuffer (SoA: position=vec4a stride 16, texcoord0=vec2 stride 8, color=rgba stride 4), the
+// CURRENT gGL matrix (the UI ortho renderBuffers just loaded), and the bound atlas id -- ZERO glGet.
+void uiSubmitBufferData(const LLVertexBufferData& d)
+{
+    if (!sFsrUiSubmit || d.mVB.isNull() || d.mCount == 0) return;
+    const LLVertexBuffer* vb = d.mVB.get();
+    const U8* base = vb->getMappedData();
+    if (!base) return;
+    U32 tm = vb->getTypeMask();
+    if (!(tm & LLVertexBuffer::MAP_VERTEX)) return;
+    const U8* pos_base = base + vb->getOffset(LLVertexBuffer::TYPE_VERTEX);
+    const U8* uv_base  = (tm & LLVertexBuffer::MAP_TEXCOORD0) ? base + vb->getOffset(LLVertexBuffer::TYPE_TEXCOORD0) : nullptr;
+    const U8* col_base = (tm & LLVertexBuffer::MAP_COLOR)     ? base + vb->getOffset(LLVertexBuffer::TYPE_COLOR)     : nullptr;
+    static std::vector<U8> buf;
+    buf.resize((size_t)d.mCount * 24);
+    U8* p = buf.data();
+    for (U32 i = 0; i < d.mCount; ++i)
+    {
+        memcpy(p, pos_base + (size_t)i * 16, 12);              // LLVector4a position xyz (drop w)
+        if (uv_base) { memcpy(p + 12, uv_base + (size_t)i * 8, 8); }
+        else { F32 z2[2] = { 0.f, 0.f }; memcpy(p + 12, z2, 8); }
+        if (col_base) { memcpy(p + 20, col_base + (size_t)i * 4, 4); }
+        else { p[20] = p[21] = p[22] = p[23] = 255; }
+        p += 24;
+    }
+    glm::mat4 mvp = gGL.getProjectionMatrix() * gGL.getModelviewMatrix();
+    sFsrUiSubmit(glm::value_ptr(mvp), d.mTexName, (U32)d.mMode, d.mCount, buf.data());
+}
+
 void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba)
 {
     if (sLive && sFsrTexUpload && rgba && w && h)

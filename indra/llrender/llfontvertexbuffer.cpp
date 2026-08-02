@@ -29,6 +29,7 @@
 #include "llfontvertexbuffer.h"
 
 #include "llvertexbuffer.h"
+#include "fsscenedump.h" // <FS:VkBridge> UI-complete: capture the cached-font replay (flush-bypassing)
 
 
 bool LLFontVertexBuffer::sEnableBufferCollection = true;
@@ -232,6 +233,10 @@ void LLFontVertexBuffer::renderBuffers()
     // anything, so we can skip that until it proves to cause issues.
     for (LLVertexBufferData& buffer : mBufferList)
     {
+        // <FS:VkBridge> UI-complete: this cached replay bypasses LLRender::flush, so the native-VK
+        // UI feed can't see it via the flush hook. Capture it here (from the buffer's retained CPU
+        // verts + the current gGL matrix) so cached text reaches the Vulkan overlay.
+        if (FSSceneDump::uiActive()) FSSceneDump::uiSubmitBufferData(buffer);
         buffer.draw();
     }
     gGL.popUIMatrix();

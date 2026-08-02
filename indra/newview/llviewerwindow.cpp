@@ -2982,7 +2982,11 @@ void LLViewerWindow::draw()
 
     //S32 screen_x, screen_y;
 
-    if (!LLPipeline::RenderUIBuffer)
+    // <FS:VkBridge> UI-complete: in engine mode force a FULL-window dirty rect every UI draw, so
+    // LLView::drawChildren never culls a static widget. The native-VK overlay clears + rebuilds
+    // each frame; a culled widget would produce no draws to capture and would vanish. (The GL path
+    // relies on the mUIScreen buffer to retain non-dirty widgets; the engine path redraws all.)
+    if (!LLPipeline::RenderUIBuffer || FSSceneDump::liveActive())
     {
         LLView::sDirtyRect = getWindowRectScaled();
     }

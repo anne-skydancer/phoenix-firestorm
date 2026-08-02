@@ -804,6 +804,11 @@ impl LiveRenderer {
         self.msaa_color = None;
     }
 
+    // P1 diag getters (temporary): armed sky pass, effective sample count, tonemap exposure/mix.
+    pub fn sky_fs_enabled(&self) -> bool { self.sky_fs_enabled }
+    pub fn msaa_samples(&self) -> u32 { self.msaa }
+    pub fn post_diag(&self) -> (f32, f32, f32) { (self.post_exposure, self.post_exp_scale, self.post_tonemap_mix) }
+
     fn ensure_msaa_color(&mut self, device: &wgpu::Device, w: u32, h: u32) {
         if self.msaa <= 1 {
             self.msaa_color = None;
@@ -1629,7 +1634,14 @@ impl LiveRenderer {
     /// D2) until auto-exposure (S6). `classic_mode`/scales/`sky_hdr_scale` drive the resolve (S4);
     /// the sky pass's own `sky_hdr_scale` still arrives via the tap aux (already the viewer value).
     pub fn apply_sky_regime(&mut self, r: &crate::scene::SkyRegime) {
-        self.set_post_params(r.exposure, 1.0, r.tonemap_mix, r.gamma, r.tonemap_type as i32, r.legacy_gamma as i32);
+        // INTERIM fixed exposure until the metered auto-exposure pass lands (measures scene_hdr
+        // avg luminance -> exp_scale, mirroring stock exposureF/luminanceF). The HDR sky (~1-43)
+        // must be normalized before the tonemap clamp or it hard-clamps to white; 0.04 gives a
+        // reasonable daytime level. FS_ENGINE_EXPOSURE=<f32> overrides for tuning. See
+        // [[fsvulkan-sky-white-bug]]: the viewport fix (NaN ray) is the real bug this pairs with.
+        let exp_scale = std::env::var("FS_ENGINE_EXPOSURE").ok()
+            .and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.04);
+        self.set_post_params(r.exposure, exp_scale, r.tonemap_mix, r.gamma, r.tonemap_type as i32, r.legacy_gamma as i32);
     }
 
     /// Phase A.1: the fullscreen sky UBO, packed by the caller from the typed camera +

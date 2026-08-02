@@ -469,6 +469,10 @@ impl SceneFrame {
         Some(u)
     }
 
+    /// P1 diag: which typed feed has arrived this frame (separates "no camera" from "no sky").
+    pub fn has_camera(&self) -> bool { self.camera.is_some() }
+    pub fn has_sky(&self) -> bool { self.eep_sky.is_some() }
+
     /// Whether this typed frame carries GEOMETRY to render. P0/P1 contribute none, so the tap
     /// still renders the whole scene. A subsystem phase flips this once it feeds typed draws.
     pub fn is_empty(&self) -> bool {

@@ -548,8 +548,40 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     }
     // Phase A.2: the engine derives the fullscreen sky UBO from the typed camera + EEP sky it was
     // fed, and renders the sky itself (parallel-read) -- no tapped dome draw needed.
-    if let Some(sky_ubo) = e.scene.fullscreen_sky_ubo() {
+    if let Some(mut sky_ubo) = e.scene.fullscreen_sky_ubo() {
+        // The viewer's setSceneCamera never populates viewport_w/h (memset 0), which made the
+        // fullscreen sky's NDC divide by zero -> NaN view-ray -> a UNIFORM constant sky. The
+        // authoritative viewport for this fullscreen pass IS the engine's render target (the
+        // scene_hdr the triangle covers = swapchain size), so supply it here.
+        sky_ubo[50] = e.config.width as f32;
+        sky_ubo[51] = e.config.height as f32;
         e.live.set_fullscreen_sky(&sky_ubo);
+    }
+    // P1 DIAG (temporary): pinpoint the white sky WITHOUT guessing. cam/sky = typed feed reached;
+    // ubo = derived; sky_fs = live pass armed; msaa = resolve path (confirmed forced 1); clear =
+    // viewer clear (what shows when sky_fs=false); exp/mix = tonemap; sun/amb/hdr/maxy = sanity of
+    // the derived params (huge/NaN -> blown-out white even when armed).
+    {
+        static D: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        if D.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 120 == 0 {
+            let cam = e.scene.has_camera();
+            let sky = e.scene.has_sky();
+            let ubo_opt = e.scene.fullscreen_sky_ubo();
+            let ubo = ubo_opt.is_some();
+            let (sun, amb, hdr, maxy) = match ubo_opt {
+                Some(u) => ((u[24], u[25], u[26]), (u[32], u[33], u[34]), u[48], u[19]),
+                None => ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0, 0.0),
+            };
+            let fs = e.live.sky_fs_enabled();
+            let ms = e.live.msaa_samples();
+            let (exp, exps, mix) = e.live.post_diag();
+            let c = e.clear_color;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("C:/fs/fsr_perf.log") {
+                use std::io::Write;
+                let _ = writeln!(f, "SKYDIAG cam={} sky={} ubo={} sky_fs={} msaa={} clear=({:.2},{:.2},{:.2}) exp={:.3} exp_scale={:.3} mix={:.2} sun=({:.2},{:.2},{:.2}) amb=({:.2},{:.2},{:.2}) hdr={:.2} maxy={:.1}",
+                    cam, sky, ubo, fs, ms, c.r, c.g, c.b, exp, exps, mix, sun.0, sun.1, sun.2, amb.0, amb.1, amb.2, hdr, maxy);
+            }
+        }
     }
     // P3 (resolve consumption) still deferred to S4: the opaque lighting resolve is a stub;
     // reconstruct-from-depth + calcAtmosphericVars land there. The sky + tonemap are live now.

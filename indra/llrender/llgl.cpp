@@ -1170,6 +1170,15 @@ bool LLGLManager::initGLFromVulkan()
     mHasRequirements = true;
     mInited = true;
 
+    // Resolve the GL function pointers (glGenVertexArrays et al.) via wglGetProcAddress, and set
+    // the initial GL states. In the 0a-0d "stub-net" phase the viewer's not-yet-ported code still
+    // issues gl* (LLRender::init, LLVertexBuffer, fonts, LLImageGL) which must reach the null-GL
+    // stub -- so the pointers must be resolved. The stub provides them context-free (no
+    // wglMakeCurrent needed). LLRender::init hard-fails on a null glGenVertexArrays without this.
+    // (Removed at 0e, when the stub is retired and that code becomes CPU-only / GL-free.)
+    initExtensions();
+    initGLStates();
+
     LL_INFOS("RenderInit") << "Path C: LLGLManager populated from the real Vulkan adapter '"
                            << mGLRenderer << "' (" << mGLVendorShort << ", " << mVRAM
                            << "MB budget, GLSL " << mGLSLVersionMajor << "." << mGLSLVersionMinor

@@ -1367,35 +1367,12 @@ bool LLWindowWin32::switchContext(bool fullscreen, const LLCoordScreen& size, bo
         LL_WARNS("Window") << "Window creation failed, code: " << GetLastError() << LL_ENDL;
     }
 
-    // <FS:VkBridge> Path C 0b: native-Vulkan boot with NO GL context. The window exists; hand its
-    // HWND straight to fs_render (which owns a real VkDevice + surface on it) and skip the ENTIRE
-    // WGL/pixel-format/GL-context block below plus the GL initGL probe. Capabilities come from the
-    // real adapter (initGL -> initGLFromVulkan, 0a) with no gl* call. The null-GL stub remains
-    // loaded only as a no-op net for any stray gl* until it is retired in 0e. Paths A/B fall
-    // through to the normal GL block.
-    {
-        const char* fs_engine = getenv("FS_ENGINE_MODE");
-        if (fs_engine && fs_engine[0] == '1')
-        {
-            RECT rect, client_rect;
-            if (GetWindowRect(mWindowHandle, &rect) && GetClientRect(mWindowHandle, &client_rect))
-            {
-                mRect = rect;
-                mClientRect = client_rect;
-            }
-            gGLManager.initGL();   // 0a: fills caps from the real VkPhysicalDevice, issues no gl*
-            fsrEnsureInit();       // hand the HWND to fs_render (VK surface + device)
-            SetWindowLongPtr(mWindowHandle, GWLP_USERDATA, (LONG_PTR)this);
-            DragAcceptFiles(mWindowHandle, TRUE);
-            mDragDrop->init(mWindowHandle);
-            SetTimer(mWindowHandle, 0, 1000 / 30, NULL); // 30 fps joystick timer
-            mPostQuit = true;
-            mWindowThread->post([=]() { mWindowThread->glReady(); });
-            LL_INFOS("RenderInit") << "Path C: native-Vulkan window ready -- NO GL context created."
-                                   << LL_ENDL;
-            return true;
-        }
-    }
+    // <FS:VkBridge> Path C: the null-GL stub provides a fake GL context here (wglCreateContext ->
+    // stub) so the viewer's un-ported GL init (initExtensions, LLRender::init) runs as the mattress
+    // while capabilities come honestly from the real Vulkan device (initGL -> initGLFromVulkan, 0a)
+    // and fs_render renders in native Vulkan on the same HWND. "No GL context" is retired together
+    // with the stub itself at 0e, once the GL init path is bypassed -- a no-context boot while the
+    // stub is still loaded would not remove the crutch anyway.
 
     //-----------------------------------------------------------------------
     // Create GL drawing context

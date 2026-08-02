@@ -28,6 +28,14 @@ namespace FSSceneDump
     bool active();
     // <FS:VkBridge> P3c live bridge
     bool liveActive();
+    // <FS:VkBridge> A.3 native-VK UI: honest feed from LLRender::flush (its OWN matrices + the
+    // immediate verts; no glGet, no tap). uiActive() gates the flush hook; uiBegin() clears the
+    // engine's per-frame UI list (once per frame); uiSubmit() forwards one flush as a UI draw.
+    // `mvp16` = projection*modelview (column-major); `verts` = vtx_count * {vec3 pos, vec2 uv,
+    // u8x4 color} = 24B each; `mode` = LLRender::eGeomModes.
+    bool uiActive();
+    void uiBegin();
+    void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8* verts);
     void endFrame();
     void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba);
     void bufferDirty(const void* ptr);
@@ -67,14 +75,52 @@ namespace FSSceneDump
     // and calls these once per frame. The engine derives its eye-space sun from view * sun_dir.
     void setSceneCamera(const float origin[3], const float at[3], const float up[3],
                         float near_clip, float far_clip, float fov_y, float aspect);
-    void setSceneSky(const float sun_dir[3], const float sun_color[3], const float ambient[3],
-                     float max_y, float gamma, int can_auto_adjust, float reflection_probe_ambiance,
-                     const float lightnorm[3]);
+    // <FS:VkBridge> A.2: the FULL WindLight sky param set the engine's fullscreen sky consumes.
+    // Plain floats (no LL types) so both llrender and newview can name it; newview fills it from
+    // LLSettingsSky and passes it once per frame.
+    struct FSSkyParams
+    {
+        float sun_dir[3];       // (fed lightnorm today; drives scene_light_strength)
+        float sun_color[3];
+        float moon_color[3];
+        float ambient[3];
+        float blue_horizon[3];
+        float blue_density[3];
+        float glow[3];
+        float lightnorm[3];     // swizzled clamped light norm -- drives the sky integral
+        float max_y;
+        float gamma;
+        float haze_density;
+        float haze_horizon;
+        float density_multiplier;
+        float cloud_shadow;
+        float sun_moon_glow_factor;
+        float sun_up_factor;
+        int   can_auto_adjust;
+        float reflection_probe_ambiance;
+    };
+    void setSceneSky(const FSSkyParams& p);
     // <FS:VkBridge> S3b: the sky-regime settings subset (gSavedSettings the engine derivation reads).
     void setSceneRegime(int auto_adjust_legacy, float sky_sunlight_scale, float hdr_sky_sunlight_scale,
                         float sky_ambient_scale, float auto_adjust_ambient_scale, float auto_adjust_hdr_scale,
                         float sun_dynamic_range, float tonemap_mix, int tonemap_type, float exposure,
                         int hdr_enabled, int reflection_probes_enabled);
+    // <FS:VkBridge> A.2 INVARIANT #1: the REAL Vulkan-adapter capabilities (mirrors fs_render's
+    // FsrGpuInfo exactly). Under native-vulkan the feature manager reads the graphics class from
+    // device_type here -- the real VkPhysicalDevice -- NOT a benchmark over no-op GL. Returns
+    // false if the engine/adapter is unavailable (then the caller keeps its normal path).
+    struct FSGpuInfo
+    {
+        char         renderer[128];
+        char         vendor[64];
+        char         version[64];
+        unsigned int vendor_id;
+        unsigned int device_id;
+        unsigned int device_type;   // 0 other / 1 integrated / 2 discrete / 3 virtual / 4 cpu
+        unsigned int max_texture_2d;
+        unsigned int max_varying_vectors;
+    };
+    bool getEngineGpuInfo(FSGpuInfo& out);
     void suppressPush();
     void suppressPop();
     struct SuppressScope

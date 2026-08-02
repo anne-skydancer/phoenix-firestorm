@@ -164,6 +164,11 @@ static fsr_msaa_t sFsrMsaa = nullptr;
 static U32 sLastMsaa = 0xFFFFFFFF;
 static U32 sPendingMsaa = 1;
 static bool sLive = false;
+// <FS:VkBridge> A.2: native-vulkan is a PARALLEL renderer -- the legacy GL-draw tap is RETIRED
+// (the engine renders from the typed scene: sky now, world/UI in later phases). The frame loop
+// (begin/end/present) + the typed sky/camera feed still run. Set FS_TAP_DRAWS=1 to re-arm the
+// draw tap for debugging/A-B comparison against the parallel path.
+static bool sTapDraws = false;
 static S32 sSuppressDepth = 0; // F2: >0 while an offscreen pass renders
 static U32 sDrawClass = 0;     // F7: current draw class (set by the owning pool)
 static U32 sAuxTex[8] = { 0 };
@@ -186,6 +191,11 @@ static fsr_scene_begin_t sFsrSceneBegin = nullptr;
 static fsr_scene_camera_t sFsrSceneCamera = nullptr;
 static fsr_scene_sky_t sFsrSceneSky = nullptr;
 static fsr_scene_regime_t sFsrSceneRegime = nullptr;
+// <FS:VkBridge> A.3 native-VK UI feed (honest LLRender::flush -> engine, no glGet, no tap)
+typedef int(__cdecl* fsr_ui_begin_t)();
+typedef int(__cdecl* fsr_ui_submit_t)(const float*, U32, U32, U32, const U8*);
+static fsr_ui_begin_t sFsrUiBegin = nullptr;
+static fsr_ui_submit_t sFsrUiSubmit = nullptr;
 static std::unordered_map<U64, U32> sSkinIds;
 static std::unordered_map<U32, U32> sSkinSentFrame;
 static U32 sNextSkinId = 1;
@@ -218,13 +228,26 @@ static void bindLive()
     sFsrSceneCamera = (fsr_scene_camera_t)GetProcAddress(dll, "fsr_scene_set_camera");
     sFsrSceneSky = (fsr_scene_sky_t)GetProcAddress(dll, "fsr_scene_set_sky");
     sFsrSceneRegime = (fsr_scene_regime_t)GetProcAddress(dll, "fsr_scene_set_regime");
+    sFsrUiBegin = (fsr_ui_begin_t)GetProcAddress(dll, "fsr_ui_begin");
+    sFsrUiSubmit = (fsr_ui_submit_t)GetProcAddress(dll, "fsr_ui_submit");
     sLive = (sFsrBegin && sFsrSubmit && sFsrEnd);
+    sTapDraws = (getenv("FS_TAP_DRAWS") != nullptr); // native-vulkan: draw tap retired unless debugging
     LL_INFOS("SceneDump") << "P3c live bridge " << (sLive ? "ARMED" : "FAILED")
                           << " (begin=" << (void*)sFsrBegin << " submit=" << (void*)sFsrSubmit
                           << " end=" << (void*)sFsrEnd << ")" << LL_ENDL;
 }
 
 bool liveActive() { return sLive; }
+
+// <FS:VkBridge> A.3: the native-VK UI feed is active when the engine is live and the legacy draw
+// tap is retired (its normal native-vulkan state). With FS_TAP_DRAWS on (debug), the tap already
+// renders the UI, so the feed stands down to avoid double-drawing.
+bool uiActive() { return sLive && !sTapDraws && sFsrUiSubmit != nullptr; }
+void uiBegin() { if (sLive && sFsrUiBegin) sFsrUiBegin(); }
+void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8* verts)
+{
+    if (sFsrUiSubmit) sFsrUiSubmit(mvp16, tex_id, mode, vtx_count, verts);
+}
 
 void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba)
 {
@@ -427,11 +450,11 @@ void recordDraw(const LLVertexBuffer* vb, U32 mode, U32 count, U32 indices_offse
     // meshshape-1: glow passes write ALPHA ONLY (colorMask(false,true)); replaying
     // them as full-color draws repainted/whited the faces underneath.
     GLint fs_cmask[4] = { 1, 1, 1, 1 };
-    if (sLive)
+    if (sLive && sTapDraws)
     {
         glGetIntegerv(0x0C23 /*GL_COLOR_WRITEMASK*/, fs_cmask);
     }
-    if (sLive && sSuppressDepth == 0 && vb && (fs_cmask[0] || fs_cmask[1] || fs_cmask[2]))
+    if (sLive && sTapDraws && sSuppressDepth == 0 && vb && (fs_cmask[0] || fs_cmask[1] || fs_cmask[2]))
     {
         const U8* vdata = vb->getMappedData();
         const U8* idata = vb->getMappedIndices();
@@ -868,22 +891,33 @@ void setSceneCamera(const float origin[3], const float at[3], const float up[3],
     cb.near_clip = near_clip; cb.far_clip = far_clip; cb.fov_y = fov_y; cb.aspect = aspect;
     sFsrSceneCamera(&cb);
 }
-void setSceneSky(const float sun_dir[3], const float sun_color[3], const float ambient[3],
-                 float max_y, float gamma, int can_auto_adjust, float reflection_probe_ambiance,
-                 const float lightnorm[3])
+void setSceneSky(const FSSkyParams& p)
 {
     if (!sFsrSceneSky) return;
     FsrEepSkyBlock sb;
     memset(&sb, 0, sizeof(sb));
-    sb.sun_dir[0] = sun_dir[0]; sb.sun_dir[1] = sun_dir[1]; sb.sun_dir[2] = sun_dir[2];
-    sb.sun_color[0] = sun_color[0]; sb.sun_color[1] = sun_color[1]; sb.sun_color[2] = sun_color[2];
-    sb.ambient[0] = ambient[0]; sb.ambient[1] = ambient[1]; sb.ambient[2] = ambient[2];
-    sb.max_y = max_y;
-    sb.gamma = gamma;
+    for (int i = 0; i < 3; ++i)
+    {
+        sb.sun_dir[i]      = p.sun_dir[i];
+        sb.sun_color[i]    = p.sun_color[i];
+        sb.moon_color[i]   = p.moon_color[i];
+        sb.ambient[i]      = p.ambient[i];
+        sb.blue_horizon[i] = p.blue_horizon[i];
+        sb.blue_density[i] = p.blue_density[i];
+        sb.glow[i]         = p.glow[i];
+        sb.lightnorm[i]    = p.lightnorm[i];
+    }
+    sb.max_y                 = p.max_y;
+    sb.gamma                 = p.gamma;
+    sb.haze_density          = p.haze_density;
+    sb.haze_horizon          = p.haze_horizon;
+    sb.density_multiplier    = p.density_multiplier;
+    sb.cloud_shadow          = p.cloud_shadow;
+    sb.sun_moon_glow_factor  = p.sun_moon_glow_factor;
+    sb.sun_up_factor         = p.sun_up_factor;
     // <FS:VkBridge> S3: the regime discriminators the engine's sky_regime() needs.
-    sb.can_auto_adjust = (U32)(can_auto_adjust ? 1 : 0);
-    sb.reflection_probe_ambiance = reflection_probe_ambiance;
-    sb.lightnorm[0] = lightnorm[0]; sb.lightnorm[1] = lightnorm[1]; sb.lightnorm[2] = lightnorm[2];
+    sb.can_auto_adjust           = (U32)(p.can_auto_adjust ? 1 : 0);
+    sb.reflection_probe_ambiance = p.reflection_probe_ambiance;
     sFsrSceneSky(&sb);
 }
 // <FS:VkBridge> S3b: forward the sky-regime settings subset (gSavedSettings the derivation reads).
@@ -908,6 +942,21 @@ void setSceneRegime(int auto_adjust_legacy, float sky_sunlight_scale, float hdr_
     rs.hdr_enabled = (U32)(hdr_enabled ? 1 : 0);
     rs.reflection_probes_enabled = (U32)(reflection_probes_enabled ? 1 : 0);
     sFsrSceneRegime(&rs);
+}
+// <FS:VkBridge> A.2 INVARIANT #1: query the REAL Vulkan adapter (fs_render's fsr_query_gpu_info
+// is standalone -- it enumerates the VkPhysicalDevice itself, so it works before fsr_init and
+// under native-vulkan even before the render device is up). Self-contained load so it does not
+// depend on the live-bridge having been armed. FSGpuInfo mirrors FsrGpuInfo exactly.
+bool getEngineGpuInfo(FSGpuInfo& out)
+{
+    memset(&out, 0, sizeof(out));
+    HMODULE m = GetModuleHandleA("fs_render.dll");
+    if (!m) m = LoadLibraryA("fs_render.dll");
+    if (!m) return false;
+    typedef int(__cdecl* fsr_query_gpu_t)(FSGpuInfo*);
+    fsr_query_gpu_t fn = (fsr_query_gpu_t)GetProcAddress(m, "fsr_query_gpu_info");
+    if (!fn) return false;
+    return fn(&out) != 0;
 }
 
 void onFrame(bool in_world)
@@ -970,6 +1019,8 @@ void onFrame(bool in_world)
         // P3: open the typed scene frame (clears last frame's camera/sky/lights); newview
         // fills camera + EEP sky right after this onFrame call.
         if (sFsrSceneBegin) sFsrSceneBegin();
+        // A.3: clear the engine's per-frame UI list -- LLRender::flush appends to it all frame.
+        if (sFsrUiBegin) sFsrUiBegin();
     }
     if (!sArmed)
     {

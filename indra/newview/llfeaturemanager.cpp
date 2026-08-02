@@ -41,6 +41,7 @@
 #include "llbufferstream.h"
 #include "llnotificationsutil.h"
 #include "llviewercontrol.h"
+#include "fsscenedump.h" // <FS:VkBridge> A.2 INVARIANT #1: real VK adapter caps under native-vulkan
 #include "llworld.h"
 #include "lldrawpoolterrain.h"
 #include "llviewertexturelist.h"
@@ -441,6 +442,30 @@ bool checkRDNA35()
 
 bool LLFeatureManager::loadGPUClass()
 {
+    // <FS:VkBridge> A.2 INVARIANT #1: under native-vulkan the engine owns the REAL VkDevice, so
+    // the graphics class comes from the real VkPhysicalDevice -- NEVER a benchmark over no-op GL.
+    // (The null-GL fiasco: garbage benchmark -> Class1 -> medium-low -> ALM off -> occlusion
+    // crash.) Discrete GPU -> top class so ALM and the full feature set are ON. Only native-vulkan
+    // takes this path; native-gl / zink keep the normal benchmark below.
+    if (gSavedSettings.getString("RenderGLBackend") == "vulkan")
+    {
+        FSSceneDump::FSGpuInfo gi;
+        if (FSSceneDump::getEngineGpuInfo(gi))
+        {
+            if (gi.device_type == 2)      mGPUClass = GPU_CLASS_5; // discrete
+            else if (gi.device_type == 1) mGPUClass = GPU_CLASS_3; // integrated
+            else                          mGPUClass = GPU_CLASS_2;
+            mGPUString    = gGLManager.getRawGLString();
+            mGPUSupported = true;
+            LL_INFOS("RenderInit") << "<FS:VkBridge> native-vulkan: GPU class " << (S32)mGPUClass
+                                   << " from real adapter '" << gi.renderer << "' (device_type "
+                                   << gi.device_type << ")" << LL_ENDL;
+            return true;
+        }
+        LL_WARNS("RenderInit") << "<FS:VkBridge> native-vulkan: fsr_query_gpu_info unavailable; "
+                               << "falling through to the benchmark path." << LL_ENDL;
+    }
+
     // This is a hack for certain AMD GPUs in newer driver versions on certain APUs.
     // These GPUs will show inconsistent freezes when attempting to run shader profiles against them.
     // This is extremely problematic as it can lead to:

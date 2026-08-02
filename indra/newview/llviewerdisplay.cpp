@@ -524,17 +524,40 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
         LLSettingsSky::ptr_t psky = LLEnvironment::instance().getCurrentSky();
         if (psky)
         {
-            LLVector4 lightnorm = LLEnvironment::instance().getClampedLightNorm();
-            LLColor3 suncol = psky->getSunlightColor();
-            LLColor3 ambient = psky->getAmbientColor();
-            // <FS:VkBridge> S3: ship the regime discriminators so the engine derives the
-            // classic-vs-advanced regime (canAutoAdjust = sky lacks a probe-ambiance key;
-            // raw probe ambiance value). Mis-routing legacy->advanced is the proven blowout.
-            int can_auto = psky->canAutoAdjust() ? 1 : 0;
-            F32 probe_amb = psky->getReflectionProbeAmbiance(); // raw (no auto_adjust)
-            FSSceneDump::setSceneSky(lightnorm.mV, suncol.mV, ambient.mV,
-                                     psky->getMaxY(), psky->getGamma(),
-                                     can_auto, probe_amb, lightnorm.mV);
+            // <FS:VkBridge> A.2: the FULL WindLight sky param set -- the engine's fullscreen sky
+            // is a pure function of these + the camera. Mis-routing legacy->advanced (canAutoAdjust /
+            // raw probe ambiance) is the proven blowout, so those ride along too.
+            LLVector4 lightnorm    = LLEnvironment::instance().getClampedLightNorm();
+            LLColor3 suncol        = psky->getSunlightColor();
+            LLColor3 mooncol       = psky->getMoonlightColor();
+            LLColor3 ambient       = psky->getAmbientColor();
+            LLColor3 blue_horizon  = psky->getBlueHorizon();
+            LLColor3 blue_density  = psky->getBlueDensity();
+            LLColor3 glow          = psky->getGlow();
+            FSSceneDump::FSSkyParams p;
+            memset(&p, 0, sizeof(p));
+            for (int i = 0; i < 3; ++i)
+            {
+                p.sun_dir[i]      = lightnorm.mV[i]; // drives scene_light_strength (S4)
+                p.sun_color[i]    = suncol.mV[i];
+                p.moon_color[i]   = mooncol.mV[i];
+                p.ambient[i]      = ambient.mV[i];
+                p.blue_horizon[i] = blue_horizon.mV[i];
+                p.blue_density[i] = blue_density.mV[i];
+                p.glow[i]         = glow.mV[i];
+                p.lightnorm[i]    = lightnorm.mV[i];
+            }
+            p.max_y                 = psky->getMaxY();
+            p.gamma                 = psky->getGamma();
+            p.haze_density          = psky->getHazeDensity();
+            p.haze_horizon          = psky->getHazeHorizon();
+            p.density_multiplier    = psky->getDensityMultiplier();
+            p.cloud_shadow          = psky->getCloudShadow();
+            p.sun_moon_glow_factor  = psky->getSunMoonGlowFactor();
+            p.sun_up_factor         = psky->getIsSunUp() ? 1.0f : 0.0f;
+            p.can_auto_adjust       = psky->canAutoAdjust() ? 1 : 0;
+            p.reflection_probe_ambiance = psky->getReflectionProbeAmbiance(); // raw (no auto_adjust)
+            FSSceneDump::setSceneSky(p);
             // <FS:VkBridge> S3b: ship the gSavedSettings the regime derivation reads, so the
             // engine's global tonemap uses the SAME regime the viewer used for the sky.
             FSSceneDump::setSceneRegime(

@@ -28,6 +28,8 @@
 
 #include "llrender.h"
 
+#include "fsscenedump.h" // <FS:VkBridge> A.3: honest native-VK UI feed from LLRender::flush
+
 #include "llvertexbuffer.h"
 #include "llcubemap.h"
 #include "llglslshader.h"
@@ -1822,6 +1824,29 @@ void LLRender::flush()
         {
             // mBuffer is present in main thread and not present in an image thread
             LL_ERRS() << "A flush call from outside main rendering thread" << LL_ENDL;
+        }
+
+        // <FS:VkBridge> A.3: honest native-VK UI feed. LLRender already holds the truth for this
+        // batch -- its OWN projection*modelview and the immediate verts (mVerticesp/mTexcoordsp/
+        // mColorsp, still valid until resetStriders below) -- so hand them to the engine with ZERO
+        // glGet, ZERO tap. uiActive() is true only under native-vulkan (engine live, tap retired).
+        if (count > 0 && FSSceneDump::uiActive())
+        {
+            static std::vector<U8> sUiVtx;
+            sUiVtx.resize((size_t)count * 24);
+            U8* p = sUiVtx.data();
+            for (U32 i = 0; i < count; ++i)
+            {
+                memcpy(p, mVerticesp[i].getF32ptr(), 12); // x,y,z (drop w)
+                F32 uv[2] = { mTexcoordsp[i].mV[0], mTexcoordsp[i].mV[1] };
+                memcpy(p + 12, uv, 8);
+                const LLColor4U& c = mColorsp[i];
+                p[20] = c.mV[0]; p[21] = c.mV[1]; p[22] = c.mV[2]; p[23] = c.mV[3];
+                p += 24;
+            }
+            glm::mat4 mvp = mMatrix[MM_PROJECTION][mMatIdx[MM_PROJECTION]]
+                          * mMatrix[MM_MODELVIEW][mMatIdx[MM_MODELVIEW]];
+            FSSceneDump::uiSubmit(&mvp[0][0], getTexUnit(0)->mCurrTexture, mMode, (U32)count, sUiVtx.data());
         }
 
         resetStriders(count);

@@ -527,8 +527,29 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
             LLVector4 lightnorm = LLEnvironment::instance().getClampedLightNorm();
             LLColor3 suncol = psky->getSunlightColor();
             LLColor3 ambient = psky->getAmbientColor();
+            // <FS:VkBridge> S3: ship the regime discriminators so the engine derives the
+            // classic-vs-advanced regime (canAutoAdjust = sky lacks a probe-ambiance key;
+            // raw probe ambiance value). Mis-routing legacy->advanced is the proven blowout.
+            int can_auto = psky->canAutoAdjust() ? 1 : 0;
+            F32 probe_amb = psky->getReflectionProbeAmbiance(); // raw (no auto_adjust)
             FSSceneDump::setSceneSky(lightnorm.mV, suncol.mV, ambient.mV,
-                                     psky->getMaxY(), psky->getGamma());
+                                     psky->getMaxY(), psky->getGamma(),
+                                     can_auto, probe_amb, lightnorm.mV);
+            // <FS:VkBridge> S3b: ship the gSavedSettings the regime derivation reads, so the
+            // engine's global tonemap uses the SAME regime the viewer used for the sky.
+            FSSceneDump::setSceneRegime(
+                gSavedSettings.getBOOL("RenderSkyAutoAdjustLegacy") ? 1 : 0,
+                gSavedSettings.getF32("RenderSkySunlightScale"),
+                gSavedSettings.getF32("RenderHDRSkySunlightScale"),
+                gSavedSettings.getF32("RenderSkyAmbientScale"),
+                gSavedSettings.getF32("RenderSkyAutoAdjustAmbientScale"),
+                gSavedSettings.getF32("RenderSkyAutoAdjustHDRScale"),
+                gSavedSettings.getF32("RenderSunDynamicRange"),
+                gSavedSettings.getF32("RenderTonemapMix"),
+                (int)gSavedSettings.getU32("RenderTonemapType"),
+                gSavedSettings.getF32("RenderExposure"),
+                gSavedSettings.getBOOL("RenderHDREnabled") ? 1 : 0,
+                LLPipeline::sReflectionProbesEnabled ? 1 : 0);
         }
     }
     // <FS:VkBridge> settings AUTOSAVE: bridge sessions can end in force-quit; the

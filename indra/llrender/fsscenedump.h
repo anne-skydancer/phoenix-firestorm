@@ -68,7 +68,13 @@ namespace FSSceneDump
     void setSceneCamera(const float origin[3], const float at[3], const float up[3],
                         float near_clip, float far_clip, float fov_y, float aspect);
     void setSceneSky(const float sun_dir[3], const float sun_color[3], const float ambient[3],
-                     float max_y, float gamma);
+                     float max_y, float gamma, int can_auto_adjust, float reflection_probe_ambiance,
+                     const float lightnorm[3]);
+    // <FS:VkBridge> S3b: the sky-regime settings subset (gSavedSettings the engine derivation reads).
+    void setSceneRegime(int auto_adjust_legacy, float sky_sunlight_scale, float hdr_sky_sunlight_scale,
+                        float sky_ambient_scale, float auto_adjust_ambient_scale, float auto_adjust_hdr_scale,
+                        float sun_dynamic_range, float tonemap_mix, int tonemap_type, float exposure,
+                        int hdr_enabled, int reflection_probes_enabled);
     void suppressPush();
     void suppressPop();
     struct SuppressScope

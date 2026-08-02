@@ -128,6 +128,26 @@ struct FsrEepSkyBlock
     F32 moisture_level;
     F32 droplet_radius;
     F32 ice_level;
+    // <FS:VkBridge> S3 regime discriminators (must match scene.rs EepSkyBlock tail exactly).
+    U32 can_auto_adjust;           // psky->canAutoAdjust()
+    F32 reflection_probe_ambiance; // psky->getReflectionProbeAmbiance() (raw)
+    F32 lightnorm[3];              // getClampedLightNorm swizzle (populated for the resolve, S4)
+};
+// <FS:VkBridge> S3b: the sky-regime settings subset (matches fs_render RegimeSettings).
+struct FsrRegimeSettings
+{
+    U32 sky_auto_adjust_legacy;
+    F32 sky_sunlight_scale;
+    F32 hdr_sky_sunlight_scale;
+    F32 sky_ambient_scale;
+    F32 sky_auto_adjust_ambient_scale;
+    F32 sky_auto_adjust_hdr_scale;
+    F32 sun_dynamic_range;
+    F32 tonemap_mix;
+    U32 tonemap_type;
+    F32 exposure;
+    U32 hdr_enabled;
+    U32 reflection_probes_enabled;
 };
 typedef int(__cdecl* fsr_begin_t)();
 typedef int(__cdecl* fsr_submit_t)(const FsrDrawDesc*, const U8*, const U8*);
@@ -161,9 +181,11 @@ static fsr_palette_t sFsrPalette = nullptr;
 typedef int(__cdecl* fsr_scene_begin_t)();
 typedef int(__cdecl* fsr_scene_camera_t)(const FsrCameraBlock*);
 typedef int(__cdecl* fsr_scene_sky_t)(const FsrEepSkyBlock*);
+typedef int(__cdecl* fsr_scene_regime_t)(const FsrRegimeSettings*);
 static fsr_scene_begin_t sFsrSceneBegin = nullptr;
 static fsr_scene_camera_t sFsrSceneCamera = nullptr;
 static fsr_scene_sky_t sFsrSceneSky = nullptr;
+static fsr_scene_regime_t sFsrSceneRegime = nullptr;
 static std::unordered_map<U64, U32> sSkinIds;
 static std::unordered_map<U32, U32> sSkinSentFrame;
 static U32 sNextSkinId = 1;
@@ -195,6 +217,7 @@ static void bindLive()
     sFsrSceneBegin = (fsr_scene_begin_t)GetProcAddress(dll, "fsr_scene_begin");
     sFsrSceneCamera = (fsr_scene_camera_t)GetProcAddress(dll, "fsr_scene_set_camera");
     sFsrSceneSky = (fsr_scene_sky_t)GetProcAddress(dll, "fsr_scene_set_sky");
+    sFsrSceneRegime = (fsr_scene_regime_t)GetProcAddress(dll, "fsr_scene_set_regime");
     sLive = (sFsrBegin && sFsrSubmit && sFsrEnd);
     LL_INFOS("SceneDump") << "P3c live bridge " << (sLive ? "ARMED" : "FAILED")
                           << " (begin=" << (void*)sFsrBegin << " submit=" << (void*)sFsrSubmit
@@ -846,7 +869,8 @@ void setSceneCamera(const float origin[3], const float at[3], const float up[3],
     sFsrSceneCamera(&cb);
 }
 void setSceneSky(const float sun_dir[3], const float sun_color[3], const float ambient[3],
-                 float max_y, float gamma)
+                 float max_y, float gamma, int can_auto_adjust, float reflection_probe_ambiance,
+                 const float lightnorm[3])
 {
     if (!sFsrSceneSky) return;
     FsrEepSkyBlock sb;
@@ -856,7 +880,34 @@ void setSceneSky(const float sun_dir[3], const float sun_color[3], const float a
     sb.ambient[0] = ambient[0]; sb.ambient[1] = ambient[1]; sb.ambient[2] = ambient[2];
     sb.max_y = max_y;
     sb.gamma = gamma;
+    // <FS:VkBridge> S3: the regime discriminators the engine's sky_regime() needs.
+    sb.can_auto_adjust = (U32)(can_auto_adjust ? 1 : 0);
+    sb.reflection_probe_ambiance = reflection_probe_ambiance;
+    sb.lightnorm[0] = lightnorm[0]; sb.lightnorm[1] = lightnorm[1]; sb.lightnorm[2] = lightnorm[2];
     sFsrSceneSky(&sb);
+}
+// <FS:VkBridge> S3b: forward the sky-regime settings subset (gSavedSettings the derivation reads).
+void setSceneRegime(int auto_adjust_legacy, float sky_sunlight_scale, float hdr_sky_sunlight_scale,
+                    float sky_ambient_scale, float auto_adjust_ambient_scale, float auto_adjust_hdr_scale,
+                    float sun_dynamic_range, float tonemap_mix, int tonemap_type, float exposure,
+                    int hdr_enabled, int reflection_probes_enabled)
+{
+    if (!sFsrSceneRegime) return;
+    FsrRegimeSettings rs;
+    memset(&rs, 0, sizeof(rs));
+    rs.sky_auto_adjust_legacy = (U32)(auto_adjust_legacy ? 1 : 0);
+    rs.sky_sunlight_scale = sky_sunlight_scale;
+    rs.hdr_sky_sunlight_scale = hdr_sky_sunlight_scale;
+    rs.sky_ambient_scale = sky_ambient_scale;
+    rs.sky_auto_adjust_ambient_scale = auto_adjust_ambient_scale;
+    rs.sky_auto_adjust_hdr_scale = auto_adjust_hdr_scale;
+    rs.sun_dynamic_range = sun_dynamic_range;
+    rs.tonemap_mix = tonemap_mix;
+    rs.tonemap_type = (U32)tonemap_type;
+    rs.exposure = exposure;
+    rs.hdr_enabled = (U32)(hdr_enabled ? 1 : 0);
+    rs.reflection_probes_enabled = (U32)(reflection_probes_enabled ? 1 : 0);
+    sFsrSceneRegime(&rs);
 }
 
 void onFrame(bool in_world)

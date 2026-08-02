@@ -22,6 +22,8 @@ layout(set = 0, binding = 1) uniform Post {
     int   tonemap_type;  // 0 = PBRNeutral, 1 = ACES Hill
     int   legacy_gamma;  // 1 = apply the classic-WL soft shoulder (legacy skies)
 } post;
+// Metered auto-exposure: 1x1 average scene luminance from the measure pass (exposure_measure.frag).
+layout(set = 0, binding = 2) uniform texture2D exp_lum;
 layout(location = 0) out vec4 frag;
 
 // ---- sRGB transfer (srgbF.glsl) ----
@@ -86,7 +88,12 @@ vec3 legacyGamma(vec3 color) {
 // toneMap() tonemapUtilF.glsl:121-151 -- mixes the EXPOSED-linear input with the tonemapped
 // result (tonemap_mix=0 => exposure+clamp only, the legacy path).
 vec3 toneMap(vec3 color) {
-    float final_exposure = post.exposure * post.exp_scale;
+    // Metered auto-exposure: normalize the HDR scene toward a mid-gray key from the measured
+    // average luminance, so HDR radiance (sky ~1-43) doesn't hard-clamp to white. post.exp_scale
+    // is a manual multiplier (tuning / FS_ENGINE_EXPOSURE); post.exposure is the RenderExposure clamp.
+    float avg_lum = max(texelFetch(exp_lum, ivec2(0, 0), 0).r, 1e-4);
+    float auto_exp = clamp(0.18 / avg_lum, 0.001, 8.0);
+    float final_exposure = post.exposure * post.exp_scale * auto_exp;
     vec3 exposed = color * final_exposure;
     vec3 tonemapped;
     if (post.tonemap_type == 1) tonemapped = toneMapACES_Hill(exposed);

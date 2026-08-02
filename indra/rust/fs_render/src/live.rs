@@ -212,6 +212,13 @@ pub struct LiveRenderer {
     post_bgl: wgpu::BindGroupLayout,
     post_pipeline: Option<wgpu::RenderPipeline>,
     post_bind: Option<wgpu::BindGroup>,
+    // Metered auto-exposure (v1): a measure pass averages scene_hdr luminance into a 1x1 target;
+    // the tonemap samples it to normalize the HDR before the clamp (replaces the fixed exp_scale).
+    exp_lum: Option<wgpu::TextureView>,          // 1x1 R16Float avg scene luminance
+    exp_bgl: wgpu::BindGroupLayout,              // measure pass bindings: scene_hdr texture + sampler
+    exp_pipeline: Option<wgpu::RenderPipeline>,  // post.vert + exposure_measure.frag
+    exp_bind: Option<wgpu::BindGroup>,           // rebuilt when scene_hdr changes
+    exp_sampler: wgpu::Sampler,
     // ---- #3/#4: deferred G-buffer + resolve + tonemap ----
     normal_up: wgpu::Buffer, // (0,0,1) fallback for G-buffer draws lacking a NORMAL block
     gbuf_albedo: Option<(wgpu::TextureView, u32, u32)>, // RT0 albedo.rgb + flag.a
@@ -464,7 +471,46 @@ impl LiveRenderer {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
+                // Metered auto-exposure: 1x1 average scene luminance (texelFetch, no sampler).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
+        });
+        // Metered auto-exposure: the measure pass samples scene_hdr (filterable) through a sampler.
+        let exp_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("exp-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let exp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("exp-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
         });
         // #3: (0,0,1) fallback normal for G-buffer draws whose SoA lacks a NORMAL block.
         let normal_up = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -575,6 +621,11 @@ impl LiveRenderer {
             post_bgl,
             post_pipeline: None,
             post_bind: None,
+            exp_lum: None,
+            exp_bgl,
+            exp_pipeline: None,
+            exp_bind: None,
+            exp_sampler,
             normal_up,
             gbuf_albedo: None,
             gbuf_normal: None,
@@ -1538,6 +1589,7 @@ impl LiveRenderer {
             });
             self.scene_hdr = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), w, h));
             self.post_bind = None; // stale: rebind against the new scene view
+            self.exp_bind = None;  // measure pass samples scene_hdr -> rebind too
         }
     }
 
@@ -1582,17 +1634,81 @@ impl LiveRenderer {
         }
         if self.post_bind.is_none() {
             let bgl = &self.post_bgl;
-            let bind = self.scene_hdr.as_ref().map(|(v, _, _)| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let bind = match (self.scene_hdr.as_ref(), self.exp_lum.as_ref()) {
+                (Some((v, _, _)), Some(lum)) => Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("post-bind"),
                     layout: bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) },
                         wgpu::BindGroupEntry { binding: 1, resource: self.post_ubo.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(lum) },
                     ],
-                })
-            });
+                })),
+                _ => None,
+            };
             self.post_bind = bind;
+        }
+    }
+
+    /// Metered auto-exposure: ensure the 1x1 luminance target, the measure pipeline, and the bind
+    /// group (rebuilt against the current scene_hdr). The measure pass fills exp_lum each frame and
+    /// post_tonemap.frag samples it to derive the exposure multiplier.
+    fn ensure_exp(&mut self, device: &wgpu::Device) {
+        if self.exp_lum.is_none() {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("exp-lum"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R16Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.exp_lum = Some(t.create_view(&wgpu::TextureViewDescriptor::default()));
+        }
+        if self.exp_pipeline.is_none() {
+            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/exposure_measure.frag.spv"));
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("exp-pl"),
+                bind_group_layouts: &[&self.exp_bgl],
+                push_constant_ranges: &[],
+            });
+            self.exp_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("exp-measure"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::R16Float,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }));
+        }
+        if self.exp_bind.is_none() {
+            if let Some((sv, _, _)) = &self.scene_hdr {
+                self.exp_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("exp-bind"),
+                    layout: &self.exp_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(sv) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.exp_sampler) },
+                    ],
+                }));
+            }
         }
     }
 
@@ -1634,13 +1750,11 @@ impl LiveRenderer {
     /// D2) until auto-exposure (S6). `classic_mode`/scales/`sky_hdr_scale` drive the resolve (S4);
     /// the sky pass's own `sky_hdr_scale` still arrives via the tap aux (already the viewer value).
     pub fn apply_sky_regime(&mut self, r: &crate::scene::SkyRegime) {
-        // INTERIM fixed exposure until the metered auto-exposure pass lands (measures scene_hdr
-        // avg luminance -> exp_scale, mirroring stock exposureF/luminanceF). The HDR sky (~1-43)
-        // must be normalized before the tonemap clamp or it hard-clamps to white; 0.04 gives a
-        // reasonable daytime level. FS_ENGINE_EXPOSURE=<f32> overrides for tuning. See
-        // [[fsvulkan-sky-white-bug]]: the viewport fix (NaN ray) is the real bug this pairs with.
+        // Metered auto-exposure now normalizes the HDR (post_tonemap.frag derives the exposure from
+        // the measured avg luminance). exp_scale is a MANUAL multiplier on top (default 1.0 = pure
+        // auto); FS_ENGINE_EXPOSURE=<f32> tunes the overall level without a rebuild.
         let exp_scale = std::env::var("FS_ENGINE_EXPOSURE").ok()
-            .and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.04);
+            .and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         self.set_post_params(r.exposure, exp_scale, r.tonemap_mix, r.gamma, r.tonemap_type as i32, r.legacy_gamma as i32);
     }
 
@@ -1947,6 +2061,7 @@ impl LiveRenderer {
         self.ensure_depth(device, w, h);
         self.ensure_msaa_color(device, w, h);
         self.ensure_scene_hdr(device, w, h);
+        self.ensure_exp(device); // before ensure_post: post_bind references exp_lum's view
         self.ensure_post(device);
         // S1: push the Post-params UBO (std140: 4 floats + 2 ints, 24 bytes used, 32 alloc)
         // consumed by post_tonemap.frag every frame, before the composite pass runs.
@@ -2175,6 +2290,25 @@ impl LiveRenderer {
                     rp.draw(q.first..q.first + q.vcount, 0..1);
                 }
             }
+        }
+        // Metered auto-exposure: average scene_hdr luminance into the 1x1 exp_lum, read by the
+        // tonemap below to normalize the HDR (so radiance > 1 doesn't hard-clamp to white). Runs
+        // after the scene is fully composited (sky + world), before the post pass.
+        if let (Some(p), Some(b), Some(lum)) = (self.exp_pipeline.as_ref(), self.exp_bind.as_ref(), self.exp_lum.as_ref()) {
+            let mut mp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("exp-measure-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: lum,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            mp.set_pipeline(p);
+            mp.set_bind_group(0, b, &[]);
+            mp.draw(0..3, 0..1);
         }
         // Final composite: tonemap the linear-HDR scene target (PBRNeutral) to the sRGB
         // swapchain. The mandatory HDR->LDR step; the swapchain ROP does the sRGB encode.

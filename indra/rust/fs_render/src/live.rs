@@ -157,9 +157,16 @@ pub struct LiveRenderer {
     terrain_gb_pipeline: Option<wgpu::RenderPipeline>,     // P2/P3 terrain_gb.{vert,frag} -> [albedo+flag, world-normal] + depth
     terrain_gb_bgl: Option<wgpu::BindGroupLayout>,         // P3 splat: UBO(0) + 4 detail(1-4) + ramp(5) + wrap(6) + clamp(7)
     terrain_gb_bind: Option<wgpu::BindGroup>,              // rebuilt per-frame (picks up detail textures as they decode)
+    // PBR-2: the PBR base-color splat -- a parallel pipeline reusing terrain_gb.vert; the fragment writes
+    // LINEAR base color + HAS_PBR. Selected over the legacy splat when the region is a PBR region.
+    pbr_gb_pipeline: Option<wgpu::RenderPipeline>,
+    pbr_gb_bgl: Option<wgpu::BindGroupLayout>,
+    pbr_gb_bind: Option<wgpu::BindGroup>,                  // rebuilt per-frame
+    terrain_is_pbr: bool,                                  // cached from the TerrainBlock -> draw selects PBR vs legacy
     terrain_sampler_wrap: Option<wgpu::Sampler>,           // detail textures (TAM_WRAP)
     terrain_sampler_clamp: Option<wgpu::Sampler>,          // alpha ramp (TAM_CLAMP)
     terrain_typed_ubo: wgpu::Buffer,                       // view_proj + sun/sunlight/ambient + hdr (128B)
+    pbr_factors_ubo: wgpu::Buffer,                         // PBR-2: 4x vec4 GLTF baseColor factor (64B), default white
     terrain_typed_bind: Option<wgpu::BindGroup>,
     terrain_vbuf: Option<wgpu::Buffer>,                    // pos(3)+normal(3) per vertex
     terrain_ibuf: Option<wgpu::Buffer>,                    // u32 indices
@@ -637,6 +644,10 @@ impl LiveRenderer {
             terrain_gb_pipeline: None,
             terrain_gb_bgl: None,
             terrain_gb_bind: None,
+            pbr_gb_pipeline: None,
+            pbr_gb_bgl: None,
+            pbr_gb_bind: None,
+            terrain_is_pbr: false,
             terrain_sampler_wrap: None,
             terrain_sampler_clamp: None,
             terrain_typed_ubo: device.create_buffer(&wgpu::BufferDescriptor {
@@ -645,6 +656,14 @@ impl LiveRenderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
+            pbr_factors_ubo: {
+                use wgpu::util::DeviceExt;
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("pbr-terrain-factors-ubo"),
+                    contents: bytemuck::cast_slice(&[1.0f32; 16]), // 4x white baseColor factor
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                })
+            },
             terrain_typed_bind: None,
             terrain_vbuf: None,
             terrain_ibuf: None,
@@ -1399,13 +1418,65 @@ impl LiveRenderer {
                 multiview: None,
             }));
             self.terrain_gb_bgl = Some(gb_bgl);
+            // PBR-2: the parallel PBR base-color pipeline. Reuses terrain_gb.vert, the same 4 textures +
+            // ramp + samplers; adds binding 8 = the per-material baseColor factor UBO (FRAGMENT). The
+            // fragment (pbrterrain_gb.frag) writes LINEAR base + HAS_PBR so the resolve runs the BRDF.
+            let pbr_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("pbr-terrain-gb-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                    tex_entry(1), tex_entry(2), tex_entry(3), tex_entry(4), tex_entry(5),
+                    samp_entry(6), samp_entry(7),
+                    wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                ],
+            });
+            let pbr_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/pbrterrain_gb.frag.spv"));
+            let pbr_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("pbr-terrain-gb-pl"), bind_group_layouts: &[&pbr_bgl], push_constant_ranges: &[],
+            });
+            self.pbr_gb_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("pbr-terrain-gb"),
+                layout: Some(&pbr_layout),
+                vertex: wgpu::VertexState {
+                    module: &gb_vs, entry_point: "main",
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: 32, step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
+                        ],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &pbr_fs, entry_point: "main",
+                    targets: &[
+                        Some(wgpu::ColorTargetState { format: GBUF_ALBEDO_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                        Some(wgpu::ColorTargetState { format: GBUF_NORMAL_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                    ],
+                }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::GreaterEqual, // reverse-Z
+                    stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }));
+            self.pbr_gb_bgl = Some(pbr_bgl);
         }
-        // Rebuild the splat bind each frame -- picks up detail textures as they decode (fallback = white).
+        // Cache the PBR-region flag for the draw-time pipeline selection (before the disjoint borrow).
+        self.terrain_is_pbr = terrain.map(|t| t.pbr).unwrap_or(false);
+        // Rebuild the splat binds each frame -- picks up detail textures as they decode (fallback = white).
         // wgpu 0.19 handles aren't Clone, so destructure self into disjoint field refs: the immutable
-        // reads (textures/bgl/samplers/ubo) coexist with writing the disjoint terrain_gb_bind field.
+        // reads (textures/bgl/samplers/ubo) coexist with writing the disjoint *_bind fields.
         let Self {
             terrain_gb_bgl, terrain_sampler_wrap, terrain_sampler_clamp,
-            terrain_typed_ubo, textures, white, terrain_gb_bind, ..
+            terrain_typed_ubo, textures, white, terrain_gb_bind,
+            pbr_gb_bgl, pbr_factors_ubo, pbr_gb_bind, ..
         } = self;
         if let (Some(t), Some(bgl), Some(sw), Some(sc)) = (
             terrain, terrain_gb_bgl.as_ref(), terrain_sampler_wrap.as_ref(), terrain_sampler_clamp.as_ref(),
@@ -1430,12 +1501,37 @@ impl LiveRenderer {
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(sc) },
                 ],
             }));
+            // PBR-2: parallel bind -- same textures/ramp/samplers (detail_tex_ids hold the material
+            // base-color ids in a PBR region), + the baseColor-factor UBO at binding 8.
+            if let Some(pbgl) = pbr_gb_bgl.as_ref() {
+                *pbr_gb_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("pbr-terrain-gb-bind"),
+                    layout: pbgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: terrain_typed_ubo.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(d0) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(d1) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(d2) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(d3) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(ramp) },
+                        wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(sw) },
+                        wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(sc) },
+                        wgpu::BindGroupEntry { binding: 8, resource: pbr_factors_ubo.as_entire_binding() },
+                    ],
+                }));
+            }
         }
     }
 
     /// Feed the terrain UBO (view_proj reverse-Z + world sun/sunlight/ambient + hdr_scale).
     pub fn set_terrain_ubo(&self, queue: &wgpu::Queue, ubo: &[f32; 32]) {
         queue.write_buffer(&self.terrain_typed_ubo, 0, bytemuck::cast_slice(ubo));
+    }
+
+    /// PBR-2/3: feed the 4 per-material GLTF baseColor factors (rgba each, 16 floats). Default = white.
+    /// The PBR splat multiplies each material's linearized base color by its factor.
+    pub fn set_terrain_pbr_factors(&self, queue: &wgpu::Queue, factors: &[f32; 16]) {
+        queue.write_buffer(&self.pbr_factors_ubo, 0, bytemuck::cast_slice(factors));
     }
 
     fn ensure_palette_ring(&mut self, device: &wgpu::Device, want: u64) {
@@ -2781,8 +2877,15 @@ impl LiveRenderer {
         // then (2) resolve (faithful softenLight) into scene_hdr OVER the sky -- LoadOp::Load keeps
         // the sky, and the resolve discards non-HAS_ATMOS pixels. Replaces the P1 forward pass.
         if has_terrain {
+            // PBR-2: select the PBR base-color splat in a PBR region (else the legacy detail splat).
+            let use_pbr = self.terrain_is_pbr && self.pbr_gb_pipeline.is_some() && self.pbr_gb_bind.is_some();
+            let (sel_pipeline, sel_bind) = if use_pbr {
+                (self.pbr_gb_pipeline.as_ref(), self.pbr_gb_bind.as_ref())
+            } else {
+                (self.terrain_gb_pipeline.as_ref(), self.terrain_gb_bind.as_ref())
+            };
             if let (Some(gp), Some(tb), Some(vb), Some(ib), Some(alb), Some(nrm)) = (
-                self.terrain_gb_pipeline.as_ref(), self.terrain_gb_bind.as_ref(),
+                sel_pipeline, sel_bind,
                 self.terrain_vbuf.as_ref(), self.terrain_ibuf.as_ref(), gb_alb, gb_nrm,
             ) {
                 {

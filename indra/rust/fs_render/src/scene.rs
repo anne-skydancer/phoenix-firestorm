@@ -332,8 +332,9 @@ pub struct TerrainBlock {
     pub height_range: [f32; 4],
     pub origin_global: [f64; 2],
     pub detail_scale: f32,
-    pub detail_tex_ids: [u32; 4],
+    pub detail_tex_ids: [u32; 4], // legacy: 4 detail textures; PBR: 4 material base-color textures
     pub alpha_ramp_id: u32,
+    pub pbr: bool,                // region uses GLTF/PBR materials -> select the PBR splat pipeline (PBR-3 feed)
 }
 
 /// The accumulating typed frame. Grows one payload per phase. Per-frame data (camera, sky,
@@ -382,6 +383,7 @@ impl SceneFrame {
             detail_scale: hdr.detail_scale,
             detail_tex_ids: hdr.detail_tex_ids,
             alpha_ramp_id: hdr.alpha_ramp_id,
+            pbr: false, // PBR-3 extends the FFI header (pad slot) + sets this from getMaterialType()
         });
     }
 

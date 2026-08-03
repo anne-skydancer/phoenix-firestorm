@@ -250,6 +250,14 @@ pub struct LiveRenderer {
     sky_fs_ubo: wgpu::Buffer,        // inv_view_proj(16) + a0..a10(44) = 60 floats (std140, 240B)
     sky_fs_data: [f32; 60],
     sky_fs_enabled: bool,
+    // Half-res volumetric cloud pass (perf + grain): cloud.frag raymarches into cloud_target at 1/2
+    // res, then cloud_composite.frag bilinearly upscales + alpha-blends it over scene_hdr.
+    cloud_target: Option<(wgpu::TextureView, u32, u32)>,  // half-res RGBA16F: rgb=radiance, a=coverage
+    cloud_pipeline: Option<wgpu::RenderPipeline>,         // post.vert + cloud.frag (reuses sky_fs_bgl/bind)
+    cloud_comp_bgl: wgpu::BindGroupLayout,                // composite: cloud texture + linear sampler
+    cloud_comp_pipeline: Option<wgpu::RenderPipeline>,    // post.vert + cloud_composite.frag -> scene_hdr (blend)
+    cloud_comp_bind: Option<wgpu::BindGroup>,             // rebuilt when cloud_target changes
+    cloud_sampler: wgpu::Sampler,                         // linear, for the bilinear upscale
     // Phase A.3: native-VK UI. Honest feed from LLRender::flush (its own matrices + verts, no
     // glGet). One ortho pass over the tonemapped swapchain, painter's order, alpha-blended.
     ui_bgl: Option<wgpu::BindGroupLayout>,
@@ -569,6 +577,32 @@ impl LiveRenderer {
                 count: None,
             }],
         });
+        // Half-res cloud composite bindings: cloud texture (filterable) + linear sampler.
+        let cloud_comp_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("cloud-comp-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let cloud_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("cloud-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
         let sky_fs_ubo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sky-fs-ubo"),
             size: 240, // mat4(64) + 11 x vec4(176)
@@ -664,6 +698,12 @@ impl LiveRenderer {
             sky_fs_ubo,
             sky_fs_data: [0.0; 60],
             sky_fs_enabled: false,
+            cloud_target: None,
+            cloud_pipeline: None,
+            cloud_comp_bgl,
+            cloud_comp_pipeline: None,
+            cloud_comp_bind: None,
+            cloud_sampler,
             ui_bgl: None,
             ui_tri_pipeline: None,
             ui_line_pipeline: None,
@@ -1976,6 +2016,97 @@ impl LiveRenderer {
         }
     }
 
+    /// Half-res volumetric cloud pass: a cloud_target at (w/2, h/2), the raymarch pipeline (reusing the
+    /// sky UBO bind group), and the composite pipeline that alpha-blends the upscaled clouds into scene_hdr.
+    fn ensure_cloud(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+        let hw = (w / 2).max(1);
+        let hh = (h / 2).max(1);
+        let need = match &self.cloud_target {
+            Some((_, cw, ch)) => *cw != hw || *ch != hh,
+            None => true,
+        };
+        if need {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("cloud-target"),
+                size: wgpu::Extent3d { width: hw, height: hh, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: SCENE_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.cloud_target = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), hw, hh));
+            self.cloud_comp_bind = None;
+        }
+        if self.cloud_pipeline.is_none() {
+            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/cloud.frag.spv"));
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("cloud-pl"),
+                bind_group_layouts: &[&self.sky_fs_bgl],
+                push_constant_ranges: &[],
+            });
+            self.cloud_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("cloud"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState { format: SCENE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }));
+        }
+        if self.cloud_comp_pipeline.is_none() {
+            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/cloud_composite.frag.spv"));
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("cloud-comp-pl"),
+                bind_group_layouts: &[&self.cloud_comp_bgl],
+                push_constant_ranges: &[],
+            });
+            self.cloud_comp_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("cloud-comp"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &vs, entry_point: "main", buffers: &[] },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs,
+                    entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: SCENE_FORMAT,
+                        // out = cloud.rgb*cloud.a + scene_hdr*(1-cloud.a) = mix(scene_hdr, cloud, alpha)
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+                            alpha: wgpu::BlendComponent::REPLACE,
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }));
+        }
+        if self.cloud_comp_bind.is_none() {
+            if let Some((cv, _, _)) = &self.cloud_target {
+                self.cloud_comp_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("cloud-comp-bind"),
+                    layout: &self.cloud_comp_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(cv) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.cloud_sampler) },
+                    ],
+                }));
+            }
+        }
+    }
+
     /// Phase A.3: reset the per-frame UI list. Called at frame start (fsr_ui_begin).
     pub fn ui_begin(&mut self) {
         self.ui_verts.clear();
@@ -2155,6 +2286,7 @@ impl LiveRenderer {
         self.ensure_depth(device, w, h);
         self.ensure_msaa_color(device, w, h);
         self.ensure_scene_hdr(device, w, h);
+        self.ensure_cloud(device, w, h); // half-res cloud target + pipelines
         self.ensure_exp(device); // before ensure_post: post_bind references exp_lum's view
         self.ensure_post(device);
         // S1: push the Post-params UBO (std140: 6 floats + 2 ints, 32 bytes) consumed by
@@ -2387,6 +2519,42 @@ impl LiveRenderer {
                     rp.draw(q.first..q.first + q.vcount, 0..1);
                 }
             }
+        }
+        // Half-res VOLUMETRIC cloud pass: raymarch clouds into cloud_target (1/2 res), then composite
+        // (bilinear upscale + alpha blend) over scene_hdr. Runs after sky+world, before the meter, so
+        // clouds are in scene_hdr for exposure + tonemap. The upscale dissolves the raymarch grain and
+        // the 1/2-res raymarch is ~4x cheaper than full-res.
+        if let (Some(cp), Some(sb), Some((cv, _, _))) = (self.cloud_pipeline.as_ref(), self.sky_fs_bind.as_ref(), self.cloud_target.as_ref()) {
+            let mut clp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("cloud-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: cv,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            clp.set_pipeline(cp);
+            clp.set_bind_group(0, sb, &[]);
+            clp.draw(0..3, 0..1);
+        }
+        if let (Some(cp), Some(cb)) = (self.cloud_comp_pipeline.as_ref(), self.cloud_comp_bind.as_ref()) {
+            let mut cmp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("cloud-composite-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: scene_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            cmp.set_pipeline(cp);
+            cmp.set_bind_group(0, cb, &[]);
+            cmp.draw(0..3, 0..1);
         }
         // Metered auto-exposure: average scene_hdr luminance into the 1x1 exp_lum, read by the
         // tonemap below to normalize the HDR (so radiance > 1 doesn't hard-clamp to white). Runs

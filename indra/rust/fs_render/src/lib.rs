@@ -555,6 +555,14 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         // scene_hdr the triangle covers = swapchain size), so supply it here.
         sky_ubo[50] = e.config.width as f32;
         sky_ubo[51] = e.config.height as f32;
+        // Cloud animation clock (a7.w = u[47], previously unused): monotonic seconds since the first
+        // frame, driving the volumetric cloud march's wind scroll + evolution. Real Instant (engine
+        // is native Rust); no viewer feed needed.
+        {
+            use std::sync::OnceLock;
+            static START: OnceLock<std::time::Instant> = OnceLock::new();
+            sky_ubo[47] = START.get_or_init(std::time::Instant::now).elapsed().as_secs_f32();
+        }
         e.live.set_fullscreen_sky(&sky_ubo);
     }
     // P1 DIAG (temporary): pinpoint the white sky WITHOUT guessing. cam/sky = typed feed reached;

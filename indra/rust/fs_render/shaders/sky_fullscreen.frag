@@ -124,8 +124,9 @@ void main() {
         float sc = dot(dir, sd);                           // cos(angle from sun)
         float above = smoothstep(-0.06, 0.02, sd.z);       // fade out below the horizon
         float disc  = smoothstep(cos(0.024), cos(0.019), sc);   // ~1.1-1.4 deg radius white core
-        float halo  = pow(max(sc, 0.0), 600.0);                 // tight, modest corona (far less bloom than disc*8)
-        color += sunlight_color * above * (disc * 5.0 + halo * 0.4);
+        // No added corona -- the atmosphere's own haze-glow (in the skyV integral above) supplies the
+        // sun's glow exactly as stock does; my extra halo was stacking on top and reading too large.
+        color += sunlight_color * above * disc * 4.0;
     }
     if (dot(moon_dir_w, moon_dir_w) > 0.25) {
         vec3  md = normalize(moon_dir_w);
@@ -153,6 +154,7 @@ void main() {
         }
     }
 
+    // (Volumetric clouds moved to cloud.frag -- a half-res pass composited over scene_hdr afterward.)
     vec3 c = min(color * 2.0, vec3(5.0));
     c = srgb_to_linear(c);
     c *= sky_hdr_scale;

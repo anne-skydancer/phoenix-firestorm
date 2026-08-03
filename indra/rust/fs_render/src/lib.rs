@@ -580,7 +580,10 @@ pub unsafe extern "C" fn fsr_texture_decode_j2c(id: u32, data: *const u8, len: u
         return std::ptr::null_mut();
     }
     let bytes = std::slice::from_raw_parts(data, len);
-    j2c::ensure_init();
+    // Grok init is HOST-OWNED: in engine mode the viewer already called grk_initialize once at
+    // startup (llimagej2cgrok) on the SAME shared grokj2k.dll -- a second init here re-creates the
+    // taskflow pool and crashes. So the DLL decode path relies on the host's init (decode() assumes
+    // init). ensure_init() stays for the standalone tests, where there is no host.
     let Some(img) = j2c::decode(bytes, discard, 0, 4) else { return std::ptr::null_mut() };
     // Enqueue the RGBA (top-down) for the render thread to GPU-upload as texture `id`. Lock only the
     // small queue, never the ENGINE mutex -- a decode worker must not contend with rendering.

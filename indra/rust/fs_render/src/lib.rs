@@ -10,10 +10,11 @@
 pub mod live;
 pub mod scene; // P0: typed scene-bridge scaffold (GROUNDUP_VULKAN_ENGINE_PLAN.md)
 pub mod terrain_noise; // P3: faithful port of stock terrain composition (noise2/generateHeights)
-pub mod j2c; // P3: engine-hosted J2C decode over Grok (renderer owns its texture inputs)
+// P3: engine-hosted J2C decode via the SHARED `j2c` crate (single source, also used by llrust).
+pub use j2c; // re-export so tests + external harnesses reach the decoder the engine uses
 
-/// Mechanism proof: Grok version via the linked grokj2k. `out` receives a borrowed static C
-/// string (never freed). Returns 1 if available. Proves fs_render links + calls grk_*.
+/// "Grok is linked" check: Grok version via the shared decoder crate (borrowed static C string,
+/// never freed). Proves fs_render links + calls grk_*.
 #[no_mangle]
 pub extern "C" fn fsr_grok_version() -> *const std::os::raw::c_char {
     j2c::grok_version()

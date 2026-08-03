@@ -22,11 +22,10 @@ raw-window-handle = "0.6"
 log = "0.4"
 env_logger = "0.11"
 
-# P3 engine-hosted J2C decode: bindgen generates the Grok C-API FFI from grok.h at
-# build time (compiler-verified struct layouts). build.rs also links grokj2k (the
-# import lib at C:/fs/grok/build/bin; grokj2k.dll ships in newview/Release).
-[build-dependencies]
-bindgen = "0.70"
+# P3 engine-hosted J2C decode: the SHARED decoder crate (single source, also used by the viewer's
+# llrust). It bindgens the Grok C-API; fs_render's build.rs links grokj2k (import lib at
+# C:/fs/grok/build/bin; grokj2k.dll ships in newview/Release).
+j2c = { path = "../../../../firestorm-upstream/indra/rust/j2c", features = ["grok"] }
 
 [profile.release]
 opt-level = 3

@@ -309,6 +309,29 @@ pub extern "C" fn fsr_scene_set_camera(cam: *const scene::CameraBlock) -> i32 {
     }
 }
 
+/// Ground phase 1: the region heightmap. `hdr` = `scene::TerrainHeader` (POD); `heights` points at
+/// `hdr.dim * hdr.dim` f32 samples (row-major, metres), copied engine-side. Region-scoped (persists
+/// across frames until re-fed on region change / terrain edit).
+#[no_mangle]
+pub extern "C" fn fsr_scene_set_terrain(hdr: *const scene::TerrainHeader, heights: *const f32) -> i32 {
+    if hdr.is_null() || heights.is_null() {
+        return 0;
+    }
+    let h = unsafe { *hdr };
+    let n = (h.dim as usize).saturating_mul(h.dim as usize);
+    if h.dim < 2 || n == 0 {
+        return 0;
+    }
+    let hs = unsafe { std::slice::from_raw_parts(heights, n) };
+    let mut g = ENGINE.lock().unwrap();
+    if let Some(e) = g.as_mut() {
+        e.scene.set_terrain(&h, hs);
+        1
+    } else {
+        0
+    }
+}
+
 /// P1 payload: the render-settings snapshot (`#[repr(C)]` = `scene::SettingsSnapshot`). Called
 /// on any settings change (not per frame); the engine reads this instead of scraping GL state
 /// (honoring mechanisms 1 & 2). Values are effective (LLFeatureManager already applied).

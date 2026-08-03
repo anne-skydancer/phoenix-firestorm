@@ -298,6 +298,28 @@ pub struct Light {
     pub _pad1: f32,
 }
 
+/// Ground/terrain (Phase 1). FFI header (POD, passed by pointer); the heightmap floats arrive as a
+/// SEPARATE pointer (dim*dim, row-major, metres), copied engine-side into `TerrainBlock`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TerrainHeader {
+    pub dim: u32,             // grids per edge + 1 (e.g. 257); heightmap is dim*dim
+    pub meters_per_grid: f32, // world metres between grid samples (e.g. 1.0)
+    pub origin: [f32; 3],     // region origin in world/agent space
+    pub _pad: f32,
+}
+
+/// Engine-side terrain: the CPU heightmap + metadata. PERSISTS across frames (region-scoped, not
+/// per-frame); `gen` bumps on each feed so the render side rebuilds the GPU mesh only on change.
+#[derive(Clone, Default)]
+pub struct TerrainBlock {
+    pub dim: u32,
+    pub meters_per_grid: f32,
+    pub origin: [f32; 3],
+    pub heights: Vec<f32>, // dim*dim, row-major
+    pub gen: u64,
+}
+
 /// The accumulating typed frame. Grows one payload per phase. Per-frame data (camera, sky,
 /// water, lights, geometry) is cleared each `begin`; settings persist (change on event only).
 /// Empty of GEOMETRY until a subsystem phase feeds typed draws.
@@ -316,11 +338,29 @@ pub struct SceneFrame {
     pub water: Option<WaterBlock>,
     /// P3: the local point/spot lights this frame (nearby-light list, capped scene-side).
     pub lights: Vec<Light>,
+    /// Ground phase 1: the region heightmap. PERSISTS across frames (region-scoped) -- NOT cleared
+    /// by `begin`. `gen` lets the render side rebuild the GPU mesh only when it changes.
+    pub terrain: Option<TerrainBlock>,
 }
 
 impl SceneFrame {
     pub fn new() -> SceneFrame {
         SceneFrame::default()
+    }
+
+    /// Feed the region heightmap (Phase 1). Copies `dim*dim` floats from `heights`; bumps `gen` so
+    /// the render side rebuilds the GPU mesh. Persists until replaced (region change / terrain edit).
+    pub fn set_terrain(&mut self, hdr: &TerrainHeader, heights: &[f32]) {
+        let n = (hdr.dim as usize) * (hdr.dim as usize);
+        if hdr.dim < 2 || heights.len() < n { return; }
+        let gen = self.terrain.as_ref().map(|t| t.gen + 1).unwrap_or(1);
+        self.terrain = Some(TerrainBlock {
+            dim: hdr.dim,
+            meters_per_grid: hdr.meters_per_grid,
+            origin: hdr.origin,
+            heights: heights[..n].to_vec(),
+            gen,
+        });
     }
 
     /// Start a typed frame: clear the previous frame's per-frame data (camera, sky, water,

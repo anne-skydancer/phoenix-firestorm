@@ -1265,8 +1265,21 @@ impl LiveRenderer {
         if self.terrain_typed_pipeline.is_none() {
             let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain_typed.vert.spv"));
             let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain_typed.frag.spv"));
+            // Dedicated BGL: the terrain reads the UBO in BOTH stages (vertex: view_proj -> gl_Position;
+            // fragment: lighting). The sky/cloud passes are fragment-only, so their sky_fs_bgl is
+            // FRAGMENT-visibility -- reusing it here fails pipeline validation (the vertex stage's UBO
+            // access is not permitted by the layout) and panics the DLL on the first frame.
+            let terrain_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("terrain-typed-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                }],
+            });
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("terrain-typed-pl"), bind_group_layouts: &[&self.sky_fs_bgl], push_constant_ranges: &[],
+                label: Some("terrain-typed-pl"), bind_group_layouts: &[&terrain_bgl], push_constant_ranges: &[],
             });
             self.terrain_typed_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("terrain-typed"),
@@ -1294,10 +1307,9 @@ impl LiveRenderer {
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
             }));
-        }
-        if self.terrain_typed_bind.is_none() {
+            // Same dedicated BGL for the bind group (layout-compatible with the pipeline above).
             self.terrain_typed_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("terrain-typed-bind"), layout: &self.sky_fs_bgl,
+                label: Some("terrain-typed-bind"), layout: &terrain_bgl,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.terrain_typed_ubo.as_entire_binding() }],
             }));
         }

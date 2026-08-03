@@ -107,6 +107,36 @@ tonemap_mix)`; `linear_to_srgb`. **[FORK] `faithful_camera`** forces `exp_scale=
 aF=ramp(tc1.x-1).a; out=mix(mix(t3,t2,a2), mix(t1,t0,a1), aF)`. Default UUIDs dirt/grass/mountain/rock in
 indra_constants.cpp:68-71.
 
+## P3 TEXTURING PORT (2026-08-03, no-shortcuts trace E+F) — the faithful splat
+
+**Composition/noise: PORTED TO THE ENGINE (Rust, `terrain_noise.rs`, commit f6322517c1).** Stock's
+`noise.{h,cpp}` (NOT llperlin) seeds tables with `srand(42)` + MSVC `rand()` LCG
+(`state=state*214013+2531011; (state>>16)&0x7fff`); reproduced deterministically (trailing
+`srand(time)` runs AFTER tables built → static). `build_composition` = generateHeights;
+`vertex_texcoord1` = eval's comp(datap cell) + per-vertex noise. All f32. Needs from the viewer:
+the region heightmap (have), the 4 corner `mStartHeight[4]`/`mHeightRange[4]` (sim RegionInfo, NOT
+the 20/60 settings defaults), and region `origin_global` (F64, global metres — lattice continuity).
+
+**Detail pixels: SUPPLIED BY THE VIEWER (asset boundary — engine has no J2C pipeline).** `mRawImages[]`
+is DEAD here. Route: on slot-change call `mDetailTextures[i]->forceToSaveRawImage(0, F32_MAX)` + once
+`compp->boost()` (force decode — the null-GL draw pool may not boost); each change poll
+`hasSavedRawImage()` → `getSavedRawImage()` → `getData/getWidth/getHeight/getComponents` (3 or 4
+comp) → `fsr_texture_upload(reserved_id_i, w, h, rgba)`. Version by `(getDetailAssetID(i),
+getSavedRawImageLevel())`. Alpha ramp = shipped local `alpha_gradient_2d.j2c` (256×256×1 GL_ALPHA8,
+CLAMP) — decode it or pull via the same saved-raw route. Detail sampler = UNORM (NOT sRGB), WRAP,
+mipmapped; ramp = CLAMP. Legacy `terrainF.glsl` does NO srgb_to_linear (that's downstream in soften).
+
+**Splat shader (`terrainF.glsl:44-69`):** detail UV = `world.xy*sDetailScale + fmod(region_origin_global,
+1/sDetailScale)*sDetailScale`, `sDetailScale = 1/RenderTerrainScale` (default 12). `a1=ramp(comp).a;
+a2=ramp(comp-2).a; aF=ramp(comp-1).a; out = mix(mix(t3,t2,a2), mix(t1,t0,a1), aF)` → RT0 albedo(sRGB).
+
+**P3 remaining (coupled engine+viewer, needs REBUILD):** (1) extend TerrainHeader/FsrTerrainHeader +
+setSceneTerrain: start[4], range[4], origin_global[2] f64, detail_scale, 5 tex ids. (2) engine
+ensure_terrain: build_composition + attach texcoord1 (stride 24→32); terrain_gb bind = UBO + 5 tex +
+2 samplers; terrain_gb.{vert,frag} do the UV + splat. (3) viewer feed: extract detail+ramp pixels +
+corner/origin params + boost. (4) rebuild + deploy + checkpoint (textured ground). NOTE: feed struct
+byte-match couples engine+viewer — deploy both together.
+
 ## PORT ARCHITECTURE DECISION (P2)
 Go **deferred** (faithful + needed for P4 shadows/objects), but reconstruct **WORLD** pos from depth via
 `inv(view_proj)` — the SAME matrix family the sky ray already uses (proven) — and do lighting+atmospherics

@@ -53,6 +53,35 @@ struct Engine {
 
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 
+/// P3 decode-once fetch-tap: textures decoded on the viewer's decode-worker threads, pending GPU
+/// upload. The worker decodes lock-free + pushes here; the render thread (fsr_end_frame) drains +
+/// uploads. Decoupled from the ENGINE mutex so a decode thread never contends with rendering.
+/// Entries: (texture id, RGBA8 top-down, width, height).
+static UPLOAD_QUEUE: Mutex<Vec<(u32, Vec<u8>, u32, u32)>> = Mutex::new(Vec::new());
+
+/// Expand a native 1/2/3/4-component decode to RGBA8, flipping bottom-up (LL raw) -> top-down so
+/// wgpu sampling matches stock's GL sampling. 1-comp fills all channels (an alpha-ramp `.a` works).
+fn expand_rgba_flip(img: &j2c::DecodedJ2c) -> Vec<u8> {
+    let (w, h, c) = (img.width as usize, img.height as usize, img.components as usize);
+    let src = &img.pixels;
+    let mut rgba = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let src_row = (h - 1 - y) * w * c;
+        let dst_row = y * w * 4;
+        for x in 0..w {
+            let s = src_row + x * c;
+            let d = dst_row + x * 4;
+            match c {
+                1 => { let v = src[s]; rgba[d] = v; rgba[d + 1] = v; rgba[d + 2] = v; rgba[d + 3] = v; }
+                2 => { let v = src[s]; rgba[d] = v; rgba[d + 1] = v; rgba[d + 2] = v; rgba[d + 3] = src[s + 1]; }
+                3 => { rgba[d] = src[s]; rgba[d + 1] = src[s + 1]; rgba[d + 2] = src[s + 2]; rgba[d + 3] = 255; }
+                _ => { rgba[d] = src[s]; rgba[d + 1] = src[s + 1]; rgba[d + 2] = src[s + 2]; rgba[d + 3] = src[s + 3]; }
+            }
+        }
+    }
+    rgba
+}
+
 fn init_logging() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -546,37 +575,60 @@ pub unsafe extern "C" fn fsr_texture_upload(id: u32, w: u32, h: u32, rgba: *cons
 /// sampling matches stock's GL sampling with the same UVs. Returns 1 on success, 0 fail-closed.
 /// # Safety: `data` must hold at least `len` readable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn fsr_texture_decode_j2c(id: u32, data: *const u8, len: usize, discard: i32) -> i32 {
+pub unsafe extern "C" fn fsr_texture_decode_j2c(id: u32, data: *const u8, len: usize, discard: i32) -> *mut std::os::raw::c_void {
     if data.is_null() || len == 0 {
-        return 0;
+        return std::ptr::null_mut();
     }
     let bytes = std::slice::from_raw_parts(data, len);
     j2c::ensure_init();
-    let Some(img) = j2c::decode(bytes, discard, 0, 4) else { return 0 };
-    let (w, h, c) = (img.width as usize, img.height as usize, img.components as usize);
-    let src = &img.pixels;
-    let mut rgba = vec![0u8; w * h * 4];
-    for y in 0..h {
-        let src_row = (h - 1 - y) * w * c; // bottom-up -> top-down
-        let dst_row = y * w * 4;
-        for x in 0..w {
-            let s = src_row + x * c;
-            let d = dst_row + x * 4;
-            match c {
-                1 => { let v = src[s]; rgba[d] = v; rgba[d + 1] = v; rgba[d + 2] = v; rgba[d + 3] = v; }
-                2 => { let v = src[s]; rgba[d] = v; rgba[d + 1] = v; rgba[d + 2] = v; rgba[d + 3] = src[s + 1]; }
-                3 => { rgba[d] = src[s]; rgba[d + 1] = src[s + 1]; rgba[d + 2] = src[s + 2]; rgba[d + 3] = 255; }
-                _ => { rgba[d] = src[s]; rgba[d + 1] = src[s + 1]; rgba[d + 2] = src[s + 2]; rgba[d + 3] = src[s + 3]; }
-            }
-        }
+    let Some(img) = j2c::decode(bytes, discard, 0, 4) else { return std::ptr::null_mut() };
+    // Enqueue the RGBA (top-down) for the render thread to GPU-upload as texture `id`. Lock only the
+    // small queue, never the ENGINE mutex -- a decode worker must not contend with rendering.
+    let rgba = expand_rgba_flip(&img);
+    if let Ok(mut q) = UPLOAD_QUEUE.lock() {
+        q.push((id, rgba, img.width, img.height));
     }
-    let mut g = ENGINE.lock().unwrap();
-    let Some(e) = g.as_mut() else { return 0 };
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Engine { device, queue, live, .. } = e;
-        live.upload_texture(device, queue, id, w as u32, h as u32, &rgba);
-    }));
-    if r.is_err() { 0 } else { 1 }
+    // Return the NATIVE decode (bottom-up, native components -- exactly what the viewer's own decode
+    // would produce) so the fetcher fills mRawImage from this SAME decode. No double-decode.
+    Box::into_raw(Box::new(img)) as *mut std::os::raw::c_void
+}
+
+/// The native-decode view for a handle from `fsr_texture_decode_j2c`, for filling the viewer's
+/// mRawImage. `pixels` is bottom-up, `components` native (1/3/4). Valid until `fsr_decoded_free`.
+#[repr(C)]
+pub struct FsrDecodedView {
+    pub pixels: *const u8,
+    pub len: usize,
+    pub width: i32,
+    pub height: i32,
+    pub components: i32,
+}
+
+/// Read the decoded-image view. Returns 1 on success, 0 if `handle`/`out` is null.
+/// # Safety: `handle` is a live handle from `fsr_texture_decode_j2c`; `out` writable.
+#[no_mangle]
+pub extern "C" fn fsr_decoded_view(handle: *const std::os::raw::c_void, out: *mut FsrDecodedView) -> i32 {
+    if handle.is_null() || out.is_null() {
+        return 0;
+    }
+    unsafe {
+        let img = &*(handle as *const j2c::DecodedJ2c);
+        (*out).pixels = img.pixels.as_ptr();
+        (*out).len = img.pixels.len();
+        (*out).width = img.width as i32;
+        (*out).height = img.height as i32;
+        (*out).components = img.components as i32;
+    }
+    1
+}
+
+/// Release a handle from `fsr_texture_decode_j2c` (null is a no-op).
+/// # Safety: `handle` must come from `fsr_texture_decode_j2c` and not be freed already.
+#[no_mangle]
+pub extern "C" fn fsr_decoded_free(handle: *mut std::os::raw::c_void) {
+    if !handle.is_null() {
+        unsafe { drop(Box::from_raw(handle as *mut j2c::DecodedJ2c)) };
+    }
 }
 
 /// Phase A.3: reset the per-frame UI list. Call once at frame start, before any fsr_ui_submit.
@@ -611,6 +663,16 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
     e.frame_open = false;
+    // P3 decode-once fetch-tap: drain textures decoded on the worker threads -> GPU (render thread).
+    // Done once per frame, before rendering, so terrain (and later all) textures are resident in time.
+    if let Ok(mut q) = UPLOAD_QUEUE.lock() {
+        if !q.is_empty() {
+            let Engine { device, queue, live, .. } = e;
+            for (id, rgba, w, h) in q.drain(..) {
+                live.upload_texture(device, queue, id, w, h, &rgba);
+            }
+        }
+    }
     // S3b: consume the derived sky regime -- drive the global tonemap's exposure/mix/gamma/
     // legacy-gamma from the SAME legacy-vs-advanced regime the viewer used for the sky. This is
     // the piece the reverted P3 consumption lacked (a tonemap at all); now the model + tonemap

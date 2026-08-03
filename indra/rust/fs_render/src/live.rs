@@ -153,7 +153,8 @@ pub struct LiveRenderer {
     terrain_binds: HashMap<[u32; 5], wgpu::BindGroup>,
     // Ground Phase 1 (typed, forward): mesh built engine-side from the fed heightmap, rendered into
     // scene_hdr after the sky (depth-tested) with in-shader N.L. Rebuilt only on TerrainBlock.gen change.
-    terrain_typed_pipeline: Option<wgpu::RenderPipeline>,  // terrain_typed.{vert,frag}, reuses sky_fs_bgl
+    terrain_typed_pipeline: Option<wgpu::RenderPipeline>,  // P1 forward terrain_typed.{vert,frag} (dormant; P2 uses the G-buffer path)
+    terrain_gb_pipeline: Option<wgpu::RenderPipeline>,     // P2 terrain_gb.{vert,frag} -> [albedo+flag, world-normal] + depth
     terrain_typed_ubo: wgpu::Buffer,                       // view_proj + sun/sunlight/ambient + hdr (128B)
     terrain_typed_bind: Option<wgpu::BindGroup>,
     terrain_vbuf: Option<wgpu::Buffer>,                    // pos(3)+normal(3) per vertex
@@ -629,6 +630,7 @@ impl LiveRenderer {
             terrain_pipeline: None,
             terrain_binds: HashMap::new(),
             terrain_typed_pipeline: None,
+            terrain_gb_pipeline: None,
             terrain_typed_ubo: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("terrain-typed-ubo"),
                 size: 128, // view_proj(64) + sun_dir/sunlight/ambient/misc (64)
@@ -1311,6 +1313,42 @@ impl LiveRenderer {
             self.terrain_typed_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("terrain-typed-bind"), layout: &terrain_bgl,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.terrain_typed_ubo.as_entire_binding() }],
+            }));
+            // P2: the DEFERRED variant -- same mesh + UBO (bind reused), but writes the G-buffer
+            // [albedo+FLAG, world-normal] + depth. The softenLight resolve then lights it.
+            let gb_vs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain_gb.vert.spv"));
+            let gb_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain_gb.frag.spv"));
+            let gb_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("terrain-gb-pl"), bind_group_layouts: &[&terrain_bgl], push_constant_ranges: &[],
+            });
+            self.terrain_gb_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("terrain-gb"),
+                layout: Some(&gb_layout),
+                vertex: wgpu::VertexState {
+                    module: &gb_vs, entry_point: "main",
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
+                        ],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &gb_fs, entry_point: "main",
+                    targets: &[
+                        Some(wgpu::ColorTargetState { format: GBUF_ALBEDO_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                        Some(wgpu::ColorTargetState { format: GBUF_NORMAL_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                    ],
+                }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::GreaterEqual, // reverse-Z
+                    stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
             }));
         }
     }
@@ -2096,13 +2134,15 @@ impl LiveRenderer {
         }
         if self.resolve_bind.is_none() {
             let bgl = &self.resolve_bgl;
-            let env = &self.env_ubo;
+            // P2b: the faithful resolve reads the shared 60-float SKY UBO (all WL params) at binding 0,
+            // not the old 4-vec4 Env UBO.
+            let sky = &self.sky_fs_ubo;
             if let (Some((alb, _, _)), Some((nrm, _, _))) = (self.gbuf_albedo.as_ref(), self.gbuf_normal.as_ref()) {
                 let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("resolve-bind"),
                     layout: bgl,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: env.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 0, resource: sky.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(alb) },
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(nrm) },
                     ],
@@ -2441,10 +2481,17 @@ impl LiveRenderer {
         }
         // #3/#4: any opaque generic-with-normal draws this frame -> build the deferred path.
         let has_gb = self.queued.iter().any(|q| q.is_gb);
-        if has_gb {
+        // Ground P2: terrain drives the deferred path (G-buffer fill + softenLight resolve).
+        let has_terrain = self.terrain_index_count > 0
+            && self.terrain_vbuf.is_some()
+            && self.terrain_gb_pipeline.is_some()
+            && self.terrain_typed_bind.is_some();
+        if has_gb || has_terrain {
             self.ensure_gbuffer(device, w, h);
-            self.ensure_pipeline_gb(device);
             self.ensure_resolve(device);
+        }
+        if has_gb {
+            self.ensure_pipeline_gb(device);
         }
         {
             // Env UBO = sun_dir, sunlight, ambient (frame_env) + bg (the viewer clear, so the
@@ -2650,33 +2697,53 @@ impl LiveRenderer {
                 }
             }
         }
-        // Ground Phase 1 (typed forward): draw terrain into scene_hdr over the sky, depth-tested
-        // (reverse-Z, clear 0). Runs before clouds + the exposure meter, so both see the lit ground.
-        if let (Some(tp), Some(tb), Some(vb), Some(ib)) = (
-            self.terrain_typed_pipeline.as_ref(), self.terrain_typed_bind.as_ref(),
-            self.terrain_vbuf.as_ref(), self.terrain_ibuf.as_ref(),
-        ) {
-            if self.terrain_index_count > 0 {
-                let mut tpass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("terrain-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: scene_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: depth_view,
-                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                tpass.set_pipeline(tp);
-                tpass.set_bind_group(0, tb, &[]);
-                tpass.set_vertex_buffer(0, vb.slice(..));
-                tpass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                tpass.draw_indexed(0..self.terrain_index_count, 0, 0..1);
+        // Ground P2: DEFERRED terrain. (1) Fill the G-buffer [albedo+FLAG, world-normal] + depth,
+        // then (2) resolve (faithful softenLight) into scene_hdr OVER the sky -- LoadOp::Load keeps
+        // the sky, and the resolve discards non-HAS_ATMOS pixels. Replaces the P1 forward pass.
+        if has_terrain {
+            if let (Some(gp), Some(tb), Some(vb), Some(ib), Some(alb), Some(nrm)) = (
+                self.terrain_gb_pipeline.as_ref(), self.terrain_typed_bind.as_ref(),
+                self.terrain_vbuf.as_ref(), self.terrain_ibuf.as_ref(), gb_alb, gb_nrm,
+            ) {
+                {
+                    let mut gbp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("terrain-gb-pass"),
+                        color_attachments: &[
+                            Some(wgpu::RenderPassColorAttachment { view: alb, resolve_target: None,
+                                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+                            Some(wgpu::RenderPassColorAttachment { view: nrm, resolve_target: None,
+                                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+                        ],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: depth_view,
+                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    gbp.set_pipeline(gp);
+                    gbp.set_bind_group(0, tb, &[]);
+                    gbp.set_vertex_buffer(0, vb.slice(..));
+                    gbp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    gbp.draw_indexed(0..self.terrain_index_count, 0, 0..1);
+                }
+                if let (Some(rp3), Some(rbind)) = (self.resolve_pipeline.as_ref(), self.resolve_bind.as_ref()) {
+                    let mut rpass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("terrain-resolve-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: scene_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    rpass.set_pipeline(rp3);
+                    rpass.set_bind_group(0, rbind, &[]);
+                    rpass.draw(0..3, 0..1);
+                }
             }
         }
         // Half-res VOLUMETRIC cloud pass: raymarch clouds into cloud_target (1/2 res), then composite

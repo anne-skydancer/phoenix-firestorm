@@ -484,7 +484,11 @@ impl SceneFrame {
         let view = glam::Mat4::from_cols_array(&cam.view);
         let proj = glam::Mat4::perspective_rh(cam.fov_y, cam.aspect, cam.near, cam.far);
         let inv_vp = (proj * view).inverse();
-        let sky_hdr_scale = self.sky_regime().map(|r| r.sky_hdr_scale).unwrap_or(1.0);
+        let regime = self.sky_regime();
+        let sky_hdr_scale = regime.as_ref().map(|r| r.sky_hdr_scale).unwrap_or(1.0);
+        // P2b resolve: the atmospherics scales the softenLight port needs (regime-derived).
+        let sky_sunlight_scale = regime.as_ref().map(|r| r.sky_sunlight_scale).unwrap_or(1.0);
+        let sky_ambient_scale = regime.as_ref().map(|r| r.sky_ambient_scale).unwrap_or(1.0);
 
         let mut u = [0.0f32; 60];
         u[0..16].copy_from_slice(&inv_vp.to_cols_array());
@@ -502,10 +506,10 @@ impl SceneFrame {
         u[36] = sky.blue_horizon[0]; u[37] = sky.blue_horizon[1]; u[38] = sky.blue_horizon[2]; u[39] = sky.haze_horizon;
         // a6: blue_density.xyz, cloud_shadow
         u[40] = sky.blue_density[0]; u[41] = sky.blue_density[1]; u[42] = sky.blue_density[2]; u[43] = sky.cloud_shadow;
-        // a7: glow.xyz, _
-        u[44] = sky.glow[0]; u[45] = sky.glow[1]; u[46] = sky.glow[2]; u[47] = 0.0;
-        // a8: sky_hdr_scale, _, viewport_w, viewport_h
-        u[48] = sky_hdr_scale; u[49] = 0.0; u[50] = cam.viewport_w; u[51] = cam.viewport_h;
+        // a7: glow.xyz, sky_sunlight_scale (P2b resolve)
+        u[44] = sky.glow[0]; u[45] = sky.glow[1]; u[46] = sky.glow[2]; u[47] = sky_sunlight_scale;
+        // a8: sky_hdr_scale, sky_ambient_scale (P2b resolve), viewport_w, viewport_h
+        u[48] = sky_hdr_scale; u[49] = sky_ambient_scale; u[50] = cam.viewport_w; u[51] = cam.viewport_h;
         // a9: sun_dir.xyz, _ ; a10: moon_dir.xyz, _ (REAL world-space, for the sun/moon discs)
         u[52] = sky.sun_dir[0]; u[53] = sky.sun_dir[1]; u[54] = sky.sun_dir[2]; u[55] = 0.0;
         u[56] = sky.moon_dir[0]; u[57] = sky.moon_dir[1]; u[58] = sky.moon_dir[2]; u[59] = 0.0;

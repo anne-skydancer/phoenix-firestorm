@@ -45,6 +45,7 @@
 #include "lltexturecache.h"
 #include "llviewercontrol.h"
 #include "llviewertexturelist.h"
+#include "fsscenedump.h" // <FS:VkBridge> E3 decode-once fetch-tap (engine decode -> mRawImage)
 #include "llviewertexture.h"
 #include "llviewerregion.h"
 #include "llviewerstats.h"
@@ -1994,27 +1995,60 @@ bool LLTextureFetchWorker::doWork(S32 param)
         mRawImage = NULL;
         mAuxImage = NULL;
 
-        // if we have the entire image data (and the image is not J2C), decode the full res image
-        // DO NOT decode a higher res j2c than was requested.  This is a waste of time and memory.
-        mDecoded  = false;
-        setState(DECODE_IMAGE_UPDATE);
-        LL_DEBUGS(LOG_TXT) << mID << ": Decoding. Bytes: " << mFormattedImage->getDataSize() << " Discard: " << discard
-                           << " All Data: " << mHaveAllData << LL_ENDL;
-
-        // In case worked manages to request decode, be shut down,
-        // then init and request decode again with first decode
-        // still in progress, assign a sufficiently unique id
-        mDecodeHandle = LLAppViewer::getImageDecodeThread()->decodeImage(mFormattedImage,
-                                                                       discard,
-                                                                       mNeedsAux,
-                                                                       new DecodeResponder(mFetcher, mID, this));
-        if (mDecodeHandle == 0)
+        // <FS:VkBridge> E3 decode-once fetch-tap: in engine (VK) mode, decode this J2C IN THE ENGINE
+        // (which also queues its GPU upload keyed by fsrTextureId(mID)), fill mRawImage from that
+        // SAME decode, and SKIP the viewer's own decode -- no double-decode. Non-aux J2C only (aux
+        // channels + non-J2C keep the normal path). Synchronous on Ttf for now (fine at terrain's
+        // scale; parallelize before general rollout). Falls through to the normal decode on failure.
+        bool fsr_tapped = false;
+        if (FSSceneDump::liveActive() && !mNeedsAux && mFormattedImage->getCodec() == IMG_CODEC_J2C)
         {
-            // Abort, failed to put into queue.
-            // Happens if viewer is shutting down
-            setState(DONE);
-            LL_DEBUGS(LOG_TXT) << mID << " DECODE_IMAGE abort: failed to post for decoding" << LL_ENDL;
-            return true;
+            unsigned int tid = FSSceneDump::fsrTextureId(mID.mData);
+            void* hdl = FSSceneDump::decodeTextureJ2C(tid, mFormattedImage->getData(), mFormattedImage->getDataSize(), discard);
+            if (hdl)
+            {
+                const U8* px = nullptr; int w = 0, h = 0, c = 0;
+                bool ok = FSSceneDump::decodedView(hdl, &px, &w, &h, &c);
+                if (ok)
+                {
+                    mRawImage = new LLImageRaw(px, (U16)w, (U16)h, (S8)c); // copies (native, bottom-up)
+                }
+                FSSceneDump::freeDecoded(hdl);
+                if (ok)
+                {
+                    mAuxImage = NULL;
+                    mDecodedDiscard = mFormattedImage->getDiscardLevel(); // match the async responder
+                    mDecoded = true;
+                    setState(DECODE_IMAGE_UPDATE);
+                    fsr_tapped = true;
+                }
+            }
+        }
+
+        if (!fsr_tapped)
+        {
+            // if we have the entire image data (and the image is not J2C), decode the full res image
+            // DO NOT decode a higher res j2c than was requested.  This is a waste of time and memory.
+            mDecoded  = false;
+            setState(DECODE_IMAGE_UPDATE);
+            LL_DEBUGS(LOG_TXT) << mID << ": Decoding. Bytes: " << mFormattedImage->getDataSize() << " Discard: " << discard
+                               << " All Data: " << mHaveAllData << LL_ENDL;
+
+            // In case worked manages to request decode, be shut down,
+            // then init and request decode again with first decode
+            // still in progress, assign a sufficiently unique id
+            mDecodeHandle = LLAppViewer::getImageDecodeThread()->decodeImage(mFormattedImage,
+                                                                           discard,
+                                                                           mNeedsAux,
+                                                                           new DecodeResponder(mFetcher, mID, this));
+            if (mDecodeHandle == 0)
+            {
+                // Abort, failed to put into queue.
+                // Happens if viewer is shutting down
+                setState(DONE);
+                LL_DEBUGS(LOG_TXT) << mID << " DECODE_IMAGE abort: failed to post for decoding" << LL_ENDL;
+                return true;
+            }
         }
         // fall though
     }

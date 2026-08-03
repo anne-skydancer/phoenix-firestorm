@@ -97,12 +97,20 @@ struct FsrCameraBlock
     F32 viewport_h;
 };
 // <FS:VkBridge> Ground P1: region heightmap header (byte-matches scene::TerrainHeader).
-struct FsrTerrainHeader
+struct FsrTerrainHeader // byte-matches Rust scene::TerrainHeader (104 bytes, F64 8-aligned @56)
 {
     U32 dim;              // grids per edge (e.g. 257); heightmap is dim*dim floats
     F32 meters_per_grid; // world metres between samples (e.g. 1.0)
-    F32 origin[3];       // region origin in agent space
-    F32 _pad;
+    F32 origin[3];       // region origin in agent space (mesh vertex positions)
+    F32 _pad0;
+    F32 start_height[4]; // P3 composition: per-corner SW,SE,NW,NE (sim RegionInfo)
+    F32 height_range[4]; // per-corner SW,SE,NW,NE
+    F64 origin_global[2];// region SW corner in GLOBAL metres (noise lattice continuity)
+    F32 detail_scale;    // 1/RenderTerrainScale (detail-UV tiling)
+    F32 _pad1;
+    U32 detail_tex_ids[4]; // engine texture ids for the 4 detail textures
+    U32 alpha_ramp_id;     // engine texture id for the alpha ramp
+    U32 _pad2;
 };
 struct FsrEepSkyBlock
 {
@@ -196,11 +204,20 @@ typedef int(__cdecl* fsr_scene_camera_t)(const FsrCameraBlock*);
 typedef int(__cdecl* fsr_scene_sky_t)(const FsrEepSkyBlock*);
 typedef int(__cdecl* fsr_scene_regime_t)(const FsrRegimeSettings*);
 typedef int(__cdecl* fsr_scene_terrain_t)(const FsrTerrainHeader*, const F32*);
+// <FS:VkBridge> E3 decode-once fetch-tap: engine decodes a compressed J2C (returns a handle owning
+// the native decode for mRawImage + queues the GPU upload as texture id), then view/free the handle.
+struct FsrDecodedView { const U8* pixels; size_t len; int width; int height; int components; };
+typedef void*(__cdecl* fsr_texdecode_t)(U32, const U8*, size_t, int);
+typedef int(__cdecl* fsr_decview_t)(const void*, FsrDecodedView*);
+typedef void(__cdecl* fsr_decfree_t)(void*);
 static fsr_scene_begin_t sFsrSceneBegin = nullptr;
 static fsr_scene_camera_t sFsrSceneCamera = nullptr;
 static fsr_scene_sky_t sFsrSceneSky = nullptr;
 static fsr_scene_regime_t sFsrSceneRegime = nullptr;
 static fsr_scene_terrain_t sFsrSceneTerrain = nullptr;
+static fsr_texdecode_t sFsrTexDecode = nullptr;
+static fsr_decview_t sFsrDecView = nullptr;
+static fsr_decfree_t sFsrDecFree = nullptr;
 // <FS:VkBridge> A.3 native-VK UI feed (honest LLRender::flush -> engine, no glGet, no tap)
 typedef int(__cdecl* fsr_ui_begin_t)();
 typedef int(__cdecl* fsr_ui_submit_t)(const float*, U32, U32, U32, const U8*);
@@ -239,6 +256,9 @@ static void bindLive()
     sFsrSceneSky = (fsr_scene_sky_t)GetProcAddress(dll, "fsr_scene_set_sky");
     sFsrSceneRegime = (fsr_scene_regime_t)GetProcAddress(dll, "fsr_scene_set_regime");
     sFsrSceneTerrain = (fsr_scene_terrain_t)GetProcAddress(dll, "fsr_scene_set_terrain");
+    sFsrTexDecode = (fsr_texdecode_t)GetProcAddress(dll, "fsr_texture_decode_j2c");
+    sFsrDecView = (fsr_decview_t)GetProcAddress(dll, "fsr_decoded_view");
+    sFsrDecFree = (fsr_decfree_t)GetProcAddress(dll, "fsr_decoded_free");
     sFsrUiBegin = (fsr_ui_begin_t)GetProcAddress(dll, "fsr_ui_begin");
     sFsrUiSubmit = (fsr_ui_submit_t)GetProcAddress(dll, "fsr_ui_submit");
     sLive = (sFsrBegin && sFsrSubmit && sFsrEnd);
@@ -936,7 +956,11 @@ void setSceneCamera(const float origin[3], const float at[3], const float up[3],
 // <FS:VkBridge> Ground P1: forward the region heightmap to the engine (once per change, from
 // newview which owns LLSurface). heights = dim*dim floats in mSurfaceZ order (i + j*dim), which
 // the engine reads directly to build the terrain mesh. origin is agent-space (same as the camera).
-void setSceneTerrain(int dim, float meters_per_grid, const float origin[3], const float* heights)
+void setSceneTerrain(int dim, float meters_per_grid, const float origin[3],
+                     const float start_height[4], const float height_range[4],
+                     const double origin_global[2], float detail_scale,
+                     const unsigned int detail_tex_ids[4], unsigned int alpha_ramp_id,
+                     const float* heights)
 {
     if (!sFsrSceneTerrain) return;
     FsrTerrainHeader th;
@@ -944,7 +968,37 @@ void setSceneTerrain(int dim, float meters_per_grid, const float origin[3], cons
     th.dim = (U32)dim;
     th.meters_per_grid = meters_per_grid;
     th.origin[0] = origin[0]; th.origin[1] = origin[1]; th.origin[2] = origin[2];
+    for (int i = 0; i < 4; ++i) { th.start_height[i] = start_height[i]; th.height_range[i] = height_range[i]; th.detail_tex_ids[i] = detail_tex_ids[i]; }
+    th.origin_global[0] = origin_global[0]; th.origin_global[1] = origin_global[1];
+    th.detail_scale = detail_scale;
+    th.alpha_ramp_id = alpha_ramp_id;
     sFsrSceneTerrain(&th, heights);
+}
+
+// <FS:VkBridge> E3 decode-once fetch-tap: engine decodes a compressed J2C IN THE ENGINE (queues the
+// GPU upload as texture `id`) and returns a handle owning the native decode; the caller reads the
+// view to fill mRawImage, then frees. Plain types keep this decoupled from llimage. Null if the
+// engine bridge / DLL export is absent (caller falls through to the normal viewer decode).
+void* decodeTextureJ2C(unsigned int id, const U8* bytes, int len, int discard)
+{
+    if (!sFsrTexDecode || !bytes || len <= 0) return nullptr;
+    return sFsrTexDecode(id, bytes, (size_t)len, discard);
+}
+bool decodedView(void* handle, const U8** pixels, int* w, int* h, int* comp)
+{
+    if (!sFsrDecView || !handle) return false;
+    FsrDecodedView v;
+    memset(&v, 0, sizeof(v));
+    if (!sFsrDecView(handle, &v)) return false;
+    if (pixels) *pixels = v.pixels;
+    if (w) *w = v.width;
+    if (h) *h = v.height;
+    if (comp) *comp = v.components;
+    return v.pixels != nullptr && v.width > 0 && v.height > 0;
+}
+void freeDecoded(void* handle)
+{
+    if (sFsrDecFree && handle) sFsrDecFree(handle);
 }
 void setSceneSky(const FSSkyParams& p)
 {

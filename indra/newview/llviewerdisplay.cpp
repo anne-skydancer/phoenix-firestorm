@@ -82,6 +82,10 @@
 #include "llviewerparcelmgr.h"
 #include "llviewerregion.h"
 #include "llsurface.h" // <FS:VkBridge> Ground P1: region heightmap feed to the engine
+#include "llvlcomposition.h" // <FS:VkBridge> P3: terrain composition params (corners, detail ids)
+#include "indra_constants.h" // <FS:VkBridge> P3: IMG_ALPHA_GRAD_2D
+#include "llviewertexture.h" // <FS:VkBridge> P3: boost the detail textures so they fetch
+#include <fstream>           // <FS:VkBridge> P3: read the shipped alpha ramp j2c
 #include "llviewershadermgr.h"
 #include "llviewertexturelist.h"
 #include "llviewerwindow.h"
@@ -607,8 +611,57 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
                         s_heights.resize(n);
                         for (U32 k = 0; k < n; ++k) s_heights[k] = surf.getZ(k);
                         LLVector3 torigin = surf.getOriginAgent();
+                        // P3 composition params: per-corner start/range (sim RegionInfo), region SW
+                        // corner in GLOBAL metres (noise lattice continuity), detail tiling, and the
+                        // 5 engine texture ids -- fsrTextureId(UUID) -- the fetch-tap uploads by.
+                        LLVLComposition* compp = tregion->getComposition();
+                        F32 starth[4], rangeh[4];
+                        U32 detail_ids[4];
+                        for (S32 ci = 0; ci < 4; ++ci)
+                        {
+                            starth[ci] = compp ? compp->getStartHeight(ci) : 20.f;
+                            rangeh[ci] = compp ? compp->getHeightRange(ci) : 60.f;
+                            LLUUID did = compp ? compp->getDetailAssetID(ci) : LLUUID::null;
+                            detail_ids[ci] = FSSceneDump::fsrTextureId(did.mData);
+                        }
+                        LLVector3d og = surf.getOriginGlobal();
+                        double origin_global[2] = { og.mdV[0], og.mdV[1] };
+                        static LLCachedControl<F32> render_terrain_scale(gSavedSettings, "RenderTerrainScale", 12.f);
+                        F32 detail_scale = (render_terrain_scale > 0.f) ? (1.f / (F32)render_terrain_scale) : (1.f / 12.f);
+                        U32 ramp_id = FSSceneDump::fsrTextureId(IMG_ALPHA_GRAD_2D.mData);
+                        // Ensure the 4 detail textures fetch (the null-GL draw pool may not boost
+                        // them), so the fetch-tap decodes them into the engine by fsrTextureId.
+                        for (S32 ci = 0; ci < 4; ++ci)
+                        {
+                            LLUUID did = compp ? compp->getDetailAssetID(ci) : LLUUID::null;
+                            if (did.notNull())
+                            {
+                                LLViewerFetchedTexture* dt = LLViewerTextureManager::getFetchedTexture(did);
+                                if (dt) { dt->setBoostLevel(LLGLTexture::BOOST_TERRAIN); dt->addTextureStats(4096.f * 4096.f); }
+                            }
+                        }
+                        // The alpha ramp is a shipped LOCAL j2c (not asset-fetched, so the network
+                        // fetch-tap won't see it) -- decode it into the engine directly, once.
+                        static bool s_ramp_fed = false;
+                        if (!s_ramp_fed)
+                        {
+                            std::string rp = gDirUtilp->findSkinnedFilename("textures", "alpha_gradient_2d.j2c");
+                            std::ifstream rf(rp.c_str(), std::ios::binary | std::ios::ate);
+                            if (rf.is_open())
+                            {
+                                std::streamsize rsz = rf.tellg();
+                                rf.seekg(0);
+                                std::vector<U8> rb((size_t)(rsz > 0 ? rsz : 0));
+                                if (rsz > 0 && rf.read((char*)rb.data(), rsz))
+                                {
+                                    void* rh = FSSceneDump::decodeTextureJ2C(ramp_id, rb.data(), (int)rsz, 0);
+                                    if (rh) { FSSceneDump::freeDecoded(rh); s_ramp_fed = true; }
+                                }
+                            }
+                        }
                         FSSceneDump::setSceneTerrain((int)dim, surf.getMetersPerGrid(),
-                                                     torigin.mV, s_heights.data());
+                                                     torigin.mV, starth, rangeh, origin_global,
+                                                     detail_scale, detail_ids, ramp_id, s_heights.data());
                     }
                 }
             }

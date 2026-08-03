@@ -84,7 +84,25 @@ namespace FSSceneDump
                         float near_clip, float far_clip, float fov_y, float aspect);
     // <FS:VkBridge> Ground P1: forward the region heightmap (dim*dim floats, mSurfaceZ order) +
     // agent-space origin + metres-per-grid. Called from newview only when the terrain changes.
-    void setSceneTerrain(int dim, float meters_per_grid, const float origin[3], const float* heights);
+    void setSceneTerrain(int dim, float meters_per_grid, const float origin[3],
+                         const float start_height[4], const float height_range[4],
+                         const double origin_global[2], float detail_scale,
+                         const unsigned int detail_tex_ids[4], unsigned int alpha_ramp_id,
+                         const float* heights);
+    // <FS:VkBridge> E3 decode-once fetch-tap. decodeTextureJ2C: engine decodes the compressed J2C
+    // (queues the GPU upload as texture `id`) + returns a handle owning the native decode; read it
+    // with decodedView (fill mRawImage), then freeDecoded. Plain types (no llimage dep).
+    void* decodeTextureJ2C(unsigned int id, const U8* bytes, int len, int discard);
+    bool  decodedView(void* handle, const U8** pixels, int* w, int* h, int* comp);
+    void  freeDecoded(void* handle);
+    // Stable UUID(16 bytes)->u32 engine texture key, shared by the fetch-tap upload + the terrain
+    // feed so both name the same texture. FNV-1a over the raw UUID bytes.
+    inline unsigned int fsrTextureId(const U8* uuid16)
+    {
+        unsigned int h = 2166136261u;
+        for (int i = 0; i < 16; ++i) { h ^= uuid16[i]; h *= 16777619u; }
+        return h ? h : 1u;
+    }
     // <FS:VkBridge> A.2: the FULL WindLight sky param set the engine's fullscreen sky consumes.
     // Plain floats (no LL types) so both llrender and newview can name it; newview fills it from
     // LLSettingsSky and passes it once per frame.

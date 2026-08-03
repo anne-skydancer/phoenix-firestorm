@@ -82,6 +82,9 @@ namespace FSSceneDump
     // and calls these once per frame. The engine derives its eye-space sun from view * sun_dir.
     void setSceneCamera(const float origin[3], const float at[3], const float up[3],
                         float near_clip, float far_clip, float fov_y, float aspect);
+    // <FS:VkBridge> Ground P1: forward the region heightmap (dim*dim floats, mSurfaceZ order) +
+    // agent-space origin + metres-per-grid. Called from newview only when the terrain changes.
+    void setSceneTerrain(int dim, float meters_per_grid, const float origin[3], const float* heights);
     // <FS:VkBridge> A.2: the FULL WindLight sky param set the engine's fullscreen sky consumes.
     // Plain floats (no LL types) so both llrender and newview can name it; newview fills it from
     // LLSettingsSky and passes it once per frame.

@@ -96,6 +96,14 @@ struct FsrCameraBlock
     F32 viewport_w;
     F32 viewport_h;
 };
+// <FS:VkBridge> Ground P1: region heightmap header (byte-matches scene::TerrainHeader).
+struct FsrTerrainHeader
+{
+    U32 dim;              // grids per edge (e.g. 257); heightmap is dim*dim floats
+    F32 meters_per_grid; // world metres between samples (e.g. 1.0)
+    F32 origin[3];       // region origin in agent space
+    F32 _pad;
+};
 struct FsrEepSkyBlock
 {
     F32 sun_dir[3];
@@ -187,10 +195,12 @@ typedef int(__cdecl* fsr_scene_begin_t)();
 typedef int(__cdecl* fsr_scene_camera_t)(const FsrCameraBlock*);
 typedef int(__cdecl* fsr_scene_sky_t)(const FsrEepSkyBlock*);
 typedef int(__cdecl* fsr_scene_regime_t)(const FsrRegimeSettings*);
+typedef int(__cdecl* fsr_scene_terrain_t)(const FsrTerrainHeader*, const F32*);
 static fsr_scene_begin_t sFsrSceneBegin = nullptr;
 static fsr_scene_camera_t sFsrSceneCamera = nullptr;
 static fsr_scene_sky_t sFsrSceneSky = nullptr;
 static fsr_scene_regime_t sFsrSceneRegime = nullptr;
+static fsr_scene_terrain_t sFsrSceneTerrain = nullptr;
 // <FS:VkBridge> A.3 native-VK UI feed (honest LLRender::flush -> engine, no glGet, no tap)
 typedef int(__cdecl* fsr_ui_begin_t)();
 typedef int(__cdecl* fsr_ui_submit_t)(const float*, U32, U32, U32, const U8*);
@@ -228,6 +238,7 @@ static void bindLive()
     sFsrSceneCamera = (fsr_scene_camera_t)GetProcAddress(dll, "fsr_scene_set_camera");
     sFsrSceneSky = (fsr_scene_sky_t)GetProcAddress(dll, "fsr_scene_set_sky");
     sFsrSceneRegime = (fsr_scene_regime_t)GetProcAddress(dll, "fsr_scene_set_regime");
+    sFsrSceneTerrain = (fsr_scene_terrain_t)GetProcAddress(dll, "fsr_scene_set_terrain");
     sFsrUiBegin = (fsr_ui_begin_t)GetProcAddress(dll, "fsr_ui_begin");
     sFsrUiSubmit = (fsr_ui_submit_t)GetProcAddress(dll, "fsr_ui_submit");
     sLive = (sFsrBegin && sFsrSubmit && sFsrEnd);
@@ -921,6 +932,19 @@ void setSceneCamera(const float origin[3], const float at[3], const float up[3],
     cb.origin[0] = origin[0]; cb.origin[1] = origin[1]; cb.origin[2] = origin[2];
     cb.near_clip = near_clip; cb.far_clip = far_clip; cb.fov_y = fov_y; cb.aspect = aspect;
     sFsrSceneCamera(&cb);
+}
+// <FS:VkBridge> Ground P1: forward the region heightmap to the engine (once per change, from
+// newview which owns LLSurface). heights = dim*dim floats in mSurfaceZ order (i + j*dim), which
+// the engine reads directly to build the terrain mesh. origin is agent-space (same as the camera).
+void setSceneTerrain(int dim, float meters_per_grid, const float origin[3], const float* heights)
+{
+    if (!sFsrSceneTerrain) return;
+    FsrTerrainHeader th;
+    memset(&th, 0, sizeof(th));
+    th.dim = (U32)dim;
+    th.meters_per_grid = meters_per_grid;
+    th.origin[0] = origin[0]; th.origin[1] = origin[1]; th.origin[2] = origin[2];
+    sFsrSceneTerrain(&th, heights);
 }
 void setSceneSky(const FSSkyParams& p)
 {

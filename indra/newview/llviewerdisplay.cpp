@@ -81,6 +81,7 @@
 #include "llviewerobjectlist.h"
 #include "llviewerparcelmgr.h"
 #include "llviewerregion.h"
+#include "llsurface.h" // <FS:VkBridge> Ground P1: region heightmap feed to the engine
 #include "llviewershadermgr.h"
 #include "llviewertexturelist.h"
 #include "llviewerwindow.h"
@@ -576,6 +577,41 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
                 gSavedSettings.getF32("RenderExposure"),
                 gSavedSettings.getBOOL("RenderHDREnabled") ? 1 : 0,
                 LLPipeline::sReflectionProbesEnabled ? 1 : 0);
+        }
+        // <FS:VkBridge> Ground P1: feed the region heightmap to the engine, but ONLY when it
+        // changes (region change, or the sim's DCT LayerData streaming/terrain edits). The engine
+        // rebuilds its ~66k-vertex terrain mesh on each feed, so a cheap sub-sampled checksum
+        // (checked ~2 Hz) gates the re-feed. Heights ship in mSurfaceZ order (i + j*dim); origin is
+        // agent-space, matching the camera we feed above.
+        LLViewerRegion* tregion = gAgent.getRegion();
+        if (tregion)
+        {
+            LLSurface& surf = tregion->getLand();
+            S32 dim = surf.getGridsPerEdge();
+            if (dim >= 2)
+            {
+                U32 n = (U32)dim * (U32)dim;
+                static U32 s_last_sum = 0;
+                static const void* s_last_region = nullptr;
+                static U32 s_frame = 0;
+                if ((s_frame++ % 30) == 0 || (const void*)tregion != s_last_region)
+                {
+                    U32 sum = (U32)dim;
+                    for (U32 k = 0; k < n; k += 101)
+                        sum = sum * 1000003u + (U32)(S32)(surf.getZ(k) * 32.0f);
+                    if (sum != s_last_sum || (const void*)tregion != s_last_region)
+                    {
+                        s_last_sum = sum;
+                        s_last_region = (const void*)tregion;
+                        static std::vector<F32> s_heights;
+                        s_heights.resize(n);
+                        for (U32 k = 0; k < n; ++k) s_heights[k] = surf.getZ(k);
+                        LLVector3 torigin = surf.getOriginAgent();
+                        FSSceneDump::setSceneTerrain((int)dim, surf.getMetersPerGrid(),
+                                                     torigin.mV, s_heights.data());
+                    }
+                }
+            }
         }
     }
     // <FS:VkBridge> settings AUTOSAVE: bridge sessions can end in force-quit; the

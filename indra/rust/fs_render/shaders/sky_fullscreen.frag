@@ -117,22 +117,25 @@ void main() {
     // so stock draws each body's halo from its BILLBOARD. We reproduce that here: a bright limb-darkened
     // body PLUS a soft pow(cos,N) glow corona, so the body reads as a glowing object and bridges the
     // hard rim into the bare sky around it (this is what was missing at the zenith).
+    // FAITHFUL to upstream size/brightness (buttery-moon experiment dropped). Body angular sizes track
+    // stock's llvosky billboard formula (diskRadius * HEAVENLY_BODY_FACTOR 0.1): sun 0.5, moon 0.45.
     if (dot(sun_dir_w, sun_dir_w) > 0.25) {
         vec3 sd = normalize(sun_dir_w);
         float sc = dot(dir, sd);                           // cos(angle from sun)
         float above = smoothstep(-0.06, 0.02, sd.z);       // fade out below the horizon
-        float disc  = smoothstep(0.99955, 0.99975, sc);    // ~1.7 deg body
-        float halo  = pow(max(sc, 0.0), 300.0);            // corona, falls off over ~5-6 deg
-        color += sunlight_color * above * (disc * 8.0 + halo * 1.5);
+        float disc  = smoothstep(cos(0.024), cos(0.019), sc);   // ~1.1-1.4 deg radius white core
+        float halo  = pow(max(sc, 0.0), 600.0);                 // tight, modest corona (far less bloom than disc*8)
+        color += sunlight_color * above * (disc * 5.0 + halo * 0.4);
     }
     if (dot(moon_dir_w, moon_dir_w) > 0.25) {
-        vec3 md = normalize(moon_dir_w);
+        vec3  md = normalize(moon_dir_w);
         float mc = dot(dir, md);                           // cos(angle from moon)
         float above = smoothstep(-0.06, 0.03, md.z);       // fade below the horizon
-        float disc  = smoothstep(0.99955, 0.99975, mc);    // ~1.3 deg body, soft limb (was ~5 deg -- too big)
-        float halo  = pow(max(mc, 0.0), 900.0) * 0.9       // tight inner glow (~3 deg)
-                    + pow(max(mc, 0.0), 120.0) * 0.35;     // soft outer moonglow (~12 deg)
-        color += vec3(0.85, 0.87, 0.98) * above * (disc * 3.5 + halo);
+        float disc  = smoothstep(cos(0.045), cos(0.038), mc);   // ~2.2-2.6 deg radius (~5 deg dia, stock)
+        float halo  = pow(max(mc, 0.0), 350.0);                 // modest glow
+        // Neutral lunar grey-white, moderate brightness (reflects stock's moon_brightness, not the earlier
+        // bright/buttery experiment).
+        color += vec3(0.88, 0.89, 0.92) * above * (disc * 0.7 + halo * 0.2);
     }
 
     // ==== procedural stars (night-gated) -- fade in as the sun drops below the horizon ====

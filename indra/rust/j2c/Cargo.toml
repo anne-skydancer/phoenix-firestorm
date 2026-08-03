@@ -1,0 +1,23 @@
+[package]
+name = "j2c"
+version = "0.1.0"
+edition = "2021"
+description = "Memory-safe SL J2C (JPEG2000) decode over Grok. Single source shared by the viewer (llrust) and the Vulkan engine (fs_render) -- the untrusted parse lives in exactly one place."
+license = "LGPL-2.1"
+publish = false
+
+[lib]
+name = "j2c"
+# rlib: compiled into each consumer (llrust staticlib, fs_render cdylib). Panic behavior is
+# inherited from the consumer (llrust = abort across the C ABI).
+crate-type = ["rlib"]
+
+[features]
+# Grok decode. Without it, only the pure ingress validator is available (decode() returns None).
+# The grokj2k LINK is done by each final artifact (viewer cmake / fs_render build.rs), not here.
+grok = ["dep:bindgen"]
+
+[build-dependencies]
+# bindgen generates the Grok C-API FFI from grok.h at build time (needs libclang). Optional +
+# gated by the `grok` feature so a non-Grok consumer pulls none of it.
+bindgen = { version = "0.70", optional = true }

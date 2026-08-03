@@ -305,8 +305,17 @@ pub struct Light {
 pub struct TerrainHeader {
     pub dim: u32,             // grids per edge + 1 (e.g. 257); heightmap is dim*dim
     pub meters_per_grid: f32, // world metres between grid samples (e.g. 1.0)
-    pub origin: [f32; 3],     // region origin in world/agent space
-    pub _pad: f32,
+    pub origin: [f32; 3],     // region origin in agent space (mesh vertex positions)
+    pub _pad0: f32,
+    // P3 composition/splat (the engine computes composition itself; see terrain_noise):
+    pub start_height: [f32; 4],   // per-corner SW,SE,NW,NE (sim RegionInfo)
+    pub height_range: [f32; 4],   // per-corner SW,SE,NW,NE
+    pub origin_global: [f64; 2],  // region SW corner in GLOBAL metres (noise lattice continuity)
+    pub detail_scale: f32,        // 1/RenderTerrainScale (default 1/12); detail-UV tiling
+    pub _pad1: f32,
+    pub detail_tex_ids: [u32; 4], // engine texture ids for the 4 detail textures (dirt/grass/mtn/rock)
+    pub alpha_ramp_id: u32,       // engine texture id for IMG_ALPHA_GRAD_2D
+    pub _pad2: u32,
 }
 
 /// Engine-side terrain: the CPU heightmap + metadata. PERSISTS across frames (region-scoped, not
@@ -316,8 +325,15 @@ pub struct TerrainBlock {
     pub dim: u32,
     pub meters_per_grid: f32,
     pub origin: [f32; 3],
-    pub heights: Vec<f32>, // dim*dim, row-major
+    pub heights: Vec<f32>, // dim*dim, mSurfaceZ order (i + j*dim)
     pub gen: u64,
+    // P3 composition/splat params (copied from the header):
+    pub start_height: [f32; 4],
+    pub height_range: [f32; 4],
+    pub origin_global: [f64; 2],
+    pub detail_scale: f32,
+    pub detail_tex_ids: [u32; 4],
+    pub alpha_ramp_id: u32,
 }
 
 /// The accumulating typed frame. Grows one payload per phase. Per-frame data (camera, sky,
@@ -360,6 +376,12 @@ impl SceneFrame {
             origin: hdr.origin,
             heights: heights[..n].to_vec(),
             gen,
+            start_height: hdr.start_height,
+            height_range: hdr.height_range,
+            origin_global: hdr.origin_global,
+            detail_scale: hdr.detail_scale,
+            detail_tex_ids: hdr.detail_tex_ids,
+            alpha_ramp_id: hdr.alpha_ramp_id,
         });
     }
 
@@ -538,7 +560,21 @@ impl SceneFrame {
         u[16] = sky.sun_dir[0]; u[17] = sky.sun_dir[1]; u[18] = sky.sun_dir[2]; u[19] = 0.0;
         u[20] = sky.sun_color[0]; u[21] = sky.sun_color[1]; u[22] = sky.sun_color[2]; u[23] = 0.0;
         u[24] = sky.ambient[0]; u[25] = sky.ambient[1]; u[26] = sky.ambient[2]; u[27] = 0.0;
-        u[28] = hdr; u[29] = 0.0; u[30] = 0.0; u[31] = 0.0;
+        // misc: P3 detail-UV texgen. offset = fmod(origin_global, 1/detail_scale)*detail_scale,
+        // matching stock OBJECT_PLANE_S/T (lldrawpoolterrain.cpp:262-269). The G-buffer vertex shader
+        // does UV = pos.xy*detail_scale + offset. (Forward terrain_typed that used misc.x=hdr is dead.)
+        let _ = hdr;
+        let (detail_scale, off_x, off_y) = match self.terrain.as_ref() {
+            Some(t) if t.detail_scale > 0.0 => {
+                let ds = t.detail_scale as f64;
+                let tile = 1.0 / ds;
+                let ox = ((t.origin_global[0] % tile) * ds) as f32;
+                let oy = ((t.origin_global[1] % tile) * ds) as f32;
+                (t.detail_scale, ox, oy)
+            }
+            _ => (1.0 / 12.0, 0.0, 0.0),
+        };
+        u[28] = detail_scale; u[29] = off_x; u[30] = off_y; u[31] = 0.0;
         Some(u)
     }
 

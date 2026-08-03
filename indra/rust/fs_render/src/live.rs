@@ -154,7 +154,11 @@ pub struct LiveRenderer {
     // Ground Phase 1 (typed, forward): mesh built engine-side from the fed heightmap, rendered into
     // scene_hdr after the sky (depth-tested) with in-shader N.L. Rebuilt only on TerrainBlock.gen change.
     terrain_typed_pipeline: Option<wgpu::RenderPipeline>,  // P1 forward terrain_typed.{vert,frag} (dormant; P2 uses the G-buffer path)
-    terrain_gb_pipeline: Option<wgpu::RenderPipeline>,     // P2 terrain_gb.{vert,frag} -> [albedo+flag, world-normal] + depth
+    terrain_gb_pipeline: Option<wgpu::RenderPipeline>,     // P2/P3 terrain_gb.{vert,frag} -> [albedo+flag, world-normal] + depth
+    terrain_gb_bgl: Option<wgpu::BindGroupLayout>,         // P3 splat: UBO(0) + 4 detail(1-4) + ramp(5) + wrap(6) + clamp(7)
+    terrain_gb_bind: Option<wgpu::BindGroup>,              // rebuilt per-frame (picks up detail textures as they decode)
+    terrain_sampler_wrap: Option<wgpu::Sampler>,           // detail textures (TAM_WRAP)
+    terrain_sampler_clamp: Option<wgpu::Sampler>,          // alpha ramp (TAM_CLAMP)
     terrain_typed_ubo: wgpu::Buffer,                       // view_proj + sun/sunlight/ambient + hdr (128B)
     terrain_typed_bind: Option<wgpu::BindGroup>,
     terrain_vbuf: Option<wgpu::Buffer>,                    // pos(3)+normal(3) per vertex
@@ -631,6 +635,10 @@ impl LiveRenderer {
             terrain_binds: HashMap::new(),
             terrain_typed_pipeline: None,
             terrain_gb_pipeline: None,
+            terrain_gb_bgl: None,
+            terrain_gb_bind: None,
+            terrain_sampler_wrap: None,
+            terrain_sampler_clamp: None,
             terrain_typed_ubo: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("terrain-typed-ubo"),
                 size: 128, // view_proj(64) + sun_dir/sunlight/ambient/misc (64)
@@ -1229,7 +1237,14 @@ impl LiveRenderer {
                 let (ox, oy, oz) = (t.origin[0], t.origin[1], t.origin[2]);
                 let hh = &t.heights;
                 let h = |i: usize, j: usize| -> f32 { hh[i * dim + j] };
-                let mut verts: Vec<f32> = Vec::with_capacity(dim * dim * 6);
+                // P3: composition band value (stock generateHeights). grids_per_region_edge = dim-1
+                // (257 -> 256). Per-vertex texcoord1 = (comp, noise) drives the splat.
+                let tbl = crate::terrain_noise::tables();
+                let dim_c = (dim - 1).max(1);
+                let datap = crate::terrain_noise::build_composition(
+                    dim_c, hh, dim, mpg, t.origin_global, t.start_height, t.height_range, tbl);
+                // Vertex = pos(3) + normal(3) + texcoord1(2) = stride 32.
+                let mut verts: Vec<f32> = Vec::with_capacity(dim * dim * 8);
                 for i in 0..dim {
                     for j in 0..dim {
                         let x = ox + (j as f32) * mpg;
@@ -1241,7 +1256,9 @@ impl LiveRenderer {
                         let dzdy = (h(ip, j) - h(im, j)) / (((ip - im) as f32) * mpg).max(1e-4);
                         let (nx, ny, nz) = (-dzdx, -dzdy, 1.0f32);
                         let inv = 1.0 / (nx * nx + ny * ny + nz * nz).sqrt();
-                        verts.extend_from_slice(&[x, y, z, nx * inv, ny * inv, nz * inv]);
+                        // grid (x=j, y=i) -> vertex_texcoord1(gx=j, gy=i).
+                        let tc1 = crate::terrain_noise::vertex_texcoord1(j, i, dim_c, &datap, t.origin_global, tbl);
+                        verts.extend_from_slice(&[x, y, z, nx * inv, ny * inv, nz * inv, tc1[0], tc1[1]]);
                     }
                 }
                 let mut idx: Vec<u32> = Vec::with_capacity((dim - 1) * (dim - 1) * 6);
@@ -1314,12 +1331,42 @@ impl LiveRenderer {
                 label: Some("terrain-typed-bind"), layout: &terrain_bgl,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.terrain_typed_ubo.as_entire_binding() }],
             }));
-            // P2: the DEFERRED variant -- same mesh + UBO (bind reused), but writes the G-buffer
-            // [albedo+FLAG, world-normal] + depth. The softenLight resolve then lights it.
+            // P3: the DEFERRED SPLAT variant -- mesh+texcoord1 -> G-buffer [4-detail albedo+FLAG,
+            // world-normal] + depth. Own BGL: UBO(0) + 4 detail(1-4) + alpha ramp(5) + wrap(6) + clamp(7).
+            let tex_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+                binding, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            };
+            let samp_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+                binding, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None,
+            };
+            let gb_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("terrain-gb-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                    tex_entry(1), tex_entry(2), tex_entry(3), tex_entry(4), tex_entry(5),
+                    samp_entry(6), samp_entry(7),
+                ],
+            });
+            self.terrain_sampler_wrap = Some(device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("terrain-detail-wrap"),
+                address_mode_u: wgpu::AddressMode::Repeat, address_mode_v: wgpu::AddressMode::Repeat, address_mode_w: wgpu::AddressMode::Repeat,
+                mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }));
+            self.terrain_sampler_clamp = Some(device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("terrain-ramp-clamp"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            }));
             let gb_vs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain_gb.vert.spv"));
             let gb_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain_gb.frag.spv"));
             let gb_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("terrain-gb-pl"), bind_group_layouts: &[&terrain_bgl], push_constant_ranges: &[],
+                label: Some("terrain-gb-pl"), bind_group_layouts: &[&gb_bgl], push_constant_ranges: &[],
             });
             self.terrain_gb_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("terrain-gb"),
@@ -1327,10 +1374,11 @@ impl LiveRenderer {
                 vertex: wgpu::VertexState {
                     module: &gb_vs, entry_point: "main",
                     buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex,
+                        array_stride: 32, step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[
                             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
                             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 2 },
                         ],
                     }],
                 },
@@ -1349,6 +1397,38 @@ impl LiveRenderer {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
+            }));
+            self.terrain_gb_bgl = Some(gb_bgl);
+        }
+        // Rebuild the splat bind each frame -- picks up detail textures as they decode (fallback = white).
+        // wgpu 0.19 handles aren't Clone, so destructure self into disjoint field refs: the immutable
+        // reads (textures/bgl/samplers/ubo) coexist with writing the disjoint terrain_gb_bind field.
+        let Self {
+            terrain_gb_bgl, terrain_sampler_wrap, terrain_sampler_clamp,
+            terrain_typed_ubo, textures, white, terrain_gb_bind, ..
+        } = self;
+        if let (Some(t), Some(bgl), Some(sw), Some(sc)) = (
+            terrain, terrain_gb_bgl.as_ref(), terrain_sampler_wrap.as_ref(), terrain_sampler_clamp.as_ref(),
+        ) {
+            let white_ref: &wgpu::TextureView = white;
+            let d0 = textures.get(&t.detail_tex_ids[0]).map(|(_, v)| v).unwrap_or(white_ref);
+            let d1 = textures.get(&t.detail_tex_ids[1]).map(|(_, v)| v).unwrap_or(white_ref);
+            let d2 = textures.get(&t.detail_tex_ids[2]).map(|(_, v)| v).unwrap_or(white_ref);
+            let d3 = textures.get(&t.detail_tex_ids[3]).map(|(_, v)| v).unwrap_or(white_ref);
+            let ramp = textures.get(&t.alpha_ramp_id).map(|(_, v)| v).unwrap_or(white_ref);
+            *terrain_gb_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("terrain-gb-bind"),
+                layout: bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: terrain_typed_ubo.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(d0) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(d1) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(d2) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(d3) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(ramp) },
+                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(sw) },
+                    wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(sc) },
+                ],
             }));
         }
     }
@@ -2485,7 +2565,7 @@ impl LiveRenderer {
         let has_terrain = self.terrain_index_count > 0
             && self.terrain_vbuf.is_some()
             && self.terrain_gb_pipeline.is_some()
-            && self.terrain_typed_bind.is_some();
+            && self.terrain_gb_bind.is_some();
         if has_gb || has_terrain {
             self.ensure_gbuffer(device, w, h);
             self.ensure_resolve(device);
@@ -2702,7 +2782,7 @@ impl LiveRenderer {
         // the sky, and the resolve discards non-HAS_ATMOS pixels. Replaces the P1 forward pass.
         if has_terrain {
             if let (Some(gp), Some(tb), Some(vb), Some(ib), Some(alb), Some(nrm)) = (
-                self.terrain_gb_pipeline.as_ref(), self.terrain_typed_bind.as_ref(),
+                self.terrain_gb_pipeline.as_ref(), self.terrain_gb_bind.as_ref(),
                 self.terrain_vbuf.as_ref(), self.terrain_ibuf.as_ref(), gb_alb, gb_nrm,
             ) {
                 {

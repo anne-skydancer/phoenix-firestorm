@@ -12,6 +12,13 @@
 
 const B: usize = 0x100; // 256
 
+/// The Perlin tables, initialized exactly once (they're static per process, like stock's srand(42)).
+pub fn tables() -> &'static PerlinTables {
+    use std::sync::OnceLock;
+    static T: OnceLock<PerlinTables> = OnceLock::new();
+    T.get_or_init(PerlinTables::init)
+}
+
 /// MSVC `rand()` / `srand()`: LCG `state = state*214013 + 2531011; return (state>>16) & 0x7fff`.
 struct MsvcRand {
     state: u32,

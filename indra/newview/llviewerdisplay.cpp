@@ -83,6 +83,7 @@
 #include "llviewerregion.h"
 #include "llsurface.h" // <FS:VkBridge> Ground P1: region heightmap feed to the engine
 #include "llvlcomposition.h" // <FS:VkBridge> P3: terrain composition params (corners, detail ids)
+#include "llfetchedgltfmaterial.h" // <FS:VkBridge> PBR-3: read PBR material base-color id + factors
 #include "indra_constants.h" // <FS:VkBridge> P3: IMG_ALPHA_GRAD_2D
 #include "llviewertexture.h" // <FS:VkBridge> P3: boost the detail textures so they fetch
 #include <fstream>           // <FS:VkBridge> P3: read the shipped alpha ramp j2c
@@ -600,7 +601,39 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
                 static U32 s_frame = 0;
                 if ((s_frame++ % 30) == 0 || (const void*)tregion != s_last_region)
                 {
-                    U32 sum = (U32)dim;
+                    LLVLComposition* compp = tregion->getComposition();
+                    // PBR-3: detect a PBR-material region. getMaterialType() returns PBR only once the
+                    // GLTF materials finish loading (else the TEXTURE fallback) -- so the flag and the
+                    // base-color ids flip over time; both are folded into the change hash so the feed
+                    // re-fires when the materials become ready.
+                    bool is_pbr = false;
+                    if (compp && compp->getMaterialType() == LLTerrainMaterials::Type::PBR)
+                    {
+                        compp->makeMaterialsReady(true, false); // populate + boost mDetailRenderMaterials
+                        is_pbr = true;
+                    }
+                    F32 starth[4], rangeh[4];
+                    U32 detail_ids[4];
+                    for (S32 ci = 0; ci < 4; ++ci)
+                    {
+                        starth[ci] = compp ? compp->getStartHeight(ci) : 20.f;
+                        rangeh[ci] = compp ? compp->getHeightRange(ci) : 60.f;
+                        LLUUID did;
+                        if (is_pbr)
+                        {
+                            const LLFetchedGLTFMaterial* rm = compp->getRenderMaterial(ci);
+                            if (rm) did = rm->mTextureId[LLGLTFMaterial::GLTF_TEXTURE_INFO_BASE_COLOR];
+                        }
+                        else
+                        {
+                            did = compp ? compp->getDetailAssetID(ci) : LLUUID::null;
+                        }
+                        detail_ids[ci] = FSSceneDump::fsrTextureId(did.mData);
+                    }
+                    // Change hash: sparse heights + the 4 detail/base-color ids + the PBR flag, so a
+                    // material load (ids/flag change with heights unchanged) re-feeds the engine.
+                    U32 sum = (U32)dim + (is_pbr ? 0x9E3779B9u : 0u);
+                    for (S32 ci = 0; ci < 4; ++ci) sum = sum * 1000003u + detail_ids[ci];
                     for (U32 k = 0; k < n; k += 101)
                         sum = sum * 1000003u + (U32)(S32)(surf.getZ(k) * 32.0f);
                     if (sum != s_last_sum || (const void*)tregion != s_last_region)
@@ -611,29 +644,37 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
                         s_heights.resize(n);
                         for (U32 k = 0; k < n; ++k) s_heights[k] = surf.getZ(k);
                         LLVector3 torigin = surf.getOriginAgent();
-                        // P3 composition params: per-corner start/range (sim RegionInfo), region SW
-                        // corner in GLOBAL metres (noise lattice continuity), detail tiling, and the
-                        // 5 engine texture ids -- fsrTextureId(UUID) -- the fetch-tap uploads by.
-                        LLVLComposition* compp = tregion->getComposition();
-                        F32 starth[4], rangeh[4];
-                        U32 detail_ids[4];
-                        for (S32 ci = 0; ci < 4; ++ci)
-                        {
-                            starth[ci] = compp ? compp->getStartHeight(ci) : 20.f;
-                            rangeh[ci] = compp ? compp->getHeightRange(ci) : 60.f;
-                            LLUUID did = compp ? compp->getDetailAssetID(ci) : LLUUID::null;
-                            detail_ids[ci] = FSSceneDump::fsrTextureId(did.mData);
-                        }
                         LLVector3d og = surf.getOriginGlobal();
                         double origin_global[2] = { og.mdV[0], og.mdV[1] };
-                        static LLCachedControl<F32> render_terrain_scale(gSavedSettings, "RenderTerrainScale", 12.f);
-                        F32 detail_scale = (render_terrain_scale > 0.f) ? (1.f / (F32)render_terrain_scale) : (1.f / 12.f);
+                        // Detail tiling: PBR uses 1/RenderTerrainPBRScale (default 8m); legacy uses
+                        // 1/RenderTerrainScale (12m).
+                        F32 detail_scale;
+                        if (is_pbr)
+                        {
+                            static LLCachedControl<F32> render_terrain_pbr_scale(gSavedSettings, "RenderTerrainPBRScale", 8.f);
+                            detail_scale = (render_terrain_pbr_scale > 0.f) ? (1.f / (F32)render_terrain_pbr_scale) : (1.f / 8.f);
+                        }
+                        else
+                        {
+                            static LLCachedControl<F32> render_terrain_scale(gSavedSettings, "RenderTerrainScale", 12.f);
+                            detail_scale = (render_terrain_scale > 0.f) ? (1.f / (F32)render_terrain_scale) : (1.f / 12.f);
+                        }
                         U32 ramp_id = FSSceneDump::fsrTextureId(IMG_ALPHA_GRAD_2D.mData);
-                        // Ensure the 4 detail textures fetch (the null-GL draw pool may not boost
-                        // them), so the fetch-tap decodes them into the engine by fsrTextureId.
+                        // Ensure the 4 source textures fetch so the fetch-tap decodes them into the
+                        // engine by fsrTextureId: legacy detail assets, or (PBR) each material's
+                        // base-color texture.
                         for (S32 ci = 0; ci < 4; ++ci)
                         {
-                            LLUUID did = compp ? compp->getDetailAssetID(ci) : LLUUID::null;
+                            LLUUID did;
+                            if (is_pbr)
+                            {
+                                const LLFetchedGLTFMaterial* rm = compp->getRenderMaterial(ci);
+                                if (rm) did = rm->mTextureId[LLGLTFMaterial::GLTF_TEXTURE_INFO_BASE_COLOR];
+                            }
+                            else
+                            {
+                                did = compp ? compp->getDetailAssetID(ci) : LLUUID::null;
+                            }
                             if (did.notNull())
                             {
                                 LLViewerFetchedTexture* dt = LLViewerTextureManager::getFetchedTexture(did);
@@ -661,7 +702,7 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
                         }
                         FSSceneDump::setSceneTerrain((int)dim, surf.getMetersPerGrid(),
                                                      torigin.mV, starth, rangeh, origin_global,
-                                                     detail_scale, detail_ids, ramp_id, s_heights.data());
+                                                     detail_scale, detail_ids, ramp_id, is_pbr ? 1 : 0, s_heights.data());
                     }
                 }
             }

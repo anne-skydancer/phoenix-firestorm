@@ -108,9 +108,9 @@ struct FsrTerrainHeader // byte-matches Rust scene::TerrainHeader (104 bytes, F6
     F64 origin_global[2];// region SW corner in GLOBAL metres (noise lattice continuity)
     F32 detail_scale;    // 1/RenderTerrainScale (detail-UV tiling)
     F32 _pad1;
-    U32 detail_tex_ids[4]; // engine texture ids for the 4 detail textures
+    U32 detail_tex_ids[4]; // legacy: 4 detail textures; PBR: 4 material base-color textures
     U32 alpha_ramp_id;     // engine texture id for the alpha ramp
-    U32 _pad2;
+    U32 pbr;               // 0 = legacy detail splat, 1 = PBR material region (getMaterialType == PBR)
 };
 struct FsrEepSkyBlock
 {
@@ -960,7 +960,7 @@ void setSceneTerrain(int dim, float meters_per_grid, const float origin[3],
                      const float start_height[4], const float height_range[4],
                      const double origin_global[2], float detail_scale,
                      const unsigned int detail_tex_ids[4], unsigned int alpha_ramp_id,
-                     const float* heights)
+                     int pbr, const float* heights)
 {
     if (!sFsrSceneTerrain) return;
     FsrTerrainHeader th;
@@ -972,6 +972,7 @@ void setSceneTerrain(int dim, float meters_per_grid, const float origin[3],
     th.origin_global[0] = origin_global[0]; th.origin_global[1] = origin_global[1];
     th.detail_scale = detail_scale;
     th.alpha_ramp_id = alpha_ramp_id;
+    th.pbr = (U32)pbr;
     sFsrSceneTerrain(&th, heights);
 }
 

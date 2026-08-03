@@ -76,6 +76,12 @@ public:
     const LLGLTFMaterial* getMaterialOverride(S32 asset) const override;
     virtual void setMaterialOverride(S32 asset, LLGLTFMaterial* mat_override);
     Type getMaterialType();
+    // <FS:VkBridge> PBR-3: read-only access to a ready render material (base-color id + GLTF factors)
+    // for the Vulkan terrain feed. Valid only after makeMaterialsReady(); may be null while loading.
+    const LLFetchedGLTFMaterial* getRenderMaterial(S32 asset) const
+    {
+        return (asset >= 0 && asset < ASSET_COUNT) ? mDetailRenderMaterials[asset].get() : nullptr;
+    }
     bool makeTexturesReady(bool boost, bool strict);
     // strict = true -> all materials must be sufficiently loaded
     // strict = false -> at least one material must be loaded

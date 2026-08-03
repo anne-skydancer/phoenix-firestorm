@@ -88,7 +88,7 @@ namespace FSSceneDump
                          const float start_height[4], const float height_range[4],
                          const double origin_global[2], float detail_scale,
                          const unsigned int detail_tex_ids[4], unsigned int alpha_ramp_id,
-                         const float* heights);
+                         int pbr, const float* heights);
     // <FS:VkBridge> E3 decode-once fetch-tap. decodeTextureJ2C: engine decodes the compressed J2C
     // (queues the GPU upload as texture `id`) + returns a handle owning the native decode; read it
     // with decodedView (fill mRawImage), then freeDecoded. Plain types (no llimage dep).

@@ -22,6 +22,12 @@ raw-window-handle = "0.6"
 log = "0.4"
 env_logger = "0.11"
 
+# P3 engine-hosted J2C decode: bindgen generates the Grok C-API FFI from grok.h at
+# build time (compiler-verified struct layouts). build.rs also links grokj2k (the
+# import lib at C:/fs/grok/build/bin; grokj2k.dll ships in newview/Release).
+[build-dependencies]
+bindgen = "0.70"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

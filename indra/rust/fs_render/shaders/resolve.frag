@@ -29,6 +29,7 @@ layout(set = 0, binding = 2) uniform texture2D g_normal;  // RT1 world normal.xy
 layout(location = 0) out vec4 frag;
 
 const float GBUFFER_FLAG_HAS_ATMOS = 0.34;
+const float GBUFFER_FLAG_HAS_PBR = 0.67;
 
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
@@ -57,13 +58,16 @@ float ambientLighting(vec3 n, vec3 light_dir) {
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
     vec4 a = texelFetch(g_albedo, p, 0);
-    // Not lit terrain: keep the sky (scene_hdr LoadOp::Load already holds it).
-    if (abs(a.a - GBUFFER_FLAG_HAS_ATMOS) > 0.1) discard;
+    // Flag routing: HAS_ATMOS (legacy) + HAS_PBR (metallic-roughness) are lit here; sky/background is
+    // kept as-is (scene_hdr LoadOp::Load) via discard.
+    bool is_atmos = abs(a.a - GBUFFER_FLAG_HAS_ATMOS) < 0.1;
+    bool is_pbr   = abs(a.a - GBUFFER_FLAG_HAS_PBR) < 0.1;
+    if (!is_atmos && !is_pbr) discard;
 
     vec3 n = normalize(texelFetch(g_normal, p, 0).xyz);      // world-space
     vec3 sun_dir = normalize(sky.sundir_distmul.xyz);         // world, SL Z-up
 
-    // --- calcAtmosphericVars (rel_pos-independent parts): sunlit + amblit ---
+    // --- calcAtmosphericVars (rel_pos-independent parts): sunlit + amblit (shared by both branches) ---
     vec3  blue_density = sky.bluedens_clouds.rgb;
     float haze_density = sky.ambient_hazed.w;
     float density_mult = sky.suncol_densmul.w;
@@ -83,11 +87,25 @@ void main() {
     vec3 sunlit = srgb_to_linear(sunlight) * sky.glow_ssc.w;              // * sky_sunlight_scale
     vec3 amblit = vec3(luma(srgb_to_linear(amblit_srgb))) * sky.hdr_sas_vp.y; // * sky_ambient_scale
 
-    // --- softenLight legacy/atmos combine ---
-    vec3 albedo = srgb_to_linear(a.rgb);
     float da = clamp(dot(n, sun_dir), 0.0, 1.0);
     float scol = 1.0;                                        // no shadows yet (P4)
-    vec3 color = amblit + min(da, scol) * sunlit;            // irradiance + sun_contrib
-    color *= albedo;
+    vec3 color;
+    if (is_pbr) {
+        // PBR metallic-roughness -- idiomatic port of stock pbrBaseLight (deferredUtil.glsl). Base color
+        // is LINEAR (the PBR terrain fill writes linear). DIFFUSE-only for now: the default G-buffer ORM
+        // is matte (occlusion 1, roughness 1, metallic 0) until the ORM target lands, so the GGX specular
+        // is negligible; the full specular (needs world-pos for the view vector) arrives with real ORM.
+        float metallic = 0.0;                               // default matte (no ORM target yet)
+        float ao = 1.0;
+        vec3 base = a.rgb;                                   // already linear
+        vec3 diffuseColor = base * 0.96 * (1.0 - metallic); // *(1 - f0=0.04)
+        vec3 iblDiff = amblit * diffuseColor * ao;                            // IBL diffuse (sky-ambient stub)
+        vec3 sunDiff = clamp(da * diffuseColor, vec3(0.0), vec3(10.0)) * sunlit * 3.0 * scol; // stock ×3.0
+        color = iblDiff + sunDiff;
+    } else {
+        // legacy HAS_ATMOS: (amblit + min(da,scol)*sunlit) * srgb_to_linear(albedo)
+        vec3 albedo = srgb_to_linear(a.rgb);
+        color = (amblit + min(da, scol) * sunlit) * albedo;
+    }
     frag = vec4(clampHDRRange(color), 1.0);
 }

@@ -151,6 +151,15 @@ pub struct LiveRenderer {
     terrain_bgl: wgpu::BindGroupLayout,
     terrain_pipeline: Option<wgpu::RenderPipeline>,
     terrain_binds: HashMap<[u32; 5], wgpu::BindGroup>,
+    // Ground Phase 1 (typed, forward): mesh built engine-side from the fed heightmap, rendered into
+    // scene_hdr after the sky (depth-tested) with in-shader N.L. Rebuilt only on TerrainBlock.gen change.
+    terrain_typed_pipeline: Option<wgpu::RenderPipeline>,  // terrain_typed.{vert,frag}, reuses sky_fs_bgl
+    terrain_typed_ubo: wgpu::Buffer,                       // view_proj + sun/sunlight/ambient + hdr (128B)
+    terrain_typed_bind: Option<wgpu::BindGroup>,
+    terrain_vbuf: Option<wgpu::Buffer>,                    // pos(3)+normal(3) per vertex
+    terrain_ibuf: Option<wgpu::Buffer>,                    // u32 indices
+    terrain_index_count: u32,
+    terrain_built_gen: u64,                                // TerrainBlock.gen the current buffers were built for
     skywater_bgl: wgpu::BindGroupLayout,
     sky_pipeline: Option<wgpu::RenderPipeline>,
     water_pipeline: Option<wgpu::RenderPipeline>,
@@ -619,6 +628,18 @@ impl LiveRenderer {
             terrain_bgl,
             terrain_pipeline: None,
             terrain_binds: HashMap::new(),
+            terrain_typed_pipeline: None,
+            terrain_typed_ubo: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("terrain-typed-ubo"),
+                size: 128, // view_proj(64) + sun_dir/sunlight/ambient/misc (64)
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            terrain_typed_bind: None,
+            terrain_vbuf: None,
+            terrain_ibuf: None,
+            terrain_index_count: 0,
+            terrain_built_gen: 0,
             skywater_bgl,
             sky_pipeline: None,
             water_pipeline: None,
@@ -1191,6 +1212,100 @@ impl LiveRenderer {
             multiview: None,
         });
         self.terrain_pipeline = Some(p);
+    }
+
+    /// Ground Phase 1 (typed forward): (re)build the terrain vertex/index buffers from the fed
+    /// heightmap on `gen` change, and ensure the terrain pipeline + UBO bind group. `terrain` is
+    /// `e.scene.terrain`. pos = origin + grid*metres + height (world/agent, SL Z-up); per-vertex
+    /// normal = normalize(-dz/dx, -dz/dy, 1) via central differences (edge-clamped).
+    pub fn ensure_terrain(&mut self, device: &wgpu::Device, terrain: Option<&crate::scene::TerrainBlock>) {
+        use wgpu::util::DeviceExt;
+        if let Some(t) = terrain {
+            if t.dim >= 2 && (t.gen != self.terrain_built_gen || self.terrain_vbuf.is_none()) {
+                let dim = t.dim as usize;
+                let mpg = t.meters_per_grid.max(1e-4);
+                let (ox, oy, oz) = (t.origin[0], t.origin[1], t.origin[2]);
+                let hh = &t.heights;
+                let h = |i: usize, j: usize| -> f32 { hh[i * dim + j] };
+                let mut verts: Vec<f32> = Vec::with_capacity(dim * dim * 6);
+                for i in 0..dim {
+                    for j in 0..dim {
+                        let x = ox + (j as f32) * mpg;
+                        let y = oy + (i as f32) * mpg;
+                        let z = oz + h(i, j);
+                        let (jm, jp) = (j.saturating_sub(1), (j + 1).min(dim - 1));
+                        let (im, ip) = (i.saturating_sub(1), (i + 1).min(dim - 1));
+                        let dzdx = (h(i, jp) - h(i, jm)) / (((jp - jm) as f32) * mpg).max(1e-4);
+                        let dzdy = (h(ip, j) - h(im, j)) / (((ip - im) as f32) * mpg).max(1e-4);
+                        let (nx, ny, nz) = (-dzdx, -dzdy, 1.0f32);
+                        let inv = 1.0 / (nx * nx + ny * ny + nz * nz).sqrt();
+                        verts.extend_from_slice(&[x, y, z, nx * inv, ny * inv, nz * inv]);
+                    }
+                }
+                let mut idx: Vec<u32> = Vec::with_capacity((dim - 1) * (dim - 1) * 6);
+                for i in 0..dim - 1 {
+                    for j in 0..dim - 1 {
+                        let a = (i * dim + j) as u32;
+                        let b = a + 1;
+                        let c = a + dim as u32;
+                        let d = c + 1;
+                        idx.extend_from_slice(&[a, c, b, b, c, d]);
+                    }
+                }
+                self.terrain_index_count = idx.len() as u32;
+                self.terrain_vbuf = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain-vbuf"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX,
+                }));
+                self.terrain_ibuf = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("terrain-ibuf"), contents: bytemuck::cast_slice(&idx), usage: wgpu::BufferUsages::INDEX,
+                }));
+                self.terrain_built_gen = t.gen;
+            }
+        }
+        if self.terrain_typed_pipeline.is_none() {
+            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain_typed.vert.spv"));
+            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/terrain_typed.frag.spv"));
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("terrain-typed-pl"), bind_group_layouts: &[&self.sky_fs_bgl], push_constant_ranges: &[],
+            });
+            self.terrain_typed_pipeline = Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("terrain-typed"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &vs, entry_point: "main",
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 12, shader_location: 1 },
+                        ],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs, entry_point: "main",
+                    targets: &[Some(wgpu::ColorTargetState { format: SCENE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::GreaterEqual, // reverse-Z (matches engine depth)
+                    stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+            }));
+        }
+        if self.terrain_typed_bind.is_none() {
+            self.terrain_typed_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("terrain-typed-bind"), layout: &self.sky_fs_bgl,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.terrain_typed_ubo.as_entire_binding() }],
+            }));
+        }
+    }
+
+    /// Feed the terrain UBO (view_proj reverse-Z + world sun/sunlight/ambient + hdr_scale).
+    pub fn set_terrain_ubo(&self, queue: &wgpu::Queue, ubo: &[f32; 32]) {
+        queue.write_buffer(&self.terrain_typed_ubo, 0, bytemuck::cast_slice(ubo));
     }
 
     fn ensure_palette_ring(&mut self, device: &wgpu::Device, want: u64) {
@@ -2521,6 +2636,35 @@ impl LiveRenderer {
                 } else {
                     rp.draw(q.first..q.first + q.vcount, 0..1);
                 }
+            }
+        }
+        // Ground Phase 1 (typed forward): draw terrain into scene_hdr over the sky, depth-tested
+        // (reverse-Z, clear 0). Runs before clouds + the exposure meter, so both see the lit ground.
+        if let (Some(tp), Some(tb), Some(vb), Some(ib)) = (
+            self.terrain_typed_pipeline.as_ref(), self.terrain_typed_bind.as_ref(),
+            self.terrain_vbuf.as_ref(), self.terrain_ibuf.as_ref(),
+        ) {
+            if self.terrain_index_count > 0 {
+                let mut tpass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("terrain-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: scene_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: depth_view,
+                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                tpass.set_pipeline(tp);
+                tpass.set_bind_group(0, tb, &[]);
+                tpass.set_vertex_buffer(0, vb.slice(..));
+                tpass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                tpass.draw_indexed(0..self.terrain_index_count, 0, 0..1);
             }
         }
         // Half-res VOLUMETRIC cloud pass: raymarch clouds into cloud_target (1/2 res), then composite

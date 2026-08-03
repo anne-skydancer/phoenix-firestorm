@@ -588,6 +588,12 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         }
         e.live.set_fullscreen_sky(&sky_ubo);
     }
+    // Ground Phase 1: feed the terrain UBO + (re)build the terrain mesh/pipeline from the fed heightmap
+    // (disjoint field borrows: e.live mut, e.queue/e.device/e.scene shared).
+    if let Some(tu) = e.scene.terrain_ubo() {
+        e.live.set_terrain_ubo(&e.queue, &tu);
+    }
+    e.live.ensure_terrain(&e.device, e.scene.terrain.as_ref());
     // P1 DIAG (temporary): pinpoint the white sky WITHOUT guessing. cam/sky = typed feed reached;
     // ubo = derived; sky_fs = live pass armed; msaa = resolve path (confirmed forced 1); clear =
     // viewer clear (what shows when sky_fs=false); exp/mix = tonemap; sun/amb/hdr/maxy = sanity of

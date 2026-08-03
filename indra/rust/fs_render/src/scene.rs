@@ -512,6 +512,32 @@ impl SceneFrame {
         Some(u)
     }
 
+    /// Ground Phase 1: the terrain UBO. view_proj is REVERSE-Z (remap [0,1]->[1,0]) so terrain depth
+    /// matches the engine's GreaterEqual + clear-0 convention; plus world-space sun_dir/sunlight/ambient
+    /// for the forward N.L shading and sky_hdr_scale to sit in the sky's HDR range. Layout matches
+    /// terrain_typed.{vert,frag}: view_proj(16) + sun_dir(4) + sunlight(4) + ambient(4) + misc(4).
+    pub fn terrain_ubo(&self) -> Option<[f32; 32]> {
+        let cam = self.camera.as_ref()?;
+        let sky = self.eep_sky.as_ref()?;
+        let view = glam::Mat4::from_cols_array(&cam.view);
+        let proj = glam::Mat4::perspective_rh(cam.fov_y, cam.aspect, cam.near, cam.far);
+        let rev = glam::Mat4::from_cols(
+            glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
+            glam::Vec4::new(0.0, 1.0, 0.0, 0.0),
+            glam::Vec4::new(0.0, 0.0, -1.0, 0.0),
+            glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
+        );
+        let vp = (rev * proj) * view;
+        let hdr = self.sky_regime().map(|r| r.sky_hdr_scale).unwrap_or(1.0);
+        let mut u = [0.0f32; 32];
+        u[0..16].copy_from_slice(&vp.to_cols_array());
+        u[16] = sky.sun_dir[0]; u[17] = sky.sun_dir[1]; u[18] = sky.sun_dir[2]; u[19] = 0.0;
+        u[20] = sky.sun_color[0]; u[21] = sky.sun_color[1]; u[22] = sky.sun_color[2]; u[23] = 0.0;
+        u[24] = sky.ambient[0]; u[25] = sky.ambient[1]; u[26] = sky.ambient[2]; u[27] = 0.0;
+        u[28] = hdr; u[29] = 0.0; u[30] = 0.0; u[31] = 0.0;
+        Some(u)
+    }
+
     /// P1 diag: which typed feed has arrived this frame (separates "no camera" from "no sky").
     pub fn has_camera(&self) -> bool { self.camera.is_some() }
     pub fn has_sky(&self) -> bool { self.eep_sky.is_some() }

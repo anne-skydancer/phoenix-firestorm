@@ -1852,7 +1852,10 @@ impl LiveRenderer {
         // [1/scale, scale]; legacy (scale<=1) gets [1,1] = constant. Drives post_tonemap's bounded
         // auto-exposure so a bright day pins at exp_max (stable, no flicker), exactly as stock does.
         let scale = r.sky_hdr_scale;
-        if scale > 1.0 { self.post_exp_min = 1.0 / scale; self.post_exp_max = scale; }
+        // TEST: our scene_hdr washes out at the full exp_max=hdr_scale (sky pale, sun glow blows huge).
+        // Damp the day-exposure ceiling toward 1 to confirm the over-exposure diagnosis (night is classic,
+        // unaffected). If this shrinks the sun + de-washes the sky, the fix is exposure, not the glow.
+        if scale > 1.0 { self.post_exp_min = 1.0 / scale; self.post_exp_max = 1.0 + (scale - 1.0) * 0.25; }
         else { self.post_exp_min = 1.0; self.post_exp_max = 1.0; }
     }
 

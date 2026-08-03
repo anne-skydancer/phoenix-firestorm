@@ -313,9 +313,9 @@ pub struct TerrainHeader {
     pub origin_global: [f64; 2],  // region SW corner in GLOBAL metres (noise lattice continuity)
     pub detail_scale: f32,        // 1/RenderTerrainScale (default 1/12); detail-UV tiling
     pub _pad1: f32,
-    pub detail_tex_ids: [u32; 4], // engine texture ids for the 4 detail textures (dirt/grass/mtn/rock)
+    pub detail_tex_ids: [u32; 4], // legacy: 4 detail textures; PBR region: 4 material base-color textures
     pub alpha_ramp_id: u32,       // engine texture id for IMG_ALPHA_GRAD_2D
-    pub _pad2: u32,
+    pub pbr: u32,                 // 0 = legacy detail splat, 1 = PBR material region (PBR-3 feed)
 }
 
 /// Engine-side terrain: the CPU heightmap + metadata. PERSISTS across frames (region-scoped, not
@@ -383,7 +383,7 @@ impl SceneFrame {
             detail_scale: hdr.detail_scale,
             detail_tex_ids: hdr.detail_tex_ids,
             alpha_ramp_id: hdr.alpha_ramp_id,
-            pbr: false, // PBR-3 extends the FFI header (pad slot) + sets this from getMaterialType()
+            pbr: hdr.pbr != 0, // set by the viewer feed from getMaterialType() == PBR
         });
     }
 

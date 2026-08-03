@@ -59,6 +59,22 @@ static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 /// Entries: (texture id, RGBA8 top-down, width, height).
 static UPLOAD_QUEUE: Mutex<Vec<(u32, Vec<u8>, u32, u32)>> = Mutex::new(Vec::new());
 
+/// Diagnostic breadcrumb: overwrite a single-line file so a CTD pinpoints the last decode/upload.
+fn lastop(s: &str) {
+    let _ = std::fs::write("C:/fs/fsr_lastop.txt", s);
+}
+
+/// Texture ids the engine actually RENDERS (currently just the 5 terrain textures, registered by the
+/// terrain feed). The fetch-tap decodes+uploads ONLY these -- decoding every J2C the viewer fetches
+/// (thousands) through the synchronous tap + a never-evicting store is what floods/destabilizes the
+/// engine. Expand this as the engine renders more (objects, avatars) -> the general decode-once + a
+/// real texture cache with eviction.
+static NEEDED_IDS: Mutex<[u32; 5]> = Mutex::new([0; 5]);
+
+fn texture_needed(id: u32) -> bool {
+    id != 0 && NEEDED_IDS.lock().map(|n| n.contains(&id)).unwrap_or(false)
+}
+
 /// Expand a native 1/2/3/4-component decode to RGBA8, flipping bottom-up (LL raw) -> top-down so
 /// wgpu sampling matches stock's GL sampling. 1-comp fills all channels (an alpha-ramp `.a` works).
 fn expand_rgba_flip(img: &j2c::DecodedJ2c) -> Vec<u8> {
@@ -362,6 +378,10 @@ pub extern "C" fn fsr_scene_set_terrain(hdr: *const scene::TerrainHeader, height
         return 0;
     }
     let hs = unsafe { std::slice::from_raw_parts(heights, n) };
+    // Register the 5 terrain texture ids as the fetch-tap's whitelist (see NEEDED_IDS).
+    if let Ok(mut n) = NEEDED_IDS.lock() {
+        *n = [h.detail_tex_ids[0], h.detail_tex_ids[1], h.detail_tex_ids[2], h.detail_tex_ids[3], h.alpha_ramp_id];
+    }
     let mut g = ENGINE.lock().unwrap();
     if let Some(e) = g.as_mut() {
         e.scene.set_terrain(&h, hs);
@@ -579,12 +599,20 @@ pub unsafe extern "C" fn fsr_texture_decode_j2c(id: u32, data: *const u8, len: u
     if data.is_null() || len == 0 {
         return std::ptr::null_mut();
     }
+    // Only tap textures the engine renders (terrain). For everything else, return null -> the viewer
+    // uses its own normal decode. Prevents the whole-scene flood through the synchronous tap.
+    if !texture_needed(id) {
+        return std::ptr::null_mut();
+    }
     let bytes = std::slice::from_raw_parts(data, len);
-    // Grok init is HOST-OWNED: in engine mode the viewer already called grk_initialize once at
-    // startup (llimagej2cgrok) on the SAME shared grokj2k.dll -- a second init here re-creates the
-    // taskflow pool and crashes. So the DLL decode path relies on the host's init (decode() assumes
-    // init). ensure_init() stays for the standalone tests, where there is no host.
-    let Some(img) = j2c::decode(bytes, discard, 0, 4) else { return std::ptr::null_mut() };
+    // The engine must ensure Grok is initialized before decoding: the host viewer's grk_initialize
+    // is LAZY (first viewer decode), which the fetch-tap may pre-empt -- so relying on it hangs on an
+    // uninitialized pool. grk_initialize is documented safe to call multiple times, so this Once is
+    // safe even alongside the viewer's init.
+    j2c::ensure_init();
+    lastop(&format!("DECODE id={} len={}", id, len));
+    let Some(img) = j2c::decode(bytes, discard, 0, 4) else { lastop(&format!("DECODE_FAIL id={}", id)); return std::ptr::null_mut() };
+    lastop(&format!("DECODED id={} {}x{}x{}", id, img.width, img.height, img.components));
     // Enqueue the RGBA (top-down) for the render thread to GPU-upload as texture `id`. Lock only the
     // small queue, never the ENGINE mutex -- a decode worker must not contend with rendering.
     let rgba = expand_rgba_flip(&img);
@@ -672,6 +700,7 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         if !q.is_empty() {
             let Engine { device, queue, live, .. } = e;
             for (id, rgba, w, h) in q.drain(..) {
+                lastop(&format!("UPLOAD id={} {}x{} bytes={}", id, w, h, rgba.len()));
                 live.upload_texture(device, queue, id, w, h, &rgba);
             }
         }

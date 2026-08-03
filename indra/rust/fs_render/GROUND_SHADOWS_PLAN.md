@@ -47,6 +47,82 @@ camera + EEP sky + regime; **no geometry** (`SceneFrame::is_empty()` == true).
 
 ---
 
+## EXACT STOCK TRACE (2026-08-03, 4-agent deep trace) — the verbatim formulas to port
+
+The whole legacy ground path, traced to file:line. **Only `class1` terrain + `class3` softenLight/haze
+exist** (no class2/class3 terrain, no class1/class2 soften — loader falls back).
+
+### G-buffer fill — terrain (`class1/deferred/terrainF.glsl`, `pipeline.cpp:381-412,977-983`)
+Stock G-buffer = 4 MRT + shared depth: RT0 `GL_RGBA8` albedo, RT1 `GL_RGBA8` ORM/spec, RT2 `GL_RGBA16`
+normal+env+FLAG.w, RT3 `GL_RGB16F` emissive (opt, default OFF). Lit output `mRT->screen` = **`GL_RGBA16F`**.
+Terrain writes: `frag_data[0]=max(splat,0)` with **`.a=0`** (albedo is **sRGB-ENCODED in a UNORM (non-sRGB)
+buffer** — lighting does `srgb_to_linear` on read; do NOT use an _SRGB format or you double-linearize);
+`frag_data[1]=vec4(0,0,0,-1)` (no spec); `frag_data[2]=encodeNormal(normalize(vary_normal),0,HAS_ATMOS)`
+where stock normal is **EYE-space** (`normal_matrix*normal`). `encodeNormal(n,env,flag)`:
+`f=sqrt(8*n.z+8); vec4(n.xy/f+0.5, env, flag)` (globalF.glsl:46-50). FLAG: SKIP_ATMOS 0.0 / HAS_ATMOS 0.34
+/ HAS_PBR 0.67 / HAS_HDRI 1.0, matched `abs(v-flag)<0.1` (llshadermgr.cpp:636-640), stored RT2.w.
+
+### softenLight legacy/atmos branch (`class3/deferred/softenLightF.glsl:206-284`) — the core combine
+`baseColor.rgb = srgb_to_linear(gbuffer_albedo)`; `da = clamp(dot(n, light_dir),0,1)`;
+`irradiance = amblit` (+ reflection-probe legacy → STUB = amblit for now); `adjustIrradiance(irr, ambocc)`
+(SSAO → ambocc=1 stub); `color = irradiance`; `sun_contrib = min(da, scol) * sunlit_linear` (scol=1 until
+P4); `color += sun_contrib`; `color *= baseColor.rgb`; (terrain spec.a=-1→0 so blinn-phong skipped);
+`frag_color.rgb = clampHDRRange(color)` (`clamp[0,11.2]`, inf→1/nan→0); `frag_color.a = 0`. **NOTE: soften
+does NOT apply fog** — haze is a separate pass. Position reconstructed EYE-space via `inv_proj` only,
+`ndc.z = 2*depth-1` (GL) — **the #1 reverse-Z port risk**.
+
+### atmospherics (`class1/windlight/atmosphericsFuncs.glsl` calcAtmosphericVars 51-131 / Linear 147-165)
+Inputs = the WL params we already feed. Outputs (sRGB then linearized):
+`light_atten = (blue_density + haze_density*0.25) * density_multiplier * max_y`;
+`sunlight *= exp(-light_atten / lightnorm.y)`; `atten = exp(-max(blue_density+haze_density,1e-6) *
+(len(rel_pos)*density_multiplier) * distance_multiplier)`; haze_glow from `dot(rel_pos_norm, lightnorm)`
+& `dot(light_dir, rel_pos_norm)`, `*glow.x`, `pow(.,glow.z)`, `+.25`, `*sun_moon_glow_factor`;
+`tmpAmbient = ambient + (1-ambient)*cloud_shadow*0.5`; `cs = sunlight*(1-cloud_shadow)`;
+`additive = blue_horizon*blue_weight*(cs+tmpAmbient) + haze_horizon*haze_weight*(cs*haze_glow+tmpAmbient)`,
+then `*= (1-combined_haze)`, `min(.,10)`. Linear post: `amblit *= ambientLighting(norm,light_dir)`
+(`a=min(|dot|,1); a*=0.5; a*=a; 1-a`), then **non-classic**: `amblit = luma709(srgb_to_linear(amblit))`
+(**GREYSCALE** — colour ambience comes only from the probe stub), `sunlit = srgb_to_linear(sunlit)`;
+`sunlit *= sky_sunlight_scale`; `amblit *= sky_ambient_scale`. `amblit=pow(tmpAmbient,0.9)*0.57` pre-scale.
+
+### haze pass (`class3/deferred/hazeF.glsl`, blend `pipeline.cpp:10189`)
+Separate fullscreen, `glBlendFuncSeparate(ONE, SRC_ALPHA, ZERO, SRC_ALPHA)` → `screen = additive_haze +
+screen*atten.r`. Shader: `discard` where `depth>=1.0` (sky); `alpha = atten.r` (SCALAR .r, grey attenuation);
+`color = srgb_to_linear(additive*2.0) * sky_hdr_scale`. Runs after soften + local lights, before alpha pools.
+
+### luminance meter (`class1/deferred/luminanceF.glsl:40-67`) + exposure (`exposureF.glsl:47-65`)
+Meter: `tc = fragcoord*0.6+0.2; tc.y -= 0.1`; `c = screen(tc)`; if `!HAS_HDRI && !SKIP_ATMOS`:
+`c *= diffuse_luminance_scale` (default 1.0); `c += emissive(tc)`; `L = luma709(c)`. Rendered 256x256 R16F,
+auto-mip, exposure reads **mip 8** (1x1). Exposure: `L=clamp(L,0,maxL)/maxL; L=pow(L,2);
+s = mix(exp_max, exp_min, L)` (maxL = coeff **0.175**); adapt `s = mix(prev, s, 1-exp(-speed*dt))`,
+`speed = -log(0.1)/2.0`; `exp_min=1/hdr_scale, exp_max=hdr_scale`, `hdr_scale=sqrt(sky_gamma)*2`. Tonemap:
+`exposed = color*exposure*exp_scale`; type0 PBRNeutral / type1 ACES-Hill; `mix(exposed_linear, tonemapped,
+tonemap_mix)`; `linear_to_srgb`. **[FORK] `faithful_camera`** forces `exp_scale=1` at tonemap.
+
+### splat (P3, `terrainF.glsl:44-69` + draw `lldrawpoolterrain.cpp`)
+5 textures: 4 detail (`TAM_WRAP`) + `alpha_ramp`=IMG_ALPHA_GRAD_2D (`TAM_CLAMP`). Detail UV = planar texgen
+`position.xy * sDetailScale + fmod(region_origin_global.xy, 1/sDetailScale)*sDetailScale`,
+`sDetailScale = 1/RenderTerrainScale` (default **12**). Per-vertex `texcoord1`: `.x`=composition[0,3]
+(`(height + perlinTwiddle - startHeight)*4/heightRange`, bilerp 4 corners; needs the exact `noise2`/
+`turbulence2` tables seeded `srand(42)`), `.y`=noise[0,1]. Splat: `a1=ramp(tc1.x).a; a2=ramp(tc1.x-2).a;
+aF=ramp(tc1.x-1).a; out=mix(mix(t3,t2,a2), mix(t1,t0,a1), aF)`. Default UUIDs dirt/grass/mountain/rock in
+indra_constants.cpp:68-71.
+
+## PORT ARCHITECTURE DECISION (P2)
+Go **deferred** (faithful + needed for P4 shadows/objects), but reconstruct **WORLD** pos from depth via
+`inv(view_proj)` — the SAME matrix family the sky ray already uses (proven) — and do lighting+atmospherics
+in **world space** (world normal in G-buffer, world `sun_dir` already fed, `rel_pos = world_pos - cam_pos`).
+Frame-invariant dots/lengths make this identical to stock's eye-space result while DODGING the reverse-Z
+`inv_proj`/`2*depth-1` risk. Our compact 2-RT G-buffer (RT0 albedo+FLAG.a, RT1 world-normal RGBA16F) is
+sufficient (no spec/emissive for terrain). Fold haze INTO the resolve (`out = additive + lit*atten.r`) since
+we have no local lights to interleave — equivalent result, one pass.
+
+**P2 phasing (each a checkpoint):** P2a terrain→G-buffer (world-normal + FLAG + depth). P2b faithful
+softenLight core (amblit grey + min(da,scol)*sunlit, *albedo, clampHDRRange; discard non-ATMOS to keep sky
+via LoadOp::Load) — NO haze/pos yet. P2c atmospherics + haze folded in (world-pos reconstruct, calcAtmos).
+P2d exposure meter FLAG sky-exclusion + revert interim damp 227950d7db. P3 = splat (needs the noise port).
+
+---
+
 ## Phase 1 — Terrain geometry + typed feed  [CHECKPOINT]
 
 Get terrain SHAPE into the G-buffer, lit by the existing minimal resolve.

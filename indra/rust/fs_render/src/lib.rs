@@ -9,6 +9,7 @@
 
 pub mod live;
 pub mod scene; // P0: typed scene-bridge scaffold (GROUNDUP_VULKAN_ENGINE_PLAN.md)
+pub mod terrain_noise; // P3: faithful port of stock terrain composition (noise2/generateHeights)
 
 use std::ffi::c_void;
 use live::{DrawDesc, LiveRenderer};

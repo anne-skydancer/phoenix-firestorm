@@ -214,8 +214,9 @@ pub struct LiveRenderer {
     post_bind: Option<wgpu::BindGroup>,
     // Metered auto-exposure (v1): a measure pass averages scene_hdr luminance into a 1x1 target;
     // the tonemap samples it to normalize the HDR before the clamp (replaces the fixed exp_scale).
-    exp_lum: Option<wgpu::TextureView>,          // 1x1 R16Float avg scene luminance
+    exp_lum: Option<wgpu::TextureView>,          // 1x1 R16Float avg scene luminance (temporally smoothed)
     exp_lum_tex: Option<wgpu::Texture>,          // same texture, kept for the diagnostic readback
+    exp_primed: bool,                            // false until exp_lum holds a real avg (first measure frame)
     exp_bgl: wgpu::BindGroupLayout,              // measure pass bindings: scene_hdr texture + sampler
     exp_pipeline: Option<wgpu::RenderPipeline>,  // post.vert + exposure_measure.frag
     exp_bind: Option<wgpu::BindGroup>,           // rebuilt when scene_hdr changes
@@ -234,6 +235,8 @@ pub struct LiveRenderer {
     post_ubo: wgpu::Buffer,
     post_exposure: f32,    // RenderExposure clamp[0.5,4]
     post_exp_scale: f32,   // auto-exposure meter; 1.0 = fixed (D2)
+    post_exp_min: f32,     // stock exposureF dynamic-exposure lower bound (1/hdr_scale, or 1 legacy)
+    post_exp_max: f32,     // upper bound (hdr_scale, or 1 legacy); a bright day pins exposure here
     post_tonemap_mix: f32, // 0 = legacy passthrough, else RenderTonemapMix
     post_gamma: f32,       // sky gamma -> legacyGamma soft-clip
     post_tonemap_type: i32,// 0 = PBRNeutral, 1 = ACES Hill
@@ -624,6 +627,7 @@ impl LiveRenderer {
             post_bind: None,
             exp_lum: None,
             exp_lum_tex: None,
+            exp_primed: false,
             exp_bgl,
             exp_pipeline: None,
             exp_bind: None,
@@ -647,6 +651,8 @@ impl LiveRenderer {
             // legacy_gamma=1, sky-driven gamma).
             post_exposure: 1.0,
             post_exp_scale: 1.0,
+            post_exp_min: 1.0,
+            post_exp_max: 1.0,
             post_tonemap_mix: 0.7,
             post_gamma: 1.0,
             post_tonemap_type: 1,
@@ -1720,7 +1726,17 @@ impl LiveRenderer {
                     entry_point: "main",
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::R16Float,
-                        blend: Some(wgpu::BlendState::REPLACE),
+                        // Eye-adaptation blend: out = avg*C + prev*(1-C), C = per-frame adaptation rate
+                        // (set via set_blend_constant). Persists the 1x1 lum across frames (LoadOp::Load)
+                        // so exposure adapts smoothly instead of tracking per-frame avg_lum swings (flicker).
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::Constant,
+                                dst_factor: wgpu::BlendFactor::OneMinusConstant,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent::REPLACE,
+                        }),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -1792,6 +1808,12 @@ impl LiveRenderer {
         let exp_scale = std::env::var("FS_ENGINE_EXPOSURE").ok()
             .and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         self.set_post_params(r.exposure, exp_scale, r.tonemap_mix, r.gamma, r.tonemap_type as i32, r.legacy_gamma as i32);
+        // Stock exposureF bounds from the sky's HDR scale (pipeline.cpp:8073-8085): probe skies get
+        // [1/scale, scale]; legacy (scale<=1) gets [1,1] = constant. Drives post_tonemap's bounded
+        // auto-exposure so a bright day pins at exp_max (stable, no flicker), exactly as stock does.
+        let scale = r.sky_hdr_scale;
+        if scale > 1.0 { self.post_exp_min = 1.0 / scale; self.post_exp_max = scale; }
+        else { self.post_exp_min = 1.0; self.post_exp_max = 1.0; }
     }
 
     /// Phase A.1: the fullscreen sky UBO, packed by the caller from the typed camera +
@@ -2135,8 +2157,9 @@ impl LiveRenderer {
         self.ensure_scene_hdr(device, w, h);
         self.ensure_exp(device); // before ensure_post: post_bind references exp_lum's view
         self.ensure_post(device);
-        // S1: push the Post-params UBO (std140: 4 floats + 2 ints, 24 bytes used, 32 alloc)
-        // consumed by post_tonemap.frag every frame, before the composite pass runs.
+        // S1: push the Post-params UBO (std140: 6 floats + 2 ints, 32 bytes) consumed by
+        // post_tonemap.frag every frame, before the composite pass runs. exp_min/exp_max (24..32)
+        // are the stock exposureF dynamic-exposure bounds (from sky hdr_scale).
         {
             let mut pp = [0u8; 32];
             pp[0..4].copy_from_slice(&self.post_exposure.to_le_bytes());
@@ -2145,6 +2168,8 @@ impl LiveRenderer {
             pp[12..16].copy_from_slice(&self.post_gamma.to_le_bytes());
             pp[16..20].copy_from_slice(&self.post_tonemap_type.to_le_bytes());
             pp[20..24].copy_from_slice(&self.post_legacy_gamma.to_le_bytes());
+            pp[24..28].copy_from_slice(&self.post_exp_min.to_le_bytes());
+            pp[28..32].copy_from_slice(&self.post_exp_max.to_le_bytes());
             queue.write_buffer(&self.post_ubo, 0, &pp);
         }
         // Phase A.1: the fullscreen sky UBO (parallel-read camera + EepSkyBlock), pushed when set.
@@ -2366,13 +2391,20 @@ impl LiveRenderer {
         // Metered auto-exposure: average scene_hdr luminance into the 1x1 exp_lum, read by the
         // tonemap below to normalize the HDR (so radiance > 1 doesn't hard-clamp to white). Runs
         // after the scene is fully composited (sky + world), before the post pass.
+        let mut ran_exp = false;
         if let (Some(p), Some(b), Some(lum)) = (self.exp_pipeline.as_ref(), self.exp_bind.as_ref(), self.exp_lum.as_ref()) {
+            // Temporal eye-adaptation: blend the current-frame avg luminance into the persisted 1x1
+            // lum. First real frame primes it (rate=1, cleared); after that a small rate damps the
+            // exposure so panning through the darkening zenith no longer flickers (~0.5s adaptation).
+            let primed = self.exp_primed;
+            let rate: f64 = if primed { 0.04 } else { 1.0 };
+            let load = if primed { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) };
             let mut mp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("exp-measure-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: lum,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -2380,8 +2412,11 @@ impl LiveRenderer {
             });
             mp.set_pipeline(p);
             mp.set_bind_group(0, b, &[]);
+            mp.set_blend_constant(wgpu::Color { r: rate, g: rate, b: rate, a: rate });
             mp.draw(0..3, 0..1);
+            ran_exp = true;
         }
+        if ran_exp { self.exp_primed = true; }
         // Final composite: tonemap the linear-HDR scene target (PBRNeutral) to the sRGB
         // swapchain. The mandatory HDR->LDR step; the swapchain ROP does the sRGB encode.
         {

@@ -16,11 +16,13 @@
 layout(set = 0, binding = 0) uniform texture2D scene;
 layout(set = 0, binding = 1) uniform Post {
     float exposure;      // RenderExposure, clamp[0.5,4]
-    float exp_scale;     // auto-exposure meter (1.0 = fixed/faithful subset, D2)
+    float exp_scale;     // manual multiplier on top of dynamic exposure (1.0 = pure auto)
     float tonemap_mix;   // 0 = curve bypassed (legacy classic), else RenderTonemapMix
     float gamma;         // sky gamma, drives the legacyGamma soft-clip
     int   tonemap_type;  // 0 = PBRNeutral, 1 = ACES Hill
     int   legacy_gamma;  // 1 = apply the classic-WL soft shoulder (legacy skies)
+    float exp_min;       // stock exposureF dynamic-exposure bounds (from sky hdr_scale): lower
+    float exp_max;       // upper; a bright scene pins here
 } post;
 // Metered auto-exposure: 1x1 average scene luminance from the measure pass (exposure_measure.frag).
 layout(set = 0, binding = 2) uniform texture2D exp_lum;
@@ -94,8 +96,17 @@ vec3 toneMap(vec3 color) {
     // (flattening the daycycle day<->night) AND stock doesn't meter at all here. So classic uses a
     // constant; only the advanced path meters (bounded, later). post.exp_scale = manual multiplier
     // (FS_ENGINE_EXPOSURE tuning); post.exposure = RenderExposure clamp.
-    float avg_lum = max(texelFetch(exp_lum, ivec2(0, 0), 0).r, 1e-4);
-    float auto_exp = (post.tonemap_mix <= 0.0) ? 1.0 : clamp(0.18 / avg_lum, 0.001, 8.0);
+    // FAITHFUL to stock exposureF.glsl: bounded dynamic exposure. Meter L, normalize by the
+    // coefficient, square, map between exp_min/exp_max (the sky hdr_scale bounds). A bright scene
+    // pins Ln->1 so exposure sits at exp_max (CONSTANT -> no flicker); only darker scenes adapt
+    // toward exp_min. This replaces the old unbounded 0.18/avg (recomputed per frame => the flicker).
+    // Our sky HDR chain (srgb_to_linear*hdr_scale) matches stock's softenLightF, so these bounds are
+    // correct as-is -- no HDR recalibration needed. Classic legacy (mix<=0) stays constant 1.0.
+    float avg_lum = max(texelFetch(exp_lum, ivec2(0, 0), 0).r, 0.0);
+    float Ln = clamp(avg_lum / 0.175, 0.0, 1.0);   // 0.175 = RenderDynamicExposureCoefficient
+    Ln = Ln * Ln;
+    float dyn_exp = mix(post.exp_min, post.exp_max, Ln);
+    float auto_exp = (post.tonemap_mix <= 0.0) ? 1.0 : dyn_exp;
     float final_exposure = post.exposure * post.exp_scale * auto_exp;
     vec3 exposed = color * final_exposure;
     vec3 tonemapped;

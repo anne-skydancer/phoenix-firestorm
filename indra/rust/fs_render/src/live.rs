@@ -79,7 +79,8 @@ fn cube_array_filled(device: &wgpu::Device, queue: &wgpu::Queue, res: u32, cubes
             size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: layers },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
             format: PROBE_CUBE_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
@@ -395,6 +396,11 @@ pub struct LiveRenderer {
     probe_depth_view: Option<wgpu::TextureView>,        // sampleable depth (binding 5); rebuilt with ensure_depth
     probe_count: u32,                                   // active probes (slice 1 = 1 default probe)
     probe_res: u32,                                     // radiance cube face resolution (RenderReflectionProbeResolution)
+    // S2: probe capture. A per-face sky UBO (same 240-byte layout as sky_fs_ubo, camera swapped per face)
+    // + a bind group for the sky-fs pipeline. The full sky environment is rendered into the 6 cube faces.
+    probe_cap_ubo: wgpu::Buffer,
+    probe_cap_bind: Option<wgpu::BindGroup>,
+    probe_captured: bool,                               // sky captured into the radiance cube at least once
     // S1: Post-params UBO consumed by post_tonemap.frag (std140, 32 bytes).
     post_ubo: wgpu::Buffer,
     post_exposure: f32,    // RenderExposure clamp[0.5,4]
@@ -838,6 +844,12 @@ impl LiveRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let probe_cap_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probe-capture-sky-ubo"),
+            size: 240, // same layout as sky_fs_ubo (mat4 inv_view_proj + 11 vec4 WL params)
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let probe_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("probe-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -960,6 +972,9 @@ impl LiveRenderer {
             probe_depth_view: None,
             probe_count: 1,
             probe_res: 128,
+            probe_cap_ubo,
+            probe_cap_bind: None,
+            probe_captured: false,
             post_ubo,
             // S1 defaults: non-legacy baseline (settings.xml RenderExposure=1, TonemapType=1
             // ACES, TonemapMix=0.7). S3 overrides these per sky regime (legacy => mix=0,
@@ -2585,7 +2600,80 @@ impl LiveRenderer {
                 &glam::Mat4::IDENTITY, &glam::Mat4::IDENTITY, max_lod, /*cube_snapshot=*/0.0, /*zconv_vulkan=*/1.0));
 
             self.resolve_bind = None; // rebind resolve against the new probe resources
+            self.probe_captured = false; // fresh arrays -> re-capture the sky
         }
+    }
+
+    /// Test/debug: the radiance cube-array texture + the scratch layer index the sky capture fills, so a
+    /// headless test can read back a captured face and confirm it holds the sky (not the neutral grey seed).
+    pub fn probe_radiance_debug(&self) -> Option<(&wgpu::Texture, u32)> {
+        self.probe_radiance.as_ref().map(|t| (t, self.probe_count))
+    }
+
+    /// S2: capture the sky environment into the 6 faces of the radiance cube's SCRATCH layer, one face
+    /// per 90deg-FOV camera. Reuses the procedural sky pipeline (sky_fullscreen.frag) with a per-face sky
+    /// UBO (current WL params, camera swapped). Captured once per (re)allocation; S3 convolves the scratch
+    /// into the radiance mip chain + irradiance. (Terrain/cloud/water folded in as the next increment.)
+    fn capture_probe_sky(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.probe_captured || !self.sky_fs_enabled || self.probe_radiance.is_none() {
+            return;
+        }
+        self.ensure_sky_fs(device);
+        if self.probe_cap_bind.is_none() {
+            self.probe_cap_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("probe-cap-bind"),
+                layout: &self.sky_fs_bgl,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.probe_cap_ubo.as_entire_binding() }],
+            }));
+        }
+        let (Some(pipe), Some(bind), Some(rad)) =
+            (self.sky_fs_pipeline.as_ref(), self.probe_cap_bind.as_ref(), self.probe_radiance.as_ref())
+        else { return; };
+
+        let wl = self.sky_fs_data; // current WL params (copy); we swap only the camera per face
+        let eye = glam::Vec3::new(wl[16], wl[17], wl[18]);
+        // Standard cube-map face basis (+X,-X,+Y,-Y,+Z,-Z), matching wgpu/Vulkan cube sampling.
+        let faces: [(glam::Vec3, glam::Vec3); 6] = [
+            (glam::Vec3::X, glam::Vec3::NEG_Y),
+            (glam::Vec3::NEG_X, glam::Vec3::NEG_Y),
+            (glam::Vec3::Y, glam::Vec3::Z),
+            (glam::Vec3::NEG_Y, glam::Vec3::NEG_Z),
+            (glam::Vec3::Z, glam::Vec3::NEG_Y),
+            (glam::Vec3::NEG_Z, glam::Vec3::NEG_Y),
+        ];
+        let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.5, 2000.0);
+        let scratch = self.probe_count; // first scratch cube (radiance array = count + 2)
+        for (f, (dir, up)) in faces.iter().enumerate() {
+            let view = glam::Mat4::look_at_rh(eye, eye + *dir, *up);
+            let inv_vp = (proj * view).inverse();
+            let mut ubo = wl;
+            ubo[0..16].copy_from_slice(&inv_vp.to_cols_array()); // swap inv_view_proj; keep cam + WL params
+            queue.write_buffer(&self.probe_cap_ubo, 0, bytemuck::cast_slice(&ubo));
+
+            let face_view = rad.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("probe-cap-face"),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: scratch * 6 + f as u32,
+                array_layer_count: Some(1),
+                ..Default::default()
+            });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("probe-cap-enc") });
+            {
+                let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("probe-cap-face-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &face_view, resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+                });
+                rp.set_pipeline(pipe);
+                rp.set_bind_group(0, bind, &[]);
+                rp.draw(0..3, 0..1);
+            }
+            queue.submit([enc.finish()]);
+        }
+        self.probe_captured = true;
     }
 
     /// #4: the deferred resolve pipeline (fullscreen post.vert + resolve.frag) + its bind
@@ -2984,6 +3072,7 @@ impl LiveRenderer {
         if has_gb || has_terrain {
             self.ensure_gbuffer(device, w, h);
             self.ensure_probes(device, queue); // P3: probe resources exist before the resolve binds them
+            self.capture_probe_sky(device, queue); // S2: fill the radiance scratch cube with the sky
             self.ensure_resolve(device);
         }
         if has_gb {

@@ -92,7 +92,18 @@ Original spec:
 - Seed a valid default probe (D2): refmapCount=1, neutral irradiance cube, identity-ish ProbeParams.
 - **Recompile `resolve.frag.spv`** (glslc). Headless: `deferred_resolve_*` + a new probe-plumbing test pass.
 
-### S2 — Sky capture into the radiance cube scratch layer (headless: faces contain the sky gradient)
+### S2 — Sky capture into the radiance cube scratch layer  ◑ PARTIAL (2026-08-04): procedural sky DONE
+Landed: `probe_cap_ubo` + `probe_cap_bind` + `capture_probe_sky()` — 6 face cameras (90° FOV, standard
+cube basis) drive the existing `sky_fullscreen.frag` pipeline into the 6 faces of the radiance cube's
+SCRATCH layer (one submit per face, per-face inv_view_proj, current WL params). `cube_array_filled` gains
+COPY_SRC (readback + S3 mip copies); captured once per (re)allocation. VERIFIED headless
+(`probe_sky_capture_fills_scratch_faces`): the faces hold a real per-direction sky gradient (zenith +Z
+darkest [0.01,0.02,0.06], horizon brightest [0.13,0.20,0.48], blue-dominant) — differs from the grey seed
+and varies. `deferred_resolve` still passes.
+REMAINING for D1 (full environment): fold terrain (deferred terrain pipeline w/ face view_proj) + clouds
+(cloud pass per face) + water into the per-face capture. These are additive passes on the proven mechanism.
+
+Original spec:
 - A cube render target (or render into radiance scratch layer `count`), 6 faces @ `res*4` supersample
   (or `res` for slice 1), 90° FOV per-face view matrices (the 6 look/up dirs), aspect 1.
 - Re-run `sky_fullscreen.frag` per face with per-face `inv_view_proj` (from `perspective_rh` + face view).

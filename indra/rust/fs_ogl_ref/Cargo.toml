@@ -12,10 +12,11 @@ crate-type = ["rlib"]
 
 [dependencies]
 png = "0.17"
-wgpu = { version = "0.19", features = ["spirv"] } # spirv: run the real OGL shaders (GLSL->SPIR-V) later
+wgpu = { version = "0.19", features = ["spirv"] } # spirv passthrough: run the real OGL shaders
 pollster = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
+shaderc = "0.8" # GLSL->SPIR-V in-process; links the SDK's shaderc_combined.lib via SHADERC_LIB_DIR
 
 [profile.release]
 opt-level = 3

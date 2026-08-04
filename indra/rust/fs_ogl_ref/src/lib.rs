@@ -9,6 +9,8 @@
 //! deliberately mirroring `fs_render`'s headless shape so the trivial baseline diffs identical. Real
 //! passes (atmospherics, HDR, sky/clouds/water, ...) are absorbed into `frame()` step by step.
 
+pub mod shaders; // assemble+transform+compile the REAL OGL shaders (softenLight, ...) to SPIR-V
+
 /// Present format -- matches `fs_render`'s headless target exactly (apples-to-apples): sRGB so the
 /// tonemap output encodes identically, and readback/PNG-friendly.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -37,10 +39,15 @@ impl RefEngine {
         }))?;
         let info = adapter.get_info();
         log::info!("fs_ogl_ref: adapter {} | {:?} | {} {}", info.name, info.backend, info.driver, info.driver_info);
+        // SPIRV_SHADER_PASSTHROUGH: the real OGL SPIR-V goes straight to the driver (naga PANICs on it,
+        // and re-translation is exactly what we don't want -- the thesis is the shaders run on the real
+        // Vulkan driver). Request it if the adapter has it (AMD does).
+        let want = wgpu::Features::SPIRV_SHADER_PASSTHROUGH;
+        let features = if adapter.features().contains(want) { want } else { wgpu::Features::empty() };
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("fs_ogl_ref"),
-                required_features: wgpu::Features::empty(),
+                required_features: features,
                 required_limits: wgpu::Limits::default(),
             },
             None,
@@ -145,5 +152,26 @@ impl RefEngine {
             }
         }
         log::info!("fs_ogl_ref: frame captured to {}", out);
+    }
+
+    /// Build the REAL softenLight fragment shader module (assemble the viewer's way -> UBO/sampler
+    /// transform -> Vulkan SPIR-V -> wgpu module via passthrough). Returns (module, n_ubo_members,
+    /// n_samplers). This is the atmospherics pass's fragment; the vertex is a fullscreen triangle.
+    /// The UBO/texture feed + pass wiring build on this. Panics on a shaderc error (compile is proven).
+    pub fn build_soften_module(&self) -> (wgpu::ShaderModule, usize, usize) {
+        let (spv, members, samplers) = shaders::build_softenlight_ubo_spirv()
+            .unwrap_or_else(|e| panic!("softenLight assemble/transform/compile failed:\n{e}"));
+        // Real engine SPIR-V -> passthrough (naga PANICs on it). Requires SPIRV_SHADER_PASSTHROUGH.
+        let module = unsafe {
+            self.device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
+                label: Some("softenLightF"),
+                source: std::borrow::Cow::Borrowed(&spv),
+            })
+        };
+        log::info!(
+            "fs_ogl_ref: softenLight module OK -- {} UBO members, {} samplers, {} SPIR-V words",
+            members, samplers, spv.len()
+        );
+        (module, members, samplers)
     }
 }

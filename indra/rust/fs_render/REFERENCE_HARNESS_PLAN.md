@@ -6,6 +6,23 @@
 > (b) how does VLK reproduce it accurately? — see [[canonical-ogl-to-vlk-method]]. Built ON the map in
 > RENDER_STRATIGRAPHY.md (every pass/RT/uniform/shader is already located).
 
+## Build on vkharness (do NOT reinvent the shader machinery)
+`indra/rust/vkharness` already provides the OGL-reproduction foundation and MUST be reused:
+- Real viewer `.glsl` → `shaderc` (Vulkan target, keep DescriptorSet/Binding) → SPIR-V → wgpu
+  (SPIRV_PASSTHROUGH; naga panics on real SPIR-V). H2 proven.
+- The std140 UBO transform, proven through the finicky cases (`mat4[]` / `shadow_matrix[6]` strides). H3.
+- **H3 = `softenLightF`/atmospherics already running on wgpu with synthetic UBO inputs** — the exact
+  step-2 shader, already ported.
+- The FULL 229-program OGL table (`sweep_table.rs`) transcribed + validated vs a live `FS_SHADER_MANIFEST`
+  dump (`table_diff.rs`).
+- `CANONICAL_LL_RENDER_MODEL.md` — the authoritative stock frame flow, stage 0..3 (shadow → G-buffer →
+  deferred lighting/soften → forward/alpha/water → post/tonemap), from stock `c:/fs/ll-canonical`.
+
+`fs_ogl_ref` = that machinery made HEADLESS and assembled into a full frame (vkharness's own H4+ target:
+"mini deferred pass → real engine; code seeds rhi_wgpu"). Step 2 (atmospherics) = vkharness H3
+`softenLightF`, headless, fed the fixture G-buffer + EEP UBOs, through the OGL present. Reuse its shaderc
+ingestion + program table + the canonical model; don't re-derive the passes.
+
 ## The two engines (one contract)
 - **`fs_ogl_ref`** (NEW crate, sibling of `fs_render`) — the ORACLE. Verbatim OGL: it runs the **actual
   OGL GLSL shaders** (from `firestorm-upstream/indra/newview/app_settings/shaders/`, compiled GLSL→SPIR-V

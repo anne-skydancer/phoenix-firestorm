@@ -143,32 +143,52 @@ void main() {
     vec3 color;
 
     if (is_pbr) {
-        // calcDiffuseSpecular: diffuseColor = base*(1-f0)*(1-metallic); base is LINEAR (PBR fill).
-        float metallic = 0.0;                               // default matte (no ORM target yet)
-        float ao = 1.0;
-        vec3 base = a.rgb;                                   // already linear
+        // ORM from RT2 (occlusion, roughness, metallic). base is LINEAR (PBR fill).
+        vec3 orm = texelFetch(g_spec, p, 0).rgb;
+        float ao = orm.r;
+        float perceptualRoughness = orm.g;
+        float metallic = orm.b;
+        vec3 base = a.rgb;
+        // calcDiffuseSpecular (deferredUtil): diffuseColor = base*(1-f0)*(1-metallic); specColor = mix(f0, base, metallic).
         vec3 diffuseColor = base * (1.0 - 0.04) * (1.0 - metallic);
-        // pbrPunctual diffuse (deconstructed): diffPunc = (1-F) * diffuseColor / M_PI. Without a view
-        // vector, F is the normal-incidence f0=0.04 (grazing rim is P2c). specPunc omitted (rough matte).
-        vec3 diffPunc = (1.0 - 0.04) * diffuseColor / M_PI;
-        // pbrIbl diffuse: irradiance * diffuseColor * ao. irradiance = sky ambient (probe stub).
-        vec3 irradiance = amblit;
+        vec3 specularColor = mix(vec3(0.04), base, metallic);
 
+        // pbrPunctual GGX (deferredUtil): F (Schlick) * G (Smith) * D (GGX). Uses the reconstructed view vector v.
+        perceptualRoughness = max(perceptualRoughness, 8.0 / 255.0);
+        float alphaRoughness = perceptualRoughness * perceptualRoughness;
+        float ar2 = alphaRoughness * alphaRoughness;
+        float reflectance90 = clamp(max(max(specularColor.r, specularColor.g), specularColor.b) * 25.0, 0.0, 1.0);
+        vec3 l = normalize(sun_dir);
+        vec3 h = normalize(l + v);
+        float NdotL = clamp(dot(n, l), 0.001, 1.0);
+        float NdotV = clamp(abs(dot(n, v)), 0.001, 1.0);
+        float NdotH = clamp(dot(n, h), 0.0, 1.0);
+        float VdotH = clamp(dot(v, h), 0.0, 1.0);
+        vec3 F = specularColor + (vec3(reflectance90) - specularColor) * pow(clamp(1.0 - VdotH, 0.0, 1.0), 5.0);
+        float aL = 2.0 * NdotL / (NdotL + sqrt(ar2 + (1.0 - ar2) * (NdotL * NdotL)));
+        float aV = 2.0 * NdotV / (NdotV + sqrt(ar2 + (1.0 - ar2) * (NdotV * NdotV)));
+        float G = aL * aV;
+        float fd = (NdotH * ar2 - NdotH) * NdotH + 1.0;
+        float D = ar2 / (M_PI * fd * fd);
+        vec3 diffPunc = (vec3(1.0) - F) * diffuseColor / M_PI;
+        vec3 specPunc = F * G * D / (4.0 * NdotL * NdotV);
+        float nl_p = NdotL;
+
+        // pbrIbl diffuse: irradiance * diffuseColor * ao (radiance=0 -> no iblSpec until probes).
+        vec3 irradiance = amblit;
+        color = irradiance * diffuseColor * ao;
+
+        // pbrBaseLight combination (classic deconstruction vs linear).
         if (classic_mode > 0) {
-            // pbrBaseLight classic sub-branch (deconstructed to match blinn-phong under legacy skies).
             irradiance = srgb_to_linear(irradiance * 0.9);
-            float da = pow(nl, 1.2);
+            float da = pow(nl_p, 1.2);
             vec3 sun_contrib = vec3(min(da, scol));
-            // ×M_PI cancels the Lambertian /pi so legacy skies aren't too dark.
             sun_contrib = srgb_to_linear(linear_to_srgb(sun_contrib) * sunlit * 0.7) * M_PI;
             vec3 finalAmbient = irradiance * diffuseColor;
-            vec3 finalSun = clamp(sun_contrib * (diffPunc * scol), vec3(0.0), vec3(10.0));
+            vec3 finalSun = clamp(sun_contrib * ((diffPunc + specPunc) * scol), vec3(0.0), vec3(10.0));
             color = srgb_to_linear(linear_to_srgb(finalAmbient) + linear_to_srgb(finalSun) * 1.1);
         } else {
-            // pbrBaseLight linear sub-branch: iblDiff + nl*diffPunc*sunlit*3.0*scol.
-            vec3 iblDiff = irradiance * diffuseColor * ao;
-            vec3 sunDiff = clamp(nl * diffPunc, vec3(0.0), vec3(10.0)) * sunlit * 3.0 * scol;
-            color = iblDiff + sunDiff;
+            color += clamp(nl_p * (diffPunc + specPunc), vec3(0.0), vec3(10.0)) * sunlit * 3.0 * scol;
         }
         // pbrBaseLight tail: additive linear emissive (colorEmissive = RT3.rgb).
         color += texelFetch(g_emissive, p, 0).rgb;

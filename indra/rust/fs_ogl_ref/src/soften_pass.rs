@@ -17,7 +17,10 @@ use wgpu::util::DeviceExt;
 pub enum Material {
     PbrGround,
     LegacySpecular,
+    PbrShiny, // low roughness + high metallic -> GGX specular DOMINATES (stresses pbrPunctual F/G/D)
 }
+pub const PBR_SHINY_BASE: [f32; 3] = [0.80, 0.50, 0.20]; // linear base color
+pub const PBR_SHINY_ORM: [f32; 3] = [1.0, 0.20, 0.80]; // occlusion, roughness, metallic
 // Shared legacy-material params so the oracle and the resolve bench describe the IDENTICAL surface.
 pub const LEGACY_DIFFUSE: [f32; 3] = [0.5, 0.5, 0.5]; // sRGB
 pub const LEGACY_SPEC_COLOR: [f32; 3] = [0.5, 0.5, 0.5]; // sRGB
@@ -249,6 +252,11 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
     // diff_rgb, spec (RT2), flag, diffuse.a (legacy fullbright), emissiveRect.rgb (PBR emissive).
     let (diff_rgb, spec4, flag, diff_a, emiss): ([f32; 3], [f32; 4], f32, f32, [f32; 3]) = match material {
         Material::PbrGround => ([0.5, 0.5, 0.5], [1.0, 1.0, 0.0, 0.0], 0.67, 0.0, PBR_EMISSIVE),
+        Material::PbrShiny => (
+            PBR_SHINY_BASE,
+            [PBR_SHINY_ORM[0], PBR_SHINY_ORM[1], PBR_SHINY_ORM[2], 0.0],
+            0.67, 0.0, [0.0, 0.0, 0.0],
+        ),
         Material::LegacySpecular => (
             LEGACY_DIFFUSE,
             [LEGACY_SPEC_COLOR[0], LEGACY_SPEC_COLOR[1], LEGACY_SPEC_COLOR[2], LEGACY_GLOSS],

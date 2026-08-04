@@ -106,11 +106,13 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bo
     // fixture G-buffer per material. World normal (0,0,1) so dot(n, sun_dir=(0,0.707,0.707)) = 0.707
     // = the oracle's nl. Spec RT stored as Rgba16Float to match the oracle's specularRect EXACTLY, so
     // the ONLY variable in the specular comparison is the view vector (the thing under test).
-    use crate::soften_pass::{LEGACY_FULLBRIGHT, PBR_EMISSIVE};
+    use crate::soften_pass::{LEGACY_FULLBRIGHT, PBR_EMISSIVE, PBR_SHINY_BASE, PBR_SHINY_ORM};
     // RT3 = (pbr_emissive.rgb, legacy_fullbright.a) -- must match the oracle's emissiveRect / diffuse.a.
     let (alb3, spec4, flag, em4): ([f32; 3], [f32; 4], f32, [f32; 4]) = match material {
         Material::PbrGround => ([0.5, 0.5, 0.5], [1.0, 1.0, 0.0, 0.0], 0.67,
             [PBR_EMISSIVE[0], PBR_EMISSIVE[1], PBR_EMISSIVE[2], 0.0]),
+        Material::PbrShiny => (PBR_SHINY_BASE,
+            [PBR_SHINY_ORM[0], PBR_SHINY_ORM[1], PBR_SHINY_ORM[2], 0.0], 0.67, [0.0, 0.0, 0.0, 0.0]),
         Material::LegacySpecular => (
             LEGACY_DIFFUSE, // sRGB (resolve srgb_to_linear's it)
             [LEGACY_SPEC_COLOR[0], LEGACY_SPEC_COLOR[1], LEGACY_SPEC_COLOR[2], LEGACY_GLOSS],

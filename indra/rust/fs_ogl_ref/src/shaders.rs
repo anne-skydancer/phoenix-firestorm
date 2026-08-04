@@ -119,6 +119,7 @@ pub fn assemble_softenlight_fragment() -> String {
     s.push_str("struct GBufferInfo { vec4 albedo; vec4 specular; vec3 normal; vec4 emissive; float gbufferFlag; float envIntensity; };\n");
     s.push_str("#define HAS_SUN_SHADOW 1\n");
     s.push_str("#define HAS_SSAO 1\n");
+    s.push_str("#define HAS_EMISSIVE 1\n"); // else getGBuffer never reads emissiveRect -> PBR emissive dropped
     s.push_str("#define REF_SAMPLE_COUNT 32\n");
     s.push_str("#define IS_AMD_CARD 1\n");
     for piece in SOFTENLIGHT_FRAG_PIECES {

@@ -36,7 +36,9 @@ void main() {
     // MASK cutout (opaque G-buffer draws reach here only when blending is OFF).
     if (u.flags.z >= 0.0 && a < u.flags.z) discard;
     g_albedo = vec4(albedo, GBUFFER_FLAG_HAS_ATMOS);
-    g_normal = vec4(normalize(v_normal), 1.0);
+    // RT1.w = env-intensity (legacy environment-reflection factor). Matte until real material data lands;
+    // MUST be 0 -- the probe resolve reads it and a stray 1.0 triggers applyLegacyEnv (overwrites lighting).
+    g_normal = vec4(normalize(v_normal), 0.0);
     g_spec = vec4(0.0); // glossiness 0 -> resolve's Blinn-Phong specular is off until real material data lands
     g_emissive = vec4(0.0); // no emissive / fullbright until real material data lands
 }

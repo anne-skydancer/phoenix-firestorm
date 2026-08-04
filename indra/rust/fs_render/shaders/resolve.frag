@@ -488,11 +488,13 @@ void pbrIbl(vec3 diffuseColor, vec3 specularColor, vec3 radiance, vec3 irradianc
 }
 
 // getPositionWithDepth (deferredUtil.glsl): reconstruct VIEW-space position from a depth sample.
-// Takes the SAME flipped ndc.xy the view ray uses (so pos and ray agree), + OGL clip z (2*depth-1) via
-// the fixture's OGL-form inv_proj -- matches the oracle's getPositionWithDepth exactly.
-// (Engine integration P3 feeds a reverse-Z-appropriate inv_proj + ndc mapping; the decal gate verifies.)
+// Takes the SAME flipped ndc.xy the view ray uses (so pos and ray agree). The clip-z mapping is
+// convention-selected by pp_misc.z: < 0.5 => OGL clip [-1,1] (2*depth-1, the P1 oracle fixture); else
+// Vulkan [0,1] / reverse-Z (depth passed straight through) with pp_inv_proj = the engine's inv_proj.
+// The decal/applier acceptance gate verifies the reverse-Z path once parallax-corrected probes land.
 vec3 getViewPositionFromDepth(vec2 ndc_xy, float depth) {
-    vec4 ndc = vec4(ndc_xy, 2.0 * depth - 1.0, 1.0);
+    float ndcz = (pp.pp_misc.z < 0.5) ? (2.0 * depth - 1.0) : depth;
+    vec4 ndc = vec4(ndc_xy, ndcz, 1.0);
     vec4 vpos = pp.pp_inv_proj * ndc;
     return vpos.xyz / vpos.w;
 }
@@ -523,9 +525,11 @@ void main() {
     vec3 world_far = far.xyz / far.w;
     vec3 v = normalize(sky.cam_maxy.xyz - world_far);        // = -ray_dir = surface->camera
 
-    // Probe stratum: a view-space position + view-space normal for the (view-space) probe block. Uses the
-    // SAME flipped ndc.xy as the ray + the depth sample. env_mat is view->world, so transpose(env_mat)
-    // maps our world normal (RT1) to view space. In the fixture view=identity so both are pass-throughs.
+    // Probe stratum: view-space position (getPositionWithDepth form, matches the oracle) + view normal.
+    // The engine feeds a depth stand-in (normalize(view_pos) = ray direction is all the default sky probe
+    // needs; parallax off -> magnitude irrelevant); the fixture feeds the real depth so the A/B matches the
+    // oracle's getPositionWithDepth exactly. Real per-pixel engine depth (a depth-export RT) lands with
+    // parallax-corrected multi-probes; the decal/applier gate verifies it then.
     float depth = texelFetch(g_depth, p, 0).r;
     vec3 view_pos = getViewPositionFromDepth(ndc, depth);
     vec3 view_norm = transpose(env_mat) * n;

@@ -27,6 +27,129 @@ const GBUF_SPEC_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 // RT3: PBR emissive.rgb (linear, additive) + legacy fullbright.a. GL_RGB16F in stock; +alpha for the
 // legacy fullbright factor (stock keeps that in RT0.a, but ours holds the flag there). Materials M2b.
 const GBUF_EMISSIVE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+// P3 reflection-probe constants (mirror llreflectionmapmanager.h). The ReflectionProbes std140 block is
+// byte-identical to resolve.frag; RP_UBO_SIZE is its size for MAX_REFMAP_COUNT=256.
+const PROBE_MAX_COUNT: usize = 256;         // LL_MAX_REFLECTION_PROBE_COUNT / MAX_REFMAP_COUNT
+const PROBE_IRRADIANCE_RES: u32 = 16;       // LL_IRRADIANCE_MAP_RESOLUTION
+const RP_UBO_SIZE: u64 = 49248;             // std140 size of the ReflectionProbes block (see resolve_pass.rs RP_SIZE)
+const PROBE_CUBE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float; // radiance/irradiance (D4: Rgba16Float for now)
+// std140 offsets into the ReflectionProbes block (element 0 of each array); mirror resolve_pass.rs RP_*.
+const RP_OFF_REFSPHERE: usize = 16448;
+const RP_OFF_REFPARAMS: usize = 20544;
+const RP_OFF_REFINDEX: usize = 24656;
+const RP_OFF_REFMAPCOUNT: usize = 49232;
+
+#[inline]
+fn f16_bytes(x: f32) -> [u8; 2] {
+    let bits = x.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    let mant = (bits >> 13) & 0x3ff;
+    let h = if exp <= 0 { sign } else if exp >= 31 { sign | 0x7c00 } else { sign | ((exp as u16) << 10) | mant as u16 };
+    h.to_le_bytes()
+}
+fn put_vec4(b: &mut [u8], off: usize, v: [f32; 4]) {
+    for (i, f) in v.iter().enumerate() { b[off + i * 4..off + i * 4 + 4].copy_from_slice(&f.to_le_bytes()); }
+}
+fn put_ivec4(b: &mut [u8], off: usize, v: [i32; 4]) {
+    for (i, f) in v.iter().enumerate() { b[off + i * 4..off + i * 4 + 4].copy_from_slice(&f.to_le_bytes()); }
+}
+
+/// ProbeParams std140 bytes: mat4 pp_inv_proj(64) + mat4 pp_env_mat(64) + vec4 pp_misc(16) =
+/// (max_probe_lod, cube_snapshot, z-convention[0=OGL 2*d-1, 1=Vulkan reverse-Z], 0).
+fn probe_params_bytes(inv_proj: &glam::Mat4, env_mat: &glam::Mat4, max_lod: f32, cube_snapshot: f32, zconv: f32) -> Vec<u8> {
+    let mut v: Vec<u8> = Vec::with_capacity(144);
+    for f in inv_proj.to_cols_array() { v.extend_from_slice(&f.to_le_bytes()); }
+    for f in env_mat.to_cols_array() { v.extend_from_slice(&f.to_le_bytes()); }
+    for f in [max_lod, cube_snapshot, zconv, 0.0] { v.extend_from_slice(&f.to_le_bytes()); }
+    v
+}
+
+/// A cube-map ARRAY (`cubes` cubes = 6*cubes layers, single mip) uniformly filled with `color`. Usage
+/// includes RENDER_ATTACHMENT (S2 face capture) + COPY_DST (S3 mip copies) + TEXTURE_BINDING (sampling).
+fn cube_array_filled(device: &wgpu::Device, queue: &wgpu::Queue, res: u32, cubes: u32, color: [f32; 3], label: &str) -> (wgpu::Texture, wgpu::TextureView) {
+    let layers = cubes * 6;
+    let texel = [f16_bytes(color[0]), f16_bytes(color[1]), f16_bytes(color[2]), f16_bytes(1.0)].concat();
+    let mut data = Vec::with_capacity((res * res * layers) as usize * 8);
+    for _ in 0..(res * res * layers) { data.extend_from_slice(&texel); }
+    let t = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: layers },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: PROBE_CUBE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &data,
+    );
+    let view = t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::CubeArray), ..Default::default() });
+    (t, view)
+}
+
+// Split-sum env-BRDF (genbrdflutF.glsl): 1024-sample GGX importance-sampled (A,B) for one (NoV, roughness).
+fn brdf_hammersley(i: u32, n: u32) -> (f32, f32) {
+    let mut bits = (i << 16) | (i >> 16);
+    bits = ((bits & 0x5555_5555) << 1) | ((bits & 0xAAAA_AAAA) >> 1);
+    bits = ((bits & 0x3333_3333) << 2) | ((bits & 0xCCCC_CCCC) >> 2);
+    bits = ((bits & 0x0F0F_0F0F) << 4) | ((bits & 0xF0F0_F0F0) >> 4);
+    bits = ((bits & 0x00FF_00FF) << 8) | ((bits & 0xFF00_FF00) >> 8);
+    (i as f32 / n as f32, bits as f32 * 2.3283064365386963e-10)
+}
+fn brdf_pair(nov: f32, roughness: f32) -> (f32, f32) {
+    let v = [(1.0 - nov * nov).max(0.0).sqrt(), 0.0, nov];
+    let k = (roughness * roughness) / 2.0;
+    let (mut a, mut b) = (0.0f32, 0.0f32);
+    let num = 1024u32;
+    let cross = |x: [f32; 3], y: [f32; 3]| [x[1]*y[2]-x[2]*y[1], x[2]*y[0]-x[0]*y[2], x[0]*y[1]-x[1]*y[0]];
+    let norm = |x: [f32; 3]| { let l = (x[0]*x[0]+x[1]*x[1]+x[2]*x[2]).sqrt(); [x[0]/l, x[1]/l, x[2]/l] };
+    for i in 0..num {
+        let (xi0, xi1) = brdf_hammersley(i, num);
+        // normal = (0,0,1); random(normal.xz)=random(0,1) -> a constant phase offset, matched to the shader.
+        let rnd = { let dt = 0.0f32 * 12.9898 + 1.0 * 78.233; let sn = dt % 3.14; let f = (sn.sin() * 43758.5453).fract(); if f < 0.0 { f + 1.0 } else { f } };
+        let phi = 2.0 * std::f32::consts::PI * xi0 + rnd * 0.1;
+        let alpha = roughness * roughness;
+        let cos_t = ((1.0 - xi1) / (1.0 + (alpha * alpha - 1.0) * xi1)).sqrt();
+        let sin_t = (1.0 - cos_t * cos_t).sqrt();
+        let h_ts = [sin_t * phi.cos(), sin_t * phi.sin(), cos_t];
+        let up = [1.0f32, 0.0, 0.0];
+        let n3 = [0.0f32, 0.0, 1.0];
+        let tx = norm(cross(up, n3));
+        let ty = cross(n3, tx);
+        let h = norm([tx[0]*h_ts[0]+ty[0]*h_ts[1]+n3[0]*h_ts[2],
+                      tx[1]*h_ts[0]+ty[1]*h_ts[1]+n3[1]*h_ts[2],
+                      tx[2]*h_ts[0]+ty[2]*h_ts[1]+n3[2]*h_ts[2]]);
+        let vdoth = v[0]*h[0] + v[1]*h[1] + v[2]*h[2];
+        let l = [2.0*vdoth*h[0]-v[0], 2.0*vdoth*h[1]-v[1], 2.0*vdoth*h[2]-v[2]];
+        let dot_nl = l[2].max(0.0);
+        let dot_nv = v[2].max(0.0);
+        let dot_vh = vdoth.max(0.0);
+        let dot_nh = h[2].max(0.0);
+        if dot_nl > 0.0 {
+            let g = (dot_nl / (dot_nl * (1.0 - k) + k)) * (dot_nv / (dot_nv * (1.0 - k) + k));
+            let g_vis = (g * dot_vh) / (dot_nh * dot_nv);
+            let fc = (1.0 - dot_vh).powf(5.0);
+            a += (1.0 - fc) * g_vis;
+            b += fc * g_vis;
+        }
+    }
+    (a / num as f32, b / num as f32)
+}
+fn brdf_lut_data(res: u32) -> Vec<u8> {
+    let mut data = Vec::with_capacity((res * res) as usize * 8);
+    for y in 0..res {
+        for x in 0..res {
+            let nov = x as f32 / (res - 1) as f32;
+            let rough = 1.0 - y as f32 / (res - 1) as f32;
+            let (a, b) = brdf_pair(nov, rough);
+            data.extend_from_slice(&[f16_bytes(a), f16_bytes(b), f16_bytes(0.0), f16_bytes(1.0)].concat());
+        }
+    }
+    data
+}
+
 const TYPE_TEXCOORD0: usize = 2;
 const TYPE_COLOR: usize = 6;
 const TYPE_TEXCOORD1: usize = 3;
@@ -260,6 +383,18 @@ pub struct LiveRenderer {
     resolve_bind: Option<wgpu::BindGroup>,
     env_ubo: wgpu::Buffer,                              // sun_dir + sunlight + ambient (std140)
     frame_env: [f32; 12],                               // CPU copy pushed to env_ubo each flush
+    // ---- P3: reflection-probe IBL (default sky probe). resolve.frag bindings 5-11. ----
+    probe_radiance: Option<wgpu::Texture>,              // radiance cube ARRAY (count+2 cubes, mipped) -- binding 7
+    probe_radiance_view: Option<wgpu::TextureView>,
+    probe_irradiance: Option<wgpu::Texture>,            // irradiance cube ARRAY (count cubes, no mips) -- binding 8
+    probe_irradiance_view: Option<wgpu::TextureView>,
+    probe_ubo: wgpu::Buffer,                            // ReflectionProbes std140 (binding 6), RP_UBO_SIZE bytes
+    probe_params_ubo: wgpu::Buffer,                     // ProbeParams std140 (binding 10): inv_proj/env_mat/misc
+    brdf_lut_view: Option<wgpu::TextureView>,           // split-sum env-BRDF LUT (binding 11)
+    probe_sampler: wgpu::Sampler,                       // filtering, for both cube arrays + brdfLut
+    probe_depth_view: Option<wgpu::TextureView>,        // sampleable depth (binding 5); rebuilt with ensure_depth
+    probe_count: u32,                                   // active probes (slice 1 = 1 default probe)
+    probe_res: u32,                                     // radiance cube face resolution (RenderReflectionProbeResolution)
     // S1: Post-params UBO consumed by post_tonemap.frag (std140, 32 bytes).
     post_ubo: wgpu::Buffer,
     post_exposure: f32,    // RenderExposure clamp[0.5,4]
@@ -594,6 +729,45 @@ impl LiveRenderer {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
+                // P3 probe bindings 5-11.
+                wgpu::BindGroupLayoutEntry { // 5: g_depth (R32Float; view-pos reconstruction). Sampled as
+                    // Float to match resolve.frag's `texture2D g_depth` (wgpu rejects a Depth texture on a
+                    // Float sampled image under SPIR-V passthrough). normalize(view_pos) is depth-independent
+                    // (ray direction), so a stand-in suffices for the sky probe; real depth-export = parallax.
+                    binding: 5, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { // 6: ReflectionProbes UBO
+                    binding: 6, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { // 7: radiance cube array
+                    binding: 7, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { // 8: irradiance cube array
+                    binding: 8, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { // 9: probe sampler (filtering)
+                    binding: 9, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { // 10: ProbeParams UBO
+                    binding: 10, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { // 11: brdfLut
+                    binding: 11, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
             ],
         });
         let env_ubo = device.create_buffer(&wgpu::BufferDescriptor {
@@ -649,6 +823,30 @@ impl LiveRenderer {
             size: 240, // mat4(64) + 11 x vec4(176)
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+        // P3: reflection-probe UBOs + sampler (persistent). Cube arrays, brdfLut, and the sampleable depth
+        // view are created lazily (ensure_probes / ensure_depth).
+        let probe_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("reflection-probes-ubo"),
+            size: RP_UBO_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let probe_params_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probe-params-ubo"),
+            size: 144, // mat4 pp_inv_proj(64) + mat4 pp_env_mat(64) + vec4 pp_misc(16)
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let probe_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("probe-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
         });
         LiveRenderer {
             bgl,
@@ -751,6 +949,17 @@ impl LiveRenderer {
                 1.0, 1.0, 1.0, 0.0,    // sunlight (linear)
                 0.25, 0.25, 0.30, 0.0, // ambient (linear)
             ],
+            probe_radiance: None,
+            probe_radiance_view: None,
+            probe_irradiance: None,
+            probe_irradiance_view: None,
+            probe_ubo,
+            probe_params_ubo,
+            brdf_lut_view: None,
+            probe_sampler,
+            probe_depth_view: None,
+            probe_count: 1,
+            probe_res: 128,
             post_ubo,
             // S1 defaults: non-legacy baseline (settings.xml RenderExposure=1, TonemapType=1
             // ACES, TonemapMix=0.7). S3 overrides these per sky regime (legacy => mix=0,
@@ -1997,7 +2206,7 @@ impl LiveRenderer {
         self.pipelines.insert(key, p);
     }
 
-    fn ensure_depth(&mut self, device: &wgpu::Device, w: u32, h: u32) {
+    fn ensure_depth(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32) {
         let need = match &self.depth {
             Some((_, dw, dh, ds)) => *dw != w || *dh != h || *ds != self.msaa,
             None => true,
@@ -2014,6 +2223,24 @@ impl LiveRenderer {
                 view_formats: &[],
             });
             self.depth = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), w, h, self.msaa));
+            // P3 binding 5 stand-in: a full-size R32Float g_depth. Zero-filled; normalize(view_pos) is
+            // depth-independent (ray direction) so the sky probe's reflection/fresnel/irradiance directions
+            // are correct regardless. Real per-pixel depth (a depth-export RT) lands with parallax probes.
+            let dw = (w.max(1) * h.max(1)) as usize;
+            let zeros = vec![0u8; dw * 4];
+            let dt = device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("probe-depth-standin"),
+                    size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+                    mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R32Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &zeros,
+            );
+            self.probe_depth_view = Some(dt.create_view(&wgpu::TextureViewDescriptor::default()));
+            self.resolve_bind = None; // rebind the resolve against the new depth stand-in (binding 5)
         }
     }
 
@@ -2310,6 +2537,57 @@ impl LiveRenderer {
         }));
     }
 
+    /// P3: (re)create the reflection-probe resources (radiance + irradiance cube arrays, brdfLut) and seed
+    /// the ReflectionProbes + ProbeParams UBOs with a single neutral DEFAULT probe. Lazy; recreated on a
+    /// count/res change. Slice 1 seeds a neutral grey (no black ambient regression); S2/S3/S4 fill the
+    /// arrays with the captured+convolved sky and the real per-frame packing.
+    fn ensure_probes(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.probe_radiance.is_none() {
+            let res = self.probe_res;
+            let rad_cubes = self.probe_count + 2; // +2 scratch layers (gen source / realtime)
+            // Neutral grey sky-ambient seed so the probe path produces sensible ambient before capture.
+            let seed = [0.20f32, 0.22, 0.26];
+            let (rad_tex, rad_view) = cube_array_filled(device, queue, res, rad_cubes, seed, "probe-radiance");
+            let (irr_tex, irr_view) = cube_array_filled(device, queue, PROBE_IRRADIANCE_RES, self.probe_count, seed, "probe-irradiance");
+            self.probe_radiance = Some(rad_tex);
+            self.probe_radiance_view = Some(rad_view);
+            self.probe_irradiance = Some(irr_tex);
+            self.probe_irradiance_view = Some(irr_view);
+
+            // brdfLut (split-sum env BRDF), CPU-generated once.
+            let brdf = device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("brdf-lut"),
+                    size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+                    mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &brdf_lut_data(64),
+            );
+            self.brdf_lut_view = Some(brdf.create_view(&wgpu::TextureViewDescriptor::default()));
+
+            // Seed the ReflectionProbes UBO: one automatic default probe (layer 0), large radius (parallax
+            // off), unit scales, refmapCount=1. refBucket stays 0 -> getStartIndex=1, loop empty, probe 0
+            // appended. S4 replaces this with the real per-frame view-space packing.
+            let mut rp = vec![0u8; RP_UBO_SIZE as usize];
+            put_vec4(&mut rp, RP_OFF_REFSPHERE, [0.0, 0.0, -1.0, 4096.0]);
+            put_vec4(&mut rp, RP_OFF_REFPARAMS, [1.0, 1.0, 1.0, 0.1]); // irr scale, rad scale, weight coeff, znear
+            put_ivec4(&mut rp, RP_OFF_REFINDEX, [0, -1, 0, 0]);        // layer 0, no neighbors, priority 0
+            rp[RP_OFF_REFMAPCOUNT..RP_OFF_REFMAPCOUNT + 4].copy_from_slice(&1i32.to_le_bytes());
+            queue.write_buffer(&self.probe_ubo, 0, &rp);
+
+            // ProbeParams: identity for slice 1 (grey cubes + parallax-off default probe don't need the
+            // real projection). S4 supplies the reverse-Z inv_proj + view->world env_mat. z-conv=Vulkan.
+            let max_lod = (res as f32).log2() - 1.0;
+            queue.write_buffer(&self.probe_params_ubo, 0, &probe_params_bytes(
+                &glam::Mat4::IDENTITY, &glam::Mat4::IDENTITY, max_lod, /*cube_snapshot=*/0.0, /*zconv_vulkan=*/1.0));
+
+            self.resolve_bind = None; // rebind resolve against the new probe resources
+        }
+    }
+
     /// #4: the deferred resolve pipeline (fullscreen post.vert + resolve.frag) + its bind
     /// group (Env UBO + the two G-buffer textures).
     fn ensure_resolve(&mut self, device: &wgpu::Device) {
@@ -2339,10 +2617,13 @@ impl LiveRenderer {
         if self.resolve_bind.is_none() {
             let bgl = &self.resolve_bgl;
             // P2b: the faithful resolve reads the shared 60-float SKY UBO (all WL params) at binding 0,
-            // not the old 4-vec4 Env UBO.
+            // not the old 4-vec4 Env UBO. P3: + probe resources at bindings 5-11 (all must be present).
             let sky = &self.sky_fs_ubo;
-            if let (Some((alb, _, _)), Some((nrm, _, _)), Some((spc, _, _)), Some((emi, _, _))) =
-                (self.gbuf_albedo.as_ref(), self.gbuf_normal.as_ref(), self.gbuf_spec.as_ref(), self.gbuf_emissive.as_ref()) {
+            if let (Some((alb, _, _)), Some((nrm, _, _)), Some((spc, _, _)), Some((emi, _, _)),
+                    Some(depth), Some(rad), Some(irr), Some(brdf)) = (
+                self.gbuf_albedo.as_ref(), self.gbuf_normal.as_ref(), self.gbuf_spec.as_ref(), self.gbuf_emissive.as_ref(),
+                self.probe_depth_view.as_ref(), self.probe_radiance_view.as_ref(), self.probe_irradiance_view.as_ref(), self.brdf_lut_view.as_ref(),
+            ) {
                 let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("resolve-bind"),
                     layout: bgl,
@@ -2352,6 +2633,13 @@ impl LiveRenderer {
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(nrm) },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(spc) },
                         wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(emi) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(depth) },
+                        wgpu::BindGroupEntry { binding: 6, resource: self.probe_ubo.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(rad) },
+                        wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(irr) },
+                        wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&self.probe_sampler) },
+                        wgpu::BindGroupEntry { binding: 10, resource: self.probe_params_ubo.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(brdf) },
                     ],
                 });
                 self.resolve_bind = Some(bind);
@@ -2660,7 +2948,7 @@ impl LiveRenderer {
                 queue.write_buffer(pr, 0, &self.palette_stage);
             }
         }
-        self.ensure_depth(device, w, h);
+        self.ensure_depth(device, queue, w, h);
         self.ensure_msaa_color(device, w, h);
         self.ensure_scene_hdr(device, w, h);
         self.ensure_cloud(device, w, h); // half-res cloud target + pipelines
@@ -2695,6 +2983,7 @@ impl LiveRenderer {
             && self.terrain_gb_bind.is_some();
         if has_gb || has_terrain {
             self.ensure_gbuffer(device, w, h);
+            self.ensure_probes(device, queue); // P3: probe resources exist before the resolve binds them
             self.ensure_resolve(device);
         }
         if has_gb {

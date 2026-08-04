@@ -133,3 +133,6 @@ checks.json
 
 # Stray nested clone + local cargo target (build artifacts, never source)
 /firestorm/
+# Rust crate build output -- cargo target dirs under indra/rust (e.g. j2c/target, generated when
+# the fs_render engine path-depends on the shared j2c crate and builds it here). Never source.
+/indra/rust/**/target/

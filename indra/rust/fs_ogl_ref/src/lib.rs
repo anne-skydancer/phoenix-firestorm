@@ -13,6 +13,7 @@ pub mod shaders; // assemble+transform+compile the REAL OGL shaders (softenLight
 pub mod std140; // SoftenFrameBlock std140 layout builder (offsets computed, not hand-placed)
 pub mod soften_pass; // the real softenLight atmospherics pass fixture (G-buffer/shadow/probe neutrals)
 pub mod resolve_pass; // the TEST side: fs_render's resolve.frag on the equivalent fixture (A/B bench)
+pub mod gen_pass; // probe convolution generators A/B (real radianceGenF/irradianceGenF vs our ports)
 
 /// Present format -- matches `fs_render`'s headless target exactly (apples-to-apples): sRGB so the
 /// tonemap output encodes identically, and readback/PNG-friendly.
@@ -201,21 +202,51 @@ impl RefEngine {
     /// means the lit ground would blow out under a classic tonemap -- the magnitude signal).
     pub fn soften_frame(&self, out: &str, classic: bool, material: soften_pass::Material) -> f64 {
         let (module, _, _) = self.build_soften_module();
-        let r = soften_pass::render(&self.device, &self.queue, &module, self.width, classic, material);
+        let r = soften_pass::render(&self.device, &self.queue, &module, self.width, classic, material, &resolve_pass::ProbeFixture::neutral());
         let regime = if classic { "classic" } else { "pbr" };
         let mean_lum = self.readback_hdr(&r.target, out);
         println!("softenLight oracle [{regime}]: mean linear luminance = {:.4}", mean_lum);
         mean_lum
     }
 
+    /// PROBE A/B (oracle side): run the REAL softenLightF with a FILLED probe fixture (default probe 0
+    /// + colored radiance/irradiance cubes + env_mat=identity) so reflectionProbeF actually contributes.
+    pub fn soften_probe_frame(&self, out: &str, classic: bool, material: soften_pass::Material, probes: &resolve_pass::ProbeFixture) -> f64 {
+        let (module, _, _) = self.build_soften_module();
+        let r = soften_pass::render(&self.device, &self.queue, &module, self.width, classic, material, probes);
+        let regime = if classic { "classic" } else { "pbr" };
+        let mean_lum = self.readback_hdr(&r.target, out);
+        println!("softenLight  probe [{regime}]: mean linear luminance = {:.4}", mean_lum);
+        mean_lum
+    }
+
     /// The TEST side: run fs_render's resolve.frag on the equivalent fixture, same regime + material,
     /// and report its mean linear luminance -> directly comparable to soften_frame() (the oracle).
+    /// Neutral (zeroed) probes -> resolve's probe path returns 0, matching the oracle's zeroed probes.
     pub fn resolve_frame(&self, out: &str, classic: bool, material: soften_pass::Material) -> f64 {
-        let r = resolve_pass::render(&self.device, &self.queue, self.width, classic, material);
+        let r = resolve_pass::render(&self.device, &self.queue, self.width, classic, material, &resolve_pass::ProbeFixture::neutral());
         let regime = if classic { "classic" } else { "pbr" };
         let mean_lum = self.readback_hdr(&r.target, out);
         println!("resolve.frag      [{regime}]: mean linear luminance = {:.4}", mean_lum);
         mean_lum
+    }
+
+    /// PROBE A/B (test side): run resolve.frag with a FILLED probe fixture (real refParams + colored
+    /// cubes) so the reflection-probe sampling actually contributes -> verify vs the oracle probe frame.
+    pub fn resolve_probe_frame(&self, out: &str, classic: bool, material: soften_pass::Material, probes: &resolve_pass::ProbeFixture) -> f64 {
+        let r = resolve_pass::render(&self.device, &self.queue, self.width, classic, material, probes);
+        let regime = if classic { "classic" } else { "pbr" };
+        let mean_lum = self.readback_hdr(&r.target, out);
+        println!("resolve.frag  probe [{regime}]: mean linear luminance = {:.4}", mean_lum);
+        mean_lum
+    }
+
+    /// PROBE GENERATION A/B: render a convolution generator (radiance/irradiance), oracle (real shader) or
+    /// ours (the port), on a shared source cube + uniforms, and return its mean linear luminance (per-pixel
+    /// image cached for the diff). `mip_level` picks the radiance roughness (mip/max_probe_lod).
+    pub fn gen_frame(&self, out: &str, kind: gen_pass::GenKind, oracle: bool, mip_level: f32, max_probe_lod: f32) -> f64 {
+        let t = gen_pass::render(&self.device, &self.queue, self.width, kind, oracle, mip_level, max_probe_lod);
+        self.readback_hdr(&t, out)
     }
 
     /// Read an Rgba16Float target back, write a clamp+sRGB PNG, and return mean LINEAR luminance

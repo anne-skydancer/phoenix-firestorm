@@ -244,9 +244,8 @@ enum Slot {
 
 /// Render the real softenLight fragment over the fixture into a `size`x`size` linear-HDR target.
 /// Returns the lit scene (pre-tonemap), the oracle side of the atmospherics diff.
-pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderModule, size: u32, classic: bool, material: Material) -> SoftenResult {
+pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderModule, size: u32, classic: bool, material: Material, probes: &crate::resolve_pass::ProbeFixture) -> SoftenResult {
     // --- fixture textures ---
-    let white = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(1.0, 1.0, 1.0, 1.0), "white");
     // G-buffer per material. PBR: linear base 0.5, ORM=(ao1,rough1,metal0), flag 0.67. Legacy: sRGB
     // diffuse, specularRect=(spec color, glossiness in .a), env 0, flag HAS_ATMOS 0.34.
     // diff_rgb, spec (RT2), flag, diffuse.a (legacy fullbright), emissiveRect.rgb (PBR emissive).
@@ -273,10 +272,15 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
     let depthv = tex_1x1(device, queue, wgpu::TextureFormat::R32Float, &0.95f32.to_le_bytes(), "depthMap");
     let black = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(0.0, 0.0, 0.0, 1.0), "black");
     let shadow = depth_1x1(device, queue, "shadowMap"); // 1.0 = far = nothing occludes
-    let cube = cube_array_1x1(device, queue, "probe");
+    let cube = cube_array_1x1(device, queue, "probe"); // black -- hero probe (unused)
+    // radiance/irradiance probe cubes, colored per the fixture (black when neutral), one cube per layer.
+    let rad_cube = crate::resolve_pass::cube_array_layers(device, queue, &probes.radiance, "reflectionProbes");
+    let irr_cube = crate::resolve_pass::cube_array_layers(device, queue, &probes.irradiance, "irradianceProbes");
     // lightMap: rg = (shadow, ambient-occlusion). (1,1) = full sun, no AO.
     let lightmap = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(1.0, 1.0, 1.0, 1.0), "lightMap");
     let lightfunc = lightfunc_lut(device, queue); // binding 40 = the REAL Blinn-Phong LUT (was white -> no falloff)
+    let brdf = crate::resolve_pass::brdf_lut(device, queue); // binding 7 = the REAL split-sum env-BRDF LUT
+                                                             // (was white; matters once probes make radiance != 0)
 
     let samp = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("filt"),
@@ -289,18 +293,24 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
         ..Default::default()
     });
 
-    // UBOs.
+    // UBOs. For a filled probe fixture, set env_mat=identity + max_probe_lod so the probe taps work
+    // (view==world in the fixture -> env_mat rotation is identity); neutral leaves them zeroed.
+    let mut sky_block = fixture_sky_block(classic);
+    if probes.env_identity {
+        sky_block.mat3("env_mat", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+                 .f32("max_probe_lod", 6.0)
+                 .i32("cube_snapshot", 0);
+    }
     let frame_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("SoftenFrameBlock"),
-        contents: fixture_sky_block(classic).bytes(),
+        contents: sky_block.bytes(),
         usage: wgpu::BufferUsages::UNIFORM,
     });
-    // ReflectionProbes: all-zero, oversized so it covers the block whatever MAX_REFMAP_COUNT is.
-    let probe_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+    // ReflectionProbes: the std140 block bytes (zeroed for neutral, filled for a probe fixture).
+    let probe_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("ReflectionProbes"),
-        size: 128 * 1024,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
+        contents: &probes.ubo,
+        usage: wgpu::BufferUsages::UNIFORM,
     });
 
     // binding -> (Slot, resource). Order + types match the emitted transform exactly.
@@ -331,7 +341,7 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
     ubo!(0, frame_ubo);
     // texture2D/sampler pairs (binding, view, is-shadow); sampler at binding+1.
     let tex_pairs: [(u32, &wgpu::TextureView, bool); 17] = [
-        (1, &normal, false), (3, &depthv, false), (5, &black, false), (7, &white, false),
+        (1, &normal, false), (3, &depthv, false), (5, &black, false), (7, &brdf, false),
         (9, &diffuse, false), (11, &specular, false), (13, &emissive, false),
         (15, &black, false), (17, &depthv, false),
         (19, &shadow, true), (21, &shadow, true), (23, &shadow, true), (25, &shadow, true),
@@ -342,8 +352,9 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
         tex!(b, view, d2, is_shadow);
         smp!(b + 1, is_shadow);
     }
-    for b in [31u32, 33, 36] {
-        tex!(b, &cube, ca, false);
+    // 31 = reflectionProbes (radiance), 33 = irradianceProbes, 36 = heroProbes (unused/black).
+    for (b, view) in [(31u32, &rad_cube), (33u32, &irr_cube), (36u32, &cube)] {
+        tex!(b, view, ca, false);
         smp!(b + 1, false);
     }
     ubo!(35, probe_ubo);

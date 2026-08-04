@@ -23,6 +23,217 @@ fn rgba16f(r: f32, g: f32, b: f32, a: f32) -> Vec<u8> {
     [f16(r), f16(g), f16(b), f16(a)].concat()
 }
 
+/// A full-size R32Float depth texture (resolve.frag texelFetches g_depth at integer fragcoord).
+/// Uniform 0.95 to match the oracle's depthMap (getPositionWithDepth reconstructs the same view pos).
+fn depth_full(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, depth: f32) -> wgpu::TextureView {
+    let mut data = Vec::with_capacity((size * size) as usize * 4);
+    let b = depth.to_le_bytes();
+    for _ in 0..(size * size) { data.extend_from_slice(&b); }
+    let t = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("g_depth"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &data,
+    );
+    t.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// A cube-map ARRAY (`colors.len()` cubes, 6 faces each, 1x1) with a uniform color per cube. Used as the
+/// radiance/irradiance probe arrays. Uniform-per-cube -> textureLod returns that cube's color for any
+/// direction/lod, isolating the weight/mix/refParams + LAYER-INDEXING math from direction+parallax.
+pub fn cube_array_layers(device: &wgpu::Device, queue: &wgpu::Queue, colors: &[[f32; 3]], label: &str) -> wgpu::TextureView {
+    let n = colors.len().max(1) as u32;
+    let mut data = Vec::with_capacity((n * 6) as usize * 8);
+    for c in colors {
+        let texel = rgba16f(c[0], c[1], c[2], 1.0);
+        for _ in 0..6 { data.extend_from_slice(&texel); }
+    }
+    let t = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: n * 6 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &data,
+    );
+    t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::CubeArray), ..Default::default() })
+}
+
+// The split-sum environment-BRDF LUT (genbrdflutF.glsl): 1024-sample GGX importance-sampled integral,
+// indexed [NoV, roughness], stored (A,B) in .rg. Generated once on the CPU and bound to BOTH the oracle
+// (brdfLut, binding 7) and resolve (binding 11) so the PBR IBL specular (pbrIbl) is apples-to-apples.
+fn brdf_hammersley(i: u32, n: u32) -> (f32, f32) {
+    let mut bits = (i << 16) | (i >> 16);
+    bits = ((bits & 0x5555_5555) << 1) | ((bits & 0xAAAA_AAAA) >> 1);
+    bits = ((bits & 0x3333_3333) << 2) | ((bits & 0xCCCC_CCCC) >> 2);
+    bits = ((bits & 0x0F0F_0F0F) << 4) | ((bits & 0xF0F0_F0F0) >> 4);
+    bits = ((bits & 0x00FF_00FF) << 8) | ((bits & 0xFF00_FF00) >> 8);
+    (i as f32 / n as f32, bits as f32 * 2.3283064365386963e-10)
+}
+fn brdf_random(x: f32, z: f32) -> f32 {
+    let dt = x * 12.9898 + z * 78.233;
+    let sn = dt % 3.14;
+    let v = (sn.sin() * 43758.5453).fract();
+    if v < 0.0 { v + 1.0 } else { v } // GLSL fract is always >= 0
+}
+fn brdf_pair(nov: f32, roughness: f32) -> (f32, f32) {
+    // Normal along +z; V in the x-z plane. Importance-sample GGX, accumulate (A,B).
+    let n = [0.0f32, 0.0, 1.0];
+    let v = [(1.0 - nov * nov).max(0.0).sqrt(), 0.0, nov];
+    let alpha = roughness * roughness;
+    let k = alpha / 2.0; // G_SchlicksmithGGX uses k = (roughness*roughness)/2
+    let (mut a, mut b) = (0.0f32, 0.0f32);
+    let num = 1024u32;
+    for i in 0..num {
+        let (xi0, xi1) = brdf_hammersley(i, num);
+        let phi = 2.0 * std::f32::consts::PI * xi0 + brdf_random(n[0], n[2]) * 0.1;
+        let cos_theta = ((1.0 - xi1) / (1.0 + (alpha * alpha - 1.0) * xi1)).sqrt();
+        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+        let h_ts = [sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta];
+        // tangent space with normal=(0,0,1): up=(1,0,0); tangentX=norm(cross(up,n)), tangentY=cross(n,tx)
+        let up = [1.0f32, 0.0, 0.0];
+        let cross = |x: [f32; 3], y: [f32; 3]| [x[1]*y[2]-x[2]*y[1], x[2]*y[0]-x[0]*y[2], x[0]*y[1]-x[1]*y[0]];
+        let norm = |x: [f32; 3]| { let l = (x[0]*x[0]+x[1]*x[1]+x[2]*x[2]).sqrt(); [x[0]/l, x[1]/l, x[2]/l] };
+        let tx = norm(cross(up, n));
+        let ty = cross(n, tx);
+        let h = norm([tx[0]*h_ts[0]+ty[0]*h_ts[1]+n[0]*h_ts[2],
+                      tx[1]*h_ts[0]+ty[1]*h_ts[1]+n[1]*h_ts[2],
+                      tx[2]*h_ts[0]+ty[2]*h_ts[1]+n[2]*h_ts[2]]);
+        let vdoth = v[0]*h[0] + v[1]*h[1] + v[2]*h[2];
+        let l = [2.0*vdoth*h[0]-v[0], 2.0*vdoth*h[1]-v[1], 2.0*vdoth*h[2]-v[2]];
+        let dot_nl = l[2].max(0.0);
+        let dot_nv = v[2].max(0.0);
+        let dot_vh = vdoth.max(0.0);
+        let dot_nh = h[2].max(0.0);
+        if dot_nl > 0.0 {
+            let gl = dot_nl / (dot_nl * (1.0 - k) + k);
+            let gv = dot_nv / (dot_nv * (1.0 - k) + k);
+            let g = gl * gv;
+            let g_vis = (g * dot_vh) / (dot_nh * dot_nv);
+            let fc = (1.0 - dot_vh).powf(5.0);
+            a += (1.0 - fc) * g_vis;
+            b += fc * g_vis;
+        }
+    }
+    (a / num as f32, b / num as f32)
+}
+pub fn brdf_lut(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let res = 128u32;
+    let mut data = Vec::with_capacity((res * res) as usize * 8);
+    for y in 0..res {
+        for x in 0..res {
+            let nov = x as f32 / (res - 1) as f32;      // uv.s
+            let rough = 1.0 - y as f32 / (res - 1) as f32; // BRDF(uv.s, 1.0 - uv.t)
+            let (a, b) = brdf_pair(nov, rough);
+            data.extend_from_slice(&rgba16f(a, b, 0.0, 1.0));
+        }
+    }
+    let t = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("brdfLut"),
+            size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &data,
+    );
+    t.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+// std140 offsets of the ReflectionProbes block (must match resolve.frag / llreflectionmapmanager.h).
+pub const RP_REFBOX: usize = 0;         // mat4[256]  16384
+pub const RP_HEROBOX: usize = 16384;    // mat4         64
+pub const RP_REFSPHERE: usize = 16448;  // vec4[256]  4096
+pub const RP_REFPARAMS: usize = 20544;  // vec4[256]  4096
+pub const RP_HEROSPHERE: usize = 24640; // vec4         16
+pub const RP_REFINDEX: usize = 24656;   // ivec4[256] 4096
+pub const RP_REFNEIGHBOR: usize = 28752;// ivec4[1024]16384
+pub const RP_REFBUCKET: usize = 45136;  // ivec4[256] 4096
+pub const RP_REFMAPCOUNT: usize = 49232;// int
+pub const RP_SIZE: usize = 49248;       // rounded to 16
+
+// std140 writers into the ReflectionProbes buffer (element i of a vec4/ivec4 array at base `off`).
+fn put_v4(b: &mut [u8], off: usize, v: [f32; 4]) {
+    for (i, f) in v.iter().enumerate() { b[off + i * 4..off + i * 4 + 4].copy_from_slice(&f.to_le_bytes()); }
+}
+fn put_i4(b: &mut [u8], off: usize, v: [i32; 4]) {
+    for (i, f) in v.iter().enumerate() { b[off + i * 4..off + i * 4 + 4].copy_from_slice(&f.to_le_bytes()); }
+}
+
+/// A description of a probe fixture shared by the oracle + resolve sides (same UBO + cube colors + env).
+pub struct ProbeFixture {
+    pub ubo: Vec<u8>,            // the std140 ReflectionProbes block bytes (RP_SIZE)
+    pub radiance: Vec<[f32; 3]>,   // per cube-array LAYER radiance (glossy) color
+    pub irradiance: Vec<[f32; 3]>, // per cube-array LAYER irradiance (diffuse) color
+    pub env_identity: bool,      // set env_mat = identity (fixture view==world); false leaves it zeroed
+}
+
+impl ProbeFixture {
+    /// Neutral probes: zeroed UBO + black cubes. Both sides sample only probe 0 with zero weights ->
+    /// sampleProbeAmbient/sampleProbes return 0 (matches the oracle's zeroed-probe behavior).
+    pub fn neutral() -> ProbeFixture {
+        ProbeFixture { ubo: vec![0u8; RP_SIZE], radiance: vec![[0.0; 3]], irradiance: vec![[0.0; 3]], env_identity: true }
+    }
+
+    /// A single default/automatic sphere probe at index 0 covering the fixture fragment cluster, with
+    /// unit irradiance+radiance scales and unit weight coeff. refmapCount=1 -> only probe 0 is sampled
+    /// (loop empty, probe 0 appended), on BOTH sides (oracle needs no REFMAP_LEVEL for the default probe).
+    pub fn default_probe(radiance: [f32; 3], irradiance: [f32; 3]) -> ProbeFixture {
+        let mut b = vec![0u8; RP_SIZE];
+        // Fragment cluster sits ~9.6 m in front along -z (depth 0.95 through the fixture proj). Center the
+        // probe there with a large radius so every pixel is inside; unit weight coeff / irr+rad scales.
+        put_v4(&mut b, RP_REFSPHERE, [0.0, 0.0, -9.64, 100.0]);
+        put_v4(&mut b, RP_REFPARAMS, [1.0, 1.0, 1.0, 0.1]); // x irr scale, y rad scale, z weight coeff, w znear
+        put_i4(&mut b, RP_REFINDEX, [0, -1, 0, 0]);         // cube layer 0, no neighbors, priority 0 (automatic)
+        b[RP_REFMAPCOUNT..RP_REFMAPCOUNT + 4].copy_from_slice(&1i32.to_le_bytes());
+        ProbeFixture { ubo: b, radiance: vec![radiance], irradiance: vec![irradiance], env_identity: true }
+    }
+
+    /// Default (automatic, layer 0) probe 0 + a MANUAL sphere probe 1 (layer 1, priority 1, real radius
+    /// -> parallax ON). refmapCount=2, refBucket -> start at probe 1, so this exercises the spatial WALK
+    /// (getStartIndex + loop + shouldSampleProbe sphere influence), sphereIntersect PARALLAX, sphereWeight,
+    /// the auto/manual MIX (col[0] vs col[1] via dwsum), and cube LAYER indexing (layer 0 vs 1).
+    pub fn two_probe(rad0: [f32; 3], irr0: [f32; 3], rad1: [f32; 3], irr1: [f32; 3]) -> ProbeFixture {
+        let mut b = vec![0u8; RP_SIZE];
+        // probe 0 -- default/automatic, layer 0, large radius (covers everything), priority 0.
+        put_v4(&mut b, RP_REFSPHERE + 0 * 16, [0.0, 0.0, -9.64, 200.0]);
+        put_v4(&mut b, RP_REFPARAMS + 0 * 16, [1.0, 1.0, 1.0, 0.1]);
+        put_i4(&mut b, RP_REFINDEX + 0 * 16, [0, -1, 0, 0]);   // layer 0, no neighbors, priority 0
+        // probe 1 -- manual, layer 1, tighter radius (real parallax), priority 1.
+        put_v4(&mut b, RP_REFSPHERE + 1 * 16, [0.0, 0.0, -9.64, 30.0]);
+        put_v4(&mut b, RP_REFPARAMS + 1 * 16, [1.0, 1.0, 1.0, 0.1]);
+        put_i4(&mut b, RP_REFINDEX + 1 * 16, [1, -1, 0, 1]);   // layer 1, no neighbors, priority 1 (manual)
+        // bucket: every depth slab starts the walk at probe 1 (so the loop actually visits it).
+        for i in 0..256 { put_i4(&mut b, RP_REFBUCKET + i * 16, [1, 0, 0, 0]); }
+        b[RP_REFMAPCOUNT..RP_REFMAPCOUNT + 4].copy_from_slice(&2i32.to_le_bytes());
+        ProbeFixture { ubo: b, radiance: vec![rad0, rad1], irradiance: vec![irr0, irr1], env_identity: true }
+    }
+}
+
+/// ProbeParams UBO bytes: std140 { mat4 pp_inv_proj; mat4 pp_env_mat; vec4 pp_misc; } = 144 bytes.
+pub fn probe_params_bytes(env_identity: bool) -> Vec<u8> {
+    let inv_proj = crate::soften_pass::perspective_inv(60.0f32.to_radians(), 1.0, 0.5, 256.0);
+    let env: [f32; 16] = if env_identity {
+        [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    } else { [0.0; 16] };
+    let misc: [f32; 4] = [6.0, 0.0, 0.0, 0.0]; // max_probe_lod = 6 (log2(128)-1), cube_snapshot = 0
+    let mut v: Vec<f32> = Vec::with_capacity(36);
+    v.extend_from_slice(&inv_proj);
+    v.extend_from_slice(&env);
+    v.extend_from_slice(&misc);
+    bytemuck::cast_slice(&v).to_vec()
+}
+
 /// A `size`x`size` texture uniformly filled with one rgba16f texel. resolve.frag uses texelFetch with
 /// the actual integer fragcoord (0..size), so the G-buffer must be full-resolution -- a 1x1 would read
 /// out-of-bounds (returns 0) everywhere and discard the whole frame.
@@ -85,7 +296,7 @@ pub struct ResolveResult {
 
 /// Compile + run resolve.frag on the equivalent fixture. `classic` is written into u56 (extra.x) so a
 /// regime-aware resolve.frag can read it; the current resolve.frag ignores it (always non-classic).
-pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bool, material: crate::soften_pass::Material) -> ResolveResult {
+pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bool, material: crate::soften_pass::Material, probes: &ProbeFixture) -> ResolveResult {
     use crate::soften_pass::{Material, LEGACY_DIFFUSE, LEGACY_SPEC_COLOR, LEGACY_GLOSS};
     let src_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../fs_render/shaders/resolve.frag");
     let src = std::fs::read_to_string(src_path)
@@ -133,19 +344,39 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bo
         usage: wgpu::BufferUsages::UNIFORM,
     });
 
+    // --- probe resources (bindings 5-10): depth, ReflectionProbes UBO, radiance/irradiance cube arrays,
+    // a filtering sampler, and the ProbeParams UBO. Fed identically to the oracle side.
+    let depth = depth_full(device, queue, size, 0.95);
+    let probe_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("ReflectionProbes"), contents: &probes.ubo, usage: wgpu::BufferUsages::UNIFORM });
+    let rad_cube = cube_array_layers(device, queue, &probes.radiance, "reflectionProbes");
+    let irr_cube = cube_array_layers(device, queue, &probes.irradiance, "irradianceProbes");
+    let probe_samp = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("probe_smp"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+    let pp_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("ProbeParams"), contents: &probe_params_bytes(probes.env_identity), usage: wgpu::BufferUsages::UNIFORM });
+    let brdf = brdf_lut(device, queue);
+
+    let ntex = |b: u32, filt: bool| wgpu::BindGroupLayoutEntry { binding: b, visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: filt }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None };
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("resolve-bgl"),
         entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+            ntex(1, false), ntex(2, false), ntex(3, false), ntex(4, false),
+            ntex(5, false), // g_depth
+            wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::FRAGMENT, // ReflectionProbes UBO
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::FRAGMENT, // radiance cube array
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::FRAGMENT, // irradiance cube array
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 9, visibility: wgpu::ShaderStages::FRAGMENT, // probe sampler
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            wgpu::BindGroupLayoutEntry { binding: 10, visibility: wgpu::ShaderStages::FRAGMENT, // ProbeParams UBO
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ntex(11, true), // brdfLut (split-sum env BRDF)
         ],
     });
     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -156,6 +387,13 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bo
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&normal) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&spec) },
             wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&emissive) },
+            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&depth) },
+            wgpu::BindGroupEntry { binding: 6, resource: probe_ubo.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&rad_cube) },
+            wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&irr_cube) },
+            wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&probe_samp) },
+            wgpu::BindGroupEntry { binding: 10, resource: pp_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(&brdf) },
         ],
     });
 

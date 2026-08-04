@@ -121,6 +121,10 @@ pub fn assemble_softenlight_fragment() -> String {
     s.push_str("#define HAS_SSAO 1\n");
     s.push_str("#define HAS_EMISSIVE 1\n"); // else getGBuffer never reads emissiveRect -> PBR emissive dropped
     s.push_str("#define REF_SAMPLE_COUNT 32\n");
+    // Enable the full reflection-probe spatial walk. Harmless for <=1 probe (refmapCount<=1 -> the loop
+    // is empty and only probe 0 is appended, identical to the #else path); required to exercise the walk
+    // + neighbor traversal + auto/manual mix for multi-probe fixtures.
+    s.push_str("#define REFMAP_LEVEL 3\n");
     s.push_str("#define IS_AMD_CARD 1\n");
     for piece in SOFTENLIGHT_FRAG_PIECES {
         let (sub, name) = piece.split_once('/').expect("piece has a subdir");

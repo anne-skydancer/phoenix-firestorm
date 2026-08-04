@@ -401,6 +401,9 @@ pub struct LiveRenderer {
     probe_cap_ubo: wgpu::Buffer,
     probe_cap_bind: Option<wgpu::BindGroup>,
     probe_captured: bool,                               // sky captured into the radiance cube at least once
+    // S2-remainder: a face-res half-res cloud target + its composite bind, for capturing clouds per face.
+    probe_cap_cloud: Option<(wgpu::TextureView, u32, u32)>,
+    probe_cap_cloud_comp_bind: Option<wgpu::BindGroup>,
     // S1: Post-params UBO consumed by post_tonemap.frag (std140, 32 bytes).
     post_ubo: wgpu::Buffer,
     post_exposure: f32,    // RenderExposure clamp[0.5,4]
@@ -975,6 +978,8 @@ impl LiveRenderer {
             probe_cap_ubo,
             probe_cap_bind: None,
             probe_captured: false,
+            probe_cap_cloud: None,
+            probe_cap_cloud_comp_bind: None,
             post_ubo,
             // S1 defaults: non-legacy baseline (settings.xml RenderExposure=1, TonemapType=1
             // ACES, TonemapMix=0.7). S3 overrides these per sky regime (legacy => mix=0,
@@ -2610,11 +2615,12 @@ impl LiveRenderer {
         self.probe_radiance.as_ref().map(|t| (t, self.probe_count))
     }
 
-    /// S2: capture the sky environment into the 6 faces of the radiance cube's SCRATCH layer, one face
-    /// per 90deg-FOV camera. Reuses the procedural sky pipeline (sky_fullscreen.frag) with a per-face sky
-    /// UBO (current WL params, camera swapped). Captured once per (re)allocation; S3 convolves the scratch
-    /// into the radiance mip chain + irradiance. (Terrain/cloud/water folded in as the next increment.)
-    fn capture_probe_sky(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    /// S2: capture the sky ENVIRONMENT into the 6 faces of the radiance cube's SCRATCH layer, one face per
+    /// 90deg-FOV camera -- a mini deferred-frame per face (stock's display_cube_face). Currently: procedural
+    /// sky (sky_fullscreen.frag) + volumetric clouds (cloud raymarch -> composite over the sky), each with a
+    /// per-face sky UBO (current WL params, camera swapped). Captured once per (re)allocation; S3 convolves
+    /// the scratch into the radiance mip chain + irradiance. (Terrain + water fold in next.)
+    fn capture_probe_environment(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         if self.probe_captured || !self.sky_fs_enabled || self.probe_radiance.is_none() {
             return;
         }
@@ -2626,9 +2632,42 @@ impl LiveRenderer {
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.probe_cap_ubo.as_entire_binding() }],
             }));
         }
-        let (Some(pipe), Some(bind), Some(rad)) =
+        // Lazy face-res half-res cloud target + its composite bind (mirrors the main cloud_target path).
+        if self.probe_cap_cloud.is_none() {
+            let half = (self.probe_res / 2).max(1);
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("probe-cap-cloud"),
+                size: wgpu::Extent3d { width: half, height: half, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.probe_cap_cloud = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), half, half));
+        }
+        if self.probe_cap_cloud_comp_bind.is_none() {
+            let Self { probe_cap_cloud, cloud_comp_bgl, cloud_sampler, probe_cap_cloud_comp_bind, .. } = self;
+            if let Some((cv, _, _)) = probe_cap_cloud.as_ref() {
+                *probe_cap_cloud_comp_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("probe-cap-cloud-comp-bind"),
+                    layout: cloud_comp_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(cv) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(cloud_sampler) },
+                    ],
+                }));
+            }
+        }
+
+        let (Some(sky_pipe), Some(bind), Some(rad)) =
             (self.sky_fs_pipeline.as_ref(), self.probe_cap_bind.as_ref(), self.probe_radiance.as_ref())
         else { return; };
+        // Clouds are optional (may be disabled); capture them only if the whole path is present.
+        let clouds = match (self.cloud_pipeline.as_ref(), self.cloud_comp_pipeline.as_ref(),
+                            self.probe_cap_cloud.as_ref(), self.probe_cap_cloud_comp_bind.as_ref()) {
+            (Some(cp), Some(ccp), Some((cv, _, _)), Some(ccb)) => Some((cp, ccp, cv, ccb)),
+            _ => None,
+        };
 
         let wl = self.sky_fs_data; // current WL params (copy); we swap only the camera per face
         let eye = glam::Vec3::new(wl[16], wl[17], wl[18]);
@@ -2658,18 +2697,48 @@ impl LiveRenderer {
                 ..Default::default()
             });
             let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("probe-cap-enc") });
+            // sky background -> face (Clear).
             {
                 let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("probe-cap-face-pass"),
+                    label: Some("probe-cap-sky"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &face_view, resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
                 });
-                rp.set_pipeline(pipe);
+                rp.set_pipeline(sky_pipe);
                 rp.set_bind_group(0, bind, &[]);
                 rp.draw(0..3, 0..1);
+            }
+            // clouds -> half-res target, then composite over the face (Load, alpha blend).
+            if let Some((cp, ccp, cv, ccb)) = clouds {
+                {
+                    let mut clp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("probe-cap-cloud"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: cv, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+                    });
+                    clp.set_pipeline(cp);
+                    clp.set_bind_group(0, bind, &[]); // cloud.frag reads the same sky UBO (face camera)
+                    clp.draw(0..3, 0..1);
+                }
+                {
+                    let mut cmp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("probe-cap-cloud-comp"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &face_view, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+                    });
+                    cmp.set_pipeline(ccp);
+                    cmp.set_bind_group(0, ccb, &[]);
+                    cmp.draw(0..3, 0..1);
+                }
             }
             queue.submit([enc.finish()]);
         }
@@ -3072,7 +3141,7 @@ impl LiveRenderer {
         if has_gb || has_terrain {
             self.ensure_gbuffer(device, w, h);
             self.ensure_probes(device, queue); // P3: probe resources exist before the resolve binds them
-            self.capture_probe_sky(device, queue); // S2: fill the radiance scratch cube with the sky
+            self.capture_probe_environment(device, queue); // S2: fill the radiance scratch cube (sky + clouds)
             self.ensure_resolve(device);
         }
         if has_gb {

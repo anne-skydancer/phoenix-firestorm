@@ -25,6 +25,7 @@ layout(set = 0, binding = 8) uniform Factors {
 } f;
 layout(location = 0) out vec4 rt0;  // base color.rgb (LINEAR) + flag.a
 layout(location = 1) out vec4 rt1;  // world normal.xyz + env.w
+layout(location = 2) out vec4 rt2;  // RT2: ORM (occlusion, roughness, metallic) -- consumed by the PBR stratum
 const float GBUFFER_FLAG_HAS_PBR = 0.67;
 
 // stock srgbF.glsl srgb_to_linear
@@ -51,4 +52,5 @@ void main() {
     vec3 base = mix(mix(c3, c2, a2), mix(c1, c0, a1), aF);   // LINEAR
     rt0 = vec4(max(base, vec3(0.0)), GBUFFER_FLAG_HAS_PBR);
     rt1 = vec4(normalize(v_normal), 0.0);
+    rt2 = vec4(1.0, 1.0, 0.0, 0.0); // ORM default: ao=1, roughness=1 (matte), metallic=0 (real ORM = PBR stratum)
 }

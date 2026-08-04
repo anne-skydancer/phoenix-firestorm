@@ -20,6 +20,7 @@ layout(set = 0, binding = 4) uniform texture2D tex3;
 layout(set = 0, binding = 5) uniform sampler smp;
 layout(location = 0) out vec4 g_albedo; // rgb albedo, a = gbufferFlag
 layout(location = 1) out vec4 g_normal; // eye-space normal
+layout(location = 2) out vec4 g_spec;   // RT2: legacy spec color.rgb + glossiness.a (no material data -> matte)
 
 const float GBUFFER_FLAG_HAS_ATMOS = 0.34; // stock GBUFFER_FLAG_HAS_ATMOS
 
@@ -35,4 +36,5 @@ void main() {
     if (u.flags.z >= 0.0 && a < u.flags.z) discard;
     g_albedo = vec4(albedo, GBUFFER_FLAG_HAS_ATMOS);
     g_normal = vec4(normalize(v_normal), 1.0);
+    g_spec = vec4(0.0); // glossiness 0 -> resolve's Blinn-Phong specular is off until real material data lands
 }

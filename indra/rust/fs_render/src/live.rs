@@ -2752,28 +2752,9 @@ impl LiveRenderer {
                 }
             }
         }
-        // #3/#4 PASS 2: deferred resolve -- light the G-buffer into scene_hdr (lit opaque
-        // where HAS_ATMOS, the viewer background elsewhere). Runs BEFORE the forward pass, so
-        // the forward sky/terrain/water/UI draw over it with depth-test (correct occlusion --
-        // forward geometry in front of opaque generic hides it, geometry behind does not).
-        if has_gb {
-            if let (Some(p), Some(bind)) = (self.resolve_pipeline.as_ref(), self.resolve_bind.as_ref()) {
-                let mut rp2 = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("resolve-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: scene_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                rp2.set_pipeline(p);
-                rp2.set_bind_group(0, bind, &[]);
-                rp2.draw(0..3, 0..1);
-            }
-        }
+        // (the generic deferred resolve moved to AFTER the sky-fs-pass below -- the sky pass does
+        //  LoadOp::Clear(BLACK) with no depth test, so running the resolve BEFORE it wiped the lit
+        //  generic G-buffer. Terrain already resolves after the sky; this makes generic match.)
         // Phase A.1: fullscreen procedural sky into scene_hdr (the background), parallel-read from
         // the typed camera + EepSkyBlock -- no tap, no dome. The forward pass then LOADs scene_hdr
         // so the sky survives. (Phase B reorders this as the true background under geometry; the
@@ -2794,6 +2775,28 @@ impl LiveRenderer {
                 sp.set_pipeline(p);
                 sp.set_bind_group(0, bind, &[]);
                 sp.draw(0..3, 0..1);
+            }
+        }
+        // #3/#4 PASS 2: deferred resolve -- light the generic G-buffer into scene_hdr (lit where
+        // HAS_ATMOS/HAS_PBR, discard elsewhere so the sky shows through). MUST run AFTER the sky-fs
+        // pass (which clears scene_hdr to black) or the sky wipes it; still BEFORE the forward pass
+        // so forward geometry draws over it with depth-test.
+        if has_gb {
+            if let (Some(p), Some(bind)) = (self.resolve_pipeline.as_ref(), self.resolve_bind.as_ref()) {
+                let mut rp2 = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("resolve-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: scene_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                rp2.set_pipeline(p);
+                rp2.set_bind_group(0, bind, &[]);
+                rp2.draw(0..3, 0..1);
             }
         }
         {

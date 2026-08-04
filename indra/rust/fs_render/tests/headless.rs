@@ -791,8 +791,21 @@ fn deferred_resolve_applies_ndl_shading() {
     };
     let fmt = wgpu::TextureFormat::Bgra8UnormSrgb;
     let mut live = LiveRenderer::new(&device, &queue, fmt);
-    // Sun pointing straight out of the screen (+z eye space); white sun, dim ambient.
-    live.set_frame_env(&[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.1, 0.1, 0.1, 0.0]);
+    // Feed the resolve via the SHARED 60-float sky UBO (the P2b path the deferred resolve actually
+    // binds) -- NOT the dead env_ubo. World sun_dir = +z so the sun-facing quad (world normal +z via
+    // identity modelview) gets full N.L; white sun, dim ambient, non-classic (classic_mode=0). The
+    // view vector (from inv_view_proj) is unused here: the fill writes glossiness 0 -> no specular.
+    let mut sky_ubo = [0.0f32; 60];
+    sky_ubo[0] = 1.0; sky_ubo[5] = 1.0; sky_ubo[10] = 1.0; sky_ubo[15] = 1.0; // inv_view_proj = identity
+    sky_ubo[19] = 1605.0;                                       // max_y
+    sky_ubo[21] = 1.0; sky_ubo[23] = 1.0;                       // lightnorm.y=1 (above_horizon=1), sun_up=1
+    sky_ubo[24] = 1.0; sky_ubo[25] = 1.0; sky_ubo[26] = 1.0;    // sun_color white (density_mult 0 -> sunlight=sun_color)
+    sky_ubo[32] = 0.1; sky_ubo[33] = 0.1; sky_ubo[34] = 0.1;    // ambient
+    sky_ubo[47] = 1.0;                                          // sky_sunlight_scale
+    sky_ubo[48] = 1.0; sky_ubo[49] = 1.0;                       // sky_hdr_scale, sky_ambient_scale
+    sky_ubo[50] = 64.0; sky_ubo[51] = 64.0;                     // viewport (the 64x64 render)
+    sky_ubo[54] = 1.0;                                          // sun_dir = (0,0,1) world
+    live.set_fullscreen_sky(&sky_ubo);
 
     // SoA: 3 positions (vec4) then 3 normals (vec4-padded, read as vec3). Both buffers kept
     // alive so their distinct pointers don't alias in the geometry cache.

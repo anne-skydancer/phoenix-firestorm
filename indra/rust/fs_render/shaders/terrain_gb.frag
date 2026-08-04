@@ -17,6 +17,7 @@ layout(set = 0, binding = 7) uniform sampler samp_clamp;  // ramp (clamp)
 layout(location = 0) out vec4 rt0;  // albedo.rgb (sRGB) + flag.a
 layout(location = 1) out vec4 rt1;  // world normal.xyz + env.w
 layout(location = 2) out vec4 rt2;  // RT2: spec color + glossiness (terrain is matte -> 0)
+layout(location = 3) out vec4 rt3;  // RT3: emissive/fullbright (terrain has none -> 0)
 const float GBUFFER_FLAG_HAS_ATMOS = 0.34;
 void main() {
     vec2 uv = v_detail_uv;
@@ -34,4 +35,5 @@ void main() {
     rt0 = vec4(max(albedo, vec3(0.0)), GBUFFER_FLAG_HAS_ATMOS);
     rt1 = vec4(normalize(v_normal), 0.0);
     rt2 = vec4(0.0); // matte terrain: glossiness 0
+    rt3 = vec4(0.0); // no emissive
 }

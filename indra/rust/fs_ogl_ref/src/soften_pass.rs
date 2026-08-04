@@ -22,6 +22,8 @@ pub enum Material {
 pub const LEGACY_DIFFUSE: [f32; 3] = [0.5, 0.5, 0.5]; // sRGB
 pub const LEGACY_SPEC_COLOR: [f32; 3] = [0.5, 0.5, 0.5]; // sRGB
 pub const LEGACY_GLOSS: f32 = 0.7; // specularRect.a / spec.a
+pub const LEGACY_FULLBRIGHT: f32 = 0.3; // diffuseRect.a (OGL) / RT3.a (ours) -> mix(color, baseColor, .a)
+pub const PBR_EMISSIVE: [f32; 3] = [0.10, 0.06, 0.02]; // emissiveRect.rgb (linear, additive)
 
 /// A perspective projection's INVERSE (column-major), the analytic inverse of the OpenGL clip-[-1,1]
 /// perspective matrix. getPositionWithDepth needs a real inv_proj or the reconstructed eye-space
@@ -244,17 +246,20 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
     let white = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(1.0, 1.0, 1.0, 1.0), "white");
     // G-buffer per material. PBR: linear base 0.5, ORM=(ao1,rough1,metal0), flag 0.67. Legacy: sRGB
     // diffuse, specularRect=(spec color, glossiness in .a), env 0, flag HAS_ATMOS 0.34.
-    let (diff_rgb, spec4, flag): ([f32; 3], [f32; 4], f32) = match material {
-        Material::PbrGround => ([0.5, 0.5, 0.5], [1.0, 1.0, 0.0, 0.0], 0.67),
+    // diff_rgb, spec (RT2), flag, diffuse.a (legacy fullbright), emissiveRect.rgb (PBR emissive).
+    let (diff_rgb, spec4, flag, diff_a, emiss): ([f32; 3], [f32; 4], f32, f32, [f32; 3]) = match material {
+        Material::PbrGround => ([0.5, 0.5, 0.5], [1.0, 1.0, 0.0, 0.0], 0.67, 0.0, PBR_EMISSIVE),
         Material::LegacySpecular => (
             LEGACY_DIFFUSE,
             [LEGACY_SPEC_COLOR[0], LEGACY_SPEC_COLOR[1], LEGACY_SPEC_COLOR[2], LEGACY_GLOSS],
             0.34,
+            LEGACY_FULLBRIGHT, // fullbright in diffuseRect.a (softenLightF:270 mix)
+            [0.0, 0.0, 0.0],
         ),
     };
-    let diffuse = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(diff_rgb[0], diff_rgb[1], diff_rgb[2], 0.0), "diffuseRect");
+    let diffuse = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(diff_rgb[0], diff_rgb[1], diff_rgb[2], diff_a), "diffuseRect");
     let specular = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(spec4[0], spec4[1], spec4[2], spec4[3]), "specularRect");
-    let emissive = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(0.0, 0.0, 0.0, 0.0), "emissiveRect");
+    let emissive = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(emiss[0], emiss[1], emiss[2], 0.0), "emissiveRect");
     // normalMap: spheremap-encoded up normal (~0.5,0.5), env 0 in .z, gbufferFlag in .w.
     let normal = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(0.5, 0.5, 0.0, flag), "normalMap");
     let depthv = tex_1x1(device, queue, wgpu::TextureFormat::R32Float, &0.95f32.to_le_bytes(), "depthMap");

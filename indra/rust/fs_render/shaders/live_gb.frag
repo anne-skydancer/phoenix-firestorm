@@ -21,6 +21,7 @@ layout(set = 0, binding = 5) uniform sampler smp;
 layout(location = 0) out vec4 g_albedo; // rgb albedo, a = gbufferFlag
 layout(location = 1) out vec4 g_normal; // eye-space normal
 layout(location = 2) out vec4 g_spec;   // RT2: legacy spec color.rgb + glossiness.a (no material data -> matte)
+layout(location = 3) out vec4 g_emissive; // RT3: PBR emissive.rgb / legacy fullbright.a (none -> 0)
 
 const float GBUFFER_FLAG_HAS_ATMOS = 0.34; // stock GBUFFER_FLAG_HAS_ATMOS
 
@@ -37,4 +38,5 @@ void main() {
     g_albedo = vec4(albedo, GBUFFER_FLAG_HAS_ATMOS);
     g_normal = vec4(normalize(v_normal), 1.0);
     g_spec = vec4(0.0); // glossiness 0 -> resolve's Blinn-Phong specular is off until real material data lands
+    g_emissive = vec4(0.0); // no emissive / fullbright until real material data lands
 }

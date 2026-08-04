@@ -24,6 +24,9 @@ const GBUF_NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float
 // RT2: legacy = (specular color.rgb, exponent/glossiness.a); PBR = ORM (occlusion, roughness, metallic).
 // 8-bit like stock GL_RGBA8 (pipeline.cpp:383 addDeferredAttachments). Materials stratum (M1).
 const GBUF_SPEC_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+// RT3: PBR emissive.rgb (linear, additive) + legacy fullbright.a. GL_RGB16F in stock; +alpha for the
+// legacy fullbright factor (stock keeps that in RT0.a, but ours holds the flag there). Materials M2b.
+const GBUF_EMISSIVE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const TYPE_TEXCOORD0: usize = 2;
 const TYPE_COLOR: usize = 6;
 const TYPE_TEXCOORD1: usize = 3;
@@ -250,6 +253,7 @@ pub struct LiveRenderer {
     gbuf_albedo: Option<(wgpu::TextureView, u32, u32)>, // RT0 albedo.rgb + flag.a
     gbuf_normal: Option<(wgpu::TextureView, u32, u32)>, // RT1 eye-space normal
     gbuf_spec: Option<(wgpu::TextureView, u32, u32)>,   // RT2 legacy spec color+exponent / PBR ORM
+    gbuf_emissive: Option<(wgpu::TextureView, u32, u32)>, // RT3 PBR emissive.rgb / legacy fullbright.a
     gb_pipeline: Option<wgpu::RenderPipeline>,          // live_gb.vert + live_gb.frag
     resolve_bgl: wgpu::BindGroupLayout,
     resolve_pipeline: Option<wgpu::RenderPipeline>,     // fullscreen: G-buffer -> lit scene_hdr
@@ -584,6 +588,12 @@ impl LiveRenderer {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4, // RT3 emissive/fullbright (materials M2b)
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
             ],
         });
         let env_ubo = device.create_buffer(&wgpu::BufferDescriptor {
@@ -730,6 +740,7 @@ impl LiveRenderer {
             gbuf_albedo: None,
             gbuf_normal: None,
             gbuf_spec: None,
+            gbuf_emissive: None,
             gb_pipeline: None,
             resolve_bgl,
             resolve_pipeline: None,
@@ -1418,6 +1429,7 @@ impl LiveRenderer {
                         Some(wgpu::ColorTargetState { format: GBUF_ALBEDO_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                         Some(wgpu::ColorTargetState { format: GBUF_NORMAL_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                         Some(wgpu::ColorTargetState { format: GBUF_SPEC_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                        Some(wgpu::ColorTargetState { format: GBUF_EMISSIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                     ],
                 }),
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
@@ -1468,6 +1480,7 @@ impl LiveRenderer {
                         Some(wgpu::ColorTargetState { format: GBUF_ALBEDO_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                         Some(wgpu::ColorTargetState { format: GBUF_NORMAL_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                         Some(wgpu::ColorTargetState { format: GBUF_SPEC_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                        Some(wgpu::ColorTargetState { format: GBUF_EMISSIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                     ],
                 }),
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
@@ -2249,6 +2262,7 @@ impl LiveRenderer {
             self.gbuf_albedo = Some((mk(GBUF_ALBEDO_FORMAT, "gbuf-albedo"), w, h));
             self.gbuf_normal = Some((mk(GBUF_NORMAL_FORMAT, "gbuf-normal"), w, h));
             self.gbuf_spec = Some((mk(GBUF_SPEC_FORMAT, "gbuf-spec"), w, h));
+            self.gbuf_emissive = Some((mk(GBUF_EMISSIVE_FORMAT, "gbuf-emissive"), w, h));
             self.resolve_bind = None; // rebind against the new G-buffer views
         }
     }
@@ -2282,6 +2296,7 @@ impl LiveRenderer {
                     Some(wgpu::ColorTargetState { format: GBUF_ALBEDO_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                     Some(wgpu::ColorTargetState { format: GBUF_NORMAL_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                     Some(wgpu::ColorTargetState { format: GBUF_SPEC_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                    Some(wgpu::ColorTargetState { format: GBUF_EMISSIVE_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                 ],
             }),
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
@@ -2328,8 +2343,8 @@ impl LiveRenderer {
             // P2b: the faithful resolve reads the shared 60-float SKY UBO (all WL params) at binding 0,
             // not the old 4-vec4 Env UBO.
             let sky = &self.sky_fs_ubo;
-            if let (Some((alb, _, _)), Some((nrm, _, _)), Some((spc, _, _))) =
-                (self.gbuf_albedo.as_ref(), self.gbuf_normal.as_ref(), self.gbuf_spec.as_ref()) {
+            if let (Some((alb, _, _)), Some((nrm, _, _)), Some((spc, _, _)), Some((emi, _, _))) =
+                (self.gbuf_albedo.as_ref(), self.gbuf_normal.as_ref(), self.gbuf_spec.as_ref(), self.gbuf_emissive.as_ref()) {
                 let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("resolve-bind"),
                     layout: bgl,
@@ -2338,6 +2353,7 @@ impl LiveRenderer {
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(alb) },
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(nrm) },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(spc) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(emi) },
                     ],
                 });
                 self.resolve_bind = Some(bind);
@@ -2708,11 +2724,12 @@ impl LiveRenderer {
         let gb_alb = self.gbuf_albedo.as_ref().map(|(v, _, _)| v);
         let gb_nrm = self.gbuf_normal.as_ref().map(|(v, _, _)| v);
         let gb_spc = self.gbuf_spec.as_ref().map(|(v, _, _)| v);
+        let gb_emi = self.gbuf_emissive.as_ref().map(|(v, _, _)| v);
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("live") });
         // #3 PASS 1: deferred G-buffer fill (opaque generic-with-normal draws) into
         // [albedo, normal] + depth. Everything else stays forward (next pass).
         if has_gb {
-            if let (Some(alb), Some(nrm), Some(spc), Some(p)) = (gb_alb, gb_nrm, gb_spc, self.gb_pipeline.as_ref()) {
+            if let (Some(alb), Some(nrm), Some(spc), Some(emi), Some(p)) = (gb_alb, gb_nrm, gb_spc, gb_emi, self.gb_pipeline.as_ref()) {
                 let mut gp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("gbuffer-pass"),
                     color_attachments: &[
@@ -2721,6 +2738,8 @@ impl LiveRenderer {
                         Some(wgpu::RenderPassColorAttachment { view: nrm, resolve_target: None,
                             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
                         Some(wgpu::RenderPassColorAttachment { view: spc, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+                        Some(wgpu::RenderPassColorAttachment { view: emi, resolve_target: None,
                             ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
                     ],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -2907,9 +2926,9 @@ impl LiveRenderer {
             } else {
                 (self.terrain_gb_pipeline.as_ref(), self.terrain_gb_bind.as_ref())
             };
-            if let (Some(gp), Some(tb), Some(vb), Some(ib), Some(alb), Some(nrm), Some(spc)) = (
+            if let (Some(gp), Some(tb), Some(vb), Some(ib), Some(alb), Some(nrm), Some(spc), Some(emi)) = (
                 sel_pipeline, sel_bind,
-                self.terrain_vbuf.as_ref(), self.terrain_ibuf.as_ref(), gb_alb, gb_nrm, gb_spc,
+                self.terrain_vbuf.as_ref(), self.terrain_ibuf.as_ref(), gb_alb, gb_nrm, gb_spc, gb_emi,
             ) {
                 {
                     let mut gbp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2920,6 +2939,8 @@ impl LiveRenderer {
                             Some(wgpu::RenderPassColorAttachment { view: nrm, resolve_target: None,
                                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
                             Some(wgpu::RenderPassColorAttachment { view: spc, resolve_target: None,
+                                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+                            Some(wgpu::RenderPassColorAttachment { view: emi, resolve_target: None,
                                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
                         ],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {

@@ -41,6 +41,7 @@ layout(set = 0, binding = 0) uniform Sky {
 layout(set = 0, binding = 1) uniform texture2D g_albedo;  // RT0 albedo + flag.a
 layout(set = 0, binding = 2) uniform texture2D g_normal;  // RT1 world normal.xyz + env.w
 layout(set = 0, binding = 3) uniform texture2D g_spec;    // RT2 legacy: spec color.rgb + exponent.a / PBR: ORM
+layout(set = 0, binding = 4) uniform texture2D g_emissive; // RT3 PBR: emissive.rgb (linear, additive) / legacy: fullbright.a
 layout(location = 0) out vec4 frag;
 
 const float M_PI = 3.14159265;
@@ -169,6 +170,8 @@ void main() {
             vec3 sunDiff = clamp(nl * diffPunc, vec3(0.0), vec3(10.0)) * sunlit * 3.0 * scol;
             color = iblDiff + sunDiff;
         }
+        // pbrBaseLight tail: additive linear emissive (colorEmissive = RT3.rgb).
+        color += texelFetch(g_emissive, p, 0).rgb;
     } else {
         // legacy HAS_ATMOS branch (softenLightF else). Legacy writes sRGB to the gbuffer.
         vec3 baseColor = srgb_to_linear(a.rgb);
@@ -208,8 +211,10 @@ void main() {
                 color += lit * sc * sunlit_spec * spec_lin;
             }
         }
-        // Still deferred: mix(color, baseColor, baseColor.a) material alpha (our .a = flag) and the
-        // env-intensity reflection (applyLegacyEnv) which needs probes -> probe stratum.
+        // Fullbright/emissive (softenLightF:270 mix(color, baseColor, baseColor.a)). OGL packs the
+        // fullbright factor in RT0.a (diffuse alpha); our RT0.a is the FLAG, so it lives in RT3.a.
+        color = mix(color, baseColor, texelFetch(g_emissive, p, 0).a);
+        // Still deferred: material-alpha blend (our .a = flag) + env-intensity reflection (probe stratum).
     }
 
     // softenLightF main tail: classic gets a ×1.1 final scale.

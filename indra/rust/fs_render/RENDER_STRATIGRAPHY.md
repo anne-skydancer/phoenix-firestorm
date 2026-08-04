@@ -81,7 +81,7 @@ SSAO/SSR are UPSTREAM (computed in renderDeferredLighting, modulate ambient befo
 
 **BRIDGE DEFECT (the current mess):** `FSSceneDump::setSceneRegime` (llviewerdisplay.cpp:570-584) ships the **static** `RenderExposure` (=1.0, :582) + tonemap regime, but NEVER the converged per-frame `mExposureMap.r`. So the engine (a) substitutes 1.0 for `s=mix(exp_max,exp_min,L²)`, (b) meters only its partial scene (not the ground-biased/sky-excluded full mRT->screen), (c) has no temporal smoothing → flashing. **A faithful fix reproduces the WHOLE loop AND respects classic-vs-PBR sky** (classic → exp=1 fixed + no curve; PBR → dynamic + curve).
 
-**Open seams:** faithful_camera (forces exp_scale=1 = fixed camera) CONTRADICTS feeding a dynamic meter — the engine may already be de-facto `faithful_camera=true`, so the "static 1.0" might be half-intended; decide per-target. Vestigial `dynamic_exposure_params2.x=getHDROffset` uploaded but unread. RenderUseExposureSkySettings default false ⇒ EEP HDRMin/Max/Offset ignored by default.
+**Reproduction notes (method = mirror OGL exactly):** faithful_camera (forces exp_scale=1 = fixed camera) is **visually indifferent from the regular FS camera in GL** — reproduce OGL's default and the optics match either way; not load-bearing. Vestigial `dynamic_exposure_params2.x=getHDROffset` uploaded-but-unread → mirror (harmless). RenderUseExposureSkySettings default false ⇒ mirror the `sqrt(gamma)*2` default path (don't read EEP HDR fields unless the setting is on). The fix is simply: reproduce THIS loop accurately — feed the converged per-frame exposure from a faithful metering pass, with the classic-vs-PBR branching, exactly as OGL.
 
 ---
 
@@ -202,8 +202,13 @@ day-cycle (§4d) ──per-frame slerped lightnorm + lerp'd params──▶ ATMO
 5. **UI feed lacks scissor + blend fields** (fsr_ui_submit) — the minimap/clip/cursor family.
 6. **VkBridge present replaces the swap** (llwindowwin32.cpp:4100); shadows + WBOIT deflated; the engine owns 3D→tonemap→UI ordering internally.
 
-## Open excavation questions (load-bearing, resolve before/within the relevant intervention)
-- **Exposure/HDR:** faithful_camera (forces exp_scale=1) vs a dynamic meter — the engine may be de-facto faithful_camera=true; decide. TWO inconsistent classic_mode defs (softenLight vs local-light/point/spot passes, pipeline.cpp:9945+). HDRMin/Max/Offset/TonemapMix HARDCODED at load (not read from asset). RenderUseExposureSkySettings default false ⇒ EEP HDR fields ignored by default. CAS-branch gamma placement (double/zero-apply on toggle). SG_SKY-vs-SG_ANY sunlight_color asymmetry.
+## Open questions = REPRODUCTION TARGETS (not design decisions)
+**Canonical method for every item here: (a) what does the OGL code do for X? (b) how does the VLK engine
+reproduce that accurately?** The OGL behavior IS the spec — a faithful VLK port has the same optics as the
+OGL pipeline. These are NOT "decide A or B"; they are spots to read the OGL answer and mirror it. (See
+[[canonical-ogl-to-vlk-method]].)
+
+- **Exposure/HDR:** **faithful_camera is visually indifferent from the regular FS camera in GL** (made for a physical-based day/night sky) → retire-or-keep is FREE; reproduce OGL's default, the optics match either way — NOT load-bearing. Reproduce as-is: the TWO classic_mode formulas (softenLight `canAutoAdjust && !should_auto_adjust` vs local-light/point/spot `canAutoAdjust`, pipeline.cpp:9945+) — mirror BOTH paths; HDRMin/Max/Offset/TonemapMix hardcoded 0.5/2.0/1.0/1.0 → VLK uses the same; RenderUseExposureSkySettings default false → mirror the sqrt(gamma)*2 default path; CAS-branch gamma placement → mirror OGL's per-branch site; SG_SKY-vs-SG_ANY sunlight_color asymmetry → mirror both bindings.
 - **Day-cycle:** which env is live (getCurrentSky vs mCurrentEnvironment->getSky) can differ in edit mode; defaults(position) function-static freeze on fallback.
 - **Materials/terrain:** getPoolTypeFromTE BLEND-GLTF+bump ordering; class1 materialF magenta if class≤2 resolves; PBR fd1.a inconsistency (pbropaque 0 vs pbrterrain base_color_factor_alpha); HAS_EMISSIVE guard commented out (latent MRT mismatch); impostorF raw-normal; BP-per-map-scalars never routed through KHR.
 - **Meshes/alpha/shadows:** deferred base-avatar CPU-vs-GPU skinning; within-group DrawInfo alpha comparator; MAX_JOINTS vs GLTF UBO joint ceiling; VSM (detail>2) unpopulated.

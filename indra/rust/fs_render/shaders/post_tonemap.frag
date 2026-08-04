@@ -102,12 +102,16 @@ vec3 toneMap(vec3 color) {
     // toward exp_min. This replaces the old unbounded 0.18/avg (recomputed per frame => the flicker).
     // Our sky HDR chain (srgb_to_linear*hdr_scale) matches stock's softenLightF, so these bounds are
     // correct as-is -- no HDR recalibration needed. Classic legacy (mix<=0) stays constant 1.0.
+    // FAITHFUL to stock exposureF.glsl: L = pow(clamp(avg/coeff,0,1), 2); s = mix(exp_max, exp_min, L).
+    // A BRIGHT scene (L->1) pins at exp_min (LESS exposure -> darkens); a DARK scene adapts toward
+    // exp_max. (The old code inverted the mix -> bright brightened, then a `// TEST` hack damped exp_max
+    // to hide the blowout. That was the "cherry-picked meter".) For CLASSIC skies exp_min==exp_max==1
+    // (apply_sky_regime), so dyn_exp is a constant 1.0 with no special-casing.
     float avg_lum = max(texelFetch(exp_lum, ivec2(0, 0), 0).r, 0.0);
     float Ln = clamp(avg_lum / 0.175, 0.0, 1.0);   // 0.175 = RenderDynamicExposureCoefficient
-    Ln = Ln * Ln;
-    float dyn_exp = mix(post.exp_min, post.exp_max, Ln);
-    float auto_exp = (post.tonemap_mix <= 0.0) ? 1.0 : dyn_exp;
-    float final_exposure = post.exposure * post.exp_scale * auto_exp;
+    Ln = Ln * Ln;                                  // pow(L, 2)
+    float dyn_exp = mix(post.exp_max, post.exp_min, Ln); // bright -> exp_min, dark -> exp_max
+    float final_exposure = post.exposure * post.exp_scale * dyn_exp;
     vec3 exposed = color * final_exposure;
     vec3 tonemapped;
     if (post.tonemap_type == 1) tonemapped = toneMapACES_Hill(exposed);

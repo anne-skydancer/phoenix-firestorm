@@ -2215,14 +2215,12 @@ impl LiveRenderer {
         let exp_scale = std::env::var("FS_ENGINE_EXPOSURE").ok()
             .and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         self.set_post_params(r.exposure, exp_scale, r.tonemap_mix, r.gamma, r.tonemap_type as i32, r.legacy_gamma as i32);
-        // Stock exposureF bounds from the sky's HDR scale (pipeline.cpp:8073-8085): probe skies get
-        // [1/scale, scale]; legacy (scale<=1) gets [1,1] = constant. Drives post_tonemap's bounded
-        // auto-exposure so a bright day pins at exp_max (stable, no flicker), exactly as stock does.
+        // Stock exposureF bounds from the sky's HDR scale (pipeline.cpp:8073-8085): probe/EEP skies get
+        // [1/scale, scale] where scale = sqrt(gamma)*2; legacy (scale<=1) gets [1,1] = constant. These are
+        // the FAITHFUL bounds -- the earlier `1 + (scale-1)*0.25` damping was a `// TEST` hack that hid
+        // the inverted-mix blowout in post_tonemap (now fixed: bright pins at exp_min, so no blowout).
         let scale = r.sky_hdr_scale;
-        // TEST: our scene_hdr washes out at the full exp_max=hdr_scale (sky pale, sun glow blows huge).
-        // Damp the day-exposure ceiling toward 1 to confirm the over-exposure diagnosis (night is classic,
-        // unaffected). If this shrinks the sun + de-washes the sky, the fix is exposure, not the glow.
-        if scale > 1.0 { self.post_exp_min = 1.0 / scale; self.post_exp_max = 1.0 + (scale - 1.0) * 0.25; }
+        if scale > 1.0 { self.post_exp_min = 1.0 / scale; self.post_exp_max = scale; }
         else { self.post_exp_min = 1.0; self.post_exp_max = 1.0; }
     }
 

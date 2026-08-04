@@ -9,7 +9,7 @@
 //! so CI on a headless box without Vulkan does not spuriously break.
 
 use fs_render::live::{DrawDesc, LiveRenderer, CLASS_SKY_DOME};
-use fs_render::scene::{CameraBlock, EepSkyBlock, SceneFrame, SettingsSnapshot};
+use fs_render::scene::{CameraBlock, EepSkyBlock, SceneFrame, SettingsSnapshot, SkyRegime};
 
 fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -697,6 +697,44 @@ fn apply_sky_regime_drives_tonemap() {
         assert!(
             (got[ch] as i32 - exp[ch] as i32).abs() <= 2,
             "regime-driven tonemap ch{}: got {} vs expected {}", ch, got[ch], exp[ch]
+        );
+    }
+}
+
+/// HDR S5: the dynamic exposure end-to-end (meter -> exposureF curve -> tonemap) matches stock
+/// exposureF.glsl. Non-classic regime (sky_hdr_scale=2 -> bounds [0.5, 2.0]); a DIM scene must adapt
+/// UP toward exp_max. Guards the fix of the inverted mix (old code mixed exp_min->exp_max, brightening
+/// bright scenes, then damped exp_max to hide the blowout). CPU model: L=clamp(avg/0.175,0,1)^2,
+/// dyn=mix(exp_max, exp_min, L); fold dyn into exposure and reuse the verified tonemap oracle.
+#[test]
+fn dynamic_exposure_matches_stock_exposureF() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping dynamic-exposure test");
+        return;
+    };
+    let r = SkyRegime {
+        classic_mode: 0, sky_hdr_scale: 2.0, sky_sunlight_scale: 1.5, sky_ambient_scale: 1.5,
+        scene_light_strength: 2.0, tonemap_mix: 0.7, legacy_gamma: 0, exposure: 1.0,
+        tonemap_type: 0, gamma: 2.2,
+    };
+    let clear = [0.05, 0.05, 0.05]; // dim -> avg_lum << 0.175 -> adapt toward exp_max
+    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+    live.apply_sky_regime(&r);
+    let got = render_empty_center(&device, &queue, &mut live, clear);
+
+    let avg = 0.2126 * clear[0] + 0.7152 * clear[1] + 0.0722 * clear[2];
+    let (exp_min, exp_max) = (0.5f64, 2.0f64);
+    let ln = (avg / 0.175).clamp(0.0, 1.0);
+    let ln = ln * ln;
+    let dyn_exp = exp_max * (1.0 - ln) + exp_min * ln; // mix(exp_max, exp_min, ln)
+    assert!(dyn_exp > 1.2, "a dim non-classic scene should adapt UP toward exp_max, dyn_exp={}", dyn_exp);
+    // fold dyn_exp into the exposure (exp_scale=1, FS_ENGINE_EXPOSURE unset) and reuse the tonemap oracle.
+    let post = Post { exposure: dyn_exp, exp_scale: 1.0, tonemap_mix: 0.7, gamma: 2.2, tonemap_type: 0, legacy_gamma: 0 };
+    let exp = expected_disp(clear, post);
+    for ch in 0..3 {
+        assert!(
+            (got[ch] as i32 - exp[ch] as i32).abs() <= 4,
+            "dynamic exposure ch{}: got {} vs expected {} (dyn_exp {:.3})", ch, got[ch], exp[ch], dyn_exp
         );
     }
 }

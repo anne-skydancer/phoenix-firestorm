@@ -1,0 +1,19 @@
+# fs_harness -- the apples-to-apples OGL<->VLK verify driver. Feeds the same canned fixture to
+# fs_render (the port, headless) and fs_ogl_ref (the oracle), grabs both frames, and diffs them
+# per-pixel. See indra/rust/fs_render/REFERENCE_HARNESS_PLAN.md.
+[package]
+name = "fs_harness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fs_render = { path = "../fs_render" }   # the port (rlib); its C ABI is called directly
+fs_ogl_ref = { path = "../fs_ogl_ref" } # the oracle
+png = "0.17"
+
+[[bin]]
+name = "fs_harness"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

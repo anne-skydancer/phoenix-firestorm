@@ -1,0 +1,9 @@
+C:\fs\fs-vulkan-engine\indra\rust\fs_harness\target\release\build\clang-sys-2704d15aa49fad5f\build_script_build-2704d15aa49fad5f.d: C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build.rs C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\macros.rs C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\common.rs C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\dynamic.rs C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\static.rs
+
+C:\fs\fs-vulkan-engine\indra\rust\fs_harness\target\release\build\clang-sys-2704d15aa49fad5f\build_script_build-2704d15aa49fad5f.exe: C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build.rs C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\macros.rs C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\common.rs C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\dynamic.rs C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\static.rs
+
+C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build.rs:
+C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\macros.rs:
+C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\common.rs:
+C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\dynamic.rs:
+C:\Users\Anne\ Skydancer\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\clang-sys-1.9.1\build\static.rs:

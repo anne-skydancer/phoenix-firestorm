@@ -36,7 +36,7 @@ _Dug 2026-08-04. Four strata bottom→top + a VkBridge overlay._
 **Render targets (writer→reader):** deferredScreen = G-buffer [fd0 albedo GL_RGBA / fd1 spec-or-ORM GL_RGBA / fd2 normal GL_RGBA16|RGB10_A2 / fd3 emissive GL_RGB16F (RenderEnableEmissiveBuffer) / depth24 owned+shared]; **screen GL_RGBA16F always**; oit [accum RGBA32F / revealage R16F]; deferredLight (sun/SSAO lightmap); shadow[4]+mSpotShadow[2] (depth); luminance 256²R16F-mipped / exposure 1×1 / lastExposure 1×1; postPing/Pong (8-bit); glow[3]; sceneMap (SSR, pre-gamma); waterDis/waterExclusion(R8); pbrBrdfLut RG16F 512²; uiScreen; mSkySH. **RT-pack switching:** probes/hero re-point `mRT` to mAuxillaryRT (16× supersample) / mHeroProbeRT and re-run the WHOLE deferred pipeline per face.
 - **Open:** FSSceneDump::endFrame vestigial (real present is window-layer s_fsr_end_frame); mSkySH writer unlocated; FsrEepSkyBlock tail zero-filled (sky parity trap); non-Windows present path (llwindowsdl2) unread.
 
-## 5. Terrain + objects/prims + materials  [texturing column]
+---
 
 ## 2. Atmospherics + lighting substrate — the magnitude PRODUCERS  [lighting column]
 _Dug + key seams source-verified 2026-08-04. Emits `sunlit`/`amblit`/`additive`/`atten` + EEP scalars
@@ -57,6 +57,8 @@ that HDR/exposure, sky, water, clouds, terrain all read. Two hand-synced twins: 
 **PRODUCES →** lit HDR linear scene in mRT->screen (clamped [0,11.2]) consumed by generateExposure/tonemap; `sunlit/amblit/additive/atten` consumed by every lighting shader; EEP uniforms (sky_hdr_scale, gamma, probe_ambiance, sun/moon dir, blue_density/horizon, glow, cloud_*) consumed by sky/cloud/water/terrain. **READS ←** EEP sky asset + gSavedSettings (Render Sky/HDR/Exposure/Tonemap) + G-buffer + shadow/SSAO lightMap + reflection probes.
 
 **Open seams:** (1) TWO inconsistent classic_mode defs — softenLight uses `canAutoAdjust && !should_auto_adjust` (llsettingsvo.cpp:810) but local-light passes push `CLASSIC_MODE = canAutoAdjust ? 1:0` (pipeline.cpp:9945,10007,10047,10084) → with auto-adjust ON, softenLight runs non-classic while local lights get classic=1 → calibration divergence. (2) HDRMin/Max/Offset/TonemapMix HARDCODED at load (0.5/2.0/1.0/1.0, llsettingssky.cpp:1185-1188), NOT read from the EEP asset. (3) probe_ambiance consumed in-shader only at class2 (reflectionProbeF.glsl:40); class3 ignores it in-shader → same EEP value, different magnitude per graphics level. (4) gammaF.glsl soft-clip = dead no-op (:41). (5) CPU twin omits the pow(0.9)*0.57 + srgb→luminance shaping → must pick canonical. (6) **faithful-camera graft** (RenderFaithfulCamera) sits atop this — non-stock; flag when calibrating vs upstream.
+
+---
 
 ## 3. HDR / exposure / tonemap + post FX — the magnitude CONSUMERS  [top of lighting column]
 _Dug 2026-08-04. Pure consumer: reads the lit HDR scene `mRT->screen` (RGBA16F, pipeline.cpp:983), meters
@@ -81,36 +83,21 @@ SSAO/SSR are UPSTREAM (computed in renderDeferredLighting, modulate ambient befo
 
 **Open seams:** faithful_camera (forces exp_scale=1 = fixed camera) CONTRADICTS feeding a dynamic meter — the engine may already be de-facto `faithful_camera=true`, so the "static 1.0" might be half-intended; decide per-target. Vestigial `dynamic_exposure_params2.x=getHDROffset` uploaded but unread. RenderUseExposureSkySettings default false ⇒ EEP HDRMin/Max/Offset ignored by default.
 
-## 6. Meshes + rigged + avatars + alpha/OIT + shadows
-_Dug 2026-08-04. Five strata bottom→top: S0 static mesh → S1 legacy avatar skinning → S2 rigged-mesh skinning → S3a shadows / S3b legacy sorted alpha → S4 WBOIT. F-seam (VkBridge) cuts across._
-
-- **S0 static mesh:** LLVOVolume face→LLDrawInfo→pass. Rigged fork: `rigged = skinInfo && isAttachment()` stamps `LLFace::RIGGED`+mSkinInfo+mAvatar (llvovolume.cpp:6088-6172); skinInfo from gMeshRepo (:1339).
-- **S1 legacy avatar skinning** (oldest skinning graft): base "system avatar" via LLDrawPoolAvatar→renderSkinned (lldrawpoolavatar.cpp:403+). `avatarSkinV.glsl:27-42`: `matrixPalette[45]` (15 joints×3 rows), SINGLE weight, `mix` between adjacent joints. **Seam S1→S2:** same `matrixPalette` name + `floor/fract(weight)` convention.
-- **S2 rigged skinning** (descendant): rigged attachments flow through NORMAL pools' rigged shader VARIANTS (`make_rigged_variant`+HAS_SKIN, llviewershadermgr.cpp:253; attaches objectSkinV.glsl, llshadermgr.cpp:168). `objectSkinV.glsl:27-63`: `mat3x4 matrixPalette[MAX_JOINTS]`, FOUR weights, renormalized. Palette: build llvoavatar.cpp:11244 (`mat=invBind×world`, llskinningutil.cpp:146), pack mGLMp 12f/joint, upload `uniformMatrix3x4fv(AVATAR_MATRIX)` + tap `setMatrixPalette` (lldrawpool.cpp:676-686).
-- **S3a shadows:** generateSunShadow (pipeline.cpp:11103) — 4-cascade CSM (sphere-bound+texel-snap stable fit :11535), +2 spot (detail>1). Consumed by sampleDirectionalShadow (shadowUtil.glsl:96, 5-tap PCF, cascade select by view-z) in the sun lightmap pass. Default RenderShadowDetail=2.
-- **S3b legacy sorted alpha:** per-group depth + 0.64 view-angle re-sort (llspatialpartition.cpp:669-704).
-- **S4 WBOIT** (over S3b): RenderAlphaOIT (default on) — accum(RGBA32F)/revealage(R16F)/composite (pipeline.cpp:5214-5266); weight `oit_w=a*clamp(0.03/(z/200)^4,...)` (alphaF.glsl:324). A thin `oit_mode` switch over the SAME alpha shaders; POST_WATER main-view only.
-- **F-seam DEFLATE (VkBridge):** `generateSunShadow` returns under `liveActive()` (pipeline.cpp:11108, VERIFIED) → NO CSM/spot maps generated; AND WBOIT forced OFF → S3b sorted painter stream (lldrawpoolalpha.cpp:219). Engine supplies shadowing + gets an ordered alpha stream.
-- **READS:** skin (invBind/joints), materials/textures per DrawInfo, G-buffer depth, shadow maps→lighting, lit mRT->screen (alpha-over). **WRITES:** G-buffer (opaque static+rigged), shadow maps, alpha composite into mRT->screen, taps (palette+material).
-- **Open:** deferred base-avatar CPU-vs-GPU skinning unconfirmed; within-group DrawInfo alpha comparator; MAX_JOINTS vs GLTF UBO joint ceiling reconciliation.
-
-## 7. UI compositing + snapshot  [top of the whole column]
-_Dug 2026-08-04. Three strata: scene→G-buffer → post/tonemap+PRESENT → 2D UI over the backbuffer._
-
-- **Order (llviewerdisplay.cpp, VERIFIED site):** `renderFinalize()` (pipeline.cpp:9173) called from `render_ui()` @ :1880 = tonemap + **present scene into FBO 0 at the world-view rect** (fullscreen tri, pipeline.cpp:9314-9328) → HUD/UI draws :1887-1942 → `swap()` :1957. UI is **ortho 2D drawn directly into FBO 0 over the presented pixels** (llrender2dutils.cpp:64 `gl_ortho`); it does NOT sample the scene as a texture (except the optional RenderUIBuffer `mUIScreen` cache, render_ui_2d :2192).
-- **Cursor:** OS-managed, NO in-GL draw (llviewerwindow.cpp:2717). "Under-cursor artifact" is therefore a root-view overlay (gToolTipView / hover-pick) or a missing-scissor issue, NOT a cursor draw.
-- **Minimap escaping (ROOT CAUSE):** LLNetMap::draw (llnetmap.cpp:310) clips via `LLLocalClipRect`→bare `glScissor()` (lllocalcliprect.cpp:95). But the engine UI feed **`fsr_ui_submit` carries NO scissor rect** (llrender.cpp:1833-1850; fsscenedump.h:37) → dots unbounded. Generalizes to EVERY clipped widget (scroll lists, editors, tabs, accordions). The `gGL.flush()` at each scissor change (lllocalcliprect.cpp:86) gives a natural transmit hook.
-- **Toasts/chiclets:** ordinary LLViews in the root-view tree (mRootView->draw, llviewerwindow.cpp:3154; LLScreenChannel, llchannelmanager.cpp:154) — same 2D stratum + same UI feed.
-- **Login tonality (ROOT):** login uses `display_startup()` (llviewerdisplay.cpp:169,873) which does `setup2DRender + draw` and **NEVER calls renderFinalize** → NO scene tonemap beneath. So login color = raw `gUIProgram`+sRGB-framebuffer output; the engine UI compositor must match the raw UI path in isolation (not the tonemapped-scene path). The A/B delta is a UI color-space question.
-- **Engine handoff:** typed UI stream `fsr_ui_submit(mvp16, tex_id, mode, count, verts{pos,uv,rgba8})` at LLRender::flush (llrender.cpp:1833) + cached-font path (llfontvertexbuffer.cpp:239). Frame bracket `onFrame`→`fsr_begin/scene_begin/ui_begin` (fsscenedump.cpp:1129) … `swapBuffers`→`s_fsr_end_frame()` (llwindowwin32.cpp:4100) which renders live 3D queue + UI list + presents to HWND, **skipping GDI SwapBuffers**. mUIScreen forced full-dirty each frame under liveActive (llviewerwindow.cpp:2989).
-- **Snapshot:** rawSnapshot `glReadPixels` from FBO 0 (llviewerwindow.cpp:6387) — reads the null-GL stub in engine mode; no engine-mode capture path exists (our fsr_capture.req is a separate engine facility).
-- **Open:** UI-vs-engine composite ordering is IMPLICIT (append order in one onFrame→end_frame bracket), not enforced — confirm end_frame tonemaps 3D before UI + never tonemaps UI; missing-scissor (minimap+widgets+cursor artifact); login color-space; engine-mode snapshot unbuilt; fsr_ui_submit lacks scissor + blend-mode fields.
+---
 
 ## 4. Sky + clouds + water
-_All three ride on the §2 atmospherics substrate. WATER dug 2026-08-04; SKY + CLOUDS + DAY-CYCLE pending
-the consolidated dig._
+_All three ride on the §2 atmospherics substrate. Dug 2026-08-04._
 
-### 4c. WATER (dug — deferred/PBR ONLY; legacy forward water is a magenta error stub)
+### 4a. SKY (legacy sky pool is a HOLLOW fossil; all sky via LLDrawPoolWLSky)
+- **THREE parallel copies of the haze math, hand-synced (fossil seam):** GLSL `calcAtmosphericVars` (atmosphericsFuncs.glsl:51) + CPU `LLSettingsSky::calculateLightSettings` (llsettingssky.cpp:1707) + CPU sky-dome twin `calcSkyColorWLVert` (lllegacyatmospherics.cpp:260). **The CPU sky-dome twin is largely DEAD** — LLVOSky::updateSky early-outs when reflection probes are on (llvosky.cpp:707, the default).
+- Legacy `lldrawpoolsky.cpp:31 // DEPRECATED` — all methods empty stubs. Live path = `LLDrawPoolWLSky::renderDeferred` (lldrawpoolwlsky.cpp:477): haze dome → sun+moon → stars → clouds. Programs gDeferredWLSky/Cloud/Sun/Moon/Star (group SG_SKY).
+- **Dome:** renderDome (Y-up rotate + scale 0.333), drawDome (radius 15000), depth-write OFF. **G-buffer flags:** sky dome writes `SKIP_ATMOS` (skyF.glsl:117) or `HAS_HDRI` (:97, ×sky_hdr_scale); sun/moon/stars write `SKIP_ATMOS`. **Depth-clear-for-haze-mask trick:** endDeferredPass clears depth (lldrawpoolwlsky.cpp:92) → the deferred hazeF discards depth>=1.0 (sky pixels already have haze baked into vary_HazeColor at dome-render). Halos/rainbows in skyF (rainbow/halo22 from moisture/droplet/ice).
+- Sun/moon discs (legacy LLVOSky FACE_SUN/MOON) carry DUAL textures (DIFFUSE + ALTERNATE) for keyframe A/B cross-fade; color via getInterpColor.
+
+### 4b. CLOUDS
+- Same dome; two-texture day-cycle blend (CLOUD_NOISE_MAP / CLOUD_NOISE_MAP_NEXT, `blend_factor=getBlendFactor()`, cloudsF.glsl:51). `cloud_shadow` = master density/darkening knob (`vary_CloudDensity=2*(cloud_shadow-0.25)`, cloudsV.glsl:184; also lifts ambient + dims sunlight in the substrate). cloudsV computes CloudColorSun/Ambient from the full substrate. Writes SKIP_ATMOS. EEP cloud X-flip fossil (SL-13084). Clouds EXCLUDED from probe irradiance (anti-popping).
+
+### 4c. WATER (deferred/PBR ONLY; legacy forward water is a magenta error stub)
 - **No planar reflection pass:** `generateWaterReflection`/`mWaterRef`/`mRT->water*` DO NOT EXIST. Reflections = reflection probes + hero/mirror probe (`sampleReflectionProbesWater`, class3 reflectionProbeF.glsl:781; mirror = mHeroProbeManager mirror pass). The only water RTs are **`mWaterDis`** (full-res screen-HDR-format + depth, "always needed as scratch") and **`mWaterExclusionMask`** (R8). updateCull sets only a user CLIP plane at water height (pipeline.cpp:2655-2688), no mirror matrix in deferred.
 - **Pass (post-deferred, camera <1024m, lldrawpoolwater.cpp):** `beginPostDeferredPass` copies screen color + deferredScreen depth → mWaterDis via gCopyDepthProgram (:112-144). `renderPostDeferred` (:146-354): `gWaterProgram` / `gUnderWaterProgram` (underwater branch only — legacy/deferred fork gone); binds 2 blended normal maps (BUMP_MAP/BUMP_MAP2 + BLEND_FACTOR), `mWaterDis` as `screenTex`(WATER_SCREENTEX)+depth (via bindDeferredShader 3rd arg), `mWaterExclusionMask` as `exclusionTex`; pushes the full water param block + **exposure/tonemap_type/tonemap_mix + classic_mode** (HDR seam, :284-287). VkBridge taps the whole uniform payload into aux F4 slots a0-a7 (:318-346) — exact constant block for the port.
 - **Geometry:** LLVOWater, tessellated grid (8×8 quads for transparent water, region-sized, flat Z); horizon warp/clamp (2560m) in the VERTEX shader (class1/environment/waterV.glsl), not C++.
@@ -119,19 +106,12 @@ the consolidated dig._
 - **Substrate seam:** `calcAtmosphericVarsLinear` — classic_mode<1 → ambient linearized + desaturated to luminance + sunlit linearized; classic → stays sRGB/colored. Water consumes sunlit/amblit/atten/additive.
 - **Open:** mWaterImagep/mOpaqueWaterImagep populated but never bound (dead?); renderOpaqueLegacyWater declared-undefined; SHORELINE_FADE compiled out (fade=1); mWaterDis TRIPLE-purposed (refraction copy / haze scratch / depth target) — watch lifetime when splitting into wgpu images; calcAtmosphericVarsLinear prototype param-name swap (additive/atten) in waterF.glsl:37 (links, but mirror carefully).
 
-### 4a. SKY (dug — legacy sky pool is a HOLLOW fossil; all sky via LLDrawPoolWLSky)
-- **THREE parallel copies of the haze math, hand-synced (fossil seam):** GLSL `calcAtmosphericVars` (atmosphericsFuncs.glsl:51) + CPU `LLSettingsSky::calculateLightSettings` (llsettingssky.cpp:1707) + CPU sky-dome twin `calcSkyColorWLVert` (lllegacyatmospherics.cpp:260). **The CPU sky-dome twin is largely DEAD** — LLVOSky::updateSky early-outs when reflection probes are on (llvosky.cpp:707, the default).
-- Legacy `lldrawpoolsky.cpp:31 // DEPRECATED` — all methods empty stubs. Live path = `LLDrawPoolWLSky::renderDeferred` (lldrawpoolwlsky.cpp:477): haze dome → sun+moon → stars → clouds. Programs gDeferredWLSky/Cloud/Sun/Moon/Star (group SG_SKY).
-- **Dome:** renderDome (Y-up rotate + scale 0.333), drawDome (radius 15000), depth-write OFF. **G-buffer flags:** sky dome writes `SKIP_ATMOS` (skyF.glsl:117) or `HAS_HDRI` (:97, ×sky_hdr_scale); sun/moon/stars write `SKIP_ATMOS`. **Depth-clear-for-haze-mask trick:** endDeferredPass clears depth (lldrawpoolwlsky.cpp:92) → the deferred hazeF discards depth>=1.0 (sky pixels already have haze baked into vary_HazeColor at dome-render). Halos/rainbows in skyF (rainbow/halo22 from moisture/droplet/ice).
-- Sun/moon discs (legacy LLVOSky FACE_SUN/MOON) carry DUAL textures (DIFFUSE + ALTERNATE) for keyframe A/B cross-fade; color via getInterpColor.
-
-### 4b. CLOUDS (dug)
-- Same dome; two-texture day-cycle blend (CLOUD_NOISE_MAP / CLOUD_NOISE_MAP_NEXT, `blend_factor=getBlendFactor()`, cloudsF.glsl:51). `cloud_shadow` = master density/darkening knob (`vary_CloudDensity=2*(cloud_shadow-0.25)`, cloudsV.glsl:184; also lifts ambient + dims sunlight in the substrate). cloudsV computes CloudColorSun/Ambient from the full substrate. Writes SKIP_ATMOS. EEP cloud X-flip fossil (SL-13084). Clouds EXCLUDED from probe irradiance (anti-popping).
-
 ### 4d. DAY-CYCLE DRIVE + **twilight-nuance RESOLVED**
 - `LLEnvironment::update()` (llenvironment.cpp:1759) every frame: `applyTimeDelta` → `updateSettingsUniforms` → mark ALL shaders dirty. **No dirty-gating; blend + uniform recompute run unconditionally per frame.**
 - **Blend = piecewise-LINEAR in time** (convert_time_to_blend_factor, llenvironment.cpp:182; LLTrackBlenderLoopingTime). `LLSettingsSky::blend` (llsettingssky.cpp:577-691): sun/moon rotation → **slerp**; colors + all scalars (gamma, cloud_shadow, glow, ambient, maxY, star/moon brightness…) → **lerp**; legacy haze (blue_density/horizon, haze, multipliers) → lerp_legacy; **textures SNAP** (A/B two-texture cross-fade instead); atomics hard-switch at 0.5.
 - **★ TWILIGHT RESOLUTION:** the DEFAULT day keyframes ONLY sun/moon ROTATION (defaults(), llsettingssky.cpp:892; all colour params constant across keyframes). **Twilight colour EMERGES from the scattering math responding continuously to the smoothly-slerped `lightnorm` (sun dir), re-evaluated per frame** — NOT from keyframed colours. So our engine's "binary day/night" = one of: (a) snapping lightnorm to keyframe values instead of feeding the per-frame slerped direction; (b) not re-evaluating calcAtmosphericVars/calculateLightSettings per frame from the interpolated lightnorm; (c) not re-pushing the atmospherics uniforms each frame. **The fix is per-frame atmospherics re-evaluation from a smoothly-moving sun dir, NOT adding keyframe colour blending.** (SKYDIAG shows our sundir DOES sweep — so suspect (b)/(c): the magnitudes/colours aren't re-derived from it.) Latent quirk: `defaults(position)` caches into a function-static guarded by size()==0 → position only affects the FIRST call; the built-in fallback day's sun rotation freezes (would itself give a binary sky on fallback).
+
+---
 
 ## 5. Terrain + objects/prims + materials  [texturing column]
 _Dug 2026-08-04. TWO columns share ONE 4-target G-buffer. **Tier is decided PER-FACE from the
@@ -150,18 +130,42 @@ _Dug 2026-08-04. TWO columns share ONE 4-target G-buffer. **Tier is decided PER-
 | fd1 | spec color+exponent(.a) | ORM (R=occ,G=rough,B=metal) |
 | fd2 | normal.xy + env-intensity in .b | normal.xy + .b=0 |
 | fd3 | 0 | linear emissive |
+
 `encodeNormal` = Lambert-azimuthal spheremap into .xy, flag into .w (globalF.glsl:46). Writes: legacy diffuseF.glsl:44, BP **class3** materialF.glsl:448 (class1 = magenta debug stub, no class2), PBR pbropaqueF.glsl:115, PBR terrain **pbrterrainF.glsl:431** (fd1.a = base_color_factor_alpha, ORM degrades to "potato" (1,1,0)). **The sRGB-vs-linear fd0 seam is load-bearing** — softenLightF.glsl:167 forks on the flag: HAS_PBR → pbrBaseLight (ORM BRDF+IBL, sun ×3), else `srgb_to_linear(baseColor)` + legacy Blinn-Phong (spec.a/env, sun ×1.35 classic).
 
 **READS:** UUID→LLViewerTexture via getFetchedTexture; boost `BOOST_TERRAIN`/`setBoostLevel>=BOOST_HIGH` pins 2048²+discard0 (llviewertexture.cpp:833); GLTF maps fetched BOOST_NONE 64² floor. **WRITES:** the shared 4-MRT G-buffer. **Texture batching disabled whenever any material present** (llvovolume.cpp:5721).
 
-**Relevance to our PBR-terrain work (§validates + roadmap):** our engine's flag routing (HAS_ATMOS 0.34 / HAS_PBR 0.67) + LINEAR base + ORM matches stock. Deferred pieces confirmed as real strata: 4-target G-buffer (fd1 ORM + fd3 emissive), the paintmap paint-type, per-swatch KHR transforms, the ORM potato-degradation, factor arrays. Our base-color-first is the correct bottom of the PBR terrain stratum.
+**Relevance to our PBR-terrain work (validates + roadmap):** our engine's flag routing (HAS_ATMOS 0.34 / HAS_PBR 0.67) + LINEAR base + ORM matches stock. Deferred pieces confirmed as real strata: 4-target G-buffer (fd1 ORM + fd3 emissive), the paintmap paint-type, per-swatch KHR transforms, the ORM potato-degradation, factor arrays. Our base-color-first is the correct bottom of the PBR terrain stratum.
 - **Open:** getPoolTypeFromTE BLEND-GLTF+bump ordering; class1 materialF magenta if class≤2 resolves; PBR fd1.a inconsistency; HAS_EMISSIVE guard commented out (pbrmetallicroughnessF.glsl:248 latent MRT mismatch); impostorF raw-normal exception; BP-scalar-vs-KHR never combined.
 
+---
+
 ## 6. Meshes + rigged + avatars + alpha/OIT + shadows
-_(pending)_
+_Dug 2026-08-04. Five strata bottom→top: S0 static mesh → S1 legacy avatar skinning → S2 rigged-mesh skinning → S3a shadows / S3b legacy sorted alpha → S4 WBOIT. F-seam (VkBridge) cuts across._
+
+- **S0 static mesh:** LLVOVolume face→LLDrawInfo→pass. Rigged fork: `rigged = skinInfo && isAttachment()` stamps `LLFace::RIGGED`+mSkinInfo+mAvatar (llvovolume.cpp:6088-6172); skinInfo from gMeshRepo (:1339).
+- **S1 legacy avatar skinning** (oldest skinning graft): base "system avatar" via LLDrawPoolAvatar→renderSkinned (lldrawpoolavatar.cpp:403+). `avatarSkinV.glsl:27-42`: `matrixPalette[45]` (15 joints×3 rows), SINGLE weight, `mix` between adjacent joints. **Seam S1→S2:** same `matrixPalette` name + `floor/fract(weight)` convention.
+- **S2 rigged skinning** (descendant): rigged attachments flow through NORMAL pools' rigged shader VARIANTS (`make_rigged_variant`+HAS_SKIN, llviewershadermgr.cpp:253; attaches objectSkinV.glsl, llshadermgr.cpp:168). `objectSkinV.glsl:27-63`: `mat3x4 matrixPalette[MAX_JOINTS]`, FOUR weights, renormalized. Palette: build llvoavatar.cpp:11244 (`mat=invBind×world`, llskinningutil.cpp:146), pack mGLMp 12f/joint, upload `uniformMatrix3x4fv(AVATAR_MATRIX)` + tap `setMatrixPalette` (lldrawpool.cpp:676-686).
+- **S3a shadows:** generateSunShadow (pipeline.cpp:11103) — 4-cascade CSM (sphere-bound+texel-snap stable fit :11535), +2 spot (detail>1). Consumed by sampleDirectionalShadow (shadowUtil.glsl:96, 5-tap PCF, cascade select by view-z) in the sun lightmap pass. Default RenderShadowDetail=2.
+- **S3b legacy sorted alpha:** per-group depth + 0.64 view-angle re-sort (llspatialpartition.cpp:669-704).
+- **S4 WBOIT** (over S3b): RenderAlphaOIT (default on) — accum(RGBA32F)/revealage(R16F)/composite (pipeline.cpp:5214-5266); weight `oit_w=a*clamp(0.03/(z/200)^4,...)` (alphaF.glsl:324). A thin `oit_mode` switch over the SAME alpha shaders; POST_WATER main-view only.
+- **F-seam DEFLATE (VkBridge):** `generateSunShadow` returns under `liveActive()` (pipeline.cpp:11108, VERIFIED) → NO CSM/spot maps generated; AND WBOIT forced OFF → S3b sorted painter stream (lldrawpoolalpha.cpp:219). Engine supplies shadowing + gets an ordered alpha stream.
+- **READS:** skin (invBind/joints), materials/textures per DrawInfo, G-buffer depth, shadow maps→lighting, lit mRT->screen (alpha-over). **WRITES:** G-buffer (opaque static+rigged), shadow maps, alpha composite into mRT->screen, taps (palette+material).
+- **Open:** deferred base-avatar CPU-vs-GPU skinning unconfirmed; within-group DrawInfo alpha comparator; MAX_JOINTS vs GLTF UBO joint ceiling reconciliation; VSM (detail>2) unpopulated.
+
+---
 
 ## 7. UI compositing + snapshot  [top of the whole column]
-_(pending) — 2D UI over the tonemapped 3D; the engine/UI composite handoff._
+_Dug 2026-08-04. Three strata: scene→G-buffer → post/tonemap+PRESENT → 2D UI over the backbuffer._
+
+- **Order (llviewerdisplay.cpp, VERIFIED site):** `renderFinalize()` (pipeline.cpp:9173) called from `render_ui()` @ :1880 = tonemap + **present scene into FBO 0 at the world-view rect** (fullscreen tri, pipeline.cpp:9314-9328) → HUD/UI draws :1887-1942 → `swap()` :1957. UI is **ortho 2D drawn directly into FBO 0 over the presented pixels** (llrender2dutils.cpp:64 `gl_ortho`); it does NOT sample the scene as a texture (except the optional RenderUIBuffer `mUIScreen` cache, render_ui_2d :2192).
+- **Cursor:** OS-managed, NO in-GL draw (llviewerwindow.cpp:2717). "Under-cursor artifact" is therefore a root-view overlay (gToolTipView / hover-pick) or a missing-scissor issue, NOT a cursor draw.
+- **Minimap escaping (ROOT CAUSE):** LLNetMap::draw (llnetmap.cpp:310) clips via `LLLocalClipRect`→bare `glScissor()` (lllocalcliprect.cpp:95). But the engine UI feed **`fsr_ui_submit` carries NO scissor rect** (llrender.cpp:1833-1850; fsscenedump.h:37) → dots unbounded. Generalizes to EVERY clipped widget (scroll lists, editors, tabs, accordions). The `gGL.flush()` at each scissor change (lllocalcliprect.cpp:86) gives a natural transmit hook.
+- **Toasts/chiclets:** ordinary LLViews in the root-view tree (mRootView->draw, llviewerwindow.cpp:3154; LLScreenChannel, llchannelmanager.cpp:154) — same 2D stratum + same UI feed.
+- **Login tonality (ROOT):** login uses `display_startup()` (llviewerdisplay.cpp:169,873) which does `setup2DRender + draw` and **NEVER calls renderFinalize** → NO scene tonemap beneath. So login color = raw `gUIProgram`+sRGB-framebuffer output; the engine UI compositor must match the raw UI path in isolation (not the tonemapped-scene path). The A/B delta is a UI color-space question.
+- **Engine handoff:** typed UI stream `fsr_ui_submit(mvp16, tex_id, mode, count, verts{pos,uv,rgba8})` at LLRender::flush (llrender.cpp:1833) + cached-font path (llfontvertexbuffer.cpp:239). Frame bracket `onFrame`→`fsr_begin/scene_begin/ui_begin` (fsscenedump.cpp:1129) … `swapBuffers`→`s_fsr_end_frame()` (llwindowwin32.cpp:4100) which renders live 3D queue + UI list + presents to HWND, **skipping GDI SwapBuffers**. mUIScreen forced full-dirty each frame under liveActive (llviewerwindow.cpp:2989).
+- **Snapshot:** rawSnapshot `glReadPixels` from FBO 0 (llviewerwindow.cpp:6387) — reads the null-GL stub in engine mode; no engine-mode capture path exists (our fsr_capture.req is a separate engine facility).
+- **Open:** UI-vs-engine composite ordering is IMPLICIT (append order in one onFrame→end_frame bracket), not enforced — confirm end_frame tonemaps 3D before UI + never tonemaps UI; missing-scissor (minimap+widgets+cursor artifact); login color-space; engine-mode snapshot unbuilt; fsr_ui_submit lacks scissor + blend-mode fields.
 
 ---
 

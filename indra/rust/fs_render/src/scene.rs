@@ -534,9 +534,12 @@ impl SceneFrame {
         u[44] = sky.glow[0]; u[45] = sky.glow[1]; u[46] = sky.glow[2]; u[47] = sky_sunlight_scale;
         // a8: sky_hdr_scale, sky_ambient_scale (P2b resolve), viewport_w, viewport_h
         u[48] = sky_hdr_scale; u[49] = sky_ambient_scale; u[50] = cam.viewport_w; u[51] = cam.viewport_h;
-        // a9: sun_dir.xyz, _ ; a10: moon_dir.xyz, _ (REAL world-space, for the sun/moon discs)
+        // a9: sun_dir.xyz, _ ; a10: moon_dir.xyz, classic_mode (REAL world-space discs + the HDR-regime
+        // seam resolve.frag branches on: classic (legacy WindLight) vs linear (PBR/EEP). Without this
+        // the resolve would always run the linear branch and blow out PBR/EEP daytime skies ~3.3x.
+        let classic_mode = regime.as_ref().map(|r| r.classic_mode).unwrap_or(0) as f32;
         u[52] = sky.sun_dir[0]; u[53] = sky.sun_dir[1]; u[54] = sky.sun_dir[2]; u[55] = 0.0;
-        u[56] = sky.moon_dir[0]; u[57] = sky.moon_dir[1]; u[58] = sky.moon_dir[2]; u[59] = 0.0;
+        u[56] = sky.moon_dir[0]; u[57] = sky.moon_dir[1]; u[58] = sky.moon_dir[2]; u[59] = classic_mode;
         Some(u)
     }
 

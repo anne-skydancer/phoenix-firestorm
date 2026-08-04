@@ -15,12 +15,13 @@
 // coincidentally looked right.
 //
 // Done in WORLD space (the deliberate divergence from stock's eye space): world normal from RT1, world
-// sun_dir fed, dots are frame-invariant -> identical result, and it dodges the reverse-Z inv_proj
-// depth-reconstruction hazard. Consequences of no view vector yet (arrives with world-pos in P2c):
-//   - punctual Fresnel F uses the normal-incidence value f0=0.04 (grazing rim = P2c),
-//   - punctual GGX specular is omitted (rough matte ground; real ORM+specular = P2c),
-//   - reflection-probe IBL is the sky-ambient stub (real probes = later).
-// Haze (additive/atten, which DO need world pos) is the separate hazeF pass = P2c.
+// sun_dir fed, dots are frame-invariant -> identical result. The view vector v is reconstructed from
+// the pixel's view RAY (inv_view_proj) -- depth-independent, so it dodges the reverse-Z hazard.
+// MATERIALS stratum (this pass): legacy Blinn-Phong direct specular (RT2 spec color+exponent) is IN.
+// Still deferred to later strata:
+//   - PBR punctual GGX specular + real ORM (roughness/metallic) = PBR stratum,
+//   - reflection-probe IBL + env-reflection (applyGlossEnv/applyLegacyEnv) = probe stratum,
+//   - emissive (RT3) = materials M2b, haze (additive/atten) = the separate hazeF pass.
 //
 // UBO is the shared 60-float sky UBO; indices match scene.rs sky_ubo() / live.rs set_fullscreen_sky.
 layout(set = 0, binding = 0) uniform Sky {
@@ -39,13 +40,24 @@ layout(set = 0, binding = 0) uniform Sky {
 } sky;
 layout(set = 0, binding = 1) uniform texture2D g_albedo;  // RT0 albedo + flag.a
 layout(set = 0, binding = 2) uniform texture2D g_normal;  // RT1 world normal.xyz + env.w
+layout(set = 0, binding = 3) uniform texture2D g_spec;    // RT2 legacy: spec color.rgb + exponent.a / PBR: ORM
 layout(location = 0) out vec4 frag;
 
 const float M_PI = 3.14159265;
 const float GBUFFER_FLAG_HAS_ATMOS = 0.34;
 const float GBUFFER_FLAG_HAS_PBR = 0.67;
+const float SPEC_EXPONENT = 368.0; // RenderSpecularExponent (settings.xml default)
 
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+// stock Blinn-Phong specular LUT (pipeline.cpp:1624 createLUTBuffers), the CLOSED FORM -- no texture:
+// n = glossiness^2 * RenderSpecularExponent; lightFunc = pow(nh,n) * normalization curve.
+float lightFunc(float nh, float glossiness) {
+    float n = glossiness * glossiness * SPEC_EXPONENT;
+    float s = pow(nh, n);
+    s *= ((n + 2.0) * (n + 4.0)) / (8.0 * M_PI * (pow(2.0, -n * 0.5) + n));
+    return s;
+}
 
 // stock srgbF.glsl srgb_to_linear / linear_to_srgb
 vec3 srgb_to_linear(vec3 cs) {
@@ -84,6 +96,16 @@ void main() {
     int classic_mode = int(sky.moondir_classic.w + 0.5);
     vec3 n = normalize(texelFetch(g_normal, p, 0).xyz);      // world-space
     vec3 sun_dir = normalize(sky.sundir_distmul.xyz);         // world, SL Z-up
+
+    // View vector (surface->camera), stock softenLightF's v = -normalize(eye_pos). The DIRECTION is
+    // depth-INDEPENDENT (depth only scales eye_pos, cancels in normalize) -> reconstruct the pixel's
+    // view ray from inv_view_proj alone, dodging the reverse-Z depth-reconstruction hazard entirely.
+    vec2 uv  = gl_FragCoord.xy / sky.hdr_sas_vp.zw;          // vp_w, vp_h (0 at top, y-down)
+    vec2 ndc = uv * 2.0 - 1.0;
+    ndc.y = -ndc.y;                                          // framebuffer y-down -> the fixture's GL inv_proj y-up
+    vec4 far = sky.inv_view_proj * vec4(ndc, 1.0, 1.0);      // far plane (clip z far); ray direction only
+    vec3 world_far = far.xyz / far.w;
+    vec3 v = normalize(sky.cam_maxy.xyz - world_far);        // = -ray_dir = surface->camera
 
     // --- calcAtmosphericVars/calcAtmosphericVarsLinear: sunlit + amblit (rel_pos-independent parts) ---
     vec3  blue_density = sky.bluedens_clouds.rgb;
@@ -161,9 +183,33 @@ void main() {
             color += sun_contrib;
         }
         color *= baseColor;
-        // stock also does mix(color, baseColor, baseColor.a) for material alpha + the spec.a/envIntensity
-        // gloss paths; this world-space G-buffer packs the FLAG in .a (no material-alpha channel) and has
-        // no spec/env yet -> opaque, non-glossy. Both arrive with the real material G-buffer (later).
+
+        // Direct Blinn-Phong specular (softenLightF legacy else, spec.a>0 path). PROBE-INDEPENDENT
+        // (applyGlossEnv/applyLegacyEnv reflections need probes -> probe stratum). spec.a = glossiness.
+        vec4 spec = texelFetch(g_spec, p, 0);               // RT2: (spec color sRGB, exponent/glossiness)
+        float glossiness = spec.a;
+        vec3 spec_lin = srgb_to_linear(spec.rgb);
+        // classic linearizes sunlit_linear before the specular (softenLightF:232); non-classic already linear.
+        vec3 sunlit_spec = (classic_mode > 0) ? srgb_to_linear(sunlit) : sunlit;
+        if (glossiness > 0.0) {
+            vec3 l = normalize(sun_dir);
+            vec3 h = normalize(l + v);
+            float eps = 1e-6;
+            float nh  = clamp(dot(n, h), eps, 1.0);
+            float nl_s = clamp(dot(n, l), eps, 1.0);
+            float nv  = clamp(dot(n, v), eps, 1.0);
+            float vh  = clamp(dot(v, h), eps, 1.0);
+            if (nl_s > 0.0 && nh > 0.0) {
+                float lit = min(nl_s * 6.0, 1.0);
+                float fres = pow(1.0 - vh, 5.0) * 0.4 + 0.5;
+                float gtdenom = 2.0 * nh;
+                float gt = max(0.0, min(gtdenom * nv / vh, gtdenom * nl_s / vh));
+                float sc = scol * fres * lightFunc(nh, glossiness) * gt / (nh * nl_s);
+                color += lit * sc * sunlit_spec * spec_lin;
+            }
+        }
+        // Still deferred: mix(color, baseColor, baseColor.a) material alpha (our .a = flag) and the
+        // env-intensity reflection (applyLegacyEnv) which needs probes -> probe stratum.
     }
 
     // softenLightF main tail: classic gets a ×1.1 final scale.

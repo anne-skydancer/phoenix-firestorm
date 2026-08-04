@@ -10,11 +10,24 @@
 use crate::std140::Block;
 use wgpu::util::DeviceExt;
 
+/// Which surface the fixture G-buffer describes. PbrGround = HAS_PBR (linear base + ORM); LegacySpecular
+/// = HAS_ATMOS legacy material (sRGB diffuse + specular color/exponent) -- exercises the Blinn-Phong
+/// direct-specular path, which is BRUTALLY view-vector sensitive (pow(nh, gloss^2*368)).
+#[derive(Clone, Copy, PartialEq)]
+pub enum Material {
+    PbrGround,
+    LegacySpecular,
+}
+// Shared legacy-material params so the oracle and the resolve bench describe the IDENTICAL surface.
+pub const LEGACY_DIFFUSE: [f32; 3] = [0.5, 0.5, 0.5]; // sRGB
+pub const LEGACY_SPEC_COLOR: [f32; 3] = [0.5, 0.5, 0.5]; // sRGB
+pub const LEGACY_GLOSS: f32 = 0.7; // specularRect.a / spec.a
+
 /// A perspective projection's INVERSE (column-major), the analytic inverse of the OpenGL clip-[-1,1]
 /// perspective matrix. getPositionWithDepth needs a real inv_proj or the reconstructed eye-space
 /// position is NaN (zeroed matrices) -- which silently zeroed calcAtmosphericVars and made the oracle
 /// dark. fovy/aspect/near/far match a plausible viewer camera; both engines use the identical matrix.
-fn perspective_inv(fovy_rad: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
+pub fn perspective_inv(fovy_rad: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
     let f = 1.0 / (fovy_rad * 0.5).tan();
     let c = (far + near) / (near - far);
     let d = (2.0 * far * near) / (near - far);
@@ -144,6 +157,37 @@ fn cube_array_1x1(device: &wgpu::Device, queue: &wgpu::Queue, label: &str) -> wg
     })
 }
 
+/// The Blinn-Phong specular LUT the viewer builds in pipeline.cpp:1624 (createLUTBuffers), bound as
+/// `lightFunc` and sampled `texture(lightFunc, vec2(nh, glossiness)).r`. WITHOUT this (stubbed to white)
+/// the oracle's legacy specular has NO falloff -> a uniform-bright frame, unfaithful to OGL. 256x256 so
+/// the sampled value matches resolve.frag's closed form closely. Value packed in .r (Rgba16Float).
+fn lightfunc_lut(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let res = 256u32;
+    let mut data = Vec::with_capacity((res * res) as usize * 8);
+    for y in 0..res {
+        for x in 0..res {
+            let sa = x as f32 / (res - 1) as f32; // nh
+            let gloss = y as f32 / (res - 1) as f32; // glossiness
+            let n = gloss * gloss * 368.0; // RenderSpecularExponent
+            let mut s = sa.powf(n);
+            s *= ((n + 2.0) * (n + 4.0)) / (8.0 * std::f32::consts::PI * (2.0f32.powf(-n * 0.5) + n));
+            data.extend_from_slice(&rgba16f(s, 0.0, 0.0, 0.0));
+        }
+    }
+    let t = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("lightFunc"),
+            size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &data,
+    );
+    t.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
 // f16 helpers for the Rgba16Float G-buffer/probe fixtures.
 fn f16(x: f32) -> [u8; 2] {
     // minimal f32->f16 (round-to-nearest-even not needed for fixtures).
@@ -195,23 +239,31 @@ enum Slot {
 
 /// Render the real softenLight fragment over the fixture into a `size`x`size` linear-HDR target.
 /// Returns the lit scene (pre-tonemap), the oracle side of the atmospherics diff.
-pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderModule, size: u32, classic: bool) -> SoftenResult {
+pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderModule, size: u32, classic: bool, material: Material) -> SoftenResult {
     // --- fixture textures ---
     let white = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(1.0, 1.0, 1.0, 1.0), "white");
-    // G-buffer: a plain PBR ground -- base color 0.5 grey, up-ish encoded normal + HAS_PBR flag.
-    let diffuse = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(0.5, 0.5, 0.5, 0.0), "diffuseRect");
-    // specularRect = ORM (occlusion, roughness, metallic). Plain rough ground: ao=1, rough=1, metal=0.
-    // (My earlier ao=0 zeroed the ambient term -- part of the 0.030 darkness.)
-    let specular = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(1.0, 1.0, 0.0, 0.0), "specularRect");
+    // G-buffer per material. PBR: linear base 0.5, ORM=(ao1,rough1,metal0), flag 0.67. Legacy: sRGB
+    // diffuse, specularRect=(spec color, glossiness in .a), env 0, flag HAS_ATMOS 0.34.
+    let (diff_rgb, spec4, flag): ([f32; 3], [f32; 4], f32) = match material {
+        Material::PbrGround => ([0.5, 0.5, 0.5], [1.0, 1.0, 0.0, 0.0], 0.67),
+        Material::LegacySpecular => (
+            LEGACY_DIFFUSE,
+            [LEGACY_SPEC_COLOR[0], LEGACY_SPEC_COLOR[1], LEGACY_SPEC_COLOR[2], LEGACY_GLOSS],
+            0.34,
+        ),
+    };
+    let diffuse = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(diff_rgb[0], diff_rgb[1], diff_rgb[2], 0.0), "diffuseRect");
+    let specular = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(spec4[0], spec4[1], spec4[2], spec4[3]), "specularRect");
     let emissive = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(0.0, 0.0, 0.0, 0.0), "emissiveRect");
-    // normalMap: spheremap-encoded up normal (~0.5,0.5), env 0, gbufferFlag HAS_PBR (0.67) in .w.
-    let normal = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(0.5, 0.5, 0.0, 0.67), "normalMap");
+    // normalMap: spheremap-encoded up normal (~0.5,0.5), env 0 in .z, gbufferFlag in .w.
+    let normal = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(0.5, 0.5, 0.0, flag), "normalMap");
     let depthv = tex_1x1(device, queue, wgpu::TextureFormat::R32Float, &0.95f32.to_le_bytes(), "depthMap");
     let black = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(0.0, 0.0, 0.0, 1.0), "black");
     let shadow = depth_1x1(device, queue, "shadowMap"); // 1.0 = far = nothing occludes
     let cube = cube_array_1x1(device, queue, "probe");
     // lightMap: rg = (shadow, ambient-occlusion). (1,1) = full sun, no AO.
     let lightmap = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(1.0, 1.0, 1.0, 1.0), "lightMap");
+    let lightfunc = lightfunc_lut(device, queue); // binding 40 = the REAL Blinn-Phong LUT (was white -> no falloff)
 
     let samp = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("filt"),
@@ -271,7 +323,7 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
         (15, &black, false), (17, &depthv, false),
         (19, &shadow, true), (21, &shadow, true), (23, &shadow, true), (25, &shadow, true),
         (27, &shadow, true), (29, &shadow, true),
-        (38, &lightmap, false), (40, &white, false),
+        (38, &lightmap, false), (40, &lightfunc, false),
     ];
     for (b, view, is_shadow) in tex_pairs {
         tex!(b, view, d2, is_shadow);

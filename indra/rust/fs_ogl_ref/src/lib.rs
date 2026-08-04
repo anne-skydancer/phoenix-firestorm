@@ -26,6 +26,7 @@ pub struct RefEngine {
     height: u32,
     clear: wgpu::Color,
     last_center_lum: std::cell::Cell<f64>, // center-pixel linear luminance of the last readback_hdr
+    last_lum: std::cell::RefCell<Vec<f64>>, // per-pixel linear luminance of the last readback_hdr
 }
 
 impl RefEngine {
@@ -81,12 +82,18 @@ impl RefEngine {
             height,
             clear: wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
             last_center_lum: std::cell::Cell::new(0.0),
+            last_lum: std::cell::RefCell::new(Vec::new()),
         })
     }
 
     /// Center-pixel linear luminance from the last readback_hdr (head-on view -> isolates the
     /// view-vector-independent diffuse math from the off-center Fresnel/specular sweep).
     pub fn last_center_lum(&self) -> f64 { self.last_center_lum.get() }
+
+    /// Per-pixel linear luminance from the last readback_hdr (row-major). Lets the A/B examples do a
+    /// PER-PIXEL diff (max/mean abs delta), which -- unlike the mean -- catches POSITION errors such
+    /// as a mirrored specular highlight (the mean is flip-invariant and silently hides those).
+    pub fn last_lum_image(&self) -> Vec<f64> { self.last_lum.borrow().clone() }
 
     /// The initial framebuffer clear (the OGL pipeline clears the deferred G-buffer / screen each
     /// frame). Set to match `fs_render`'s clear color for the skeleton baseline.
@@ -192,19 +199,19 @@ impl RefEngine {
     /// Render the REAL softenLight on the fixture + read the linear-HDR scene back to a viewable PNG
     /// (clamp+sRGB). The atmospherics ORACLE frame; also logs the mean linear luminance (>1 pre-clamp
     /// means the lit ground would blow out under a classic tonemap -- the magnitude signal).
-    pub fn soften_frame(&self, out: &str, classic: bool) -> f64 {
+    pub fn soften_frame(&self, out: &str, classic: bool, material: soften_pass::Material) -> f64 {
         let (module, _, _) = self.build_soften_module();
-        let r = soften_pass::render(&self.device, &self.queue, &module, self.width, classic);
+        let r = soften_pass::render(&self.device, &self.queue, &module, self.width, classic, material);
         let regime = if classic { "classic" } else { "pbr" };
         let mean_lum = self.readback_hdr(&r.target, out);
         println!("softenLight oracle [{regime}]: mean linear luminance = {:.4}", mean_lum);
         mean_lum
     }
 
-    /// The TEST side: run fs_render's resolve.frag on the equivalent fixture, same regime, and report
-    /// its mean linear luminance -> directly comparable to soften_frame() (the oracle).
-    pub fn resolve_frame(&self, out: &str, classic: bool) -> f64 {
-        let r = resolve_pass::render(&self.device, &self.queue, self.width, classic);
+    /// The TEST side: run fs_render's resolve.frag on the equivalent fixture, same regime + material,
+    /// and report its mean linear luminance -> directly comparable to soften_frame() (the oracle).
+    pub fn resolve_frame(&self, out: &str, classic: bool, material: soften_pass::Material) -> f64 {
+        let r = resolve_pass::render(&self.device, &self.queue, self.width, classic, material);
         let regime = if classic { "classic" } else { "pbr" };
         let mean_lum = self.readback_hdr(&r.target, out);
         println!("resolve.frag      [{regime}]: mean linear luminance = {:.4}", mean_lum);
@@ -237,6 +244,7 @@ impl RefEngine {
         if !matches!(rx.recv(), Ok(Ok(()))) { return -1.0; }
         let data = slice.get_mapped_range();
         let mut rgba = vec![0u8; (w * h * 4) as usize];
+        let mut lum = vec![0f64; (w * h) as usize];
         let mut lum_sum = 0f64;
         let mut center_lum = 0f64;
         for y in 0..h {
@@ -247,6 +255,7 @@ impl RefEngine {
                 let lb = f16_to_f32(u16::from_le_bytes([data[o + 4], data[o + 5]]));
                 let l = (0.2126 * lr + 0.7152 * lg + 0.0722 * lb) as f64;
                 lum_sum += l;
+                lum[(y * w + x) as usize] = l;
                 if x == w / 2 && y == h / 2 { center_lum = l; } // head-on view: F~=f0, isolates diffuse math
                 let d = ((y * w + x) * 4) as usize;
                 rgba[d] = lin_to_srgb8(lr);
@@ -258,6 +267,7 @@ impl RefEngine {
         drop(data);
         buf.unmap();
         self.last_center_lum.set(center_lum);
+        *self.last_lum.borrow_mut() = lum;
         if let Ok(f) = std::fs::File::create(out) {
             let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h);
             e.set_color(png::ColorType::Rgba);

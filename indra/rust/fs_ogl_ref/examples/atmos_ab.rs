@@ -10,10 +10,11 @@ fn main() {
     println!("=== atmospherics A/B (linear luminance; oracle = invariant) ===");
     println!("  mean = whole-frame (includes off-center Fresnel/specular sweep);");
     println!("  center = head-on pixel (view-vector-independent diffuse math -- the P2b faithfulness gate)\n");
+    let m = fs_ogl_ref::soften_pass::Material::PbrGround;
     for &(classic, tag) in &[(true, "classic"), (false, "pbr")] {
-        let o = r.soften_frame(&format!("C:/fs/fsref_oracle_{tag}.png"), classic);
+        let o = r.soften_frame(&format!("C:/fs/fsref_oracle_{tag}.png"), classic, m);
         let oc = r.last_center_lum();
-        let v = r.resolve_frame(&format!("C:/fs/fsref_resolve_{tag}.png"), classic);
+        let v = r.resolve_frame(&format!("C:/fs/fsref_resolve_{tag}.png"), classic, m);
         let vc = r.last_center_lum();
         let ratio = if o > 1e-6 { v / o } else { f64::NAN };
         let cratio = if oc > 1e-6 { vc / oc } else { f64::NAN };

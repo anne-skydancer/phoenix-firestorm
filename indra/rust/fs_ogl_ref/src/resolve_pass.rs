@@ -47,8 +47,13 @@ fn tex_full(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, texel: &[u8],
 /// `layout(...) uniform Sky` comments in resolve.frag exactly.
 fn resolve_sky_ubo() -> [f32; 60] {
     let mut u = [0.0f32; 60];
-    // u0-15 inv_view_proj: unused by the lit path (haze/pos = P2c). Leave zero.
-    // u16-19: cam.xyz (unused), max_y
+    // u0-15 inv_view_proj: the SAME 60deg/aspect-1 perspective the oracle fixture uses (view=identity,
+    // camera at eye origin). resolve.frag reconstructs the view RAY from this; the ray direction is
+    // convention-independent (any ndc-z unprojects to a point ON the ray), so the GL-form inverse is
+    // fine. This makes resolve's ray-derived v the SAME physical ray as the oracle's -normalize(pos).
+    u[0..16].copy_from_slice(&crate::soften_pass::perspective_inv(60.0f32.to_radians(), 1.0, 0.5, 256.0));
+    // u16-19: cam.xyz = origin (matches the oracle's eye-at-origin), max_y
+    u[16] = 0.0; u[17] = 0.0; u[18] = 0.0;
     u[19] = 1605.0;
     // u20-23: lightnorm.xyz (OGL Y-up), sun_up_factor
     u[20] = 0.0; u[21] = 0.707; u[22] = 0.707; u[23] = 1.0;
@@ -80,7 +85,8 @@ pub struct ResolveResult {
 
 /// Compile + run resolve.frag on the equivalent fixture. `classic` is written into u56 (extra.x) so a
 /// regime-aware resolve.frag can read it; the current resolve.frag ignores it (always non-classic).
-pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bool) -> ResolveResult {
+pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bool, material: crate::soften_pass::Material) -> ResolveResult {
+    use crate::soften_pass::{Material, LEGACY_DIFFUSE, LEGACY_SPEC_COLOR, LEGACY_GLOSS};
     let src_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../fs_render/shaders/resolve.frag");
     let src = std::fs::read_to_string(src_path)
         .unwrap_or_else(|e| panic!("cannot read resolve.frag at {src_path}: {e}"));
@@ -97,10 +103,20 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bo
         })
     };
 
-    // fixture G-buffer: PBR ground (flag 0.67, base 0.5 LINEAR), world normal (0,0,1) so
-    // dot(n, sun_dir=(0,0.707,0.707)) = 0.707 = the oracle's nl.
-    let albedo = tex_full(device, queue, size, &rgba16f(0.5, 0.5, 0.5, 0.67), "g_albedo");
+    // fixture G-buffer per material. World normal (0,0,1) so dot(n, sun_dir=(0,0.707,0.707)) = 0.707
+    // = the oracle's nl. Spec RT stored as Rgba16Float to match the oracle's specularRect EXACTLY, so
+    // the ONLY variable in the specular comparison is the view vector (the thing under test).
+    let (alb3, spec4, flag): ([f32; 3], [f32; 4], f32) = match material {
+        Material::PbrGround => ([0.5, 0.5, 0.5], [1.0, 1.0, 0.0, 0.0], 0.67), // linear base + ORM
+        Material::LegacySpecular => (
+            LEGACY_DIFFUSE, // sRGB (resolve srgb_to_linear's it)
+            [LEGACY_SPEC_COLOR[0], LEGACY_SPEC_COLOR[1], LEGACY_SPEC_COLOR[2], LEGACY_GLOSS],
+            0.34,
+        ),
+    };
+    let albedo = tex_full(device, queue, size, &rgba16f(alb3[0], alb3[1], alb3[2], flag), "g_albedo");
     let normal = tex_full(device, queue, size, &rgba16f(0.0, 0.0, 1.0, 0.0), "g_normal");
+    let spec = tex_full(device, queue, size, &rgba16f(spec4[0], spec4[1], spec4[2], spec4[3]), "g_spec");
 
     let mut ubo = resolve_sky_ubo();
     ubo[59] = if classic { 1.0 } else { 0.0 }; // classic_mode at moondir_classic.w (u59)
@@ -119,6 +135,8 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bo
                 ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
         ],
     });
     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -127,6 +145,7 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bo
             wgpu::BindGroupEntry { binding: 0, resource: ubo_buf.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&albedo) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&normal) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&spec) },
         ],
     });
 

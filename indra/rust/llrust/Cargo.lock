@@ -110,6 +110,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "j2c"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -129,8 +136,8 @@ dependencies = [
 name = "llrust"
 version = "0.1.0"
 dependencies = [
- "bindgen",
  "flate2",
+ "j2c",
 ]
 
 [[package]]

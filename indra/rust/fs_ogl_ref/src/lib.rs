@@ -10,6 +10,8 @@
 //! passes (atmospherics, HDR, sky/clouds/water, ...) are absorbed into `frame()` step by step.
 
 pub mod shaders; // assemble+transform+compile the REAL OGL shaders (softenLight, ...) to SPIR-V
+pub mod std140; // SoftenFrameBlock std140 layout builder (offsets computed, not hand-placed)
+pub mod soften_pass; // the real softenLight atmospherics pass fixture (G-buffer/shadow/probe neutrals)
 
 /// Present format -- matches `fs_render`'s headless target exactly (apples-to-apples): sRGB so the
 /// tonemap output encodes identically, and readback/PNG-friendly.

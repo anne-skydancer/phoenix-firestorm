@@ -29,7 +29,12 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, Wi
 
 struct Engine {
     _instance: wgpu::Instance,
-    surface: wgpu::Surface<'static>,
+    /// Live viewer: Some(swapchain surface). Reference harness: None (headless -> render into
+    /// `headless_target`, read back by `fsr_grab`).
+    surface: Option<wgpu::Surface<'static>>,
+    /// Headless present target: the swapchain-equivalent offscreen texture rendered into when there
+    /// is no window. None in the live path.
+    headless_target: Option<wgpu::Texture>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -113,28 +118,38 @@ fn init_logging() {
 pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) -> i32 {
     init_logging();
     let result = std::panic::catch_unwind(|| -> Option<Engine> {
-        let hwnd_nz = std::num::NonZeroIsize::new(hwnd as isize)?;
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..Default::default()
         });
-        let mut wh = Win32WindowHandle::new(hwnd_nz);
-        wh.hinstance = None;
-        let surface = instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
-                raw_window_handle: RawWindowHandle::Win32(wh),
-            })
-            .ok()?;
+        // Headless (hwnd == null): no window/surface. The engine renders into a persistent offscreen
+        // target and `fsr_grab` reads it back to PNG -- the reference harness A/Bs fs_render vs
+        // fs_ogl_ref with no window and no SL login. The live-viewer HWND path is otherwise unchanged.
+        let headless = hwnd.is_null();
+        let surface = if headless {
+            None
+        } else {
+            let hwnd_nz = std::num::NonZeroIsize::new(hwnd as isize)?;
+            let mut wh = Win32WindowHandle::new(hwnd_nz);
+            wh.hinstance = None;
+            Some(
+                instance
+                    .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                        raw_display_handle: RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
+                        raw_window_handle: RawWindowHandle::Win32(wh),
+                    })
+                    .ok()?,
+            )
+        };
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
+            compatible_surface: surface.as_ref(),
             force_fallback_adapter: false,
         }))?;
         let info = adapter.get_info();
         log::info!(
-            "fs_render: adapter {} | {:?} | {} {}",
-            info.name, info.backend, info.driver, info.driver_info
+            "fs_render: adapter {} | {:?} | {} {} (headless={})",
+            info.name, info.backend, info.driver, info.driver_info, headless
         );
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -145,13 +160,16 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
             None,
         ))
         .ok()?;
-        let caps = surface.get_capabilities(&adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(caps.formats[0]);
+        // Present format: live -> first sRGB surface format; headless -> Rgba8UnormSrgb (readback- and
+        // PNG-friendly, and sRGB so the tonemap encodes identically to the live swapchain).
+        let (format, alpha_mode) = match surface.as_ref() {
+            Some(surf) => {
+                let caps = surf.get_capabilities(&adapter);
+                let fmt = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
+                (fmt, caps.alpha_modes[0])
+            }
+            None => (wgpu::TextureFormat::Rgba8UnormSrgb, wgpu::CompositeAlphaMode::Auto),
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, // frame grabber
             format,
@@ -160,18 +178,40 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
             // FIFO = vsync. The first-listed mode is often IMMEDIATE: the viewer's main
             // loop then spins flat-out (~120fps of no-op-GL scene traversal), saturating
             // cores and starving other apps + its own decode threads -- the residual
-            // stutter after the upload fix. Fifo is guaranteed present on Vulkan.
+            // stutter after the upload fix. Fifo is guaranteed present on Vulkan. (Inert headless.)
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
-        log::info!("fs_render: surface {}x{} {:?}", config.width, config.height, format);
+        if let Some(surf) = surface.as_ref() {
+            surf.configure(&device, &config);
+        }
+        // Headless: the persistent offscreen present target (swapchain-equivalent). Same format as the
+        // live swapchain would use; RENDER_ATTACHMENT | COPY_SRC so `fsr_grab` can read it back.
+        let headless_target = if headless {
+            Some(device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("fsr-headless-target"),
+                size: wgpu::Extent3d { width: config.width, height: config.height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }))
+        } else {
+            None
+        };
+        log::info!(
+            "fs_render: {} {}x{} {:?}",
+            if headless { "headless" } else { "surface" }, config.width, config.height, format
+        );
         let live = LiveRenderer::new(&device, &queue, config.format);
         Some(Engine {
             _instance: instance,
             surface,
+            headless_target,
             device,
             queue,
             config,
@@ -207,7 +247,22 @@ pub extern "C" fn fsr_resize(width: u32, height: u32) {
         if width > 0 && height > 0 {
             e.config.width = width;
             e.config.height = height;
-            e.surface.configure(&e.device, &e.config);
+            if let Some(surf) = e.surface.as_ref() {
+                surf.configure(&e.device, &e.config);
+            }
+            // Headless: reallocate the offscreen target to the new size.
+            if e.headless_target.is_some() {
+                e.headless_target = Some(e.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("fsr-headless-target"),
+                    size: wgpu::Extent3d { width: e.config.width, height: e.config.height, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: e.config.format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                }));
+            }
         }
     }
 }
@@ -218,12 +273,17 @@ pub extern "C" fn fsr_resize(width: u32, height: u32) {
 pub extern "C" fn fsr_frame() -> i32 {
     let mut guard = ENGINE.lock().unwrap();
     let Some(e) = guard.as_mut() else { return 0 };
+    // Headless: the P3a clear-present stub is surface-only; the reference harness drives fsr_end_frame.
+    if e.surface.is_none() {
+        e.frames += 1;
+        return 1;
+    }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let frame = match e.surface.get_current_texture() {
+        let frame = match e.surface.as_ref().unwrap().get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                e.surface.configure(&e.device, &e.config);
-                match e.surface.get_current_texture() {
+                e.surface.as_ref().unwrap().configure(&e.device, &e.config);
+                match e.surface.as_ref().unwrap().get_current_texture() {
                     Ok(f) => f,
                     Err(_) => return 0,
                 }
@@ -263,6 +323,44 @@ pub extern "C" fn fsr_frame() -> i32 {
         1
     }));
     result.unwrap_or(0)
+}
+
+/// Headless grab (reference harness): read the offscreen present target back to a PNG at `path`
+/// (or C:\fs\fsr_headless.png if null). Call after fsr_end_frame. Returns 1 on success, 0 if the
+/// engine isn't headless / not initialized.
+/// # Safety: `path`, if non-null, must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_grab(path: *const std::os::raw::c_char) -> i32 {
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    let Some(target) = e.headless_target.as_ref() else { return 0 };
+    let (w, h, fmt) = (e.config.width, e.config.height, e.config.format);
+    let out = if path.is_null() {
+        "C:\\fs\\fsr_headless.png".to_string()
+    } else {
+        std::ffi::CStr::from_ptr(path).to_string_lossy().into_owned()
+    };
+    let stride = ((w * 4 + 255) / 256) * 256;
+    let buf = e.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("headless-grab"),
+        size: (stride * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = e
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("headless-grab") });
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer {
+            buffer: &buf,
+            layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) },
+        },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    e.queue.submit([enc.finish()]);
+    write_capture(&e.device, &buf, stride, w, h, fmt, &out);
+    1
 }
 
 const CAPTURE_REQ: &str = "C:\\fs\\fsr_capture.req";
@@ -767,6 +865,23 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     }
     // P3 (resolve consumption) still deferred to S4: the opaque lighting resolve is a stub;
     // reconstruct-from-depth + calcAtmosphericVars land there. The sky + tonemap are live now.
+    // Headless (reference harness): no surface -> render the scene into the persistent offscreen target
+    // via the SAME live.flush_clear path the surface present uses, then return. fsr_grab reads it back.
+    // Placed before the empty-frame skip so the harness always gets a deterministic frame.
+    if e.surface.is_none() {
+        let (w, h) = (e.config.width, e.config.height);
+        let clear = e.clear_color;
+        {
+            let Engine { device, queue, live, headless_target, .. } = e;
+            if let Some(target) = headless_target.as_ref() {
+                let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+                live.flush_clear(device, queue, &view, w, h, clear);
+            }
+        }
+        e.frames += 1;
+        e.presented_once = true;
+        return 1;
+    }
     // B1: an empty frame would present the raw clear over a good image -- the whole
     // teal-flash class (window resize swaps, startup states with no draws). Keep the
     // last presented frame instead. The very first present still goes through so the
@@ -776,7 +891,7 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     }
     let t_acq = std::time::Instant::now();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let frame = match e.surface.get_current_texture() {
+        let frame = match e.surface.as_ref().unwrap().get_current_texture() {
             Ok(f) => f,
             Err(err) => {
                 // alt-tab/occlusion diagnostics: name every surface hiccup in the perf log
@@ -786,8 +901,8 @@ pub extern "C" fn fsr_end_frame() -> i32 {
                 }
                 match err {
                     wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => {
-                        e.surface.configure(&e.device, &e.config);
-                        match e.surface.get_current_texture() {
+                        e.surface.as_ref().unwrap().configure(&e.device, &e.config);
+                        match e.surface.as_ref().unwrap().get_current_texture() {
                             Ok(f) => f,
                             Err(_) => return 0,
                         }

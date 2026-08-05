@@ -8,6 +8,7 @@
 //! slots (pos/uv/color) with per-slot offsets, exactly as the replay proved.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use glam::Mat4;
 use wgpu::util::DeviceExt;
@@ -401,6 +402,10 @@ pub struct LiveRenderer {
     tex_bytes: usize,
     tex_budget: usize,
     tex_last_used: HashMap<u32, u64>,
+    // U4 filter: texture ids that are FONT ATLASES (created glyph-by-glyph via upload_subtexture).
+    // Stock samples the font atlas TFO_POINT (NEAREST, crisp on ll_round'd glyph origins); UI images
+    // are LINEAR. The UI pass picks the sampler per draw from membership here.
+    font_texs: HashSet<u32>,
     frame_no: u64,
     /// Rigged skinning: palettes registered per skin id (viewer world-space mGLMp),
     /// staged into a second dynamic-offset ring each frame they are drawn.
@@ -538,7 +543,8 @@ pub struct LiveRenderer {
     ui_bgl: Option<wgpu::BindGroupLayout>,
     ui_tri_pipeline: Option<wgpu::RenderPipeline>,  // TRIANGLES/STRIP/FAN (expanded to list)
     ui_line_pipeline: Option<wgpu::RenderPipeline>, // LINES/LINE_STRIP (expanded to list)
-    ui_sampler: Option<wgpu::Sampler>,
+    ui_sampler: Option<wgpu::Sampler>,          // LINEAR (UI images)
+    ui_sampler_nearest: Option<wgpu::Sampler>,  // U4: NEAREST (font atlases -- crisp glyphs)
     ui_verts: Vec<u8>,                 // interleaved {vec3 pos, vec2 uv, u8x4 color} = 24B/vtx
     ui_draws: Vec<UiDraw>,             // per-flush draw records, in submission (painter's) order
     ui_vbuf: Option<(wgpu::Buffer, u64)>, // (buffer, capacity bytes) -- grown as needed
@@ -1048,6 +1054,7 @@ impl LiveRenderer {
                 .unwrap_or(4096)
                 * 1024 * 1024,
             tex_last_used: HashMap::new(),
+            font_texs: HashSet::new(),
             frame_no: 0,
             palettes: HashMap::new(),
             palette_ring: None,
@@ -1155,6 +1162,7 @@ impl LiveRenderer {
             ui_tri_pipeline: None,
             ui_line_pipeline: None,
             ui_sampler: None,
+            ui_sampler_nearest: None,
             ui_verts: Vec::new(),
             ui_draws: Vec::new(),
             ui_vbuf: None,
@@ -1241,6 +1249,7 @@ impl LiveRenderer {
         // bind group that references this id so the next draw rebinds the new view.
         self.binds.retain(|k, _| !k.contains(&id));
         self.terrain_binds.retain(|k, _| !k.contains(&id));
+        self.font_texs.remove(&id); // U4: a full RGBA upload is an image (not a glyph atlas) -> LINEAR
         self.textures.insert(id, (t, v_srgb, v_unorm));
     }
 
@@ -1277,6 +1286,7 @@ impl LiveRenderer {
             let (v_srgb, v_unorm) = dual_views(&t);
             self.binds.retain(|k, _| !k.contains(&id));
             self.terrain_binds.retain(|k, _| !k.contains(&id));
+            self.font_texs.insert(id); // U4: glyph-by-glyph atlas -> font -> NEAREST sampler
             self.textures.insert(id, (t, v_srgb, v_unorm));
         }
         let Some((tex, _, _)) = self.textures.get(&id) else { return false };
@@ -1307,6 +1317,7 @@ impl LiveRenderer {
             self.tex_bytes = self.tex_bytes.saturating_sub((sz.width * sz.height * 4) as usize);
         }
         self.tex_last_used.remove(&id);
+        self.font_texs.remove(&id);
         if self.textures.remove(&id).is_some() {
             self.binds.retain(|k, _| !k.contains(&id));
             self.terrain_binds.retain(|k, _| !k.contains(&id));
@@ -3769,13 +3780,25 @@ impl LiveRenderer {
             }));
         }
         if self.ui_sampler.is_none() {
+            // U4: two samplers -- LINEAR for UI images, NEAREST for font atlases (stock TFO_POINT:
+            // crisp glyphs on ll_round'd origins). Both clamp (UI images load TAM_CLAMP; fonts too).
             self.ui_sampler = Some(device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("ui-sampler"),
+                label: Some("ui-sampler-linear"),
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            }));
+            self.ui_sampler_nearest = Some(device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("ui-sampler-nearest"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
                 mipmap_filter: wgpu::FilterMode::Nearest,
                 ..Default::default()
             }));
@@ -4283,18 +4306,22 @@ impl LiveRenderer {
             // One bind group per unique texture id; all share the mvp ring (dynamic offset per
             // draw selects the mvp). Immutable self borrows only -> no aliasing with the encoder.
             let bgl = self.ui_bgl.as_ref().unwrap();
-            let sampler = self.ui_sampler.as_ref().unwrap();
+            let sampler_lin = self.ui_sampler.as_ref().unwrap();
+            let sampler_near = self.ui_sampler_nearest.as_ref().unwrap();
             let mut binds: HashMap<u32, wgpu::BindGroup> = HashMap::new();
             for d in &self.ui_draws {
                 if binds.contains_key(&d.tex_id) { continue; }
                 let tv = self.textures.get(&d.tex_id).map(|(_, _, v)| v).unwrap_or(&self.white); // U1: raw UNORM view (UI samples bytes unmodified)
+                // U4: font atlases sample NEAREST (crisp), UI images LINEAR. Font-ness is per tex_id,
+                // so the per-tex_id bind group bakes in the right sampler.
+                let samp = if self.font_texs.contains(&d.tex_id) { sampler_near } else { sampler_lin };
                 let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("ui-bind"),
                     layout: bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: ui_ubo, offset: 0, size: wgpu::BufferSize::new(64) }) },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(tv) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(samp) },
                     ],
                 });
                 binds.insert(d.tex_id, bg);

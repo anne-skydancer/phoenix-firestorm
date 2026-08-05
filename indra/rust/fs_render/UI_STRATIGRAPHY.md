@@ -163,6 +163,15 @@ which a draw is: carry a per-texture filter option at upload (stock knows each s
 or a per-draw font/image hint from the tap (the `uiSubmitBufferData`/`LLFontGL::render` paths are already the
 font paths). UI pass picks the sampler per draw's texture.
 
+**LANDED (U4, engine-only).** The engine tells fonts from images WITHOUT a tap signal: a font atlas is
+built glyph-by-glyph via `upload_subtexture` (its own comment: "Font atlases are built glyph-by-glyph this
+way"), an image is a full `upload_texture`. So `font_texs: HashSet<u32>` is filled in `upload_subtexture`
+(and cleared in `upload_texture_now`/`delete_texture`); `ensure_ui` builds a NEAREST + a LINEAR sampler;
+the per-`tex_id` UI bind group bakes in the NEAREST sampler for font ids, LINEAR otherwise. Convergence
+pinned in `headless.rs::ui_font_atlas_samples_nearest` (a font texture is a hard step, an image a ramp).
+Faithful for the font/image split; if a future tap ever carries stock's exact per-surface `mFilterOption`,
+that refines the rare non-font sub-rect case.
+
 ---
 
 ## Already-satisfied invariants — DO NOT touch (would regress)
@@ -216,8 +225,9 @@ caps line width at 1 on most backends. Defer to the in-world residual pass.
   scissor onto each `uiSubmit`/`uiSubmitBufferData`. Verified in-world at U5 (needs a viewer build).
 - **U3 — Blend modes (C):** tap captures src/dst factors; same ABI bump as U2; pipeline cache by blend key.
   Assert additive + multiply fixtures.
-- **U4 — Per-surface sampler filter (D):** per-texture filter carried at upload/draw; nearest for fonts,
-  linear for images. Assert text-crispness (nearest 1:1) + image fixtures.
+- **U4 — Per-surface sampler filter (D):** ✅ DONE (engine-only). `font_texs` set (filled from the
+  `upload_subtexture` glyph path); NEAREST sampler for font ids, LINEAR for images, chosen in the per-tex_id
+  bind group. Convergence pinned (`ui_font_atlas_samples_nearest`: font = hard step, image = ramp).
 - **U5 — In-world parity pass** (needs a user SL launch): real login screen + populated UI; A/B screenshot
   vs stock; chase residuals (line width, cursor, chiclets/toasts, minimap now clipped, login tonality) —
   the Cat B backlog.

@@ -1819,3 +1819,76 @@ fn ui_scissor_clips_draw() {
     assert!((corner[0] as i32 - 40).abs() <= 1, "outside the clip the grey background must survive (white escaped its bounds), got {:?}", corner);
     assert!((edge[0] as i32 - 40).abs() <= 1, "left edge is outside the clip x-range -> grey, got {:?}", edge);
 }
+
+/// U4 CONVERGENCE PIN (filter stratum): the UI pass samples FONT atlases NEAREST (stock TFO_POINT ->
+/// crisp glyphs) and UI images LINEAR. The engine tells them apart faithfully: a font atlas is built
+/// glyph-by-glyph via upload_subtexture, an image is a full upload_texture. A 2-texel black|white
+/// texture sampled across the screen must be a HARD step for the font (no intermediate values) and a
+/// smooth RAMP for the image (intermediate values near the texel boundary).
+#[test]
+fn ui_font_atlas_samples_nearest() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping headless UI filter test");
+        return;
+    };
+    let fmt = wgpu::TextureFormat::Rgba8Unorm;
+    let mut live = LiveRenderer::new(&device, &queue, fmt);
+    let (w, h) = (32u32, 8u32);
+    let identity: [f32; 16] = [1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.];
+    let tex2 = vec![0u8, 0, 0, 255, 255, 255, 255, 255]; // 2x1: texel0 black, texel1 white
+
+    // Font atlas (id 20) via the glyph-by-glyph path -> NEAREST. Image (id 21) via full upload -> LINEAR.
+    assert!(live.upload_subtexture(&device, &queue, 20, 0, 0, 2, 1, 2, 1, &tex2), "font subtexture upload");
+    live.upload_texture(&device, &queue, 21, 2, 1, &tex2);
+
+    // A full-screen quad whose u spans 0..1 (samples across both texels).
+    let grad = || -> Vec<u8> {
+        let mut v = Vec::new();
+        for &(x, y, u) in &[(-1f32,-1f32,0f32), (1.,-1.,1.), (1.,1.,1.), (-1.,-1.,0.), (1.,1.,1.), (-1.,1.,0.)] {
+            ui_vtx(&mut v, x, y, u, 0.0, [255, 255, 255, 255]);
+        }
+        v
+    };
+    // Render tex_id full-screen and return the middle row's R channel per column.
+    let row = |live: &mut LiveRenderer, tex_id: u32| -> Vec<u8> {
+        live.begin();
+        live.ui_begin();
+        live.ui_submit(&identity, tex_id, 0, &grad(), None);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ui-filter-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: fmt, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+        let stride = ((w * 4 + 255) / 256) * 256;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ui-filter-rb"), size: (stride * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ui-filter-rb") });
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let y = h / 2;
+        let out: Vec<u8> = (0..w).map(|x| data[(y * stride + x * 4) as usize]).collect();
+        drop(data);
+        buf.unmap();
+        out
+    };
+
+    let font_row = row(&mut live, 20); // NEAREST
+    let img_row = row(&mut live, 21);  // LINEAR
+    let intermediate = |r: &[u8]| r.iter().any(|&v| v > 40 && v < 215);
+    assert!(!intermediate(&font_row), "font atlas must sample NEAREST (hard edge, no ramp), got {:?}", font_row);
+    assert!(intermediate(&img_row), "UI image must sample LINEAR (a ramp with intermediate values), got {:?}", img_row);
+}

@@ -2046,7 +2046,7 @@ fn fsr_snapshot_captures_fed_frame() {
 
     let (w, h) = (32u32, 32u32);
     let mut out = vec![0u8; (w * h * 4) as usize];
-    let ok = unsafe { fs_render::fsr_snapshot(w, h, out.as_mut_ptr()) };
+    let ok = unsafe { fs_render::fsr_snapshot(w, h, 4, out.as_mut_ptr()) };
     assert_eq!(ok, 1, "fsr_snapshot should succeed");
     let ci = (((h / 2) * w + w / 2) * 4) as usize;
     assert!(out[ci + 1] > 200 && out[ci] < 60 && out[ci + 2] < 60,

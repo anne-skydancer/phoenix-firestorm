@@ -852,12 +852,13 @@ fn prepare_frame(e: &mut Engine, vp_w: u32, vp_h: u32) {
 /// composited) swapchain. Renders the same scene+UI the swapchain path does (via `flush_clear`) but to a
 /// private target, so it captures the snapshot camera WITHOUT presenting or disturbing the on-screen
 /// swapchain / read_cache. UI appears only if the viewer fed UI draws for this frame (deferred snapshots
-/// skip render_ui -> no UI). `out` receives w*h*4 bytes RGBA8 in GL bottom-up row order (the glReadPixels
-/// contract the viewer expects). Returns 1 on success, 0 on failure.
-/// # Safety: `out` must be writable for `w*h*4` bytes.
+/// skip render_ui -> no UI). `components` = 3 (RGB) or 4 (RGBA) to match the viewer's LLImageRaw; `out`
+/// receives w*h*components bytes in GL bottom-up row order (the glReadPixels contract the viewer expects).
+/// Returns 1 on success, 0 on failure.
+/// # Safety: `out` must be writable for `w*h*components` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn fsr_snapshot(w: u32, h: u32, out: *mut u8) -> i32 {
-    if out.is_null() || w == 0 || h == 0 { return 0; }
+pub unsafe extern "C" fn fsr_snapshot(w: u32, h: u32, components: u32, out: *mut u8) -> i32 {
+    if out.is_null() || w == 0 || h == 0 || !(components == 3 || components == 4) { return 0; }
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
     let fmt = e.config.format;
@@ -903,18 +904,18 @@ pub unsafe extern "C" fn fsr_snapshot(w: u32, h: u32, out: *mut u8) -> i32 {
         slice.map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::Maintain::Wait);
         let data = slice.get_mapped_range();
-        let dst = std::slice::from_raw_parts_mut(out, (w as usize) * (h as usize) * 4);
+        let comp = components as usize;
+        let dst = std::slice::from_raw_parts_mut(out, (w as usize) * (h as usize) * comp);
         for y in 0..h {
-            let src_row = (y * stride) as usize;          // wgpu top-down row y
-            let dst_row = ((h - 1 - y) as usize) * (w as usize) * 4; // GL bottom-up
+            let src_row = (y * stride) as usize;                     // wgpu top-down row y
+            let dst_row = ((h - 1 - y) as usize) * (w as usize) * comp; // GL bottom-up
             for x in 0..w as usize {
                 let s = src_row + x * 4;
-                let d = dst_row + x * 4;
-                if bgra {
-                    dst[d] = data[s + 2]; dst[d + 1] = data[s + 1]; dst[d + 2] = data[s]; dst[d + 3] = data[s + 3];
-                } else {
-                    dst[d] = data[s]; dst[d + 1] = data[s + 1]; dst[d + 2] = data[s + 2]; dst[d + 3] = data[s + 3];
-                }
+                let d = dst_row + x * comp;
+                // RGB from the target (BGRA -> swap R/B); alpha only when components == 4.
+                let (r, gch, b) = if bgra { (data[s + 2], data[s + 1], data[s]) } else { (data[s], data[s + 1], data[s + 2]) };
+                dst[d] = r; dst[d + 1] = gch; dst[d + 2] = b;
+                if comp == 4 { dst[d + 3] = data[s + 3]; }
             }
         }
         drop(data);

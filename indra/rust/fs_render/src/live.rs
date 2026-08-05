@@ -314,6 +314,18 @@ struct UiDraw {
     line: bool,         // LINES/LINE_STRIP -> line pipeline; else triangle pipeline
 }
 
+/// U1: build the (srgb, unorm) view pair for a dual-viewed texture. Created Rgba8UnormSrgb with
+/// Rgba8Unorm in view_formats: the default view is sRGB (3D albedo decodes to linear for lighting),
+/// the explicit Rgba8Unorm view is raw (the UI pass samples bytes with no decode, matching stock).
+fn dual_views(t: &wgpu::Texture) -> (wgpu::TextureView, wgpu::TextureView) {
+    let srgb = t.create_view(&wgpu::TextureViewDescriptor::default());
+    let unorm = t.create_view(&wgpu::TextureViewDescriptor {
+        format: Some(wgpu::TextureFormat::Rgba8Unorm),
+        ..Default::default()
+    });
+    (srgb, unorm)
+}
+
 pub struct LiveRenderer {
     bgl: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
@@ -352,7 +364,10 @@ pub struct LiveRenderer {
     sampler_clamp: wgpu::Sampler,
     sampler: wgpu::Sampler,
     white: wgpu::TextureView,
-    textures: HashMap<u32, (wgpu::Texture, wgpu::TextureView)>,
+    // U1 dual-view: (texture, srgb_view, unorm_view). 3D passes bind the sRGB view (albedo decodes
+    // to linear for lighting); the UI pass binds the raw UNORM view (stock samples UI bytes raw, no
+    // decode). The texture is created Rgba8UnormSrgb with Rgba8Unorm in view_formats.
+    textures: HashMap<u32, (wgpu::Texture, wgpu::TextureView, wgpu::TextureView)>,
     queued: Vec<Queued>,
     /// GPU copies of the viewer's vertex/index buffers, keyed by its CPU-shadow pointer.
     /// The viewer tells us when one changes (flush_vbo -> fsr_buffer_dirty), so we upload
@@ -1194,7 +1209,7 @@ impl LiveRenderer {
         if id == 0 || w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
             return;
         }
-        if let Some((old, _)) = self.textures.get(&id) {
+        if let Some((old, _, _)) = self.textures.get(&id) {
             let sz = old.size();
             self.tex_bytes = self.tex_bytes.saturating_sub((sz.width * sz.height * 4) as usize);
         }
@@ -1210,19 +1225,19 @@ impl LiveRenderer {
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
+                view_formats: &[wgpu::TextureFormat::Rgba8Unorm], // U1: raw view for the UI pass
             },
             wgpu::util::TextureDataOrder::LayerMajor,
             &rgba[..(w * h * 4) as usize],
         );
-        let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+        let (v_srgb, v_unorm) = dual_views(&t);
         // F1 (gap G16): discard-level changes re-spec textures via glTexImage2D at a new
         // size (llimagegl.cpp:1503) -- bind groups referencing the OLD view would pin it
         // (or the white fallback) forever, leaving textures stuck stale/white. Evict every
         // bind group that references this id so the next draw rebinds the new view.
         self.binds.retain(|k, _| !k.contains(&id));
         self.terrain_binds.retain(|k, _| !k.contains(&id));
-        self.textures.insert(id, (t, v));
+        self.textures.insert(id, (t, v_srgb, v_unorm));
     }
 
     /// Patch a sub-rect of an existing texture IN PLACE (glTexSubImage2D). Font atlases
@@ -1253,14 +1268,14 @@ impl LiveRenderer {
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
+                view_formats: &[wgpu::TextureFormat::Rgba8Unorm], // U1: raw view for the UI pass (font atlases)
             });
-            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+            let (v_srgb, v_unorm) = dual_views(&t);
             self.binds.retain(|k, _| !k.contains(&id));
             self.terrain_binds.retain(|k, _| !k.contains(&id));
-            self.textures.insert(id, (t, v));
+            self.textures.insert(id, (t, v_srgb, v_unorm));
         }
-        let Some((tex, _)) = self.textures.get(&id) else { return false };
+        let Some((tex, _, _)) = self.textures.get(&id) else { return false };
         if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
             return false;
         }
@@ -1283,7 +1298,7 @@ impl LiveRenderer {
     }
 
     pub fn delete_texture(&mut self, id: u32) {
-        if let Some((t, _)) = self.textures.get(&id) {
+        if let Some((t, _, _)) = self.textures.get(&id) {
             let sz = t.size();
             self.tex_bytes = self.tex_bytes.saturating_sub((sz.width * sz.height * 4) as usize);
         }
@@ -1864,11 +1879,11 @@ impl LiveRenderer {
             terrain, terrain_gb_bgl.as_ref(), terrain_sampler_wrap.as_ref(), terrain_sampler_clamp.as_ref(),
         ) {
             let white_ref: &wgpu::TextureView = white;
-            let d0 = textures.get(&t.detail_tex_ids[0]).map(|(_, v)| v).unwrap_or(white_ref);
-            let d1 = textures.get(&t.detail_tex_ids[1]).map(|(_, v)| v).unwrap_or(white_ref);
-            let d2 = textures.get(&t.detail_tex_ids[2]).map(|(_, v)| v).unwrap_or(white_ref);
-            let d3 = textures.get(&t.detail_tex_ids[3]).map(|(_, v)| v).unwrap_or(white_ref);
-            let ramp = textures.get(&t.alpha_ramp_id).map(|(_, v)| v).unwrap_or(white_ref);
+            let d0 = textures.get(&t.detail_tex_ids[0]).map(|(_, v, _)| v).unwrap_or(white_ref);
+            let d1 = textures.get(&t.detail_tex_ids[1]).map(|(_, v, _)| v).unwrap_or(white_ref);
+            let d2 = textures.get(&t.detail_tex_ids[2]).map(|(_, v, _)| v).unwrap_or(white_ref);
+            let d3 = textures.get(&t.detail_tex_ids[3]).map(|(_, v, _)| v).unwrap_or(white_ref);
+            let ramp = textures.get(&t.alpha_ramp_id).map(|(_, v, _)| v).unwrap_or(white_ref);
             *terrain_gb_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("terrain-gb-bind"),
                 layout: bgl,
@@ -2152,7 +2167,7 @@ impl LiveRenderer {
             let pal_ring = self.palette_ring.as_ref().unwrap();
             let tv: Vec<&wgpu::TextureView> = bind_key
                 .iter()
-                .map(|id| self.textures.get(id).map(|(_, v)| v).unwrap_or(&self.white))
+                .map(|id| self.textures.get(id).map(|(_, v, _)| v).unwrap_or(&self.white))
                 .collect();
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("live-bind"),
@@ -2193,8 +2208,8 @@ impl LiveRenderer {
             if !self.skywater_binds.contains_key(&sw_key) {
                 self.ensure_ring(device, need.max(STRIDE * 1024) as u64);
                 let ring = self.ubo_ring.as_ref().unwrap();
-                let t0 = self.textures.get(&sw_key[0]).map(|(_, v)| v).unwrap_or(&self.white);
-                let t1 = self.textures.get(&sw_key[1]).map(|(_, v)| v).unwrap_or(&self.white);
+                let t0 = self.textures.get(&sw_key[0]).map(|(_, v, _)| v).unwrap_or(&self.white);
+                let t1 = self.textures.get(&sw_key[1]).map(|(_, v, _)| v).unwrap_or(&self.white);
                 let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("skywater-bind"),
                     layout: &self.skywater_bgl,
@@ -2228,7 +2243,7 @@ impl LiveRenderer {
                 let ring = self.ubo_ring.as_ref().unwrap();
                 let tv: Vec<&wgpu::TextureView> = terrain_key
                     .iter()
-                    .map(|id| self.textures.get(id).map(|(_, v)| v).unwrap_or(&self.white))
+                    .map(|id| self.textures.get(id).map(|(_, v, _)| v).unwrap_or(&self.white))
                     .collect();
                 let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("terrain-bind"),
@@ -3063,8 +3078,8 @@ impl LiveRenderer {
             for k in keys {
                 if !self.probe_cap_water_binds.contains_key(&k) {
                     let Self { skywater_bgl, probe_cap_water_ubo, textures, white, sampler, probe_cap_water_binds, .. } = self;
-                    let t0 = textures.get(&k[0]).map(|(_, v)| v).unwrap_or(white);
-                    let t1 = textures.get(&k[1]).map(|(_, v)| v).unwrap_or(white);
+                    let t0 = textures.get(&k[0]).map(|(_, v, _)| v).unwrap_or(white);
+                    let t1 = textures.get(&k[1]).map(|(_, v, _)| v).unwrap_or(white);
                     probe_cap_water_binds.insert(k, device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("probe-cap-water-bind"),
                         layout: skywater_bgl,
@@ -4266,7 +4281,7 @@ impl LiveRenderer {
             let mut binds: HashMap<u32, wgpu::BindGroup> = HashMap::new();
             for d in &self.ui_draws {
                 if binds.contains_key(&d.tex_id) { continue; }
-                let tv = self.textures.get(&d.tex_id).map(|(_, v)| v).unwrap_or(&self.white);
+                let tv = self.textures.get(&d.tex_id).map(|(_, _, v)| v).unwrap_or(&self.white); // U1: raw UNORM view (UI samples bytes unmodified)
                 let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("ui-bind"),
                     layout: bgl,

@@ -81,6 +81,15 @@ texture-decode sub-part; opaque untinted images round-trip cleanly — decode+en
 This is the stratum that most needs the no-cherry-pick discipline: it cannot be fixed inside the UI pass
 alone — the swapchain-format flip forces the 3D present path to own its sRGB encode.
 
+**LANDED (U1).** (1) `lib.rs` present format → the UNORM twin of the surface's sRGB format (`Bgra8Unorm`;
+headless `Rgba8Unorm`). (2) `post_tonemap.frag` now emits the final display value `disp` DIRECTLY instead
+of `srgb_to_linear(disp)` — byte-identical on the UNORM target (the shader already computed `disp`; the old
+code only pre-imaged it for the sRGB ROP). (3) uploaded textures are dual-viewed (`view_formats:
+[Rgba8Unorm]`): the UI pass binds the raw `Rgba8Unorm` view (`live.rs` `dual_views`), the 3D/terrain passes
+keep the sRGB view. Convergence pinned in `headless.rs::ui_color_space_srgb_blend_matches_stock` (real
+engine: translucent gray → **96** on UNORM, diverges on sRGB). 3D scene proven byte-unchanged: the six
+tonemap/sky oracle tests pass with the SAME expected `disp` values once their targets flip to UNORM.
+
 ---
 
 ## Stratum B — Clipping / scissor (STRUCTURAL, functional)
@@ -193,10 +202,11 @@ caps line width at 1 on most backends. Defer to the in-world residual pass.
   math (the reference is pinned), and **measures** each stratum's gap: A Δ48, B Δ191, C Δ48, D Δ125, tex Δ6.
   `UiState` parameterizes all four axes, so U1-U4 each already have their fixture. The **engine-side**
   convergence pins (driving the real `LiveRenderer`) land in `fs_render/tests/headless.rs` per phase.
-- **U1 — Color-space stratum (A):** swapchain → `Bgra8Unorm`; sRGB-encode moved into the tonemap/present
-  shader; uploaded textures dual-view (UI binds raw `Rgba8Unorm`, 3D keeps sRGB); `ui.frag` writes raw.
-  Assert UI-oracle color-exact for panel + text + image; assert 3D scene byte-unchanged (sky/ground oracles
-  + offscreen present).
+- **U1 — Color-space stratum (A):** ✅ DONE. swapchain → UNORM twin (`Bgra8Unorm`/headless `Rgba8Unorm`);
+  `post_tonemap.frag` emits `disp` directly (byte-identical); uploaded textures dual-viewed (UI binds raw
+  `Rgba8Unorm`, 3D keeps sRGB); the UI already targets `self.format` so the Δ48 vanishes. Real-engine
+  convergence pinned (translucent gray → 96); 3D scene byte-unchanged (6 tonemap/sky oracles pass, same
+  expected values). Remaining A residual: the translucent-textured-image Δ6 is closed by the raw UI view.
 - **U2 — Clipping/scissor (B):** tap captures the clip rect at flush; ABI widen; `UiDraw` clip; UI pass
   `set_scissor_rect` with UI-scale + llfloor/llceil+1. Assert nested-clip fixture.
 - **U3 — Blend modes (C):** tap captures src/dst factors; same ABI bump as U2; pipeline cache by blend key.

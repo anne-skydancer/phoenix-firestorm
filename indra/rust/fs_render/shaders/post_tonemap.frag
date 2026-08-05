@@ -8,11 +8,13 @@
 // This is the HDR->LDR step whose absence blew the scene to white: raw EEP radiance x 1.5
 // scales x sky_hdr_scale routinely exceeds 1.0, and without this pass it hard-clamps.
 //
-// Single encode site (D4): the swapchain is sRGB, so its ROP applies linear->sRGB to whatever
-// we output. We compute the FINAL sRGB display pixel `disp` (tonemap -> linear_to_srgb ->
-// optional legacyGamma), then emit its pre-image `srgb_to_linear(disp)` so the ROP re-encodes
-// back to exactly `disp`. legacyGamma is defined on the sRGB-encoded value, so it MUST run
-// after linear_to_srgb -- this is the only faithful placement without changing the surface fmt.
+// Single encode site (U1): the present target is now UNORM (no ROP encode) -- flipped from sRGB so
+// the native-VK UI can blend RAW sRGB bytes in sRGB space, exactly as stock does (GL_FRAMEBUFFER_SRGB
+// is DISABLED for the UI pass). We compute the FINAL sRGB display pixel `disp` (tonemap ->
+// linear_to_srgb -> optional legacyGamma) and emit it DIRECTLY: the UNORM store keeps the exact bytes.
+// This is BYTE-IDENTICAL to the old sRGB path, which emitted srgb_to_linear(disp) so the ROP would
+// re-encode back to disp. legacyGamma is defined on the sRGB-encoded value, so it MUST run after
+// linear_to_srgb.
 layout(set = 0, binding = 0) uniform texture2D scene;
 layout(set = 0, binding = 1) uniform Post {
     float exposure;      // RenderExposure, clamp[0.5,4]
@@ -130,11 +132,11 @@ void main() {
     vec3 disp = linear_to_srgb(toneMap(hdr));
     if (post.legacy_gamma != 0) disp = legacyGamma(disp);
     // Dither in the sRGB display domain to break 8-bit quantization banding on shallow gradients.
-    // The WL night-haze airmass ramp spans only ~1 output level across the whole sky, so the ROP
+    // The WL night-haze airmass ramp spans only ~1 output level across the whole sky, so the store
     // posterizes it into ONE hard contour -- the "ring of non-hazed sky". Triangular-PDF, ~+-1 LSB,
-    // per-pixel; it integrates back to a smooth gradient. Applied to `disp` because the sRGB swapchain
-    // ROP quantizes exactly that value (we emit its linear pre-image).
+    // per-pixel; it integrates back to a smooth gradient. Applied to `disp` because the UNORM store
+    // quantizes exactly that value (we emit it directly).
     float t = (ign(gl_FragCoord.xy) + ign(gl_FragCoord.xy + 113.0) - 1.0) / 255.0;
     disp = clamp(disp + t, 0.0, 1.0);
-    frag = vec4(srgb_to_linear(disp), 1.0);
+    frag = vec4(disp, 1.0);
 }

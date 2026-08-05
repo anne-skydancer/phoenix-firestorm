@@ -130,7 +130,7 @@ fn expected_disp(clear: [f64; 3], p: Post) -> [u8; 3] {
 /// values > 1.0 survive the Rgba16Float target) under the given post params, and read back the
 /// centre pixel as (R,G,B). Exercises the real tonemap SPIR-V end to end (incl. the sRGB ROP).
 fn tonemap_center(device: &wgpu::Device, queue: &wgpu::Queue, clear: [f64; 3], p: Post) -> [u8; 3] {
-    let fmt = wgpu::TextureFormat::Bgra8UnormSrgb; // the swapchain format the engine sees
+    let fmt = wgpu::TextureFormat::Bgra8Unorm; // U1: the UNORM present format the engine now uses
     let mut live = LiveRenderer::new(device, queue, fmt);
     live.set_post_params(p.exposure as f32, p.exp_scale as f32, p.tonemap_mix as f32,
         p.gamma as f32, p.tonemap_type, p.legacy_gamma);
@@ -141,7 +141,7 @@ fn tonemap_center(device: &wgpu::Device, queue: &wgpu::Queue, clear: [f64; 3], p
 /// centre pixel. The caller sets the LiveRenderer's post params first (directly or via
 /// apply_sky_regime), so this isolates "whatever tonemap the renderer is configured with".
 fn render_empty_center(device: &wgpu::Device, queue: &wgpu::Queue, live: &mut LiveRenderer, clear: [f64; 3]) -> [u8; 3] {
-    let fmt = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let fmt = wgpu::TextureFormat::Bgra8Unorm; // U1: UNORM present target (post_tonemap emits disp directly)
     let (w, h) = (64u32, 48u32);
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("headless-target"),
@@ -370,7 +370,7 @@ fn sky_dome_matches_windlight() {
         eprintln!("no Vulkan adapter; skipping headless sky test");
         return;
     };
-    let fmt = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let fmt = wgpu::TextureFormat::Bgra8Unorm; // U1: UNORM present target
     let mut live = LiveRenderer::new(&device, &queue, fmt);
     // Legacy classic regime (D1): tonemap curve bypassed (mix=0), legacyGamma with sky
     // gamma=1.0 (identity) so the expected = srgb(clamp(sky_hdr_color)). Exercises the sky
@@ -529,7 +529,7 @@ fn fullscreen_sky_matches_windlight() {
 
     // Legacy-classic tonemap (mix=0, exposure=1, legacyGamma at gamma=1 => identity).
     let post = Post { exposure: 1.0, exp_scale: 1.0, tonemap_mix: 0.0, gamma: 1.0, tonemap_type: 0, legacy_gamma: 1 };
-    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8Unorm); // U1: UNORM present target
     live.set_post_params(post.exposure as f32, post.exp_scale as f32, post.tonemap_mix as f32,
         post.gamma as f32, post.tonemap_type, post.legacy_gamma);
     // This test validates the SKY (skyV haze) against a haze-only oracle -- clouds are a separate stratum
@@ -743,7 +743,7 @@ fn engine_derives_fullscreen_sky_from_typed_scene() {
     let r = scene.sky_regime().expect("regime");
 
     // Render via the derived UBO + derived regime (exactly what fsr_end_frame does).
-    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8Unorm); // U1: UNORM present target
     live.apply_sky_regime(&r);
     live.set_clouds_enabled(false); // SKY conformance vs a haze-only oracle -- exclude the cloud overlay stratum
     live.set_fullscreen_sky(&ubo);
@@ -822,10 +822,10 @@ fn apply_sky_regime_drives_tonemap() {
     };
     // Configure the renderer via apply_sky_regime (NOT set_post_params) and render a bright HDR
     // frame: with legacy mix=0 the tonemap is clamp -> sRGB (+ identity legacyGamma at gamma=1).
-    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8Unorm); // U1: UNORM present target
     live.apply_sky_regime(&r);
     let clear = [2.0, 0.5, 0.1];
-    let got = render_empty_center(&device, &queue, &mut live, clear);
+    let got = render_empty_center(&device, &queue, &mut live, clear); // U1: render_empty_center now UNORM
     let exp = expected_disp(clear, post);
     for ch in 0..3 {
         assert!(
@@ -852,7 +852,7 @@ fn dynamic_exposure_matches_stock_exposureF() {
         tonemap_type: 0, gamma: 2.2, probe_ambiance: 0.0,
     };
     let clear = [0.05, 0.05, 0.05]; // dim -> avg_lum << 0.175 -> adapt toward exp_max
-    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8Unorm); // U1: UNORM present target
     live.apply_sky_regime(&r);
     let got = render_empty_center(&device, &queue, &mut live, clear);
 
@@ -1673,4 +1673,87 @@ fn ui_pass_renders_textured_and_solid_quads() {
         "textured-quad pixel should be red (texture color through white vertex), got {:?}", lft);
     assert!(rgt[1] > 200 && rgt[0] < 60 && rgt[2] < 60,
         "solid-quad pixel should be green (vertex color through white-texture fallback), got {:?}", rgt);
+}
+
+/// U1 CONVERGENCE PIN (color-space stratum): drives the REAL LiveRenderer UI pass and proves it
+/// blends RAW sRGB bytes in sRGB space -- matching stock (GL_FRAMEBUFFER_SRGB disabled for UI) and
+/// the fs_ogl_ref `ui_ab` oracle's Stratum-A fixture. A translucent mid-gray panel (byte 128, α 128)
+/// over a gray background (byte 64) must land at the analytic stock value 96 on the U1 UNORM present
+/// target -- and demonstrably NOT there on an sRGB target (the old ~144 washout: linear-space blend +
+/// re-encode). This pins BOTH the fix and why the non-sRGB swapchain is load-bearing.
+#[test]
+fn ui_color_space_srgb_blend_matches_stock() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping headless UI color-space test");
+        return;
+    };
+    let (w, h) = (32u32, 32u32);
+    let identity: [f32; 16] = [1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.];
+
+    // A full-screen quad (6 verts, one flat color) in NDC.
+    let quad = |c: [u8; 4]| -> Vec<u8> {
+        let mut v = Vec::new();
+        for &(x, y) in &[(-1f32,-1f32), (1.,-1.), (1.,1.), (-1.,-1.), (1.,1.), (-1.,1.)] {
+            ui_vtx(&mut v, x, y, 0.0, 0.0, c);
+        }
+        v
+    };
+
+    // Render at a given present format and read back the center pixel (R,G,B). The BACKGROUND is a UI
+    // draw itself -- an OPAQUE gray-64 panel that exactly replaces whatever the tonemap composite left
+    // (flush_clear runs the full frame) -- so the translucent panel blends over a KNOWN 64, isolating
+    // the color-space (not the scene) exactly like the fs_ogl_ref oracle's flat clear.
+    let center = |fmt: wgpu::TextureFormat| -> [u8; 3] {
+        let mut live = LiveRenderer::new(&device, &queue, fmt);
+        live.begin();
+        live.ui_begin();
+        live.ui_submit(&identity, 0, 0, &quad([64, 64, 64, 255]));    // opaque background
+        live.ui_submit(&identity, 0, 0, &quad([128, 128, 128, 128])); // translucent mid-gray over it
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ui-cs-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: fmt, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+        let stride = ((w * 4 + 255) / 256) * 256;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ui-cs-rb"), size: (stride * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ui-cs-rb") });
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let off = ((h / 2) * stride + (w / 2) * 4) as usize;
+        // Bgra8* -> B,G,R,A; Rgba8* -> R,G,B,A. Return RGB in either case.
+        let rgb = if matches!(fmt, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+            [data[off + 2], data[off + 1], data[off]]
+        } else {
+            [data[off], data[off + 1], data[off + 2]]
+        };
+        drop(data);
+        buf.unmap();
+        rgb
+    };
+
+    // U1 present format: UNORM -> raw-byte sRGB-space blend -> stock 96.
+    let unorm = center(wgpu::TextureFormat::Rgba8Unorm);
+    assert!((unorm[0] as i32 - 96).abs() <= 1,
+        "UI color-space: translucent gray over gray on a UNORM target must blend to the stock value 96 (sRGB-space), got {:?}", unorm);
+
+    // The pre-U1 sRGB swapchain blends in LINEAR space + re-encodes -> the ~144 washout. Pin that the
+    // difference is large so a regression flipping the present format back to sRGB is caught.
+    let srgb = center(wgpu::TextureFormat::Rgba8UnormSrgb);
+    assert!(srgb[0] as i32 - unorm[0] as i32 >= 30,
+        "UI color-space: an sRGB target must visibly diverge from stock (linear-space blend washout); got srgb={:?} unorm={:?}", srgb, unorm);
 }

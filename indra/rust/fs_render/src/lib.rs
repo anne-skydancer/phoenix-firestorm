@@ -160,15 +160,25 @@ pub unsafe extern "C" fn fsr_init(hwnd: *mut c_void, width: u32, height: u32) ->
             None,
         ))
         .ok()?;
-        // Present format: live -> first sRGB surface format; headless -> Rgba8UnormSrgb (readback- and
-        // PNG-friendly, and sRGB so the tonemap encodes identically to the live swapchain).
+        // Present format (U1): a NON-sRGB UNORM format. Stock disables GL_FRAMEBUFFER_SRGB for the UI,
+        // so the native-VK UI must blend RAW sRGB bytes in sRGB (perceptual) space -- an sRGB swapchain
+        // would blend in LINEAR space (the Δ48 washout). post_tonemap.frag now emits the final sRGB
+        // display value DIRECTLY (byte-identical to the old ROP round-trip). Prefer the UNORM twin of
+        // the surface's sRGB format (Bgra8Unorm on Windows); headless -> Rgba8Unorm (readback/PNG match).
         let (format, alpha_mode) = match surface.as_ref() {
             Some(surf) => {
                 let caps = surf.get_capabilities(&adapter);
-                let fmt = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
+                let unorm = caps.formats.iter().copied().find(|f| f.is_srgb()).map(|s| s.remove_srgb_suffix());
+                let fmt = match unorm {
+                    Some(u) if caps.formats.contains(&u) => u,
+                    _ => caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]),
+                };
+                if fmt.is_srgb() {
+                    log::warn!("fs_render: surface offers no UNORM format; UI will blend in linear space (color mismatch)");
+                }
                 (fmt, caps.alpha_modes[0])
             }
-            None => (wgpu::TextureFormat::Rgba8UnormSrgb, wgpu::CompositeAlphaMode::Auto),
+            None => (wgpu::TextureFormat::Rgba8Unorm, wgpu::CompositeAlphaMode::Auto),
         };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, // frame grabber

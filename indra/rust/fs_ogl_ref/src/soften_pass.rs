@@ -274,7 +274,10 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
     let shadow = depth_1x1(device, queue, "shadowMap"); // 1.0 = far = nothing occludes
     let cube = cube_array_1x1(device, queue, "probe"); // black -- hero probe (unused)
     // radiance/irradiance probe cubes, colored per the fixture (black when neutral), one cube per layer.
-    let rad_cube = crate::resolve_pass::cube_array_layers(device, queue, &probes.radiance, "reflectionProbes");
+    let rad_cube = match &probes.rad_faces {
+        Some(f) => crate::resolve_pass::cube_array_faces(device, queue, f, "reflectionProbes"),
+        None => crate::resolve_pass::cube_array_layers(device, queue, &probes.radiance, "reflectionProbes"),
+    };
     let irr_cube = crate::resolve_pass::cube_array_layers(device, queue, &probes.irradiance, "irradianceProbes");
     // lightMap: rg = (shadow, ambient-occlusion). (1,1) = full sun, no AO.
     let lightmap = tex_1x1(device, queue, wgpu::TextureFormat::Rgba16Float, &rgba16f(1.0, 1.0, 1.0, 1.0), "lightMap");
@@ -296,11 +299,13 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, frag: &wgpu::ShaderMod
     // UBOs. For a filled probe fixture, set env_mat=identity + max_probe_lod so the probe taps work
     // (view==world in the fixture -> env_mat rotation is identity); neutral leaves them zeroed.
     let mut sky_block = fixture_sky_block(classic);
-    if probes.env_identity {
-        sky_block.mat3("env_mat", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-                 .f32("max_probe_lod", 6.0)
-                 .i32("cube_snapshot", 0);
-    }
+    // env_mat: the col-major fixture matrix as a std140 mat3 (the 3 columns' xyz). Fed IDENTICALLY to the
+    // resolve side's pp_env_mat -> the ONLY reflection-direction variable under test. (Neutral = identity,
+    // black cubes -> no probe contribution, so it's harmless there.)
+    let e = &probes.env_mat;
+    sky_block.mat3("env_mat", [[e[0], e[1], e[2]], [e[4], e[5], e[6]], [e[8], e[9], e[10]]])
+             .f32("max_probe_lod", 6.0)
+             .i32("cube_snapshot", 0);
     let frame_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("SoftenFrameBlock"),
         contents: sky_block.bytes(),

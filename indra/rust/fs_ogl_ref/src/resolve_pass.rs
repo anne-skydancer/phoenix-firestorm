@@ -170,19 +170,26 @@ fn put_i4(b: &mut [u8], off: usize, v: [i32; 4]) {
     for (i, f) in v.iter().enumerate() { b[off + i * 4..off + i * 4 + 4].copy_from_slice(&f.to_le_bytes()); }
 }
 
+/// col-major identity mat4 (view==world -> env_mat = identity).
+pub const ENV_IDENTITY: [f32; 16] = [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0];
+
 /// A description of a probe fixture shared by the oracle + resolve sides (same UBO + cube colors + env).
 pub struct ProbeFixture {
     pub ubo: Vec<u8>,            // the std140 ReflectionProbes block bytes (RP_SIZE)
-    pub radiance: Vec<[f32; 3]>,   // per cube-array LAYER radiance (glossy) color
+    pub radiance: Vec<[f32; 3]>,   // per cube-array LAYER radiance (glossy) color (uniform-per-cube)
     pub irradiance: Vec<[f32; 3]>, // per cube-array LAYER irradiance (diffuse) color
-    pub env_identity: bool,      // set env_mat = identity (fixture view==world); false leaves it zeroed
+    pub env_mat: [f32; 16],      // pp_env_mat / oracle env_mat, COL-MAJOR (identity for view==world). Fed
+                                 // identically to both engines -- a wrong transpose/extraction on either
+                                 // side rotates the reflection to a different cube face -> the A/B catches it.
+    pub rad_faces: Option<[[f32; 3]; 6]>, // per-FACE radiance for cube 0 (direction-varying), so env_mat's
+                                 // rotation of the reflection is OBSERVABLE (a uniform cube hides it).
 }
 
 impl ProbeFixture {
     /// Neutral probes: zeroed UBO + black cubes. Both sides sample only probe 0 with zero weights ->
     /// sampleProbeAmbient/sampleProbes return 0 (matches the oracle's zeroed-probe behavior).
     pub fn neutral() -> ProbeFixture {
-        ProbeFixture { ubo: vec![0u8; RP_SIZE], radiance: vec![[0.0; 3]], irradiance: vec![[0.0; 3]], env_identity: true }
+        ProbeFixture { ubo: vec![0u8; RP_SIZE], radiance: vec![[0.0; 3]], irradiance: vec![[0.0; 3]], env_mat: ENV_IDENTITY, rad_faces: None }
     }
 
     /// A single default/automatic sphere probe at index 0 covering the fixture fragment cluster, with
@@ -196,7 +203,7 @@ impl ProbeFixture {
         put_v4(&mut b, RP_REFPARAMS, [1.0, 1.0, 1.0, 0.1]); // x irr scale, y rad scale, z weight coeff, w znear
         put_i4(&mut b, RP_REFINDEX, [0, -1, 0, 0]);         // cube layer 0, no neighbors, priority 0 (automatic)
         b[RP_REFMAPCOUNT..RP_REFMAPCOUNT + 4].copy_from_slice(&1i32.to_le_bytes());
-        ProbeFixture { ubo: b, radiance: vec![radiance], irradiance: vec![irradiance], env_identity: true }
+        ProbeFixture { ubo: b, radiance: vec![radiance], irradiance: vec![irradiance], env_mat: ENV_IDENTITY, rad_faces: None }
     }
 
     /// Default (automatic, layer 0) probe 0 + a MANUAL sphere probe 1 (layer 1, priority 1, real radius
@@ -216,20 +223,57 @@ impl ProbeFixture {
         // bucket: every depth slab starts the walk at probe 1 (so the loop actually visits it).
         for i in 0..256 { put_i4(&mut b, RP_REFBUCKET + i * 16, [1, 0, 0, 0]); }
         b[RP_REFMAPCOUNT..RP_REFMAPCOUNT + 4].copy_from_slice(&2i32.to_le_bytes());
-        ProbeFixture { ubo: b, radiance: vec![rad0, rad1], irradiance: vec![irr0, irr1], env_identity: true }
+        ProbeFixture { ubo: b, radiance: vec![rad0, rad1], irradiance: vec![irr0, irr1], env_mat: ENV_IDENTITY, rad_faces: None }
+    }
+
+    /// S4 A/B: a single default probe with a NON-IDENTITY env_mat (rotation about Y by `angle`) + a
+    /// DIRECTION-VARYING radiance cube (6 distinct face colors). The reflection direction is rotated by
+    /// env_mat before the cube lookup, so a wrong env_mat transpose/extraction on either side hits a
+    /// different face -> a large pixel Δ. env_mat is col-major (matches scene.probe_params / pp_env_mat);
+    /// it is fed IDENTICALLY to the oracle (as a std140 mat3) and resolve (as pp_env_mat mat4). Irradiance
+    /// stays uniform (the diffuse path cancels env_mat, so it can't test it).
+    pub fn default_probe_rotated(rad_faces: [[f32; 3]; 6], irradiance: [f32; 3], angle: f32) -> ProbeFixture {
+        let mut b = vec![0u8; RP_SIZE];
+        put_v4(&mut b, RP_REFSPHERE, [0.0, 0.0, -9.64, 100.0]);
+        put_v4(&mut b, RP_REFPARAMS, [1.0, 1.0, 1.0, 0.1]);
+        put_i4(&mut b, RP_REFINDEX, [0, -1, 0, 0]);
+        b[RP_REFMAPCOUNT..RP_REFMAPCOUNT + 4].copy_from_slice(&1i32.to_le_bytes());
+        let (c, s) = (angle.cos(), angle.sin());
+        // rotation about Y, col-major: col0=(c,0,s), col1=(0,1,0), col2=(-s,0,c).
+        let env_mat = [c, 0.0, s, 0.0,  0.0, 1.0, 0.0, 0.0,  -s, 0.0, c, 0.0,  0.0, 0.0, 0.0, 1.0];
+        ProbeFixture { ubo: b, radiance: vec![[0.0; 3]], irradiance: vec![irradiance], env_mat, rad_faces: Some(rad_faces) }
     }
 }
 
+/// A single cube (6 layers = 6 faces of one 1x1 cube) with a DISTINCT color per face, in wgpu cube-array
+/// face order (+X,-X,+Y,-Y,+Z,-Z). Direction-varying, so the sampled cube color depends on the (env_mat-
+/// rotated) reflection direction -- what makes a non-identity env_mat OBSERVABLE in the A/B.
+pub fn cube_array_faces(device: &wgpu::Device, queue: &wgpu::Queue, faces: &[[f32; 3]; 6], label: &str) -> wgpu::TextureView {
+    let mut data = Vec::with_capacity(6 * 8);
+    for f in faces { data.extend_from_slice(&rgba16f(f[0], f[1], f[2], 1.0)); }
+    let t = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 6 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &data,
+    );
+    t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::CubeArray), ..Default::default() })
+}
+
 /// ProbeParams UBO bytes: std140 { mat4 pp_inv_proj; mat4 pp_env_mat; vec4 pp_misc; } = 144 bytes.
-pub fn probe_params_bytes(env_identity: bool) -> Vec<u8> {
+/// `env_mat` is col-major (matches scene.probe_params); pp_misc.z=0 selects the OGL fixture depth
+/// convention (getViewPositionFromDepth: 2*depth-1), matching the oracle's getPositionWithDepth.
+pub fn probe_params_bytes(env_mat: &[f32; 16]) -> Vec<u8> {
     let inv_proj = crate::soften_pass::perspective_inv(60.0f32.to_radians(), 1.0, 0.5, 256.0);
-    let env: [f32; 16] = if env_identity {
-        [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-    } else { [0.0; 16] };
     let misc: [f32; 4] = [6.0, 0.0, 0.0, 0.0]; // max_probe_lod = 6 (log2(128)-1), cube_snapshot = 0
     let mut v: Vec<f32> = Vec::with_capacity(36);
     v.extend_from_slice(&inv_proj);
-    v.extend_from_slice(&env);
+    v.extend_from_slice(env_mat);
     v.extend_from_slice(&misc);
     bytemuck::cast_slice(&v).to_vec()
 }
@@ -349,12 +393,15 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bo
     let depth = depth_full(device, queue, size, 0.95);
     let probe_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("ReflectionProbes"), contents: &probes.ubo, usage: wgpu::BufferUsages::UNIFORM });
-    let rad_cube = cube_array_layers(device, queue, &probes.radiance, "reflectionProbes");
+    let rad_cube = match &probes.rad_faces {
+        Some(f) => cube_array_faces(device, queue, f, "reflectionProbes"),
+        None => cube_array_layers(device, queue, &probes.radiance, "reflectionProbes"),
+    };
     let irr_cube = cube_array_layers(device, queue, &probes.irradiance, "irradianceProbes");
     let probe_samp = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("probe_smp"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
     let pp_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("ProbeParams"), contents: &probe_params_bytes(probes.env_identity), usage: wgpu::BufferUsages::UNIFORM });
+        label: Some("ProbeParams"), contents: &probe_params_bytes(&probes.env_mat), usage: wgpu::BufferUsages::UNIFORM });
     let brdf = brdf_lut(device, queue);
 
     let ntex = |b: u32, filt: bool| wgpu::BindGroupLayoutEntry { binding: b, visibility: wgpu::ShaderStages::FRAGMENT,

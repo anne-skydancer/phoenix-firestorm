@@ -287,8 +287,15 @@ impl SkyParams {
 
 /// CPU port of sky.vert (skyV.glsl): pos -> vary_HazeColor. Transcribed op-for-op, including
 /// the canonical DOUBLE-sqrt in the below-cloud blend (skyV.glsl:159-162).
+///
+/// COORD FIX (matches sky_fullscreen.frag 2026-08-02): stock skyV integrates in the dome's Y-up/OGL frame
+/// (position + camPosLocal are dome-space, lightnorm is fed .yzx-swizzled via toLightNorm,
+/// llenvironment.cpp:1664). The ray here is reconstructed in SL world (Z-up), so the delta MUST be swizzled
+/// SL(x,y,z)->OGL(y,z,x) or the haze integrates around the wrong axis. This was the stale oracle behind the
+/// 2 sky-conformance failures (the shader got this fix; the oracle did not).
 fn sky_v_haze(pos: [f64; 3], p: &SkyParams) -> [f64; 3] {
-    let mut rel = [pos[0] - p.cam_pos[0], pos[1] - p.cam_pos[1] + 50.0, pos[2] - p.cam_pos[2]];
+    let d = [pos[0] - p.cam_pos[0], pos[1] - p.cam_pos[1], pos[2] - p.cam_pos[2]];
+    let mut rel = [d[1], d[2] + 50.0, d[0]]; // .yzx then +50 on the (dome) up axis
     if rel[1] > 0.0 { let s = p.max_y / rel[1]; rel = [rel[0] * s, rel[1] * s, rel[2] * s]; }
     if rel[1] < 0.0 { let s = -32000.0 / rel[1]; rel = [rel[0] * s, rel[1] * s, rel[2] * s]; }
     let len = (rel[0] * rel[0] + rel[1] * rel[1] + rel[2] * rel[2]).sqrt();
@@ -525,6 +532,9 @@ fn fullscreen_sky_matches_windlight() {
     let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
     live.set_post_params(post.exposure as f32, post.exp_scale as f32, post.tonemap_mix as f32,
         post.gamma as f32, post.tonemap_type, post.legacy_gamma);
+    // This test validates the SKY (skyV haze) against a haze-only oracle -- clouds are a separate stratum
+    // (their own conformance concern), so exclude the cloud overlay here. See sky_haze_matches_oracle_in_linear_hdr.
+    live.set_clouds_enabled(false);
     live.set_fullscreen_sky(&ubo);
     let got = render_empty_center(&device, &queue, &mut live, [0.0, 0.0, 0.0]);
 
@@ -549,6 +559,129 @@ fn fullscreen_sky_matches_windlight() {
             "fullscreen sky ch{}: got {} vs expected {} (v_haze {:?} sky_hdr {:?})",
             ch, got[ch], exp[ch], v_haze, sky_hdr
         );
+    }
+}
+
+/// The fullscreen procedural sky, in LINEAR HDR (scene_hdr, pre-tonemap, pre-exposure), with the cloud
+/// overlay OFF, reproduces the WindLight skyV haze EXACTLY (to f16 precision). This isolates the sky
+/// integral from the tonemap and the cloud composite -- proving the reproduction is faithful independent of
+/// those later strata. (The *_matches_windlight tests then add tonemap; clouds stay off, since the haze-only
+/// oracle does not model them.)
+#[test]
+fn sky_haze_matches_oracle_in_linear_hdr() {
+    let Some((device, queue)) = headless() else { return; };
+    let (w, h) = (64u32, 48u32);
+    let ln = { let v = [0.30f64, 0.90, 0.15]; let l = (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt(); [(v[0]/l) as f32,(v[1]/l) as f32,(v[2]/l) as f32] };
+    let mut aux = [0.0f32; 48];
+    aux[0]=0.0; aux[1]=0.0; aux[2]=0.0; aux[3]=1605.0;
+    aux[4]=ln[0]; aux[5]=ln[1]; aux[6]=ln[2]; aux[7]=1.0;
+    aux[8]=0.7342; aux[9]=0.7815; aux[10]=0.8999; aux[11]=0.0001;
+    aux[12]=0.7342; aux[13]=0.7815; aux[14]=0.8999; aux[15]=1.0;
+    aux[16]=0.25; aux[17]=0.25; aux[18]=0.25; aux[19]=0.7;
+    aux[20]=0.4954; aux[21]=0.4954; aux[22]=0.6399; aux[23]=0.19;
+    aux[24]=0.2447; aux[25]=0.4487; aux[26]=0.7599; aux[27]=0.4;
+    aux[28]=5.0; aux[29]=0.001; aux[30]=-0.4799; aux[31]=0.0;
+    aux[32]=1.0; aux[34]=w as f32; aux[35]=h as f32;
+    let sp = SkyParams::from_aux(&aux);
+
+    let eye = glam::Vec3::ZERO;
+    let dir = glam::Vec3::new(0.2, 0.7, 0.3).normalize();
+    let view = glam::Mat4::look_at_rh(eye, eye + dir, glam::Vec3::Y);
+    let proj = glam::Mat4::perspective_rh(60f32.to_radians(), w as f32 / h as f32, 0.1, 1.0e4);
+    let inv_vp = (proj * view).inverse();
+    // Same centre-pixel ray as the shader (gl_FragCoord center = px+0.5, no extra half-pixel).
+    let (cx, cy) = (w / 2, h / 2);
+    let ndc_x = (cx as f32 + 0.5) / w as f32 * 2.0 - 1.0;
+    let ndc_y = 1.0 - (cy as f32 + 0.5) / h as f32 * 2.0;
+    let wh = inv_vp * glam::Vec4::new(ndc_x, ndc_y, 0.5, 1.0);
+    let wp = wh.truncate() / wh.w;
+    let d = (wp - eye).normalize();
+    let world_pos = [(eye.x + d.x*1.0e6) as f64, (eye.y + d.y*1.0e6) as f64, (eye.z + d.z*1.0e6) as f64];
+
+    // CPU stages (mirror sky_v_haze + the shader's debug encodings).
+    let dd = [world_pos[0]-sp.cam_pos[0], world_pos[1]-sp.cam_pos[1], world_pos[2]-sp.cam_pos[2]];
+    let mut rel = [dd[1], dd[2]+50.0, dd[0]];
+    if rel[1]>0.0 { let s=sp.max_y/rel[1]; rel=[rel[0]*s,rel[1]*s,rel[2]*s]; }
+    if rel[1]<0.0 { let s=-32000.0/rel[1]; rel=[rel[0]*s,rel[1]*s,rel[2]*s]; }
+    let len=(rel[0]*rel[0]+rel[1]*rel[1]+rel[2]*rel[2]).sqrt();
+    let n=[rel[0]/len, rel[1]/len, rel[2]/len];
+    let rel_dot = n[0]*sp.lightnorm[0]+n[1]*sp.lightnorm[1]+n[2]*sp.lightnorm[2];
+    let mut sunlight = if sp.sun_up_factor==1.0 { sp.sunlight_color } else { [sp.moonlight_color[0]*0.7,sp.moonlight_color[1]*0.7,sp.moonlight_color[2]*0.7] };
+    let asc = sp.density_multiplier*sp.max_y;
+    let light_atten = [(sp.blue_density[0]+sp.haze_density*0.25)*asc,(sp.blue_density[1]+sp.haze_density*0.25)*asc,(sp.blue_density[2]+sp.haze_density*0.25)*asc];
+    let mut comb = [(sp.blue_density[0].abs()+sp.haze_density.abs()).max(1e-6),(sp.blue_density[1].abs()+sp.haze_density.abs()).max(1e-6),(sp.blue_density[2].abs()+sp.haze_density.abs()).max(1e-6)];
+    let bw=[sp.blue_density[0]/comb[0],sp.blue_density[1]/comb[1],sp.blue_density[2]/comb[2]];
+    let hw=[sp.haze_density/comb[0],sp.haze_density/comb[1],sp.haze_density/comb[2]];
+    let off_axis = 1.0/(1e-6f64).max(n[1].max(0.0)+sp.lightnorm[1]);
+    for i in 0..3 { sunlight[i]*=(-light_atten[i]*off_axis).exp(); }
+    let dens_dist=len*sp.density_multiplier;
+    for i in 0..3 { comb[i]=(-comb[i]*dens_dist).exp(); }
+    let mut hg=(1.0-rel_dot).max(0.001); hg*=sp.glow[0]; hg=hg.powf(sp.glow[2]);
+    hg= if sp.sun_moon_glow_factor<1.0 {0.0} else {sp.sun_moon_glow_factor*(hg+0.25)};
+    let mut color=[0.0f64;3];
+    for i in 0..3 { color[i]=sp.blue_horizon[i]*bw[i]*(sunlight[i]+sp.ambient_color[i])+(sp.haze_horizon*hw[i])*(sunlight[i]*hg+sp.ambient_color[i]); }
+    let color_above=[color[0]*(1.0-comb[0]),color[1]*(1.0-comb[1]),color[2]*(1.0-comb[2])];
+
+    // Extend the CPU integral to the FINAL haze color + the packaged sky_hdr (the shader's output).
+    let amb = [
+        sp.ambient_color[0] + (1.0-sp.ambient_color[0]).max(0.0)*sp.cloud_shadow*0.5,
+        sp.ambient_color[1] + (1.0-sp.ambient_color[1]).max(0.0)*sp.cloud_shadow*0.5,
+        sp.ambient_color[2] + (1.0-sp.ambient_color[2]).max(0.0)*sp.cloud_shadow*0.5,
+    ];
+    let mut sun2 = sunlight; for i in 0..3 { sun2[i] *= (1.0-sp.cloud_shadow).max(0.0); }
+    let mut add_below = [0.0f64;3];
+    for i in 0..3 { add_below[i] = sp.blue_horizon[i]*bw[i]*(sun2[i]+amb[i]) + (sp.haze_horizon*hw[i])*(sun2[i]*hg+amb[i]); }
+    let comb_s = [comb[0].sqrt(), comb[1].sqrt(), comb[2].sqrt()];
+    let mut color_final = color_above;
+    for i in 0..3 { color_final[i] += (add_below[i]-color_above[i])*(1.0 - comb_s[i].sqrt()); }
+    let sky_hdr_cpu = [
+        srgb_to_lin((color_final[0]*2.0).min(5.0))*sp.sky_hdr_scale,
+        srgb_to_lin((color_final[1]*2.0).min(5.0))*sp.sky_hdr_scale,
+        srgb_to_lin((color_final[2]*2.0).min(5.0))*sp.sky_hdr_scale,
+    ];
+
+    // Render the sky with CLOUDS OFF and read scene_hdr (raw sky, pre-tonemap, pre-exposure) at the centre.
+    // This is the linear-HDR sky the tonemap consumes -- it must equal the oracle's sky_hdr exactly (the
+    // cloud overlay is a separate concern; enabling it is what the *_matches_windlight tests must exclude).
+    let mut ubo = [0.0f32; 52];
+    ubo[0..16].copy_from_slice(&inv_vp.to_cols_array());
+    ubo[16..52].copy_from_slice(&aux[0..36]);
+    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+    live.set_post_params(1.0, 1.0, 0.0, 1.0, 0, 1);
+    live.set_clouds_enabled(false); // isolate pure haze (no cloud overlay)
+    live.set_fullscreen_sky(&ubo);
+    let (w2, h2) = (64u32, 48u32);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("t"), size: wgpu::Extent3d { width: w2, height: h2, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+    let vw = target.create_view(&wgpu::TextureViewDescriptor::default());
+    live.begin();
+    live.flush_clear(&device, &queue, &vw, w2, h2, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+    let (tex, sw, sh) = live.scene_hdr_debug().expect("scene_hdr");
+    let stride = ((sw*8+255)/256)*256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (stride*sh) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(sh) } },
+        wgpu::Extent3d { width: sw, height: sh, depth_or_array_layers: 1 });
+    queue.submit([enc.finish()]);
+    let sl = buf.slice(..); sl.map_async(wgpu::MapMode::Read, |_| {}); device.poll(wgpu::Maintain::Wait);
+    let data = sl.get_mapped_range();
+    let o = ((sh/2)*stride + (sw/2)*8) as usize;
+    let g0 = [
+        f16_to_f32(u16::from_le_bytes([data[o],data[o+1]])) as f64,
+        f16_to_f32(u16::from_le_bytes([data[o+2],data[o+3]])) as f64,
+        f16_to_f32(u16::from_le_bytes([data[o+4],data[o+5]])) as f64,
+    ];
+    eprintln!("sky_hdr (clouds off): GPU {:.4?} | oracle {:.4?}", g0, sky_hdr_cpu);
+    for i in 0..3 {
+        assert!((g0[i]-sky_hdr_cpu[i]).abs() <= 0.004,
+            "linear-HDR sky ch{} GPU {} vs oracle {} -- skyV integral diverges from the oracle",
+            i, g0[i], sky_hdr_cpu[i]);
     }
 }
 
@@ -612,6 +745,7 @@ fn engine_derives_fullscreen_sky_from_typed_scene() {
     // Render via the derived UBO + derived regime (exactly what fsr_end_frame does).
     let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
     live.apply_sky_regime(&r);
+    live.set_clouds_enabled(false); // SKY conformance vs a haze-only oracle -- exclude the cloud overlay stratum
     live.set_fullscreen_sky(&ubo);
     let got = render_empty_center(&device, &queue, &mut live, [0.0, 0.0, 0.0]);
 

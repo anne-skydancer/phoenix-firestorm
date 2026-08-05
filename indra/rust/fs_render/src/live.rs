@@ -403,6 +403,7 @@ pub struct LiveRenderer {
     /// (Rgba16Float, no ROP encode); the post pass then composites to the swapchain.
     /// The deferred-lighting stage (Phase 4) will write its lit output into this target.
     scene_hdr: Option<(wgpu::TextureView, u32, u32)>,
+    scene_hdr_tex: Option<wgpu::Texture>, // DEBUG: same texture, kept for headless readback (COPY_SRC)
     post_bgl: wgpu::BindGroupLayout,
     post_pipeline: Option<wgpu::RenderPipeline>,
     post_bind: Option<wgpu::BindGroup>,
@@ -507,6 +508,7 @@ pub struct LiveRenderer {
     cloud_comp_pipeline: Option<wgpu::RenderPipeline>,    // post.vert + cloud_composite.frag -> scene_hdr (blend)
     cloud_comp_bind: Option<wgpu::BindGroup>,             // rebuilt when cloud_target changes
     cloud_sampler: wgpu::Sampler,                         // linear, for the bilinear upscale
+    clouds_enabled: bool,                                 // gate the half-res cloud pass + composite (debug/perf)
     // Phase A.3: native-VK UI. Honest feed from LLRender::flush (its own matrices + verts, no
     // glGet). One ortho pass over the tonemapped swapchain, painter's order, alpha-blended.
     ui_bgl: Option<wgpu::BindGroupLayout>,
@@ -1035,6 +1037,7 @@ impl LiveRenderer {
             msaa: 1,
             msaa_color: None,
             scene_hdr: None,
+            scene_hdr_tex: None,
             post_bgl,
             post_pipeline: None,
             post_bind: None,
@@ -1123,6 +1126,7 @@ impl LiveRenderer {
             cloud_comp_pipeline: None,
             cloud_comp_bind: None,
             cloud_sampler,
+            clouds_enabled: true,
             ui_bgl: None,
             ui_tri_pipeline: None,
             ui_line_pipeline: None,
@@ -2398,12 +2402,21 @@ impl LiveRenderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: SCENE_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
             self.scene_hdr = Some((t.create_view(&wgpu::TextureViewDescriptor::default()), w, h));
+            self.scene_hdr_tex = Some(t);
             self.post_bind = None; // stale: rebind against the new scene view
             self.exp_bind = None;  // measure pass samples scene_hdr -> rebind too
+        }
+    }
+
+    /// DEBUG: the linear-HDR scene target (post-sky/cloud, pre-tonemap), for headless readback.
+    pub fn scene_hdr_debug(&self) -> Option<(&wgpu::Texture, u32, u32)> {
+        match (&self.scene_hdr_tex, &self.scene_hdr) {
+            (Some(t), Some((_, w, h))) => Some((t, *w, *h)),
+            _ => None,
         }
     }
 
@@ -2600,6 +2613,12 @@ impl LiveRenderer {
         let n = ubo.len().min(60);
         self.sky_fs_data[..n].copy_from_slice(&ubo[..n]);
         self.sky_fs_enabled = n >= 52;
+    }
+
+    /// Enable/disable the half-res volumetric cloud pass + composite (default on). Used by the sky
+    /// conformance diagnostics to isolate the pure haze from the cloud overlay.
+    pub fn set_clouds_enabled(&mut self, on: bool) {
+        self.clouds_enabled = on;
     }
 
     /// #3: (re)create the G-buffer attachments on size change.
@@ -4066,6 +4085,7 @@ impl LiveRenderer {
         // (bilinear upscale + alpha blend) over scene_hdr. Runs after sky+world, before the meter, so
         // clouds are in scene_hdr for exposure + tonemap. The upscale dissolves the raymarch grain and
         // the 1/2-res raymarch is ~4x cheaper than full-res.
+        if self.clouds_enabled {
         if let (Some(cp), Some(sb), Some((cv, _, _))) = (self.cloud_pipeline.as_ref(), self.sky_fs_bind.as_ref(), self.cloud_target.as_ref()) {
             let mut clp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("cloud-pass"),
@@ -4098,6 +4118,7 @@ impl LiveRenderer {
             cmp.set_bind_group(0, cb, &[]);
             cmp.draw(0..3, 0..1);
         }
+        } // clouds_enabled
         // Metered auto-exposure: average scene_hdr luminance into the 1x1 exp_lum, read by the
         // tonemap below to normalize the HDR (so radiance > 1 doesn't hard-clamp to white). Runs
         // after the scene is fully composited (sky + world), before the post pass.

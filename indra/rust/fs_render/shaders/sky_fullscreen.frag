@@ -53,8 +53,10 @@ void main() {
     // --- reconstruct the world view-ray through this pixel ---
     // NDC (wgpu: y-down framebuffer -> y-up NDC). Any valid clip-z gives the same ray direction
     // for a perspective camera, so pick mid-range and take the direction from the eye.
-    vec2 ndc = vec2((gl_FragCoord.x + 0.5) / viewport.x * 2.0 - 1.0,
-                    1.0 - (gl_FragCoord.y + 0.5) / viewport.y * 2.0);
+    // gl_FragCoord.xy is ALREADY the pixel CENTRE (px + 0.5) in Vulkan -- do NOT add another 0.5,
+    // or the reconstructed ray is offset ~1 px (a real sky-conformance error near the sun glow).
+    vec2 ndc = vec2(gl_FragCoord.x / viewport.x * 2.0 - 1.0,
+                    1.0 - gl_FragCoord.y / viewport.y * 2.0);
     vec4 world_h = u.inv_view_proj * vec4(ndc, 0.5, 1.0);
     vec3 world_pt = world_h.xyz / world_h.w;
     vec3 dir = normalize(world_pt - camPosLocal);

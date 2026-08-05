@@ -8,7 +8,7 @@
 //! Requires a Vulkan adapter; if none is present the tests no-op (skip) rather than fail,
 //! so CI on a headless box without Vulkan does not spuriously break.
 
-use fs_render::live::{DrawDesc, LiveRenderer, CLASS_SKY_DOME};
+use fs_render::live::{DrawDesc, LiveRenderer, CLASS_SKY_DOME, CLASS_WATER};
 use fs_render::scene::{CameraBlock, EepSkyBlock, SceneFrame, SettingsSnapshot, SkyRegime};
 
 fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -1117,6 +1117,116 @@ fn probe_terrain_capture_changes_faces() {
     // The terrain (lit ground) must change at least one face substantially vs sky-only.
     let max_delta = (0..6).map(|f| (0..3).map(|c| (sky[f][c] - terr[f][c]).abs()).fold(0f32, f32::max)).fold(0f32, f32::max);
     assert!(max_delta > 0.02, "terrain did not change any probe face (sky {:?} terr {:?})", sky, terr);
+}
+
+/// P3-S2 water: the self-contained forward water is captured into the probe faces. Captures the
+/// environment with vs without a water plane below the eye and asserts water changes the down-looking
+/// faces. Confirms the per-face water pass (face reverse-Z mvp + the draw's aux + depth-test vs the
+/// captured terrain/clear).
+#[test]
+fn probe_water_capture_changes_faces() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping probe water test");
+        return;
+    };
+    let ln = { let v = [0.30f32, 0.90, 0.15]; let l = (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt(); [v[0]/l, v[1]/l, v[2]/l] };
+    let mut aux = [0.0f32; 48];
+    aux[0]=0.0; aux[1]=0.0; aux[2]=20.0; aux[3]=1605.0;
+    aux[4]=ln[0]; aux[5]=ln[1]; aux[6]=ln[2]; aux[7]=1.0;
+    aux[8]=0.7342; aux[9]=0.7815; aux[10]=0.8999; aux[11]=0.0001;
+    aux[12]=0.7342; aux[13]=0.7815; aux[14]=0.8999; aux[15]=1.0;
+    aux[16]=0.25; aux[17]=0.25; aux[18]=0.25; aux[19]=0.7;
+    aux[20]=0.4954; aux[21]=0.4954; aux[22]=0.6399; aux[23]=0.19;
+    aux[24]=0.2447; aux[25]=0.4487; aux[26]=0.7599; aux[27]=0.4;
+    aux[28]=5.0; aux[29]=0.001; aux[30]=-0.4799; aux[31]=0.0;
+    aux[32]=1.0; aux[34]=256.0; aux[35]=256.0;
+    let mut sky_ubo = [0.0f32; 52];
+    sky_ubo[0..16].copy_from_slice(&glam::Mat4::IDENTITY.to_cols_array());
+    sky_ubo[16..52].copy_from_slice(&aux[0..36]);
+
+    // Water params (the DrawDesc.aux the water shaders consume): eyeVec(0,0,20), waves, waterHeight 0, fog.
+    let mut waux = [0.0f32; 48];
+    waux[0]=0.0; waux[1]=0.0; waux[2]=20.0; waux[3]=0.0;               // eyeVec, time
+    waux[4]=1.0; waux[5]=0.0; waux[6]=0.0; waux[7]=1.0;               // wave dirs
+    waux[8]=1.0; waux[9]=1.0; waux[10]=1.0; waux[11]=0.5;            // normScale, fresnelScale
+    waux[12]=0.3; waux[13]=1.0; waux[14]=0.0; waux[15]=0.5;         // fresnelOffset, blur, waterHeight, fogDensity
+    waux[16]=0.10; waux[17]=0.20; waux[18]=0.35; waux[19]=1.0;      // fogColor, fogKS
+    waux[20]=ln[0]; waux[21]=ln[1]; waux[22]=ln[2]; waux[23]=0.0;  // lightDir, underwater
+    waux[24]=1.0; waux[25]=1.0; waux[26]=1.0; waux[27]=0.5;         // lightDiffuse, blend_factor
+    waux[28]=0.25; waux[29]=0.25; waux[30]=0.25; waux[31]=1.0;      // ambient, sun_up
+
+    let capture = |with_water: bool| -> [[f32; 3]; 6] {
+        let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        live.set_fullscreen_sky(&sky_ubo);
+        // A G-buffer quad triggers the probe block (has_gb); water alone would not.
+        let qpos: [[f32; 4]; 3] = [[-0.6, -0.6, 0.0, 1.0], [0.6, -0.6, 0.0, 1.0], [0.0, 0.6, 0.0, 1.0]];
+        let qn: [[f32; 4]; 3] = [[0.0, 0.0, 1.0, 0.0]; 3];
+        let mut qvtx: Vec<u8> = bytemuck::cast_slice(&qpos).to_vec();
+        qvtx.extend_from_slice(bytemuck::cast_slice(&qn));
+        let mut qd: DrawDesc = unsafe { std::mem::zeroed() };
+        qd.mode = 0; qd.count = 3; qd.typemask = 1 | 2; qd.num_verts = 3; qd.vtx_bytes = qvtx.len() as u32;
+        qd.depth_test = 1; qd.depth_write = 1;
+        let id = glam::Mat4::IDENTITY.to_cols_array();
+        qd.mvp = id; qd.modelview = id; qd.color = [1.0, 1.0, 1.0, 1.0]; qd.min_alpha = -1.0;
+
+        let (w, h) = (64u32, 64u32);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("t"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        live.begin();
+        live.submit(&device, &queue, &qd, &qvtx, &[]);
+        if with_water {
+            // A large flat water plane at z=0 (region space), below the eye. Position-only (vec4) verts.
+            let s = 400.0f32;
+            let wp: [[f32; 4]; 6] = [
+                [-s, -s, 0.0, 1.0], [s, -s, 0.0, 1.0], [-s, s, 0.0, 1.0],
+                [ s, -s, 0.0, 1.0], [s,  s, 0.0, 1.0], [-s, s, 0.0, 1.0],
+            ];
+            let wvtx: Vec<u8> = bytemuck::cast_slice(&wp).to_vec();
+            let mut wd: DrawDesc = unsafe { std::mem::zeroed() };
+            wd.mode = 0; wd.count = 6; wd.typemask = 1; wd.num_verts = 6; wd.vtx_bytes = wvtx.len() as u32;
+            wd.draw_class = CLASS_WATER; wd.depth_test = 1; wd.depth_write = 1;
+            wd.mvp = id; wd.modelview = id; wd.color = [1.0, 1.0, 1.0, 1.0]; wd.min_alpha = -1.0;
+            wd.aux = waux;
+            live.submit(&device, &queue, &wd, &wvtx, &[]);
+        }
+        live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+
+        let (rad, scratch) = live.probe_radiance_debug().expect("radiance");
+        let res = 128u32;
+        let stride = ((res * 8 + 255) / 256) * 256;
+        let mut out = [[0f32; 3]; 6];
+        for f in 0..6u32 {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None, size: (stride * res) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            enc.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture { texture: rad, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: scratch * 6 + f }, aspect: wgpu::TextureAspect::All },
+                wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(res) } },
+                wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 });
+            queue.submit([enc.finish()]);
+            let slice = buf.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::Maintain::Wait);
+            let data = slice.get_mapped_range();
+            let o = ((res / 2) * stride + (res / 2) * 8) as usize;
+            for c in 0..3 { out[f as usize][c] = f16_to_f32(u16::from_le_bytes([data[o + c*2], data[o + c*2 + 1]])); }
+            drop(data); buf.unmap();
+        }
+        out
+    };
+
+    let dry = capture(false);
+    let wet = capture(true);
+    eprintln!("no-water faces: {:?}", dry);
+    eprintln!("w/water  faces: {:?}", wet);
+    let max_delta = (0..6).map(|f| (0..3).map(|c| (dry[f][c] - wet[f][c]).abs()).fold(0f32, f32::max)).fold(0f32, f32::max);
+    assert!(max_delta > 0.02, "water did not change any probe face (dry {:?} wet {:?})", dry, wet);
 }
 
 fn f16_to_f32(h: u16) -> f32 {

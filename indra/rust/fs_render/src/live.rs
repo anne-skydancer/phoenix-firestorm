@@ -32,6 +32,7 @@ const GBUF_EMISSIVE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Flo
 const PROBE_MAX_COUNT: usize = 256;         // LL_MAX_REFLECTION_PROBE_COUNT / MAX_REFMAP_COUNT
 const PROBE_IRRADIANCE_RES: u32 = 16;       // LL_IRRADIANCE_MAP_RESOLUTION
 const RP_UBO_SIZE: u64 = 49248;             // std140 size of the ReflectionProbes block (see resolve_pass.rs RP_SIZE)
+const CAP_MAX_WATER: u64 = 16;              // max water draws captured per probe face (ring slots)
 const PROBE_CUBE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float; // radiance/irradiance (D4: Rgba16Float for now)
 // std140 offsets into the ReflectionProbes block (element 0 of each array); mirror resolve_pass.rs RP_*.
 const RP_OFF_REFSPHERE: usize = 16448;
@@ -413,6 +414,10 @@ pub struct LiveRenderer {
     probe_cap_depth: Option<wgpu::TextureView>,
     probe_cap_resolve_bind: Option<wgpu::BindGroup>,
     terrain_ubo_cache: std::cell::Cell<[f32; 32]>,
+    // S2-water: a small ring of face water UBOs ([face_mvp | aux]) + per-sw_key capture binds (binding 0 =
+    // the ring w/ dynamic offset, 1/2 = the draw's bump maps). Water is a self-contained forward pass.
+    probe_cap_water_ubo: wgpu::Buffer,
+    probe_cap_water_binds: HashMap<[u32; 2], wgpu::BindGroup>,
     // S1: Post-params UBO consumed by post_tonemap.frag (std140, 32 bytes).
     post_ubo: wgpu::Buffer,
     post_exposure: f32,    // RenderExposure clamp[0.5,4]
@@ -862,6 +867,12 @@ impl LiveRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let probe_cap_water_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probe-capture-water-ubo"),
+            size: 256 * CAP_MAX_WATER, // [face_mvp | 12 aux vec4] = 256 B per water draw
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let probe_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("probe-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -994,6 +1005,8 @@ impl LiveRenderer {
             probe_cap_depth: None,
             probe_cap_resolve_bind: None,
             terrain_ubo_cache: std::cell::Cell::new([0.0f32; 32]),
+            probe_cap_water_ubo,
+            probe_cap_water_binds: HashMap::new(),
             post_ubo,
             // S1 defaults: non-legacy baseline (settings.xml RenderExposure=1, TonemapType=1
             // ACES, TonemapMix=0.7). S3 overrides these per sky regime (legacy => mix=0,
@@ -2738,10 +2751,47 @@ impl LiveRenderer {
         }
 
         self.ensure_probe_capture_targets(device);
+
+        // Collect the queued water draws (self-contained forward pass) + build a capture bind per sw_key
+        // (binding 0 = the capture water ring w/ dynamic offset; 1/2 = the draw's bump maps).
+        struct WaterCap { vptr: usize, iptr: Option<usize>, icount: u32, first: u32, vcount: u32, v_off: u32, ubo_off: u32, sw_key: [u32; 2] }
+        let mut waters: Vec<WaterCap> = Vec::new();
+        for q in &self.queued {
+            if q.draw_class == CLASS_WATER && (waters.len() as u64) < CAP_MAX_WATER {
+                waters.push(WaterCap {
+                    vptr: q.vptr, iptr: q.iptr, icount: q.icount, first: q.first, vcount: q.vcount,
+                    v_off: q.voffsets[TYPE_VERTEX], ubo_off: q.ubo_off, sw_key: [q.terrain_key[0], q.terrain_key[1]],
+                });
+            }
+        }
+        if !waters.is_empty() {
+            self.ensure_skywater_pipelines(device);
+            let keys: Vec<[u32; 2]> = waters.iter().map(|w| w.sw_key).collect();
+            for k in keys {
+                if !self.probe_cap_water_binds.contains_key(&k) {
+                    let Self { skywater_bgl, probe_cap_water_ubo, textures, white, sampler, probe_cap_water_binds, .. } = self;
+                    let t0 = textures.get(&k[0]).map(|(_, v)| v).unwrap_or(white);
+                    let t1 = textures.get(&k[1]).map(|(_, v)| v).unwrap_or(white);
+                    probe_cap_water_binds.insert(k, device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("probe-cap-water-bind"),
+                        layout: skywater_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: probe_cap_water_ubo, offset: 0, size: std::num::NonZeroU64::new(256) }) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(t0) },
+                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(t1) },
+                            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(sampler) },
+                        ],
+                    }));
+                }
+            }
+        }
+
         let (Some(sky_pipe), Some(bind), Some(rad), Some(cap_scene)) = (
             self.sky_fs_pipeline.as_ref(), self.probe_cap_bind.as_ref(),
             self.probe_radiance.as_ref(), self.probe_cap_scene.as_ref(),
         ) else { return; };
+        let water_pipe = self.water_pipeline.as_ref();
+        let cap_depth = self.probe_cap_depth.as_ref();
         let cap_scene_view = cap_scene.create_view(&wgpu::TextureViewDescriptor::default());
         // Clouds optional (may be disabled); capture only if the whole path is present.
         let clouds = match (self.cloud_pipeline.as_ref(), self.cloud_comp_pipeline.as_ref(),
@@ -2848,6 +2898,46 @@ impl LiveRenderer {
                     rpass.set_pipeline(rpipe);
                     rpass.set_bind_group(0, rb, &[]);
                     rpass.draw(0..3, 0..1);
+                }
+            }
+            // water (self-contained forward: fog + fresnel tint + waves) -> cap_scene, depth-tested against
+            // the captured terrain in cap_depth (so terrain occludes water). Region-space geometry with a
+            // per-face reverse-Z mvp; the draw's water params (aux) come from the staged UBO.
+            if !waters.is_empty() {
+                if let (Some(wp_pipe), Some(cdep)) = (water_pipe, cap_depth) {
+                    for (i, w) in waters.iter().enumerate() {
+                        let mut block = [0f32; 64];
+                        block[..16].copy_from_slice(&((rev * proj_t) * view).to_cols_array());
+                        let aux: &[f32] = bytemuck::cast_slice(&self.ubo_stage[w.ubo_off as usize + 64..w.ubo_off as usize + 256]);
+                        block[16..64].copy_from_slice(aux);
+                        queue.write_buffer(&self.probe_cap_water_ubo, (i as u64) * 256, bytemuck::cast_slice(&block));
+                    }
+                    let mut wp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("probe-cap-water"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &cap_scene_view, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: cdep,
+                            depth_ops: Some(wgpu::Operations { load: if had_terrain { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(0.0) }, store: wgpu::StoreOp::Store }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None, occlusion_query_set: None,
+                    });
+                    wp.set_pipeline(wp_pipe);
+                    for (i, w) in waters.iter().enumerate() {
+                        let (Some(bg), Some((vbuf, _))) = (self.probe_cap_water_binds.get(&w.sw_key), self.geo.get(&w.vptr)) else { continue };
+                        wp.set_bind_group(0, bg, &[(i as u32) * 256]);
+                        wp.set_vertex_buffer(0, vbuf.slice(w.v_off as u64..));
+                        if let Some(ip) = w.iptr {
+                            let Some((ib, _)) = self.geo.get(&ip) else { continue };
+                            wp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint16);
+                            wp.draw_indexed(w.first..w.first + w.icount, 0, 0..1);
+                        } else {
+                            wp.draw(w.first..w.first + w.vcount, 0..1);
+                        }
+                    }
                 }
             }
             // clouds -> half-res target, then composite over cap_scene (Load, alpha blend).

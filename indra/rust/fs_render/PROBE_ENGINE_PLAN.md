@@ -92,7 +92,26 @@ Original spec:
 - Seed a valid default probe (D2): refmapCount=1, neutral irradiance cube, identity-ish ProbeParams.
 - **Recompile `resolve.frag.spv`** (glslc). Headless: `deferred_resolve_*` + a new probe-plumbing test pass.
 
-### S2 — Sky-environment capture into the radiance cube scratch layer  ◑ PARTIAL (2026-08-05): sky + terrain + clouds DONE
+### S2 — Sky-environment capture into the radiance cube scratch layer  ✅ DONE (2026-08-05): sky + terrain + clouds + water
+
+**D1 (full sky environment) COMPLETE.** WATER (2026-08-05): after being caught cherry-picking (I'd
+inferred "tapped → hard/fragile/circular" without reading the code), the full excavation of water.vert/frag/
+packing/pipeline showed water is a SELF-CONTAINED forward pass (fog integral + fresnel sky/ambient tint +
+sun glint + wave normal-maps; samples only bump0/bump1 — no scene, no probe, not circular), with a swappable
+single `mvp` over region-space geometry, depth-tested (reverse-Z GreaterEqual). So it captures like terrain:
+per face, per queued CLASS_WATER draw, build a face water UBO `[rev*proj_face*view_face | the draw's aux]`
+(aux read back from `ubo_stage[ubo_off+64..+256]`), render the queued water geometry into cap_scene with
+cap_depth (Load if terrain rendered else Clear-0, so terrain occludes water). Capture water ring
+(`probe_cap_water_ubo`, 256 B × 16, dynamic offset) + per-sw_key binds. Verified: `probe_water_capture_changes_faces`
+turns the down-facing face from blue sky [0.13,0.20,0.48] → water [0.25,0.26,0.28]. LESSON: excavate the WHOLE
+path before assessing — the sliver-inference was exactly wrong.
+
+Prior (sky/terrain/clouds) below. All in `capture_probe_environment`: mini deferred-frame per face rendered
+into `cap_scene` (probe_res) then COPIED to the cube face. 11/12 headless pass; the 2 `fullscreen_sky_*` are
+PRE-EXISTING (sky conformance, identical values with/without P3). Next: S3 convolution makes the probe light
+the scene.
+
+Prior partial note (sky + terrain + clouds):
 
 Done + verified: **sky** + deferred **terrain** + volumetric **clouds** captured into the 6 faces of the
 radiance scratch cube via `capture_probe_environment` — now a real mini deferred-frame per face rendered

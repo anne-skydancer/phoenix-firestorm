@@ -17,6 +17,9 @@ layout(set = 0, binding = 2) uniform GenParams {
 } gp;
 
 void main() {
-    gl_Position = vec4(position, 1.0);
+    // Vulkan clip-space z is [0,1]; stock radianceGenV uses position.z = -1 (GL [-1,1] near plane), which
+    // would clip the whole quad here. There is no depth test in the gen passes, so pin gl_Position.z to 0.
+    // vary_dir keeps position.z = -1 -- it is the clip-quad direction the per-face modelview rotates to a ray.
+    gl_Position = vec4(position.xy, 0.0, 1.0);
     vary_dir = (gp.modelview * vec4(position, 1.0)).xyz;
 }

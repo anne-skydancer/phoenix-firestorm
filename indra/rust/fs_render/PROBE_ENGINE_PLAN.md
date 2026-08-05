@@ -146,12 +146,30 @@ Original spec:
 - Re-run `sky_fullscreen.frag` per face with per-face `inv_view_proj` (from `perspective_rh` + face view).
 - Headless: read back a face; assert the sky gradient/horizon is present.
 
-### S3 — Gen orchestration: gaussian → mip chain → convolve (headless: convolved arrays match P2 pattern)
-- Compile `gen.vert`/`radiance_gen.frag`/`irradiance_gen.frag` → `.spv`; port + compile `gaussian.frag` +
-  `reflection_mip.frag`.
-- Gaussian pre-blur the captured face; mip-chain downsample into the scratch layer's mips; radiance
-  prefilter per-mip/per-face → radiance array layer 0; irradiance convolve → irradiance array layer 0.
-- Headless: sample the arrays; compare against the P2 `gen_ab` expectation on a synthetic source.
+### S3 — Gen orchestration: gaussian → mip chain → convolve — DONE (headless verified)
+- `gen.vert`/`radiance_gen.frag`/`irradiance_gen.frag` compiled; ported + compiled `gaussian.frag` +
+  `reflection_mip.frag` + `fsq_uv.vert`. **gen.vert clip-z fix:** stock radianceGenV uses position.z=-1
+  (GL clip [-1,1] near plane); Vulkan clip-z is [0,1] so that quad clips → pinned `gl_Position.z=0` (no
+  depth test in the gen passes), `vary_dir` keeps position.z=-1 as the ray. This was the bug behind an
+  all-black radiance on the first run.
+- **Capture at CAP_SUPER=4× (512)** — pulled forward from "deferred" below, so the gaussian pre-blur
+  (resScale=1/(probeRes*2)) filters the supersample before the 4:1 reduction, faithful to stock
+  `updateProbeFace`. Scene/G-buffer/depth/cloud targets scaled to cap_res.
+- Per face: gaussian H (cap_scene→gauss_tmp) + V (gauss_tmp→cap_scene); reflection-mip chain
+  (scratch2d[0]←cap_scene, scratch2d[i]←scratch2d[i-1], 128..2); copy each into `probe_scratch` (a
+  SEPARATE 1-cube 7-mip texture — wgpu forbids read+write of one texture in a pass, so the prefilter reads
+  scratch and writes radiance). `probe_radiance` re-allocated MIPPED (7 mips); irradiance stays 16.
+- `convolve_probe`: radiance GGX prefilter (6 faces × 7 mips → radiance slot 0) reading the scratch mip
+  chain at the solid-angle LOD; irradiance cosine convolve (6 faces → irradiance slot 0). Per-face rotation
+  = `look_at(dir,up).inverse()` on the SAME face basis as capture (sClipToCube is a stock-internal cube-array
+  convention, not portable — confirmed by reading llcubemaparray.cpp). GenParams dynamic-offset UBO per draw.
+- Headless VERIFIED (`probe_convolve_fills_radiance_and_irradiance`): radiance mip 0 == the captured sky
+  faces (roughness-0 passthrough, matches to ~1e-3); irradiance == smooth positive per-face ambient. The
+  three capture tests re-pointed at `probe_scratch`. No regressions (only the 2 pre-existing sky failures).
+- **NOT in S3 (deferred, see below):** the single-bounce feedback (irradiance-from-direct-only →
+  radiance-from-scene-with-irradiance). Mechanism now known precisely (llreflectionmapmanager.cpp:773-780,
+  12-call cadence); belongs with the manager scheduler slice. Open question for then: single iteration vs
+  iterate-to-convergence for the continuous loop.
 
 ### S4 — updateUniforms: pack the default probe (headless: resolve consumes it → non-zero sky ambient)
 - Pack ReflectionProbes: refmapCount=1; refSphere[0] = view-space (0,0,-?) + r4096 (64 m above cam →
@@ -172,6 +190,11 @@ Original spec:
 ## Deferred beyond this plan
 - Automatic 32 m-grid + manual box/sphere probes (need object geometry; the walk/mix/parallax consumer is
   already verified) — geometry stratum.
-- The full manager scheduler (12-render single-bounce, priority, occlusion, realtime probes).
-- 4× supersample + faithful `R11F_G11F_B10F` format match.
+- The full manager scheduler (12-render single-bounce, priority, occlusion, realtime probes). Includes the
+  single-bounce feedback: irradiance pass captures direct-only lighting → generates irradiance; radiance
+  pass captures the scene lit by that irradiance (+ prior radiance) → generates radiance
+  (llreflectionmapmanager.cpp:773-780). Needs the `isRadiancePass()` "direct only" toggle traced into the
+  deferred resolve, and a decision on single-iteration vs iterate-to-convergence headlessly.
+- 4× supersample — DONE in S3 (CAP_SUPER=4). Still deferred: faithful `R11F_G11F_B10F` cube format (we use
+  `Rgba16Float`).
 - P4: hero (mirror) probes + SSR generation.

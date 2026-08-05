@@ -975,8 +975,8 @@ fn probe_sky_capture_fills_scratch_faces() {
     live.submit(&device, &queue, &d, &vtx, &[]);
     live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
 
-    // Read back the 6 scratch faces' centre texels of the radiance cube (Rgba16Float).
-    let (rad, scratch) = live.probe_radiance_debug().expect("probe radiance exists");
+    // Read back the 6 faces' centre texels of the scratch cube, mip 0 (Rgba16Float).
+    let scr = live.probe_scratch_debug().expect("probe scratch exists");
     let res = 128u32;
     let stride = ((res * 8 + 255) / 256) * 256;
     let mut face_rgb = [[0f32; 3]; 6];
@@ -986,8 +986,8 @@ fn probe_sky_capture_fills_scratch_faces() {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         enc.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture { texture: rad, mip_level: 0,
-                origin: wgpu::Origin3d { x: 0, y: 0, z: scratch * 6 + f }, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyTexture { texture: scr, mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y: 0, z: f }, aspect: wgpu::TextureAspect::All },
             wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(res) } },
             wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 });
         queue.submit([enc.finish()]);
@@ -1010,6 +1010,105 @@ fn probe_sky_capture_fills_scratch_faces() {
     let spread = (0..3).map(|i| hi[i] - lo[i]).fold(0f32, f32::max);
     assert!(spread > 0.02, "captured faces are flat (no sky gradient): {:?}", face_rgb);
     eprintln!("probe capture faces (center rgb): {:?}", face_rgb);
+}
+
+/// P3-S3: convolve_probe GGX-prefilters/convolves the scratch cube into the DEFAULT probe's radiance +
+/// irradiance (slot 0 = layers 0..5). Asserts both are filled with REAL convolved sky (not the neutral grey
+/// seed 0.20/0.22/0.26): radiance mip 0 (roughness 0 = passthrough) varies per face like the captured sky,
+/// and irradiance (cosine-convolved, res 16) is a smooth positive per-face ambient. This is what the resolve
+/// samples, so it proves the probe path delivers sky ambient + reflections rather than the grey placeholder.
+#[test]
+fn probe_convolve_fills_radiance_and_irradiance() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping probe convolve test");
+        return;
+    };
+    let ln = { let v = [0.30f32, 0.90, 0.15]; let l = (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt(); [v[0]/l, v[1]/l, v[2]/l] };
+    let mut aux = [0.0f32; 48];
+    aux[0]=0.0; aux[1]=0.0; aux[2]=0.0; aux[3]=1605.0;
+    aux[4]=ln[0]; aux[5]=ln[1]; aux[6]=ln[2]; aux[7]=1.0;
+    aux[8]=0.7342; aux[9]=0.7815; aux[10]=0.8999; aux[11]=0.0001;
+    aux[12]=0.7342; aux[13]=0.7815; aux[14]=0.8999; aux[15]=1.0;
+    aux[16]=0.25; aux[17]=0.25; aux[18]=0.25; aux[19]=0.7;
+    aux[20]=0.4954; aux[21]=0.4954; aux[22]=0.6399; aux[23]=0.19;
+    aux[24]=0.2447; aux[25]=0.4487; aux[26]=0.7599; aux[27]=0.4;
+    aux[28]=5.0; aux[29]=0.001; aux[30]=-0.4799; aux[31]=0.0;
+    aux[32]=1.0; aux[34]=256.0; aux[35]=256.0;
+    let mut ubo = [0.0f32; 52];
+    ubo[0..16].copy_from_slice(&glam::Mat4::IDENTITY.to_cols_array());
+    ubo[16..52].copy_from_slice(&aux[0..36]);
+
+    let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+    live.set_fullscreen_sky(&ubo);
+
+    let pos: [[f32; 4]; 3] = [[-0.6, -0.6, 0.0, 1.0], [0.6, -0.6, 0.0, 1.0], [0.0, 0.6, 0.0, 1.0]];
+    let nrm: [[f32; 4]; 3] = [[0.0, 0.0, 1.0, 0.0]; 3];
+    let mut vtx: Vec<u8> = bytemuck::cast_slice(&pos).to_vec();
+    vtx.extend_from_slice(bytemuck::cast_slice(&nrm));
+    let mut d: DrawDesc = unsafe { std::mem::zeroed() };
+    d.mode = 0; d.count = 3; d.typemask = 1 | 2; d.num_verts = 3; d.vtx_bytes = vtx.len() as u32;
+    d.depth_test = 1; d.depth_write = 1;
+    let idm = glam::Mat4::IDENTITY.to_cols_array();
+    d.mvp = idm; d.modelview = idm; d.color = [1.0, 1.0, 1.0, 1.0]; d.min_alpha = -1.0;
+
+    let (w, h) = (128u32, 128u32);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("t"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    live.begin();
+    live.submit(&device, &queue, &d, &vtx, &[]);
+    live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+
+    // Read one center texel per face from a cube-array texture at (res, mip, base layer 0 = default probe).
+    let read_slot0 = |tex: &wgpu::Texture, res: u32, mip: u32| -> [[f32; 3]; 6] {
+        let mres = (res >> mip).max(1);
+        let stride = ((mres * 8 + 255) / 256) * 256;
+        let mut out = [[0f32; 3]; 6];
+        for f in 0..6u32 {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None, size: (stride * mres) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            enc.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture { texture: tex, mip_level: mip, origin: wgpu::Origin3d { x: 0, y: 0, z: f }, aspect: wgpu::TextureAspect::All },
+                wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(mres) } },
+                wgpu::Extent3d { width: mres, height: mres, depth_or_array_layers: 1 });
+            queue.submit([enc.finish()]);
+            let slice = buf.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::Maintain::Wait);
+            let data = slice.get_mapped_range();
+            let o = ((mres / 2) * stride + (mres / 2) * 8) as usize;
+            for c in 0..3 { out[f as usize][c] = f16_to_f32(u16::from_le_bytes([data[o + c*2], data[o + c*2 + 1]])); }
+            drop(data); buf.unmap();
+        }
+        out
+    };
+
+    let (rad, irr) = live.probe_outputs_debug().expect("probe outputs exist");
+    let seed = [0.20f32, 0.22, 0.26];
+    let rad0 = read_slot0(rad, 128, 0);     // radiance mip 0 (roughness 0 = sky passthrough)
+    let irr0 = read_slot0(irr, 16, 0); // irradiance res 16 (LL_IRRADIANCE_MAP_RESOLUTION)
+
+    // Radiance mip 0: differs from the grey seed and VARIES per face (a real per-direction sky).
+    let rad_differs = rad0.iter().any(|c| (0..3).any(|i| (c[i] - seed[i]).abs() > 0.03));
+    assert!(rad_differs, "radiance slot 0 still the grey seed: {:?}", rad0);
+    let mut lo = [f32::MAX; 3]; let mut hi = [f32::MIN; 3];
+    for c in &rad0 { for i in 0..3 { lo[i] = lo[i].min(c[i]); hi[i] = hi[i].max(c[i]); } }
+    let rad_spread = (0..3).map(|i| hi[i] - lo[i]).fold(0f32, f32::max);
+    assert!(rad_spread > 0.02, "radiance faces are flat (no sky gradient): {:?}", rad0);
+
+    // Irradiance: differs from the seed, all positive, and a valid finite ambient.
+    let irr_differs = irr0.iter().any(|c| (0..3).any(|i| (c[i] - seed[i]).abs() > 0.02));
+    assert!(irr_differs, "irradiance slot 0 still the grey seed: {:?}", irr0);
+    for c in &irr0 { for i in 0..3 { assert!(c[i].is_finite() && c[i] >= 0.0, "irradiance not a valid ambient: {:?}", irr0); } }
+
+    eprintln!("radiance mip0 slot0 (center rgb): {:?}", rad0);
+    eprintln!("irradiance slot0 (center rgb): {:?}", irr0);
 }
 
 /// P3-S2 terrain: the deferred terrain is captured into the probe faces. Renders the environment capture
@@ -1085,7 +1184,7 @@ fn probe_terrain_capture_changes_faces() {
         live.submit(&device, &queue, &d, &vtx, &[]);
         live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
 
-        let (rad, scratch) = live.probe_radiance_debug().expect("radiance");
+        let scr = live.probe_scratch_debug().expect("scratch");
         let res = 128u32;
         let stride = ((res * 8 + 255) / 256) * 256;
         let mut out = [[0f32; 3]; 6];
@@ -1095,7 +1194,7 @@ fn probe_terrain_capture_changes_faces() {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
             let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             enc.copy_texture_to_buffer(
-                wgpu::ImageCopyTexture { texture: rad, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: scratch * 6 + f }, aspect: wgpu::TextureAspect::All },
+                wgpu::ImageCopyTexture { texture: scr, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: f }, aspect: wgpu::TextureAspect::All },
                 wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(res) } },
                 wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 });
             queue.submit([enc.finish()]);
@@ -1196,7 +1295,7 @@ fn probe_water_capture_changes_faces() {
         }
         live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
 
-        let (rad, scratch) = live.probe_radiance_debug().expect("radiance");
+        let scr = live.probe_scratch_debug().expect("scratch");
         let res = 128u32;
         let stride = ((res * 8 + 255) / 256) * 256;
         let mut out = [[0f32; 3]; 6];
@@ -1206,7 +1305,7 @@ fn probe_water_capture_changes_faces() {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
             let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             enc.copy_texture_to_buffer(
-                wgpu::ImageCopyTexture { texture: rad, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: scratch * 6 + f }, aspect: wgpu::TextureAspect::All },
+                wgpu::ImageCopyTexture { texture: scr, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: f }, aspect: wgpu::TextureAspect::All },
                 wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(res) } },
                 wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 });
             queue.submit([enc.finish()]);

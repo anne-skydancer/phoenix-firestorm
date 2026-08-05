@@ -34,6 +34,17 @@ const PROBE_IRRADIANCE_RES: u32 = 16;       // LL_IRRADIANCE_MAP_RESOLUTION
 const RP_UBO_SIZE: u64 = 49248;             // std140 size of the ReflectionProbes block (see resolve_pass.rs RP_SIZE)
 const CAP_MAX_WATER: u64 = 16;              // max water draws captured per probe face (ring slots)
 const PROBE_CUBE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float; // radiance/irradiance (D4: Rgba16Float for now)
+// S3 convolution constants. CAP_SUPER = stock's probe-capture supersample (mRenderTarget = mProbeResolution*4);
+// the gaussian pre-blur (resScale = 1/(probeRes*2)) filters this before the 4:1 reflection-mip reduction to
+// mip 0. GEN_SLOT/GAUSS_SLOT are 256-byte dynamic-offset UBO strides for the per-face/mip gen + gaussian params.
+const CAP_SUPER: u32 = 4;
+const GEN_SLOT: u64 = 256;
+const GAUSS_SLOT: u64 = 256;
+
+/// mips in a probe's scratch/radiance chain: round(log2(res)) (stock: (S32)(log2(res)+0.5f)). 128 -> 7 (128..2).
+fn probe_mip_count(res: u32) -> u32 {
+    (res as f32).log2().round() as u32
+}
 // std140 offsets into the ReflectionProbes block (element 0 of each array); mirror resolve_pass.rs RP_*.
 const RP_OFF_REFSPHERE: usize = 16448;
 const RP_OFF_REFPARAMS: usize = 20544;
@@ -87,6 +98,37 @@ fn cube_array_filled(device: &wgpu::Device, queue: &wgpu::Queue, res: u32, cubes
         wgpu::util::TextureDataOrder::LayerMajor,
         &data,
     );
+    let view = t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::CubeArray), ..Default::default() });
+    (t, view)
+}
+
+/// A cube-map ARRAY with a full `mips`-level chain, every subresource seeded with `color`. The radiance
+/// output cube: the resolve samples it via textureLod up to max_probe_lod, so no mip may be uninitialized
+/// before the first capture+convolve. RENDER_ATTACHMENT so the radiance prefilter renders into each mip/face.
+fn cube_array_seeded_mipped(device: &wgpu::Device, queue: &wgpu::Queue, res: u32, cubes: u32, mips: u32, color: [f32; 3], label: &str) -> (wgpu::Texture, wgpu::TextureView) {
+    let layers = cubes * 6;
+    let texel = [f16_bytes(color[0]), f16_bytes(color[1]), f16_bytes(color[2]), f16_bytes(1.0)].concat();
+    let t = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: layers },
+        mip_level_count: mips, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: PROBE_CUBE_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    for m in 0..mips {
+        let mw = (res >> m).max(1);
+        let mh = mw;
+        let mut data = Vec::with_capacity((mw * mh * layers) as usize * 8);
+        for _ in 0..(mw * mh * layers) { data.extend_from_slice(&texel); }
+        queue.write_texture(
+            wgpu::ImageCopyTexture { texture: &t, mip_level: m, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &data,
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(mw * 8), rows_per_image: Some(mh) },
+            wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: layers },
+        );
+    }
     let view = t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::CubeArray), ..Default::default() });
     (t, view)
 }
@@ -418,6 +460,26 @@ pub struct LiveRenderer {
     // the ring w/ dynamic offset, 1/2 = the draw's bump maps). Water is a self-contained forward pass.
     probe_cap_water_ubo: wgpu::Buffer,
     probe_cap_water_binds: HashMap<[u32; 2], wgpu::BindGroup>,
+    // S3: probe convolution. probe_scratch = a 1-cube array with a full mip chain holding the gaussian-pre-
+    // blurred + downsampled captured environment (stock's sourceIdx scratch layer; here its own texture so
+    // the radiance prefilter can sample it while writing probe_radiance -- wgpu forbids read+write of one
+    // texture in a pass). probe_scratch2d = the per-face 2D reflection-mip targets (probeRes>>i) + gauss_tmp
+    // the supersample-res gaussian ping-pong; both rebuilt per face and copied into the cube.
+    probe_scratch: Option<wgpu::Texture>,
+    probe_scratch_view: Option<wgpu::TextureView>,
+    probe_convolved: bool,
+    probe_gauss_tmp: Option<wgpu::TextureView>,
+    probe_scratch2d: Vec<(wgpu::Texture, wgpu::TextureView, u32)>, // (mip target, its view, res) i=0..mips-1
+    gauss_pipeline: Option<wgpu::RenderPipeline>,
+    gauss_bgl: Option<wgpu::BindGroupLayout>,
+    gauss_params_ubo: wgpu::Buffer,
+    refmip_pipeline: Option<wgpu::RenderPipeline>,
+    refmip_bgl: Option<wgpu::BindGroupLayout>,
+    gen_bgl: Option<wgpu::BindGroupLayout>,
+    radiance_gen_pipeline: Option<wgpu::RenderPipeline>,
+    irradiance_gen_pipeline: Option<wgpu::RenderPipeline>,
+    gen_vbuf: Option<wgpu::Buffer>,
+    gen_params_ubo: wgpu::Buffer,
     // S1: Post-params UBO consumed by post_tonemap.frag (std140, 32 bytes).
     post_ubo: wgpu::Buffer,
     post_exposure: f32,    // RenderExposure clamp[0.5,4]
@@ -873,6 +935,20 @@ impl LiveRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // S3 convolution UBOs. gaussian: 2 dynamic-offset slots (H = dir(1,0), V = dir(0,1)). gen: one slot
+        // per (face,mip) draw (radiance 6*mips + irradiance 6 = 6*(mips+1) <= 48 for res 128), dynamic offset.
+        let gauss_params_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probe-gauss-params-ubo"),
+            size: GAUSS_SLOT * 2,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let gen_params_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probe-gen-params-ubo"),
+            size: GEN_SLOT * 48,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let probe_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("probe-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -1007,6 +1083,21 @@ impl LiveRenderer {
             terrain_ubo_cache: std::cell::Cell::new([0.0f32; 32]),
             probe_cap_water_ubo,
             probe_cap_water_binds: HashMap::new(),
+            probe_scratch: None,
+            probe_scratch_view: None,
+            probe_convolved: false,
+            probe_gauss_tmp: None,
+            probe_scratch2d: Vec::new(),
+            gauss_pipeline: None,
+            gauss_bgl: None,
+            gauss_params_ubo,
+            refmip_pipeline: None,
+            refmip_bgl: None,
+            gen_bgl: None,
+            radiance_gen_pipeline: None,
+            irradiance_gen_pipeline: None,
+            gen_vbuf: None,
+            gen_params_ubo,
             post_ubo,
             // S1 defaults: non-legacy baseline (settings.xml RenderExposure=1, TonemapType=1
             // ACES, TonemapMix=0.7). S3 overrides these per sky regime (legacy => mix=0,
@@ -2592,11 +2683,27 @@ impl LiveRenderer {
     fn ensure_probes(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         if self.probe_radiance.is_none() {
             let res = self.probe_res;
-            let rad_cubes = self.probe_count + 2; // +2 scratch layers (gen source / realtime)
+            let mips = probe_mip_count(res);
+            let rad_cubes = self.probe_count + 2; // +2 scratch layers (realtime / spare)
             // Neutral grey sky-ambient seed so the probe path produces sensible ambient before capture.
             let seed = [0.20f32, 0.22, 0.26];
-            let (rad_tex, rad_view) = cube_array_filled(device, queue, res, rad_cubes, seed, "probe-radiance");
+            // S3: radiance is now MIPPED (7 mips for 128) -- the resolve reads it via textureLod up to
+            // max_probe_lod, and the radiance prefilter renders one mip per roughness level. Irradiance stays
+            // single-mip at 16. probe_scratch (1 cube, same mip chain) holds the gaussian+downsampled capture
+            // the gens sample; separate texture so the prefilter can read it while writing radiance.
+            let (rad_tex, rad_view) = cube_array_seeded_mipped(device, queue, res, rad_cubes, mips, seed, "probe-radiance");
             let (irr_tex, irr_view) = cube_array_filled(device, queue, PROBE_IRRADIANCE_RES, self.probe_count, seed, "probe-irradiance");
+            let scratch = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("probe-scratch"),
+                size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 6 },
+                mip_level_count: mips, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                format: PROBE_CUBE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            self.probe_scratch_view = Some(scratch.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::CubeArray), ..Default::default() }));
+            self.probe_scratch = Some(scratch);
             self.probe_radiance = Some(rad_tex);
             self.probe_radiance_view = Some(rad_view);
             self.probe_irradiance = Some(irr_tex);
@@ -2634,31 +2741,147 @@ impl LiveRenderer {
 
             self.resolve_bind = None; // rebind resolve against the new probe resources
             self.probe_captured = false; // fresh arrays -> re-capture the sky
+            self.probe_convolved = false; // ...and re-convolve into radiance/irradiance slot 0
         }
     }
 
-    /// Test/debug: the radiance cube-array texture + the scratch layer index the sky capture fills, so a
-    /// headless test can read back a captured face and confirm it holds the sky (not the neutral grey seed).
-    pub fn probe_radiance_debug(&self) -> Option<(&wgpu::Texture, u32)> {
-        self.probe_radiance.as_ref().map(|t| (t, self.probe_count))
+    /// Test/debug: the scratch cube (1 cube, mip chain) the capture fills -- read layer f, mip 0 to confirm a
+    /// face holds the captured sky/terrain/water (not the grey seed).
+    pub fn probe_scratch_debug(&self) -> Option<&wgpu::Texture> {
+        self.probe_scratch.as_ref()
     }
 
-    /// S2-terrain: (re)create the probe-capture mini-frame targets -- a probe_res scene target, a face-res
-    /// G-buffer (RT0-3) + depth, and the face resolve bind (resolve_bgl, but binding 0 = probe_cap_ubo and
-    /// the G-buffer textures = the face G-buffer). Lazy.
+    /// Test/debug: the convolved DEFAULT-probe outputs (radiance array, irradiance array). Slot 0 = layers
+    /// 0..5 -- read to confirm convolve_probe wrote real convolved sky (not the grey seed) that the resolve reads.
+    pub fn probe_outputs_debug(&self) -> Option<(&wgpu::Texture, &wgpu::Texture)> {
+        match (self.probe_radiance.as_ref(), self.probe_irradiance.as_ref()) {
+            (Some(r), Some(i)) => Some((r, i)),
+            _ => None,
+        }
+    }
+
+    /// S3: (re)create the probe-convolution pipelines -- gaussian pre-blur + reflection-mip downsample (both
+    /// fullscreen fsq_uv.vert 2D passes) and the radiance-prefilter + irradiance-convolve generators (gen.vert
+    /// clip-quad + the P2 GGX/cosine frags). All render into PROBE_CUBE_FORMAT. Also seeds the two static
+    /// gaussian param slots (H = dir(1,0), V = dir(0,1); resScale = 1/(probeRes*2)) and the gen vertex quad.
+    fn ensure_probe_convolve_pipelines(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.gauss_pipeline.is_some() {
+            return;
+        }
+        let tex2d = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding, visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        };
+        let smp = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding, visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None,
+        };
+        let dyn_ubo = |binding: u32, vis: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
+            binding, visibility: vis,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: None },
+            count: None,
+        };
+
+        // gaussian: texture2D + sampler + dynamic GaussParams
+        let gauss_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gauss-bgl"), entries: &[tex2d(0), smp(1), dyn_ubo(2, wgpu::ShaderStages::FRAGMENT)],
+        });
+        // reflection-mip: texture2D + sampler
+        let refmip_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("refmip-bgl"), entries: &[tex2d(0), smp(1)],
+        });
+        // gen: textureCubeArray + sampler + dynamic GenParams (vertex reads modelview, fragment the rest)
+        let gen_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gen-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::CubeArray, multisampled: false },
+                    count: None,
+                },
+                smp(1),
+                dyn_ubo(2, wgpu::ShaderStages::VERTEX_FRAGMENT),
+            ],
+        });
+
+        let fsq = device.create_shader_module(wgpu::include_spirv!("../shaders/fsq_uv.vert.spv"));
+        let gauss_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/gaussian.frag.spv"));
+        let refmip_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/reflection_mip.frag.spv"));
+        let gen_vs = device.create_shader_module(wgpu::include_spirv!("../shaders/gen.vert.spv"));
+        let rad_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/radiance_gen.frag.spv"));
+        let irr_fs = device.create_shader_module(wgpu::include_spirv!("../shaders/irradiance_gen.frag.spv"));
+
+        let color_target = |blend| [Some(wgpu::ColorTargetState { format: PROBE_CUBE_FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })];
+        let fs_pipe = |label: &str, bgl: &wgpu::BindGroupLayout, fs: &wgpu::ShaderModule| {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[bgl], push_constant_ranges: &[] });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label), layout: Some(&layout),
+                vertex: wgpu::VertexState { module: &fsq, entry_point: "main", buffers: &[] },
+                fragment: Some(wgpu::FragmentState { module: fs, entry_point: "main", targets: &color_target(None) }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None,
+            })
+        };
+        self.gauss_pipeline = Some(fs_pipe("gauss", &gauss_bgl, &gauss_fs));
+        self.refmip_pipeline = Some(fs_pipe("refmip", &refmip_bgl, &refmip_fs));
+
+        // gen pipelines: clip-space quad (4-vert tri-strip, Float32x3 position at location 0)
+        let gen_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("gen-pl"), bind_group_layouts: &[&gen_bgl], push_constant_ranges: &[] });
+        let gen_vb = [wgpu::VertexBufferLayout {
+            array_stride: 12, step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 }],
+        }];
+        let gen_pipe = |label: &str, fs: &wgpu::ShaderModule| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label), layout: Some(&gen_layout),
+                vertex: wgpu::VertexState { module: &gen_vs, entry_point: "main", buffers: &gen_vb },
+                fragment: Some(wgpu::FragmentState { module: fs, entry_point: "main", targets: &color_target(None) }),
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, cull_mode: None, ..Default::default() },
+                depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None,
+            })
+        };
+        self.radiance_gen_pipeline = Some(gen_pipe("radiance-gen", &rad_fs));
+        self.irradiance_gen_pipeline = Some(gen_pipe("irradiance-gen", &irr_fs));
+
+        // gen vertex quad (clip space, z = -1 as radianceGenV expects); drawn as a 4-vert tri-strip.
+        let verts: [f32; 12] = [-1.0, -1.0, -1.0,  1.0, -1.0, -1.0,  -1.0, 1.0, -1.0,  1.0, 1.0, -1.0];
+        self.gen_vbuf = Some(wgpu::util::DeviceExt::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
+            label: Some("gen-vbuf"), contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX,
+        }));
+
+        // static gaussian params: resScale = 1/(probeRes*2); slot 0 = horizontal, slot 1 = vertical.
+        let res_scale = 1.0f32 / (self.probe_res as f32 * 2.0);
+        let mut g = vec![0u8; (GAUSS_SLOT * 2) as usize];
+        put_vec4(&mut g, 0, [1.0, 0.0, res_scale, 0.0]);
+        put_vec4(&mut g, GAUSS_SLOT as usize, [0.0, 1.0, res_scale, 0.0]);
+        queue.write_buffer(&self.gauss_params_ubo, 0, &g);
+
+        self.gauss_bgl = Some(gauss_bgl);
+        self.refmip_bgl = Some(refmip_bgl);
+        self.gen_bgl = Some(gen_bgl);
+    }
+
+    /// S2-terrain: (re)create the probe-capture mini-frame targets -- a supersample scene target, matching
+    /// G-buffer (RT0-3) + depth, the face resolve bind, plus the S3 gaussian ping-pong tmp and reflection-mip
+    /// chain targets (probeRes>>i). Lazy.
     fn ensure_probe_capture_targets(&mut self, device: &wgpu::Device) {
-        let res = self.probe_res;
+        // Capture at the supersample resolution (stock mRenderTarget = probeRes*4); the gaussian pre-blur +
+        // reflection-mip reduce it to the probeRes mip 0. G-buffer + depth + scene all at cap_res.
+        let cap_res = self.probe_res * CAP_SUPER;
         let mk = |fmt: wgpu::TextureFormat, usage: wgpu::TextureUsages, label: &str| {
             device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label), size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 },
+                label: Some(label), size: wgpu::Extent3d { width: cap_res, height: cap_res, depth_or_array_layers: 1 },
                 mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt, usage, view_formats: &[],
             }).create_view(&wgpu::TextureViewDescriptor::default())
         };
         if self.probe_cap_scene.is_none() {
+            // cap_scene is both a render target (sky/terrain/water/clouds, and the gaussian-V dest) and a
+            // sampled source (gaussian-H, and the mip-0 reduction) -- TEXTURE_BINDING for the resamples.
             self.probe_cap_scene = Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("probe-cap-scene"), size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 },
+                label: Some("probe-cap-scene"), size: wgpu::Extent3d { width: cap_res, height: cap_res, depth_or_array_layers: 1 },
                 mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: SCENE_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
             }));
         }
         if self.probe_cap_gbuf.is_none() {
@@ -2672,6 +2895,28 @@ impl LiveRenderer {
         }
         if self.probe_cap_depth.is_none() {
             self.probe_cap_depth = Some(mk(wgpu::TextureFormat::Depth32Float, wgpu::TextureUsages::RENDER_ATTACHMENT, "probe-cap-depth"));
+        }
+        // S3: gaussian ping-pong tmp (cap_res) + the reflection-mip chain targets (probeRes>>i, i=0..mips-1).
+        if self.probe_gauss_tmp.is_none() {
+            self.probe_gauss_tmp = Some(device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("probe-gauss-tmp"), size: wgpu::Extent3d { width: cap_res, height: cap_res, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: SCENE_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+            }).create_view(&wgpu::TextureViewDescriptor::default()));
+        }
+        if self.probe_scratch2d.is_empty() {
+            let mips = probe_mip_count(self.probe_res);
+            for i in 0..mips {
+                let r = (self.probe_res >> i).max(1);
+                let t = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("probe-scratch2d"), size: wgpu::Extent3d { width: r, height: r, depth_or_array_layers: 1 },
+                    mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: PROBE_CUBE_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+                self.probe_scratch2d.push((t, v, r));
+            }
         }
         if self.probe_cap_resolve_bind.is_none() {
             let Self {
@@ -2705,12 +2950,13 @@ impl LiveRenderer {
         }
     }
 
-    /// S2: capture the sky ENVIRONMENT into the 6 faces of the radiance cube's SCRATCH layer, one face per
-    /// 90deg-FOV camera -- a mini deferred-frame per face (stock's display_cube_face). Renders sky +
-    /// (deferred) terrain + volumetric clouds into a probe_res scene target, then copies it to the cube face
-    /// (the deferred resolve samples the probe cubes, so it can't render into the cube it reads). Each pass
-    /// uses a per-face camera. Captured once per (re)allocation; S3 convolves the scratch into radiance +
-    /// irradiance. (Water -- tapped forward geometry -- folds in next.)
+    /// S2/S3: capture the full sky ENVIRONMENT (sky + deferred terrain + water + volumetric clouds) into the 6
+    /// faces of probe_scratch, one face per 90deg-FOV camera -- a mini deferred-frame per face (stock's
+    /// display_cube_face) rendered at the CAP_SUPER supersample, then gaussian-pre-blurred and reduced through
+    /// the reflection-mip chain into the scratch cube's mip levels (stock's updateProbeFace downsample). The
+    /// deferred resolve samples the probe cubes, so the mini-frame renders into a scene target first. Captured
+    /// once per (re)allocation; convolve_probe then GGX-prefilters/convolves the scratch into radiance +
+    /// irradiance slot 0.
     fn capture_probe_environment(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         if self.probe_captured || !self.sky_fs_enabled || self.probe_radiance.is_none() {
             return;
@@ -2723,9 +2969,9 @@ impl LiveRenderer {
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: self.probe_cap_ubo.as_entire_binding() }],
             }));
         }
-        // Lazy face-res half-res cloud target + its composite bind (mirrors the main cloud_target path).
+        // Lazy half-res cloud target (half the capture res) + its composite bind (mirrors the main path).
         if self.probe_cap_cloud.is_none() {
-            let half = (self.probe_res / 2).max(1);
+            let half = (self.probe_res * CAP_SUPER / 2).max(1);
             let t = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("probe-cap-cloud"),
                 size: wgpu::Extent3d { width: half, height: half, depth_or_array_layers: 1 },
@@ -2751,6 +2997,7 @@ impl LiveRenderer {
         }
 
         self.ensure_probe_capture_targets(device);
+        self.ensure_probe_convolve_pipelines(device, queue); // S3: gaussian/mip/gen pipelines (before the immutable borrows below)
 
         // Collect the queued water draws (self-contained forward pass) + build a capture bind per sw_key
         // (binding 0 = the capture water ring w/ dynamic offset; 1/2 = the draw's bump maps).
@@ -2786,13 +3033,48 @@ impl LiveRenderer {
             }
         }
 
-        let (Some(sky_pipe), Some(bind), Some(rad), Some(cap_scene)) = (
+        let (Some(sky_pipe), Some(bind), Some(cap_scene)) = (
             self.sky_fs_pipeline.as_ref(), self.probe_cap_bind.as_ref(),
-            self.probe_radiance.as_ref(), self.probe_cap_scene.as_ref(),
+            self.probe_cap_scene.as_ref(),
         ) else { return; };
         let water_pipe = self.water_pipeline.as_ref();
         let cap_depth = self.probe_cap_depth.as_ref();
         let cap_scene_view = cap_scene.create_view(&wgpu::TextureViewDescriptor::default());
+        // S3 resample binds (owned; textures reused per face). H reads cap_scene, V reads gauss_tmp (dyn offsets
+        // 0 / GAUSS_SLOT); the mip chain reads cap_scene for mip 0 then scratch2d[i-1] for i>0. All -> probe_sampler.
+        let convolve_binds: Option<(wgpu::BindGroup, wgpu::BindGroup, Vec<wgpu::BindGroup>)> =
+            if self.gauss_pipeline.is_some() && self.probe_gauss_tmp.is_some() && !self.probe_scratch2d.is_empty() {
+                let gbgl = self.gauss_bgl.as_ref().unwrap();
+                let rbgl = self.refmip_bgl.as_ref().unwrap();
+                let gtmp = self.probe_gauss_tmp.as_ref().unwrap();
+                let gauss_ubo = |off: u64| wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &self.gauss_params_ubo, offset: off, size: std::num::NonZeroU64::new(16) });
+                let g_from_scene = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("gauss-bind-h"), layout: gbgl, entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&cap_scene_view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.probe_sampler) },
+                        wgpu::BindGroupEntry { binding: 2, resource: gauss_ubo(0) },
+                    ],
+                });
+                let g_from_tmp = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("gauss-bind-v"), layout: gbgl, entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(gtmp) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.probe_sampler) },
+                        wgpu::BindGroupEntry { binding: 2, resource: gauss_ubo(0) },
+                    ],
+                });
+                let mut rm_binds = Vec::with_capacity(self.probe_scratch2d.len());
+                for i in 0..self.probe_scratch2d.len() {
+                    let src = if i == 0 { &cap_scene_view } else { &self.probe_scratch2d[i - 1].1 };
+                    rm_binds.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("refmip-bind"), layout: rbgl, entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.probe_sampler) },
+                        ],
+                    }));
+                }
+                Some((g_from_scene, g_from_tmp, rm_binds))
+            } else { None };
         // Clouds optional (may be disabled); capture only if the whole path is present.
         let clouds = match (self.cloud_pipeline.as_ref(), self.cloud_comp_pipeline.as_ref(),
                             self.probe_cap_cloud.as_ref(), self.probe_cap_cloud_comp_bind.as_ref()) {
@@ -2833,8 +3115,6 @@ impl LiveRenderer {
             glam::Vec4::new(0.0, 0.0, -1.0, 0.0), glam::Vec4::new(0.0, 0.0, 1.0, 1.0));
         let proj_t = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.5, 8192.0);
         let main_terrain = self.terrain_ubo_cache.get();
-        let res = self.probe_res;
-        let scratch = self.probe_count; // first scratch cube (radiance array = count + 2)
         for (f, (dir, up)) in faces.iter().enumerate() {
             let view = glam::Mat4::look_at_rh(eye, eye + *dir, *up);
             let mut ubo = wl;
@@ -2969,17 +3249,141 @@ impl LiveRenderer {
                     cmp.draw(0..3, 0..1);
                 }
             }
-            // copy the mini-frame into the cube face (radiance scratch layer).
-            enc.copy_texture_to_texture(
-                wgpu::ImageCopyTexture { texture: cap_scene, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                wgpu::ImageCopyTexture { texture: rad, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: scratch * 6 + f as u32 }, aspect: wgpu::TextureAspect::All },
-                wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 });
+            // S3 downsample: gaussian pre-blur (H: cap_scene -> gauss_tmp; V: gauss_tmp -> cap_scene) then the
+            // reflection-mip chain (scratch2d[0] <- cap_scene @512; scratch2d[i] <- scratch2d[i-1]), and copy
+            // each mip into probe_scratch face f. The convolution (radiance/irradiance gen) reads probe_scratch.
+            if let (Some((gh, gv, rm_binds)), Some(gp), Some(rmp), Some(scratch_tex), Some(gtmp)) = (
+                convolve_binds.as_ref(), self.gauss_pipeline.as_ref(), self.refmip_pipeline.as_ref(),
+                self.probe_scratch.as_ref(), self.probe_gauss_tmp.as_ref(),
+            ) {
+                let blit = |enc: &mut wgpu::CommandEncoder, pipe: &wgpu::RenderPipeline, dst: &wgpu::TextureView, bindg: &wgpu::BindGroup, dyn_off: &[u32]| {
+                    let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("probe-resample"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: dst, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+                    });
+                    p.set_pipeline(pipe);
+                    p.set_bind_group(0, bindg, dyn_off);
+                    p.draw(0..3, 0..1);
+                };
+                blit(&mut enc, gp, gtmp, gh, &[0]);                        // horizontal -> gauss_tmp
+                blit(&mut enc, gp, &cap_scene_view, gv, &[GAUSS_SLOT as u32]); // vertical -> cap_scene
+                for i in 0..self.probe_scratch2d.len() {
+                    blit(&mut enc, rmp, &self.probe_scratch2d[i].1, &rm_binds[i], &[]); // reduce into scratch2d[i]
+                }
+                for i in 0..self.probe_scratch2d.len() {
+                    let (tex, _, r) = &self.probe_scratch2d[i];
+                    enc.copy_texture_to_texture(
+                        wgpu::ImageCopyTexture { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                        wgpu::ImageCopyTexture { texture: scratch_tex, mip_level: i as u32, origin: wgpu::Origin3d { x: 0, y: 0, z: f as u32 }, aspect: wgpu::TextureAspect::All },
+                        wgpu::Extent3d { width: *r, height: *r, depth_or_array_layers: 1 });
+                }
+            }
             queue.submit([enc.finish()]);
         }
         if had_terrain {
             queue.write_buffer(&self.terrain_typed_ubo, 0, bytemuck::cast_slice(&main_terrain)); // restore main view_proj
         }
         self.probe_captured = true;
+    }
+
+    /// S3: convolve the captured environment (probe_scratch mip chain) into the DEFAULT probe's radiance +
+    /// irradiance (slot 0). Radiance = per-mip GGX prefilter (radianceGenF): mip i, roughness i/max_lod, one
+    /// clip-quad per cube face reading the scratch mip chain at the solid-angle LOD. Irradiance = cosine
+    /// convolution (irradianceGenF) at res 16, one quad per face. Per-face rotation = look_at(dir,up).inverse()
+    /// using the SAME face basis as the capture, so scratch (input) and radiance/irradiance (output) share
+    /// orientation. Runs once after capture; the resolve then samples real sky ambient + reflections at slot 0.
+    fn convolve_probe(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.probe_convolved || !self.probe_captured {
+            return;
+        }
+        let (Some(scratch_view), Some(rad_tex), Some(irr_tex), Some(rad_pipe), Some(irr_pipe), Some(gen_bgl), Some(vbuf)) = (
+            self.probe_scratch_view.as_ref(), self.probe_radiance.as_ref(), self.probe_irradiance.as_ref(),
+            self.radiance_gen_pipeline.as_ref(), self.irradiance_gen_pipeline.as_ref(),
+            self.gen_bgl.as_ref(), self.gen_vbuf.as_ref(),
+        ) else { return; };
+        let res = self.probe_res;
+        let mips = probe_mip_count(res);
+        let max_lod = (res as f32).log2() - 1.0; // mMaxProbeLOD (6 for 128)
+        // Same face basis as capture (standard +X,-X,+Y,-Y,+Z,-Z), so input/output cube orientation matches.
+        let faces: [(glam::Vec3, glam::Vec3); 6] = [
+            (glam::Vec3::X, glam::Vec3::NEG_Y),
+            (glam::Vec3::NEG_X, glam::Vec3::NEG_Y),
+            (glam::Vec3::Y, glam::Vec3::Z),
+            (glam::Vec3::NEG_Y, glam::Vec3::NEG_Z),
+            (glam::Vec3::Z, glam::Vec3::NEG_Y),
+            (glam::Vec3::NEG_Z, glam::Vec3::NEG_Y),
+        ];
+        // The face rotation: modelview*(0,0,-1) = dir, modelview*(0,1,0) = up (the gen quad is at z=-1).
+        let face_mv = |cf: usize| glam::Mat4::look_at_rh(glam::Vec3::ZERO, faces[cf].0, faces[cf].1).inverse();
+
+        // gen bind: scratch cube (sourceIdx 0) + sampler + GenParams (dynamic offset, 96-byte std140 slot).
+        let gen_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gen-bind"), layout: gen_bgl, entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(scratch_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.probe_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &self.gen_params_ubo, offset: 0, size: std::num::NonZeroU64::new(96) }) },
+            ],
+        });
+
+        // Write all GenParams slots: radiance = 6*mips (mipLevel i), irradiance = 6 (mipLevel unused).
+        let put = |slot: u64, mv: &glam::Mat4, mip_level: f32| {
+            let mut b = vec![0u8; 96];
+            b[0..64].copy_from_slice(bytemuck::cast_slice(&mv.to_cols_array()));
+            b[64..68].copy_from_slice(&mip_level.to_le_bytes());
+            b[68..72].copy_from_slice(&max_lod.to_le_bytes());
+            b[72..76].copy_from_slice(&1.0f32.to_le_bytes());          // probe_strength
+            b[76..80].copy_from_slice(&0i32.to_le_bytes());            // sourceIdx = 0 (scratch cube layer 0)
+            b[80..84].copy_from_slice(&(res as i32).to_le_bytes());    // u_width (radiance; irradiance hardcodes 64)
+            queue.write_buffer(&self.gen_params_ubo, slot * GEN_SLOT, &b);
+        };
+        for i in 0..mips {
+            for cf in 0..6 {
+                put((i * 6 + cf as u32) as u64, &face_mv(cf), i as f32);
+            }
+        }
+        for cf in 0..6 {
+            put((mips * 6 + cf as u32) as u64, &face_mv(cf), 0.0);
+        }
+
+        // Render: radiance mip i / face cf -> rad slot 0 (layers 0..5); irradiance face cf -> irr slot 0.
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("probe-convolve-enc") });
+        let face2d = |tex: &wgpu::Texture, mip: u32, layer: u32| tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_mip_level: mip, mip_level_count: Some(1),
+            base_array_layer: layer, array_layer_count: Some(1),
+            ..Default::default()
+        });
+        let gen_pass = |enc: &mut wgpu::CommandEncoder, pipe: &wgpu::RenderPipeline, dst: &wgpu::TextureView, slot: u64| {
+            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("probe-gen"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: dst, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+            });
+            p.set_pipeline(pipe);
+            p.set_bind_group(0, &gen_bind, &[(slot * GEN_SLOT) as u32]);
+            p.set_vertex_buffer(0, vbuf.slice(..));
+            p.draw(0..4, 0..1);
+        };
+        for i in 0..mips {
+            for cf in 0..6u32 {
+                let v = face2d(rad_tex, i, cf); // slot 0 default probe = layers 0..5
+                gen_pass(&mut enc, rad_pipe, &v, (i * 6 + cf) as u64);
+            }
+        }
+        for cf in 0..6u32 {
+            let v = face2d(irr_tex, 0, cf);
+            gen_pass(&mut enc, irr_pipe, &v, (mips * 6 + cf) as u64);
+        }
+        queue.submit([enc.finish()]);
+        self.probe_convolved = true;
     }
 
     /// #4: the deferred resolve pipeline (fullscreen post.vert + resolve.frag) + its bind
@@ -3379,7 +3783,8 @@ impl LiveRenderer {
             self.ensure_gbuffer(device, w, h);
             self.ensure_probes(device, queue); // P3: probe resources exist before the resolve binds them
             self.ensure_resolve(device);       // resolve pipeline needed by the terrain capture (below)
-            self.capture_probe_environment(device, queue); // S2: fill the radiance scratch cube (sky + terrain + clouds)
+            self.capture_probe_environment(device, queue); // S2: fill probe_scratch (sky + terrain + water + clouds)
+            self.convolve_probe(device, queue);            // S3: GGX-prefilter/convolve scratch -> radiance + irradiance slot 0
         }
         if has_gb {
             self.ensure_pipeline_gb(device);

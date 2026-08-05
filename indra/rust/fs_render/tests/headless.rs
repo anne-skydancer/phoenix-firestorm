@@ -849,7 +849,7 @@ fn dynamic_exposure_matches_stock_exposureF() {
     let r = SkyRegime {
         classic_mode: 0, sky_hdr_scale: 2.0, sky_sunlight_scale: 1.5, sky_ambient_scale: 1.5,
         scene_light_strength: 2.0, tonemap_mix: 0.7, legacy_gamma: 0, exposure: 1.0,
-        tonemap_type: 0, gamma: 2.2,
+        tonemap_type: 0, gamma: 2.2, probe_ambiance: 0.0,
     };
     let clear = [0.05, 0.05, 0.05]; // dim -> avg_lum << 0.175 -> adapt toward exp_max
     let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);

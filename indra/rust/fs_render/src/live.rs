@@ -2636,6 +2636,19 @@ impl LiveRenderer {
         }
     }
 
+    /// S4: per-frame reflection-probe view transforms for the deferred resolve -- `inv_proj` (clip->view,
+    /// reverse-Z = inverse(rev*proj)) + `env_mat` (view->world rotation), both column-major mat4. Packs the
+    /// ProbeParams UBO (pp_inv_proj/pp_env_mat/pp_misc) so the resolve places the DEFAULT probe in view space
+    /// under a REAL camera (identity only suits view=identity). z-conv = 1 (Vulkan reverse-Z). Feed from
+    /// SceneFrame::probe_params() each frame (the C++ bridge calls this like set_fullscreen_sky).
+    pub fn set_probe_camera(&self, queue: &wgpu::Queue, inv_proj: &[f32; 16], env_mat: &[f32; 16]) {
+        let max_lod = (self.probe_res as f32).log2() - 1.0;
+        let ip = glam::Mat4::from_cols_array(inv_proj);
+        let em = glam::Mat4::from_cols_array(env_mat);
+        queue.write_buffer(&self.probe_params_ubo, 0,
+            &probe_params_bytes(&ip, &em, max_lod, /*cube_snapshot=*/0.0, /*zconv_vulkan=*/1.0));
+    }
+
     /// #3: (re)create the G-buffer attachments on size change.
     fn ensure_gbuffer(&mut self, device: &wgpu::Device, w: u32, h: u32) {
         let need = match &self.gbuf_albedo {

@@ -256,6 +256,7 @@ pub struct SkyRegime {
     pub exposure: f32,              // clamp(RenderExposure, 0.5, 4.0)
     pub tonemap_type: u32,          // 0 PBRNeutral / 1 ACES Hill
     pub gamma: f32,                 // sky gamma -> legacyGamma
+    pub probe_ambiance: f32,        // getReflectionProbeAmbiance(should_auto) -> default-probe refParams.x (S3-C)
 }
 
 /// P2: the EEP water block, from `LLSettingsWater` getters. Texture fields are UUID-derived
@@ -494,6 +495,7 @@ impl SceneFrame {
             exposure: s.render_exposure.clamp(0.5, 4.0), // pipeline.cpp:8164
             tonemap_type: s.render_tonemap_type,
             gamma: g,
+            probe_ambiance: eff_probe, // = getReflectionProbeAmbiance(should_auto) = minimum_ambiance
         })
     }
 
@@ -583,6 +585,32 @@ impl SceneFrame {
         Some(u)
     }
 
+    /// S4: the per-frame reflection-probe view transforms the deferred resolve needs to place the DEFAULT
+    /// probe in view space (`ProbeParams.pp_inv_proj`/`pp_env_mat`). Returns `(inv_proj, env_mat)` as
+    /// column-major mat4 arrays:
+    ///   - `inv_proj = inverse(rev * proj)` -- clip->view for the reverse-Z depth the engine renders (matches
+    ///     terrain_ubo's `rev*proj*view`); getViewPositionFromDepth multiplies the reverse-Z ndc by this.
+    ///   - `env_mat  = view->world rotation = transpose(view 3x3)` (stock setEnvMat: uniformMatrix3fv of the
+    ///     modelview 3x3 with transpose=TRUE). The resolve rotates the view-space reflection to world with it.
+    /// view=identity (the P1 fixture) -> env_mat=identity, inv_proj=inverse(rev*proj); the resolve's
+    /// pp_misc.z=1 (Vulkan reverse-Z) branch consumes them. refSphere/refParams weights are static (a single
+    /// parallax-off default probe: its weight cancels in the resolve's single-probe normalization).
+    pub fn probe_params(&self) -> Option<([f32; 16], [f32; 16])> {
+        let cam = self.camera.as_ref()?;
+        let view = glam::Mat4::from_cols_array(&cam.view);
+        let proj = glam::Mat4::perspective_rh(cam.fov_y, cam.aspect, cam.near, cam.far);
+        let rev = glam::Mat4::from_cols(
+            glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
+            glam::Vec4::new(0.0, 1.0, 0.0, 0.0),
+            glam::Vec4::new(0.0, 0.0, -1.0, 0.0),
+            glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
+        );
+        let inv_proj = (rev * proj).inverse();
+        // view->world rotation: transpose of the view's upper-left 3x3 (rigid view -> transpose == inverse).
+        let env_mat = glam::Mat4::from_mat3(glam::Mat3::from_mat4(view).transpose());
+        Some((inv_proj.to_cols_array(), env_mat.to_cols_array()))
+    }
+
     /// P1 diag: which typed feed has arrived this frame (separates "no camera" from "no sky").
     pub fn has_camera(&self) -> bool { self.camera.is_some() }
     pub fn has_sky(&self) -> bool { self.eep_sky.is_some() }
@@ -597,6 +625,38 @@ impl SceneFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S4: probe_params gives the view transforms the resolve needs, for a NON-identity camera:
+    ///   - env_mat (view->world rotation) un-rotates the view: env_mat_3x3 * view_3x3 == identity.
+    ///   - inv_proj inverts the REVERSE-Z projection: inv_proj * (rev*proj) == identity (catches a missing
+    ///     rev factor -- inverse(proj) alone would fail).
+    #[test]
+    fn probe_params_view_transforms() {
+        let view = glam::Mat4::look_at_rh(
+            glam::Vec3::new(10.0, 20.0, 5.0), glam::Vec3::new(3.0, -1.0, 2.0), glam::Vec3::Z);
+        let cam = CameraBlock { view: view.to_cols_array(), near: 0.5, far: 2048.0, fov_y: 1.1, aspect: 1.6, ..Default::default() };
+        let mut s = SceneFrame::new();
+        s.set_camera(&cam);
+        let (inv_proj, env_mat) = s.probe_params().expect("camera present -> probe params");
+
+        let em3 = glam::Mat3::from_mat4(glam::Mat4::from_cols_array(&env_mat));
+        let v3 = glam::Mat3::from_mat4(view);
+        let prod3 = em3 * v3;
+        for c in 0..3 { for r in 0..3 {
+            let want = if c == r { 1.0 } else { 0.0 };
+            assert!((prod3.col(c)[r] - want).abs() < 1e-4, "env_mat*view != I at ({c},{r}): {}", prod3.col(c)[r]);
+        }}
+
+        let proj = glam::Mat4::perspective_rh(cam.fov_y, cam.aspect, cam.near, cam.far);
+        let rev = glam::Mat4::from_cols(
+            glam::Vec4::new(1.0,0.0,0.0,0.0), glam::Vec4::new(0.0,1.0,0.0,0.0),
+            glam::Vec4::new(0.0,0.0,-1.0,0.0), glam::Vec4::new(0.0,0.0,1.0,1.0));
+        let prod4 = glam::Mat4::from_cols_array(&inv_proj) * (rev * proj);
+        for c in 0..4 { for r in 0..4 {
+            let want = if c == r { 1.0 } else { 0.0 };
+            assert!((prod4.col(c)[r] - want).abs() < 1e-3, "inv_proj*(rev*proj) != I at ({c},{r}): {}", prod4.col(c)[r]);
+        }}
+    }
 
     #[test]
     fn lifecycle_and_snapshot_roundtrip() {

@@ -190,12 +190,25 @@ Original spec:
 
 Deferred with the manager scheduler: the multi-frame 12-call cadence, priority/occlusion, realtime probes.
 
-### S4 — updateUniforms: pack the default probe (headless: resolve consumes it → non-zero sky ambient)
-- Pack ReflectionProbes: refmapCount=1; refSphere[0] = view-space (0,0,-?) + r4096 (64 m above cam →
-  view space); refParams[0] = (sky ambiance floor, 1, fadeIn, znear); refIndex[0] = (layer 0, -1, 0, 0);
-  refBucket = 0 (→ start 1 → append probe 0). ProbeParams: pp_inv_proj = reverse-Z inv_proj, pp_env_mat =
-  view→world (3×3 of the view matrix transposed), pp_misc = (max_probe_lod=6, cube_snapshot=0, z-conv).
-- Headless: a lit legacy/PBR pixel now gets sky-probe ambient (non-zero, sensible).
+### S4 — per-frame default-probe view transforms — DONE (headless verified)
+- Whole-chain read: for the SINGLE default probe (radius 4096, parallax off) only two per-frame values are
+  load-bearing — everything else is static. `refSphere` center + `refParams.w` are irrelevant (a single
+  parallax-off probe's weight cancels in the resolve's `col/=wsum` normalization; `sphereWeight` doesn't even
+  read `.w`). `refParams.x/y` = S3-C's ambiance/radiance. `refBucket`/`refmapCount`/`refIndex` static.
+- The two that matter (were hard-coded to IDENTITY, only right when view=identity):
+  - `pp_env_mat` = view→world = `transpose(view 3x3)` (stock `setEnvMat`: uniformMatrix3fv of modelview 3x3,
+    transpose=TRUE). `pp_inv_proj` = `inverse(rev*proj)` (reverse-Z; getViewPositionFromDepth's z-conv=1 path).
+- Implemented: `SceneFrame::probe_params()` (inv_proj, env_mat from the typed CameraBlock),
+  `LiveRenderer::set_probe_camera` (packs the ProbeParams UBO), `SkyRegime::probe_ambiance` (=
+  getReflectionProbeAmbiance), and `fsr_end_frame` now feeds `set_probe_camera` + `set_probe_ambiance`
+  per-frame (mirrors the sky/terrain feeds) so it's live in-world.
+- **Finding:** `env_mat`/`inv_proj` affect ONLY reflections, not diffuse ambient — in `tapIrradianceMap`
+  the sample dir is `env_mat * view_norm` where `view_norm = transpose(env_mat)*n`, so `env_mat` CANCELS →
+  diffuse ambient samples world normal `n` regardless. Diffuse probe ambient was already correct even at
+  identity; S4's real in-world effect is on REFLECTIVE surfaces (the specular path uses the real view ray).
+- Headless VERIFIED (`scene::probe_params_view_transforms`): env_mat un-rotates the view (`env_mat*view==I`)
+  and inv_proj inverts `rev*proj`, for a non-identity camera. The non-identity reflection difference is a
+  visual S5 gate (env_mat only affects reflections, best seen in-world). All 6 lib + 15 headless tests pass.
 
 ### S5 — IN-WORLD verification (needs the user's SL launch)
 - Sky ambient + reflections appear on terrain/objects; matches stock's look qualitatively.

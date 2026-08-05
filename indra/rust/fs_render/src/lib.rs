@@ -810,6 +810,7 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     // fed yet) leaves the post defaults; the sky's own sky_hdr_scale still comes via the tap aux.
     if let Some(r) = e.scene.sky_regime() {
         e.live.apply_sky_regime(&r);
+        e.live.set_probe_ambiance(r.probe_ambiance); // S3-C: default-probe single-bounce diffuse strength
     }
     // Phase A.2: the engine derives the fullscreen sky UBO from the typed camera + EEP sky it was
     // fed, and renders the sky itself (parallel-read) -- no tapped dome draw needed.
@@ -834,6 +835,11 @@ pub extern "C" fn fsr_end_frame() -> i32 {
     // (disjoint field borrows: e.live mut, e.queue/e.device/e.scene shared).
     if let Some(tu) = e.scene.terrain_ubo() {
         e.live.set_terrain_ubo(&e.queue, &tu);
+    }
+    // S4: per-frame reflection-probe view transforms (view->world env_mat + reverse-Z inv_proj) so the
+    // deferred resolve places the default probe under the REAL camera (identity only suits view=identity).
+    if let Some((inv_proj, env_mat)) = e.scene.probe_params() {
+        e.live.set_probe_camera(&e.queue, &inv_proj, &env_mat);
     }
     e.live.ensure_terrain(&e.device, e.scene.terrain.as_ref());
     // P1 DIAG (temporary): pinpoint the white sky WITHOUT guessing. cam/sky = typed feed reached;

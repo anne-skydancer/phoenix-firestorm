@@ -43,6 +43,11 @@ namespace FSSceneDump
     // read-only text). This captures that replay from the retained CPU vertex buffer + the CURRENT
     // gGL matrix (the UI ortho renderBuffers set) + the bound atlas id. Called from renderBuffers.
     void uiSubmitBufferData(const LLVertexBufferData& d);
+    // <FS:VkBridge> U2: mirror the UI scissor stack (LLScreenClipRect) to the native-VK feed. Called
+    // from lllocalcliprect (llui -> llrender, exactly like textureUploaded/bufferDirty). Rect is GL
+    // device px (bottom-left origin, llfloor/llceil+1, UI-scaled); enabled=false clears the clip.
+    // uiSubmit/uiSubmitBufferData stamp the current value onto each flushed draw.
+    void uiSetScissor(int x, int y, int w, int h, bool enabled);
     void endFrame();
     void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba);
     void bufferDirty(const void* ptr);

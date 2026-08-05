@@ -28,6 +28,7 @@
 
 #include "llfontgl.h"
 #include "llui.h"
+#include "fsscenedump.h" // <FS:VkBridge> U2: mirror the UI scissor to the native-VK feed
 
 /*static*/ std::stack<LLRect> LLScreenClipRect::sClipRectStack;
 
@@ -80,7 +81,11 @@ void LLScreenClipRect::popClipRect()
 //static
 void LLScreenClipRect::updateScissorRegion()
 {
-    if (sClipRectStack.empty()) return;
+    if (sClipRectStack.empty())
+    {
+        FSSceneDump::uiSetScissor(0, 0, 0, 0, false); // <FS:VkBridge> U2: stack empty -> no UI clip
+        return;
+    }
 
     // finish any deferred calls in the old clipping region
     gGL.flush();
@@ -93,6 +98,9 @@ void LLScreenClipRect::updateScissorRegion()
     w = llmax(0, llceil(rect.getWidth() * LLUI::getScaleFactor().mV[VX])) + 1;
     h = llmax(0, llceil(rect.getHeight() * LLUI::getScaleFactor().mV[VY])) + 1;
     glScissor( x,y,w,h );
+    // <FS:VkBridge> U2: mirror the exact GL scissor (device px, bottom-left) to the native-VK UI feed,
+    // AFTER gGL.flush() has drained the old-scissor draws (each stamped with the prior clip).
+    FSSceneDump::uiSetScissor(x, y, w, h, true);
     stop_glerror();
 }
 

@@ -220,7 +220,9 @@ static fsr_decview_t sFsrDecView = nullptr;
 static fsr_decfree_t sFsrDecFree = nullptr;
 // <FS:VkBridge> A.3 native-VK UI feed (honest LLRender::flush -> engine, no glGet, no tap)
 typedef int(__cdecl* fsr_ui_begin_t)();
-typedef int(__cdecl* fsr_ui_submit_t)(const float*, U32, U32, U32, const U8*);
+// <FS:VkBridge> U2/U3: widened once -- clip rect (GL device px, bottom-left; w<0 = no clip) + the
+// LLRender eBlendFactor pair (getCurrBlendSFactor/DFactor). Viewer + engine rebuild in lockstep.
+typedef int(__cdecl* fsr_ui_submit_t)(const float*, U32, U32, U32, const U8*, S32, S32, S32, S32, U32, U32);
 static fsr_ui_begin_t sFsrUiBegin = nullptr;
 static fsr_ui_submit_t sFsrUiSubmit = nullptr;
 static std::unordered_map<U64, U32> sSkinIds;
@@ -275,9 +277,27 @@ bool liveActive() { return sLive; }
 // renders the UI, so the feed stands down to avoid double-drawing.
 bool uiActive() { return sLive && !sTapDraws && sFsrUiSubmit != nullptr; }
 void uiBegin() { if (sLive && sFsrUiBegin) sFsrUiBegin(); }
+
+// <FS:VkBridge> U2: the active UI scissor, mirrored from LLScreenClipRect::updateScissorRegion (GL
+// device px, bottom-left origin). Stamped onto every uiSubmit/uiSubmitBufferData; enabled=false => no
+// clip. Like textureUploaded/bufferDirty, this is a hook called FROM llui (a legal upward dependency).
+static struct { S32 x = 0, y = 0, w = 0, h = 0; bool enabled = false; } sUiScissor;
+void uiSetScissor(int x, int y, int w, int h, bool enabled)
+{
+    sUiScissor.x = x; sUiScissor.y = y; sUiScissor.w = w; sUiScissor.h = h; sUiScissor.enabled = enabled;
+}
+
 void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8* verts)
 {
-    if (sFsrUiSubmit) sFsrUiSubmit(mvp16, tex_id, mode, vtx_count, verts);
+    if (!sFsrUiSubmit) return;
+    // U2 clip (GL device px; w<0 => no clip) + U3 blend (current eBlendFactor pair, cached -> no glGet).
+    S32 cx = sUiScissor.enabled ? sUiScissor.x : 0;
+    S32 cy = sUiScissor.enabled ? sUiScissor.y : 0;
+    S32 cw = sUiScissor.enabled ? sUiScissor.w : -1;
+    S32 ch = sUiScissor.enabled ? sUiScissor.h : 0;
+    U32 bs = (U32)gGL.getCurrBlendSFactor();
+    U32 bd = (U32)gGL.getCurrBlendDFactor();
+    sFsrUiSubmit(mvp16, tex_id, mode, vtx_count, verts, cx, cy, cw, ch, bs, bd);
 }
 
 // <FS:VkBridge> UI-complete: capture a cached-font replay (LLFontVertexBuffer::renderBuffers) that
@@ -308,7 +328,15 @@ void uiSubmitBufferData(const LLVertexBufferData& d)
         p += 24;
     }
     glm::mat4 mvp = gGL.getProjectionMatrix() * gGL.getModelviewMatrix();
-    sFsrUiSubmit(glm::value_ptr(mvp), d.mTexName, (U32)d.mMode, d.mCount, buf.data());
+    // U2/U3: same clip + blend capture as uiSubmit -- cached text (list rows/editors) lives INSIDE
+    // scroll clips, so it must scissor too.
+    S32 cx = sUiScissor.enabled ? sUiScissor.x : 0;
+    S32 cy = sUiScissor.enabled ? sUiScissor.y : 0;
+    S32 cw = sUiScissor.enabled ? sUiScissor.w : -1;
+    S32 ch = sUiScissor.enabled ? sUiScissor.h : 0;
+    U32 bs = (U32)gGL.getCurrBlendSFactor();
+    U32 bd = (U32)gGL.getCurrBlendDFactor();
+    sFsrUiSubmit(glm::value_ptr(mvp), d.mTexName, (U32)d.mMode, d.mCount, buf.data(), cx, cy, cw, ch, bs, bd);
 }
 
 void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba)

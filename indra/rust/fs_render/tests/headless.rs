@@ -1626,8 +1626,8 @@ fn ui_pass_renders_textured_and_solid_quads() {
 
     live.begin();
     live.ui_begin();
-    live.ui_submit(&identity, 42, 0, &left, None);  // textured red (left)
-    live.ui_submit(&identity, 0, 0, &right, None);  // solid green (right, white fallback)
+    live.ui_submit(&identity, 42, 0, &left, None, 7, 9);  // textured red (left)
+    live.ui_submit(&identity, 0, 0, &right, None, 7, 9);  // solid green (right, white fallback)
 
     let (w, h) = (64u32, 48u32);
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -1707,8 +1707,8 @@ fn ui_color_space_srgb_blend_matches_stock() {
         let mut live = LiveRenderer::new(&device, &queue, fmt);
         live.begin();
         live.ui_begin();
-        live.ui_submit(&identity, 0, 0, &quad([64, 64, 64, 255]), None);    // opaque background
-        live.ui_submit(&identity, 0, 0, &quad([128, 128, 128, 128]), None); // translucent mid-gray over it
+        live.ui_submit(&identity, 0, 0, &quad([64, 64, 64, 255]), None, 7, 9);    // opaque background
+        live.ui_submit(&identity, 0, 0, &quad([128, 128, 128, 128]), None, 7, 9); // translucent mid-gray over it
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ui-cs-target"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1781,8 +1781,8 @@ fn ui_scissor_clips_draw() {
     };
     live.begin();
     live.ui_begin();
-    live.ui_submit(&identity, 0, 0, &quad([40, 40, 40, 255]), None);                       // grey bg, no clip
-    live.ui_submit(&identity, 0, 0, &quad([255, 255, 255, 255]), Some([8, 8, 16, 16]));    // white, clipped to centre
+    live.ui_submit(&identity, 0, 0, &quad([40, 40, 40, 255]), None, 7, 9);                       // grey bg, no clip
+    live.ui_submit(&identity, 0, 0, &quad([255, 255, 255, 255]), Some([8, 8, 16, 16]), 7, 9);    // white, clipped to centre
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("ui-clip-target"),
         size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1853,7 +1853,7 @@ fn ui_font_atlas_samples_nearest() {
     let row = |live: &mut LiveRenderer, tex_id: u32| -> Vec<u8> {
         live.begin();
         live.ui_begin();
-        live.ui_submit(&identity, tex_id, 0, &grad(), None);
+        live.ui_submit(&identity, tex_id, 0, &grad(), None, 7, 9);
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ui-filter-target"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1891,4 +1891,61 @@ fn ui_font_atlas_samples_nearest() {
     let intermediate = |r: &[u8]| r.iter().any(|&v| v > 40 && v < 215);
     assert!(!intermediate(&font_row), "font atlas must sample NEAREST (hard edge, no ramp), got {:?}", font_row);
     assert!(intermediate(&img_row), "UI image must sample LINEAR (a ramp with intermediate values), got {:?}", img_row);
+}
+
+/// U3 CONVERGENCE PIN (blend stratum): the UI pass honors the per-draw eBlendFactor pair captured from
+/// setSceneBlendType. An ADDITIVE draw (BF_ONE/BF_ONE = 0/0, stock BT_ADD for glow) over a grey
+/// background must be src+dst -- NOT the straight-alpha result the single-pipeline engine produced.
+#[test]
+fn ui_additive_blend_composites() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping headless UI blend test");
+        return;
+    };
+    let fmt = wgpu::TextureFormat::Rgba8Unorm;
+    let mut live = LiveRenderer::new(&device, &queue, fmt);
+    let (w, h) = (32u32, 32u32);
+    let identity: [f32; 16] = [1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.];
+    let quad = |c: [u8; 4]| -> Vec<u8> {
+        let mut v = Vec::new();
+        for &(x, y) in &[(-1f32,-1f32), (1.,-1.), (1.,1.), (-1.,-1.), (1.,1.), (-1.,1.)] {
+            ui_vtx(&mut v, x, y, 0.0, 0.0, c);
+        }
+        v
+    };
+    live.begin();
+    live.ui_begin();
+    live.ui_submit(&identity, 0, 0, &quad([64, 64, 64, 255]), None, 7, 9);    // opaque grey bg (alpha)
+    live.ui_submit(&identity, 0, 0, &quad([128, 128, 128, 255]), None, 0, 0); // additive grey (BF_ONE/BF_ONE)
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ui-blend-target"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: fmt, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+    let stride = ((w * 4 + 255) / 256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ui-blend-rb"), size: (stride * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ui-blend-rb") });
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    queue.submit([enc.finish()]);
+    let slice = buf.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::Maintain::Wait);
+    let data = slice.get_mapped_range();
+    let off = ((h / 2) * stride + (w / 2) * 4) as usize;
+    let centre = [data[off], data[off + 1], data[off + 2]];
+    drop(data);
+    buf.unmap();
+    assert!((centre[0] as i32 - 192).abs() <= 1,
+        "additive UI must composite src+dst = 128+64 = 192 (straight-alpha would give 128), got {:?}", centre);
 }

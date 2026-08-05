@@ -317,6 +317,27 @@ struct UiDraw {
     // LLScreenClipRect::updateScissorRegion computes it (llfloor origin, llceil+1 extent, UI-scaled).
     // None = no clip (draw full). Converted to wgpu top-left in the UI pass (needs the target height).
     clip: Option<[i32; 4]>, // [x, y_bottom, w, h]
+    // U3 blend: the LLRender eBlendFactor pair captured from gGL.getCurrBlendSFactor/DFactor at flush.
+    blend_src: u8,
+    blend_dst: u8,
+}
+
+/// U3: map an LLRender eBlendFactor (llrender.h:353-366) to wgpu::BlendFactor. The UI tap ships the
+/// current getCurrBlendSFactor/DFactor per flush so each draw blends exactly as setSceneBlendType did.
+fn ui_blend_factor(f: u8) -> wgpu::BlendFactor {
+    match f {
+        0 => wgpu::BlendFactor::One,              // BF_ONE
+        1 => wgpu::BlendFactor::Zero,             // BF_ZERO
+        2 => wgpu::BlendFactor::Dst,              // BF_DEST_COLOR
+        3 => wgpu::BlendFactor::Src,              // BF_SOURCE_COLOR
+        4 => wgpu::BlendFactor::OneMinusDst,      // BF_ONE_MINUS_DEST_COLOR
+        5 => wgpu::BlendFactor::OneMinusSrc,      // BF_ONE_MINUS_SOURCE_COLOR
+        6 => wgpu::BlendFactor::DstAlpha,         // BF_DEST_ALPHA
+        7 => wgpu::BlendFactor::SrcAlpha,         // BF_SOURCE_ALPHA
+        8 => wgpu::BlendFactor::OneMinusDstAlpha, // BF_ONE_MINUS_DEST_ALPHA
+        9 => wgpu::BlendFactor::OneMinusSrcAlpha, // BF_ONE_MINUS_SOURCE_ALPHA
+        _ => wgpu::BlendFactor::SrcAlpha,         // BF_UNDEF / unknown -> alpha default
+    }
 }
 
 /// U1: build the (srgb, unorm) view pair for a dual-viewed texture. Created Rgba8UnormSrgb with
@@ -541,8 +562,12 @@ pub struct LiveRenderer {
     // Phase A.3: native-VK UI. Honest feed from LLRender::flush (its own matrices + verts, no
     // glGet). One ortho pass over the tonemapped swapchain, painter's order, alpha-blended.
     ui_bgl: Option<wgpu::BindGroupLayout>,
-    ui_tri_pipeline: Option<wgpu::RenderPipeline>,  // TRIANGLES/STRIP/FAN (expanded to list)
-    ui_line_pipeline: Option<wgpu::RenderPipeline>, // LINES/LINE_STRIP (expanded to list)
+    // U3: UI pipelines are cached per (blend_src, blend_dst, line) eBlendFactor pair so each flush's
+    // captured setSceneBlendType renders faithfully (alpha, additive glow, multiply, ...).
+    ui_vs: Option<wgpu::ShaderModule>,
+    ui_fs: Option<wgpu::ShaderModule>,
+    ui_pll: Option<wgpu::PipelineLayout>,
+    ui_pipelines: HashMap<(u8, u8, bool), wgpu::RenderPipeline>,
     ui_sampler: Option<wgpu::Sampler>,          // LINEAR (UI images)
     ui_sampler_nearest: Option<wgpu::Sampler>,  // U4: NEAREST (font atlases -- crisp glyphs)
     ui_verts: Vec<u8>,                 // interleaved {vec3 pos, vec2 uv, u8x4 color} = 24B/vtx
@@ -1159,8 +1184,10 @@ impl LiveRenderer {
             cloud_sampler,
             clouds_enabled: true,
             ui_bgl: None,
-            ui_tri_pipeline: None,
-            ui_line_pipeline: None,
+            ui_vs: None,
+            ui_fs: None,
+            ui_pll: None,
+            ui_pipelines: HashMap::new(),
             ui_sampler: None,
             ui_sampler_nearest: None,
             ui_verts: Vec::new(),
@@ -3687,8 +3714,9 @@ impl LiveRenderer {
     /// expanded to lists so one triangle (or line) pipeline covers the whole frame in painter's
     /// order. `mvp` is the viewer's OWN projection*modelview -- no glGet, no tap.
     /// `clip` = the active UI scissor at flush time in GL device pixels (bottom-left origin), None for
-    /// no clip. From FSSceneDump's mirror of LLScreenClipRect (U2); the UI pass converts to wgpu.
-    pub fn ui_submit(&mut self, mvp: &[f32; 16], tex_id: u32, mode: u32, verts: &[u8], clip: Option<[i32; 4]>) {
+    /// no clip (U2). `blend_src`/`blend_dst` = the LLRender eBlendFactor pair from getCurrBlendSFactor/
+    /// DFactor at flush (U3; default UI = 7/9 = SRC_ALPHA/ONE_MINUS_SRC_ALPHA). The UI pass converts.
+    pub fn ui_submit(&mut self, mvp: &[f32; 16], tex_id: u32, mode: u32, verts: &[u8], clip: Option<[i32; 4]>, blend_src: u8, blend_dst: u8) {
         const STRIDE: usize = 24;
         let n = verts.len() / STRIDE;
         if n == 0 { return; }
@@ -3706,7 +3734,7 @@ impl LiveRenderer {
         }
         let vertex_count = (self.ui_verts.len() / STRIDE) as u32 - first_vertex;
         if vertex_count == 0 { return; }
-        self.ui_draws.push(UiDraw { mvp: *mvp, tex_id, first_vertex, vertex_count, line, clip });
+        self.ui_draws.push(UiDraw { mvp: *mvp, tex_id, first_vertex, vertex_count, line, clip, blend_src, blend_dst });
     }
 
     /// Flash diagnostic: dump the LARGE UI draws (screen coverage > 0.3) captured this frame, to
@@ -3803,46 +3831,56 @@ impl LiveRenderer {
                 ..Default::default()
             }));
         }
-        if self.ui_tri_pipeline.is_none() {
-            let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/ui.vert.spv"));
-            let fs = device.create_shader_module(wgpu::include_spirv!("../shaders/ui.frag.spv"));
+        if self.ui_vs.is_none() {
+            // U3: the shared shader modules + pipeline layout; the actual pipelines are built per
+            // blend combo on demand (ensure_ui_pipeline), keyed by the captured eBlendFactor pair.
+            self.ui_vs = Some(device.create_shader_module(wgpu::include_spirv!("../shaders/ui.vert.spv")));
+            self.ui_fs = Some(device.create_shader_module(wgpu::include_spirv!("../shaders/ui.frag.spv")));
             let bgl = self.ui_bgl.as_ref().unwrap();
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            self.ui_pll = Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("ui-pl"),
                 bind_group_layouts: &[bgl],
                 push_constant_ranges: &[],
-            });
-            let attrs = [
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 12, shader_location: 1 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 20, shader_location: 2 },
-            ];
-            let blend = wgpu::BlendState {
-                color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
-                alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
-            };
-            let fmt = self.format;
-            let mk = |topo: wgpu::PrimitiveTopology, label: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &vs,
-                    entry_point: "main",
-                    buffers: &[wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs }],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &fs,
-                    entry_point: "main",
-                    targets: &[Some(wgpu::ColorTargetState { format: fmt, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
-                }),
-                primitive: wgpu::PrimitiveState { topology: topo, cull_mode: None, ..Default::default() },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-            });
-            self.ui_tri_pipeline = Some(mk(wgpu::PrimitiveTopology::TriangleList, "ui-tri"));
-            self.ui_line_pipeline = Some(mk(wgpu::PrimitiveTopology::LineList, "ui-line"));
+            }));
         }
+    }
+
+    /// U3: build + cache a UI pipeline for a (blend_src, blend_dst) eBlendFactor pair + topology.
+    /// Stock glBlendFunc applies (src,dst) uniformly to RGBA, so color and alpha use the same factors.
+    fn ensure_ui_pipeline(&mut self, device: &wgpu::Device, src: u8, dst: u8, line: bool) {
+        let key = (src, dst, line);
+        if self.ui_pipelines.contains_key(&key) { return; }
+        let vs = self.ui_vs.as_ref().unwrap();
+        let fs = self.ui_fs.as_ref().unwrap();
+        let pll = self.ui_pll.as_ref().unwrap();
+        let attrs = [
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 12, shader_location: 1 },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 20, shader_location: 2 },
+        ];
+        let (sf, df) = (ui_blend_factor(src), ui_blend_factor(dst));
+        let bc = wgpu::BlendComponent { src_factor: sf, dst_factor: df, operation: wgpu::BlendOperation::Add };
+        let blend = wgpu::BlendState { color: bc, alpha: bc };
+        let topo = if line { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList };
+        let pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ui-pipe"),
+            layout: Some(pll),
+            vertex: wgpu::VertexState {
+                module: vs,
+                entry_point: "main",
+                buffers: &[wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex, attributes: &attrs }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: fs,
+                entry_point: "main",
+                targets: &[Some(wgpu::ColorTargetState { format: self.format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState { topology: topo, cull_mode: None, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+        self.ui_pipelines.insert(key, pipe);
     }
 
     pub fn flush_clear(
@@ -4273,6 +4311,13 @@ impl LiveRenderer {
         // the whole reason native-vulkan is usable: real menus/text, not a stub.
         if !self.ui_draws.is_empty() {
             self.ensure_ui(device);
+            // U3: build a pipeline for every (blend, topology) combo this frame uses, before the pass.
+            let combos: Vec<(u8, u8, bool)> = {
+                let mut set: HashSet<(u8, u8, bool)> = HashSet::new();
+                for d in &self.ui_draws { set.insert((d.blend_src, d.blend_dst, d.line)); }
+                set.into_iter().collect()
+            };
+            for (s, dd, l) in combos { self.ensure_ui_pipeline(device, s, dd, l); }
             const ALIGN: u64 = 256;
             let vbytes = self.ui_verts.len() as u64;
             let grow_vb = self.ui_vbuf.as_ref().map_or(true, |(_, cap)| *cap < vbytes);
@@ -4326,8 +4371,6 @@ impl LiveRenderer {
                 });
                 binds.insert(d.tex_id, bg);
             }
-            let tri = self.ui_tri_pipeline.as_ref().unwrap();
-            let line = self.ui_line_pipeline.as_ref().unwrap();
             let mut up = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ui-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -4357,7 +4400,8 @@ impl LiveRenderer {
                     }
                     None => up.set_scissor_rect(0, 0, w, h),
                 }
-                up.set_pipeline(if d.line { line } else { tri });
+                let Some(pipe) = self.ui_pipelines.get(&(d.blend_src, d.blend_dst, d.line)) else { continue };
+                up.set_pipeline(pipe);
                 up.set_bind_group(0, bind, &[(i as u64 * ALIGN) as u32]);
                 up.draw(d.first_vertex..d.first_vertex + d.vertex_count, 0..1);
             }

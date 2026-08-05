@@ -139,6 +139,12 @@ src/dst factors; (c) `UiDraw` gains a blend key; (d) UI pass selects from a smal
 (src,dst) factor pair. Coordinate the ABI widening with Stratum B (one `fsr_ui_submit` signature bump for
 clip+blend, not two).
 
+**LANDED (U3).** Engine (`fs/vulkan-groundup`): `UiDraw.{blend_src,blend_dst}`; `ui_submit` takes the
+eBlendFactor pair; `ensure_ui_pipeline` builds+caches one pipeline per `(src,dst,line)` (same factors for
+color+alpha, matching stock's uniform `glBlendFunc`); `ui_blend_factor` maps eBlendFactor→wgpu. Viewer
+(`fs/vulkan-groundup-vw`): `uiSubmit`/`uiSubmitBufferData` pass `getCurrBlendSFactor/DFactor`. Convergence
+pinned in `headless.rs::ui_additive_blend_composites` (additive `ONE/ONE` → `src+dst=192`, not alpha's 128).
+
 ---
 
 ## Stratum D — Per-surface sampler filter (fidelity)
@@ -222,9 +228,11 @@ caps line width at 1 on most backends. Defer to the in-world residual pass.
   updateScissorRegion` → `FSSceneDump::uiSetScissor(x,y,w,h,enabled)` (llui→llrender hook, mirroring the
   existing `textureUploaded`/`bufferDirty` hooks; passes the SAME llfloor/llceil+1 UI-scaled rect it feeds
   `glScissor`); `fsr_ui_submit` ABI widened once (clip + blend, for U3); `fsscenedump` stamps the current
-  scissor onto each `uiSubmit`/`uiSubmitBufferData`. Verified in-world at U5 (needs a viewer build).
-- **U3 — Blend modes (C):** tap captures src/dst factors; same ABI bump as U2; pipeline cache by blend key.
-  Assert additive + multiply fixtures.
+  scissor onto each `uiSubmit`/`uiSubmitBufferData`. **U2b ✅ DONE on the viewer branch
+  `fs/vulkan-groundup-vw`** (`lllocalcliprect.cpp` + `fsscenedump.{h,cpp}`); the engine FFI now consumes the
+  real clip (was `None`). Compiles/verifies on a viewer build; the engine scissor is already pinned.
+- **U3 — Blend modes (C):** ✅ DONE — engine pipeline cache + C++ blend capture (see Stratum C above).
+  Pinned by `ui_additive_blend_composites`.
 - **U4 — Per-surface sampler filter (D):** ✅ DONE (engine-only). `font_texs` set (filled from the
   `upload_subtexture` glyph path); NEAREST sampler for font ids, LINEAR for images, chosen in the per-tex_id
   bind group. Convergence pinned (`ui_font_atlas_samples_nearest`: font = hard step, image = ramp).

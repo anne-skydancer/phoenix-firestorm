@@ -780,19 +780,26 @@ pub extern "C" fn fsr_ui_begin() -> i32 {
 /// projection*modelview, column-major), `verts` = `vtx_count` interleaved vertices of
 /// {f32 x,y,z; f32 u,v; u8 r,g,b,a} (24 bytes each), `mode` = LLRender::eGeomModes, `tex_id` = the
 /// bound GL texture id (0/unknown -> 1x1 white). No glGet: honest state only.
+///
+/// U2/U3 ABI (widened once): `clip_*` = the active UI scissor in GL device pixels (bottom-left origin)
+/// exactly as LLScreenClipRect::updateScissorRegion computes it; `clip_w < 0` = no clip. `blend_src`/
+/// `blend_dst` = the LLRender eBlendFactor pair (getCurrBlendSFactor/DFactor) so the draw blends as
+/// setSceneBlendType did (default UI 7/9 = SRC_ALPHA / ONE_MINUS_SRC_ALPHA).
 /// # Safety: `mvp` -> 16 f32; `verts` -> `vtx_count*24` bytes, both valid for the call.
 #[no_mangle]
-pub unsafe extern "C" fn fsr_ui_submit(mvp: *const f32, tex_id: u32, mode: u32, vtx_count: u32, verts: *const u8) -> i32 {
+pub unsafe extern "C" fn fsr_ui_submit(mvp: *const f32, tex_id: u32, mode: u32, vtx_count: u32, verts: *const u8,
+                                       clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32,
+                                       blend_src: u32, blend_dst: u32) -> i32 {
     if mvp.is_null() || verts.is_null() || vtx_count == 0 { return 0; }
     let mut m = [0f32; 16];
     m.copy_from_slice(std::slice::from_raw_parts(mvp, 16));
     let vbytes = std::slice::from_raw_parts(verts, vtx_count as usize * 24);
+    let clip = if clip_w < 0 { None } else { Some([clip_x, clip_y, clip_w, clip_h]) };
+    let (bs, bd) = (blend_src as u8, blend_dst as u8);
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // U2: clip is None until the C++ tap ABI is widened to mirror LLScreenClipRect (next step);
-        // the engine scissor mechanism is exercised via ui_submit's clip arg in the headless pin.
-        e.live.ui_submit(&m, tex_id, mode, vbytes, None);
+        e.live.ui_submit(&m, tex_id, mode, vbytes, clip, bs, bd);
     }));
     if r.is_err() { 0 } else { 1 }
 }

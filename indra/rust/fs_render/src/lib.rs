@@ -806,15 +806,12 @@ pub unsafe extern "C" fn fsr_ui_submit(mvp: *const f32, tex_id: u32, mode: u32, 
     if r.is_err() { 0 } else { 1 }
 }
 
-/// End the frame: render every queued draw to the swapchain and present.
-/// Returns the number of draws rendered (0 = nothing/failed).
-#[no_mangle]
-pub extern "C" fn fsr_end_frame() -> i32 {
-    let mut g = ENGINE.lock().unwrap();
-    let Some(e) = g.as_mut() else { return 0 };
-    e.frame_open = false;
+/// Per-frame setup shared by `fsr_end_frame` and `fsr_snapshot`: drain decoded textures to the GPU, then
+/// derive + feed the sky regime / fullscreen-sky UBO / terrain UBO / probe camera from the typed scene.
+/// `vp_w`/`vp_h` = the render TARGET size (the fullscreen sky's NDC ray needs the true viewport; for a
+/// snapshot this is the snapshot resolution, not the swapchain).
+fn prepare_frame(e: &mut Engine, vp_w: u32, vp_h: u32) {
     // P3 decode-once fetch-tap: drain textures decoded on the worker threads -> GPU (render thread).
-    // Done once per frame, before rendering, so terrain (and later all) textures are resident in time.
     if let Ok(mut q) = UPLOAD_QUEUE.lock() {
         if !q.is_empty() {
             let Engine { device, queue, live, .. } = e;
@@ -824,27 +821,15 @@ pub extern "C" fn fsr_end_frame() -> i32 {
             }
         }
     }
-    // S3b: consume the derived sky regime -- drive the global tonemap's exposure/mix/gamma/
-    // legacy-gamma from the SAME legacy-vs-advanced regime the viewer used for the sky. This is
-    // the piece the reverted P3 consumption lacked (a tonemap at all); now the model + tonemap
-    // exist (S1/S2/S3a) and the regime is oracle-tested, so this is safe. `None` (no typed sky
-    // fed yet) leaves the post defaults; the sky's own sky_hdr_scale still comes via the tap aux.
+    // Sky regime -> tonemap exposure/mix/gamma/legacy-gamma + probe single-bounce ambiance.
     if let Some(r) = e.scene.sky_regime() {
         e.live.apply_sky_regime(&r);
-        e.live.set_probe_ambiance(r.probe_ambiance); // S3-C: default-probe single-bounce diffuse strength
+        e.live.set_probe_ambiance(r.probe_ambiance);
     }
-    // Phase A.2: the engine derives the fullscreen sky UBO from the typed camera + EEP sky it was
-    // fed, and renders the sky itself (parallel-read) -- no tapped dome draw needed.
+    // Fullscreen sky UBO: viewport = the render target size (the NDC view ray divides by it).
     if let Some(mut sky_ubo) = e.scene.fullscreen_sky_ubo() {
-        // The viewer's setSceneCamera never populates viewport_w/h (memset 0), which made the
-        // fullscreen sky's NDC divide by zero -> NaN view-ray -> a UNIFORM constant sky. The
-        // authoritative viewport for this fullscreen pass IS the engine's render target (the
-        // scene_hdr the triangle covers = swapchain size), so supply it here.
-        sky_ubo[50] = e.config.width as f32;
-        sky_ubo[51] = e.config.height as f32;
-        // Cloud animation clock (a7.w = u[47], previously unused): monotonic seconds since the first
-        // frame, driving the volumetric cloud march's wind scroll + evolution. Real Instant (engine
-        // is native Rust); no viewer feed needed.
+        sky_ubo[50] = vp_w as f32;
+        sky_ubo[51] = vp_h as f32;
         {
             use std::sync::OnceLock;
             static START: OnceLock<std::time::Instant> = OnceLock::new();
@@ -852,17 +837,103 @@ pub extern "C" fn fsr_end_frame() -> i32 {
         }
         e.live.set_fullscreen_sky(&sky_ubo);
     }
-    // Ground Phase 1: feed the terrain UBO + (re)build the terrain mesh/pipeline from the fed heightmap
-    // (disjoint field borrows: e.live mut, e.queue/e.device/e.scene shared).
     if let Some(tu) = e.scene.terrain_ubo() {
         e.live.set_terrain_ubo(&e.queue, &tu);
     }
-    // S4: per-frame reflection-probe view transforms (view->world env_mat + reverse-Z inv_proj) so the
-    // deferred resolve places the default probe under the REAL camera (identity only suits view=identity).
     if let Some((inv_proj, env_mat)) = e.scene.probe_params() {
         e.live.set_probe_camera(&e.queue, &inv_proj, &env_mat);
     }
     e.live.ensure_terrain(&e.device, e.scene.terrain.as_ref());
+}
+
+/// R1: render the CURRENT fed frame to an OFFSCREEN `w`x`h` target and read it back to `out`. This is the
+/// engine's snapshot capability -- the null-GL stub can't render offscreen, so the viewer feeds the
+/// snapshot camera/scene via display() then calls this INSTEAD of glReadPixels of the (stale, UI-
+/// composited) swapchain. Renders the same scene+UI the swapchain path does (via `flush_clear`) but to a
+/// private target, so it captures the snapshot camera WITHOUT presenting or disturbing the on-screen
+/// swapchain / read_cache. UI appears only if the viewer fed UI draws for this frame (deferred snapshots
+/// skip render_ui -> no UI). `out` receives w*h*4 bytes RGBA8 in GL bottom-up row order (the glReadPixels
+/// contract the viewer expects). Returns 1 on success, 0 on failure.
+/// # Safety: `out` must be writable for `w*h*4` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn fsr_snapshot(w: u32, h: u32, out: *mut u8) -> i32 {
+    if out.is_null() || w == 0 || h == 0 { return 0; }
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    let fmt = e.config.format;
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        prepare_frame(e, w, h);
+        let clear = e.clear_color;
+        let Engine { device, queue, live, .. } = e;
+        // Offscreen target at the requested resolution, in the LiveRenderer's own format (its pipelines
+        // target that). RENDER_ATTACHMENT for flush_clear + COPY_SRC for readback.
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fsr-snapshot"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        // Renders the queued scene + UI to the offscreen target (and clears the queue, like a normal
+        // frame). Intermediates (scene_hdr/g-buffer) reallocate to (w,h) for this pass; the next
+        // fsr_end_frame reallocates them back to the swapchain size.
+        live.flush_clear(device, queue, &view, w, h, clear);
+        // Readback -> out, converting the target format to RGBA8 and flipping wgpu top-down -> GL
+        // bottom-up so the viewer's snapshot buffer (glReadPixels order) is filled correctly.
+        let bgra = matches!(fmt, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let stride = ((w * 4 + 255) / 256) * 256;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fsr-snapshot-rb"),
+            size: (stride * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("fsr-snapshot-rb") });
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+        let dst = std::slice::from_raw_parts_mut(out, (w as usize) * (h as usize) * 4);
+        for y in 0..h {
+            let src_row = (y * stride) as usize;          // wgpu top-down row y
+            let dst_row = ((h - 1 - y) as usize) * (w as usize) * 4; // GL bottom-up
+            for x in 0..w as usize {
+                let s = src_row + x * 4;
+                let d = dst_row + x * 4;
+                if bgra {
+                    dst[d] = data[s + 2]; dst[d + 1] = data[s + 1]; dst[d + 2] = data[s]; dst[d + 3] = data[s + 3];
+                } else {
+                    dst[d] = data[s]; dst[d + 1] = data[s + 1]; dst[d + 2] = data[s + 2]; dst[d + 3] = data[s + 3];
+                }
+            }
+        }
+        drop(data);
+        buf.unmap();
+    }));
+    if r.is_err() { 0 } else { 1 }
+}
+
+/// End the frame: render every queued draw to the swapchain and present.
+/// Returns the number of draws rendered (0 = nothing/failed).
+#[no_mangle]
+pub extern "C" fn fsr_end_frame() -> i32 {
+    let mut g = ENGINE.lock().unwrap();
+    let Some(e) = g.as_mut() else { return 0 };
+    e.frame_open = false;
+    // Per-frame setup (texture-upload drain + sky/terrain/probe derivation from the typed scene),
+    // shared with fsr_snapshot. Viewport = the swapchain size for the on-screen present.
+    let (vp_w, vp_h) = (e.config.width, e.config.height);
+    prepare_frame(e, vp_w, vp_h);
     // P1 DIAG (temporary): pinpoint the white sky WITHOUT guessing. cam/sky = typed feed reached;
     // ubo = derived; sky_fs = live pass armed; msaa = resolve path (confirmed forced 1); clear =
     // viewer clear (what shows when sky_fs=false); exp/mix = tonemap; sun/amb/hdr/maxy = sanity of

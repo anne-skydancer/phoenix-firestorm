@@ -2019,3 +2019,38 @@ fn ui_solid_color_uses_color_rgb_texture_alpha_mask() {
     assert!(normal[2] < 20,
         "gUIProgram: color*texel makes blue*red = black; if this is blue the solid flag isn't switching shaders, got {:?}", normal);
 }
+
+/// R1 CONVERGENCE PIN (offscreen snapshot): fsr_snapshot renders the CURRENT fed frame to an offscreen
+/// (w,h) target and reads it back RGBA8 -- the engine capability that replaces glReadPixels of the stale
+/// UI-composited swapchain. Drives the FFI headless: feed a full-screen green UI quad, snapshot, and
+/// verify the readback captured it (correct channels + a real render, not zeros/last-frame).
+#[test]
+fn fsr_snapshot_captures_fed_frame() {
+    if unsafe { fs_render::fsr_init(std::ptr::null_mut(), 64, 48) } == 0 {
+        eprintln!("no Vulkan adapter; skipping fsr_snapshot test");
+        return;
+    }
+    // Feed one full-screen opaque GREEN UI quad (24-byte verts: pos.xyz, uv, rgba8).
+    unsafe { fs_render::fsr_ui_begin() };
+    let identity: [f32; 16] = [1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.];
+    let mut verts: Vec<u8> = Vec::new();
+    for &(x, y) in &[(-1f32,-1f32), (1.,-1.), (1.,1.), (-1.,-1.), (1.,1.), (-1.,1.)] {
+        verts.extend_from_slice(&x.to_le_bytes());
+        verts.extend_from_slice(&y.to_le_bytes());
+        verts.extend_from_slice(&0f32.to_le_bytes());
+        verts.extend_from_slice(&0f32.to_le_bytes());
+        verts.extend_from_slice(&0f32.to_le_bytes());
+        verts.extend_from_slice(&[0u8, 255, 0, 255]);
+    }
+    unsafe { fs_render::fsr_ui_submit(identity.as_ptr(), 0, 0, 6, verts.as_ptr(), 0, 0, -1, 0, 7, 9, 0) };
+
+    let (w, h) = (32u32, 32u32);
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    let ok = unsafe { fs_render::fsr_snapshot(w, h, out.as_mut_ptr()) };
+    assert_eq!(ok, 1, "fsr_snapshot should succeed");
+    let ci = (((h / 2) * w + w / 2) * 4) as usize;
+    assert!(out[ci + 1] > 200 && out[ci] < 60 && out[ci + 2] < 60,
+        "fsr_snapshot must capture the fed green UI quad (a real offscreen render, RGBA), got {:?}", &out[ci..ci + 4]);
+    // Alpha channel written (not an untouched zero buffer).
+    assert!(out[ci + 3] > 200, "snapshot alpha should be opaque, got {}", out[ci + 3]);
+}

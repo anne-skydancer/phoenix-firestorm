@@ -14,6 +14,7 @@ pub mod std140; // SoftenFrameBlock std140 layout builder (offsets computed, not
 pub mod soften_pass; // the real softenLight atmospherics pass fixture (G-buffer/shadow/probe neutrals)
 pub mod resolve_pass; // the TEST side: fs_render's resolve.frag on the equivalent fixture (A/B bench)
 pub mod gen_pass; // probe convolution generators A/B (real radianceGenF/irradianceGenF vs our ports)
+pub mod ui_pass; // U0: the native-VK UI oracle -- stock LLRender/LLUI fixed-function contract vs engine-current
 
 /// Present format -- matches `fs_render`'s headless target exactly (apples-to-apples): sRGB so the
 /// tonemap output encodes identically, and readback/PNG-friendly.
@@ -86,6 +87,10 @@ impl RefEngine {
             last_lum: std::cell::RefCell::new(Vec::new()),
         })
     }
+
+    /// Device/queue accessors so the UI oracle (ui_pass) can build its own targets/pipelines.
+    pub fn device(&self) -> &wgpu::Device { &self.device }
+    pub fn queue(&self) -> &wgpu::Queue { &self.queue }
 
     /// Center-pixel linear luminance from the last readback_hdr (head-on view -> isolates the
     /// view-vector-independent diffuse math from the off-center Fresnel/specular sweep).

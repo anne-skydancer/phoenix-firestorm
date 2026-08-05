@@ -79,17 +79,21 @@ fn main() {
     assert!(ctl_worst < 0.01, "reflection-direction reconstruction diverges from softenLightF (Δ {ctl_worst:.4})");
     println!("reflection-direction PIN: worst Δ = {ctl_worst:.4} (pixel-exact)");
 
-    // DIAGNOSTIC (non-identity env_mat): NOT a clean pin, and NOT an fs_render bug. Stock stores VIEW-space
-    // G-buffer normals (softenLightF passes gb.normal straight to the probe; env_mat=view->world only makes
-    // sense on a view normal). fs_render stores WORLD normals and derives the view normal via
-    // transpose(env_mat)*n. Both yield the same view normal for a REAL surface -- but this synthetic fixture
-    // feeds the oracle a fixed view (0,0,1) and resolve a world (0,0,1), which coincide ONLY at identity.
-    // A true non-identity pin needs a physically-consistent fixture (feed the oracle transpose(env_mat)*n
-    // AND a matching sun). The env_mat matrix-multiply itself is proven identical by reading both shaders.
-    println!("=== PROBE A/B [non-identity env_mat: fixture-gap DIAGNOSTIC, not a pin] ===");
+    // PIN (non-identity env_mat): S4's FULL flow, pixel-exact. The fixture is now physically consistent --
+    // the oracle is the fixed VIEW-frame reference; resolve rotates its whole WORLD frame (normal, sun,
+    // inv_view_proj) by env_mat, so both describe the same surface under the same rotated camera. All lighting
+    // is dot/angle-based (invariant under the shared rotation); the probe view_norm = transpose(env_mat)*
+    // world_normal = the oracle's view normal. This pins fs_render's world->view normal conversion + the
+    // env_mat cube rotation + inv_proj against the REAL softenLightF/reflectionProbeF (was Δ 0.096 when the
+    // fixture fed inconsistent view/world normals -- a fixture bug, never an fs_render one).
+    println!("=== PROBE A/B [PIN: non-identity env_mat] (S4 full flow) ===");
     let rotated = ProbeFixture::default_probe_rotated(faces, [0.18, 0.22, 0.30], 0.6);
+    let mut rot_worst = 0f64;
     for &(classic, tag) in &[(true, "classic"), (false, "pbr")] {
         let (max_d, mean_d) = ab(&r, &rotated, "rot", tag, classic);
-        println!("  [{tag:>7}] Δ max={max_d:.4} mean={mean_d:.4}  (frame-convention gap, see comment)");
+        if max_d > rot_worst { rot_worst = max_d; }
+        println!("  [{tag:>7}] Δ max={max_d:.4} mean={mean_d:.4}");
     }
+    assert!(rot_worst < 0.01, "S4 non-identity env_mat diverges from softenLightF (Δ {rot_worst:.4})");
+    println!("S4 non-identity env_mat PIN: worst Δ = {rot_worst:.4} (pixel-exact)");
 }

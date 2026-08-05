@@ -23,6 +23,23 @@ fn rgba16f(r: f32, g: f32, b: f32, a: f32) -> Vec<u8> {
     [f16(r), f16(g), f16(b), f16(a)].concat()
 }
 
+/// col-major 4x4 * 4x4.
+fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    let mut r = [0f32; 16];
+    for col in 0..4 { for row in 0..4 {
+        let mut s = 0.0;
+        for k in 0..4 { s += a[k * 4 + row] * b[col * 4 + k]; }
+        r[col * 4 + row] = s;
+    }}
+    r
+}
+/// col-major mat3(env_mat 4x4) * v.
+fn mat3_mul(m: &[f32; 16], v: [f32; 3]) -> [f32; 3] {
+    [m[0]*v[0] + m[4]*v[1] + m[8]*v[2],
+     m[1]*v[0] + m[5]*v[1] + m[9]*v[2],
+     m[2]*v[0] + m[6]*v[1] + m[10]*v[2]]
+}
+
 /// A full-size R32Float depth texture (resolve.frag texelFetches g_depth at integer fragcoord).
 /// Uniform 0.95 to match the oracle's depthMap (getPositionWithDepth reconstructs the same view pos).
 fn depth_full(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, depth: f32) -> wgpu::TextureView {
@@ -376,12 +393,26 @@ pub fn render(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, classic: bo
         ),
     };
     let albedo = tex_full(device, queue, size, &rgba16f(alb3[0], alb3[1], alb3[2], flag), "g_albedo");
-    let normal = tex_full(device, queue, size, &rgba16f(0.0, 0.0, 1.0, 0.0), "g_normal");
+    // Consistent rotated-camera fixture: the ORACLE is the fixed VIEW-frame reference (view normal (0,0,1),
+    // view sun (0,0.707,0.707)); RESOLVE rotates its whole WORLD frame to match via env_mat -> world normal,
+    // world sun, and inv_view_proj (for the view vector v) all rotated. All lighting is dot/angle-based, so
+    // the rotation is invariant; the probe view_norm = transpose(env_mat)*world_normal = the oracle's view
+    // normal. For identity env_mat this reduces to the original fixture (bytewise).
+    let n_world = mat3_mul(&probes.env_mat, [0.0, 0.0, 1.0]);
+    let normal = tex_full(device, queue, size, &rgba16f(n_world[0], n_world[1], n_world[2], 0.0), "g_normal");
     let spec = tex_full(device, queue, size, &rgba16f(spec4[0], spec4[1], spec4[2], spec4[3]), "g_spec");
     let emissive = tex_full(device, queue, size, &rgba16f(em4[0], em4[1], em4[2], em4[3]), "g_emissive");
 
     let mut ubo = resolve_sky_ubo();
     ubo[59] = if classic { 1.0 } else { 0.0 }; // classic_mode at moondir_classic.w (u59)
+    // inv_view_proj = inverse(proj*V) = V^T * proj^-1 = env_mat * perspective_inv (V is a rotation, so
+    // V^-1 = V^T = env_mat). Rotates the reconstructed view ray v into the world frame -> (n,l,v) angles
+    // match the oracle's view-frame lighting. world sun = env_mat * (view sun); lightnorm stays fixed.
+    let pinv = crate::soften_pass::perspective_inv(60.0f32.to_radians(), 1.0, 0.5, 256.0);
+    let ivp = mat4_mul(&probes.env_mat, &pinv);
+    ubo[0..16].copy_from_slice(&ivp);
+    let sun_world = mat3_mul(&probes.env_mat, [0.0, 0.707, 0.707]);
+    ubo[52] = sun_world[0]; ubo[53] = sun_world[1]; ubo[54] = sun_world[2];
     let ubo_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("resolve-sky"),
         contents: bytemuck::cast_slice(&ubo),

@@ -320,6 +320,9 @@ struct UiDraw {
     // U3 blend: the LLRender eBlendFactor pair captured from gGL.getCurrBlendSFactor/DFactor at flush.
     blend_src: u8,
     blend_dst: u8,
+    // U6 solid: gSolidColorProgram batch -> use ui_solid.frag (frag = vec4(v_color.rgb, texel.a*v_color.a);
+    // texture is an alpha mask). The tap stamps the DIFFUSE_COLOR uniform into v_color for these.
+    solid: bool,
 }
 
 /// U3: map an LLRender eBlendFactor (llrender.h:353-366) to wgpu::BlendFactor. The UI tap ships the
@@ -566,8 +569,9 @@ pub struct LiveRenderer {
     // captured setSceneBlendType renders faithfully (alpha, additive glow, multiply, ...).
     ui_vs: Option<wgpu::ShaderModule>,
     ui_fs: Option<wgpu::ShaderModule>,
+    ui_solid_fs: Option<wgpu::ShaderModule>, // U6: gSolidColorProgram fragment (RGB from color, tex = alpha mask)
     ui_pll: Option<wgpu::PipelineLayout>,
-    ui_pipelines: HashMap<(u8, u8, bool), wgpu::RenderPipeline>,
+    ui_pipelines: HashMap<(u8, u8, bool, bool), wgpu::RenderPipeline>, // (blend_src, blend_dst, line, solid)
     ui_sampler: Option<wgpu::Sampler>,          // LINEAR (UI images)
     ui_sampler_nearest: Option<wgpu::Sampler>,  // U4: NEAREST (font atlases -- crisp glyphs)
     ui_verts: Vec<u8>,                 // interleaved {vec3 pos, vec2 uv, u8x4 color} = 24B/vtx
@@ -1186,6 +1190,7 @@ impl LiveRenderer {
             ui_bgl: None,
             ui_vs: None,
             ui_fs: None,
+            ui_solid_fs: None,
             ui_pll: None,
             ui_pipelines: HashMap::new(),
             ui_sampler: None,
@@ -3715,8 +3720,9 @@ impl LiveRenderer {
     /// order. `mvp` is the viewer's OWN projection*modelview -- no glGet, no tap.
     /// `clip` = the active UI scissor at flush time in GL device pixels (bottom-left origin), None for
     /// no clip (U2). `blend_src`/`blend_dst` = the LLRender eBlendFactor pair from getCurrBlendSFactor/
-    /// DFactor at flush (U3; default UI = 7/9 = SRC_ALPHA/ONE_MINUS_SRC_ALPHA). The UI pass converts.
-    pub fn ui_submit(&mut self, mvp: &[f32; 16], tex_id: u32, mode: u32, verts: &[u8], clip: Option<[i32; 4]>, blend_src: u8, blend_dst: u8) {
+    /// DFactor at flush (U3; default UI = 7/9 = SRC_ALPHA/ONE_MINUS_SRC_ALPHA). `solid` = gSolidColorProgram
+    /// batch (U6): use ui_solid.frag (RGB from v_color, texture = alpha mask). The UI pass converts.
+    pub fn ui_submit(&mut self, mvp: &[f32; 16], tex_id: u32, mode: u32, verts: &[u8], clip: Option<[i32; 4]>, blend_src: u8, blend_dst: u8, solid: bool) {
         const STRIDE: usize = 24;
         let n = verts.len() / STRIDE;
         if n == 0 { return; }
@@ -3734,7 +3740,7 @@ impl LiveRenderer {
         }
         let vertex_count = (self.ui_verts.len() / STRIDE) as u32 - first_vertex;
         if vertex_count == 0 { return; }
-        self.ui_draws.push(UiDraw { mvp: *mvp, tex_id, first_vertex, vertex_count, line, clip, blend_src, blend_dst });
+        self.ui_draws.push(UiDraw { mvp: *mvp, tex_id, first_vertex, vertex_count, line, clip, blend_src, blend_dst, solid });
     }
 
     /// Flash diagnostic: dump the LARGE UI draws (screen coverage > 0.3) captured this frame, to
@@ -3836,6 +3842,7 @@ impl LiveRenderer {
             // blend combo on demand (ensure_ui_pipeline), keyed by the captured eBlendFactor pair.
             self.ui_vs = Some(device.create_shader_module(wgpu::include_spirv!("../shaders/ui.vert.spv")));
             self.ui_fs = Some(device.create_shader_module(wgpu::include_spirv!("../shaders/ui.frag.spv")));
+            self.ui_solid_fs = Some(device.create_shader_module(wgpu::include_spirv!("../shaders/ui_solid.frag.spv")));
             let bgl = self.ui_bgl.as_ref().unwrap();
             self.ui_pll = Some(device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("ui-pl"),
@@ -3845,13 +3852,14 @@ impl LiveRenderer {
         }
     }
 
-    /// U3: build + cache a UI pipeline for a (blend_src, blend_dst) eBlendFactor pair + topology.
-    /// Stock glBlendFunc applies (src,dst) uniformly to RGBA, so color and alpha use the same factors.
-    fn ensure_ui_pipeline(&mut self, device: &wgpu::Device, src: u8, dst: u8, line: bool) {
-        let key = (src, dst, line);
+    /// U3/U6: build + cache a UI pipeline for a (blend_src, blend_dst) eBlendFactor pair + topology +
+    /// solid flag. Stock glBlendFunc applies (src,dst) uniformly to RGBA, so color and alpha use the same
+    /// factors. `solid` selects ui_solid.frag (gSolidColorProgram: RGB from color, texture = alpha mask).
+    fn ensure_ui_pipeline(&mut self, device: &wgpu::Device, src: u8, dst: u8, line: bool, solid: bool) {
+        let key = (src, dst, line, solid);
         if self.ui_pipelines.contains_key(&key) { return; }
         let vs = self.ui_vs.as_ref().unwrap();
-        let fs = self.ui_fs.as_ref().unwrap();
+        let fs = if solid { self.ui_solid_fs.as_ref().unwrap() } else { self.ui_fs.as_ref().unwrap() };
         let pll = self.ui_pll.as_ref().unwrap();
         let attrs = [
             wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 0 },
@@ -4311,13 +4319,13 @@ impl LiveRenderer {
         // the whole reason native-vulkan is usable: real menus/text, not a stub.
         if !self.ui_draws.is_empty() {
             self.ensure_ui(device);
-            // U3: build a pipeline for every (blend, topology) combo this frame uses, before the pass.
-            let combos: Vec<(u8, u8, bool)> = {
-                let mut set: HashSet<(u8, u8, bool)> = HashSet::new();
-                for d in &self.ui_draws { set.insert((d.blend_src, d.blend_dst, d.line)); }
+            // U3/U6: build a pipeline for every (blend, topology, solid) combo this frame uses.
+            let combos: Vec<(u8, u8, bool, bool)> = {
+                let mut set: HashSet<(u8, u8, bool, bool)> = HashSet::new();
+                for d in &self.ui_draws { set.insert((d.blend_src, d.blend_dst, d.line, d.solid)); }
                 set.into_iter().collect()
             };
-            for (s, dd, l) in combos { self.ensure_ui_pipeline(device, s, dd, l); }
+            for (s, dd, l, so) in combos { self.ensure_ui_pipeline(device, s, dd, l, so); }
             const ALIGN: u64 = 256;
             let vbytes = self.ui_verts.len() as u64;
             let grow_vb = self.ui_vbuf.as_ref().map_or(true, |(_, cap)| *cap < vbytes);
@@ -4400,7 +4408,7 @@ impl LiveRenderer {
                     }
                     None => up.set_scissor_rect(0, 0, w, h),
                 }
-                let Some(pipe) = self.ui_pipelines.get(&(d.blend_src, d.blend_dst, d.line)) else { continue };
+                let Some(pipe) = self.ui_pipelines.get(&(d.blend_src, d.blend_dst, d.line, d.solid)) else { continue };
                 up.set_pipeline(pipe);
                 up.set_bind_group(0, bind, &[(i as u64 * ALIGN) as u32]);
                 up.draw(d.first_vertex..d.first_vertex + d.vertex_count, 0..1);

@@ -444,7 +444,6 @@ pub struct LiveRenderer {
     // + a bind group for the sky-fs pipeline. The full sky environment is rendered into the 6 cube faces.
     probe_cap_ubo: wgpu::Buffer,
     probe_cap_bind: Option<wgpu::BindGroup>,
-    probe_captured: bool,                               // sky captured into the radiance cube at least once
     // S2-remainder: a face-res half-res cloud target + its composite bind, for capturing clouds per face.
     probe_cap_cloud: Option<(wgpu::TextureView, u32, u32)>,
     probe_cap_cloud_comp_bind: Option<wgpu::BindGroup>,
@@ -468,7 +467,13 @@ pub struct LiveRenderer {
     // the supersample-res gaussian ping-pong; both rebuilt per face and copied into the cube.
     probe_scratch: Option<wgpu::Texture>,
     probe_scratch_view: Option<wgpu::TextureView>,
-    probe_convolved: bool,
+    // S3-C single-bounce: the default probe bakes in TWO passes (stock's ambiance/radiance passes). The
+    // ambiance pass captures direct-lit (refParams.x=0 -> analytic ambient, y=0.5 -> half old radiance) ->
+    // irradiance; the radiance pass captures with that fresh irradiance active (refParams.x=ambiance, y=1) ->
+    // radiance. probe_ambiance = the sky's reflection_probe_ambiance (getReflectionProbeAmbiance); 0 for a
+    // legacy sky makes the diffuse bounce inert (refParams.x=0 -> amblit), exactly as stock.
+    probe_baked: bool,
+    probe_ambiance: f32,
     probe_gauss_tmp: Option<wgpu::TextureView>,
     probe_scratch2d: Vec<(wgpu::Texture, wgpu::TextureView, u32)>, // (mip target, its view, res) i=0..mips-1
     gauss_pipeline: Option<wgpu::RenderPipeline>,
@@ -1076,7 +1081,6 @@ impl LiveRenderer {
             probe_res: 128,
             probe_cap_ubo,
             probe_cap_bind: None,
-            probe_captured: false,
             probe_cap_cloud: None,
             probe_cap_cloud_comp_bind: None,
             probe_cap_scene: None,
@@ -1088,7 +1092,8 @@ impl LiveRenderer {
             probe_cap_water_binds: HashMap::new(),
             probe_scratch: None,
             probe_scratch_view: None,
-            probe_convolved: false,
+            probe_baked: false,
+            probe_ambiance: 0.0,
             probe_gauss_tmp: None,
             probe_scratch2d: Vec::new(),
             gauss_pipeline: None,
@@ -2621,6 +2626,16 @@ impl LiveRenderer {
         self.clouds_enabled = on;
     }
 
+    /// The sky's reflection_probe_ambiance (getReflectionProbeAmbiance). Scales the default probe's
+    /// irradiance contribution (refParams.x) on the radiance pass -- i.e. how strongly the single-bounce
+    /// diffuse feedback lights the captured environment. 0 (legacy sky) => inert diffuse bounce, as stock.
+    pub fn set_probe_ambiance(&mut self, ambiance: f32) {
+        if ambiance != self.probe_ambiance {
+            self.probe_ambiance = ambiance;
+            self.probe_baked = false; // re-bake with the new bounce strength
+        }
+    }
+
     /// #3: (re)create the G-buffer attachments on size change.
     fn ensure_gbuffer(&mut self, device: &wgpu::Device, w: u32, h: u32) {
         let need = match &self.gbuf_albedo {
@@ -2759,8 +2774,7 @@ impl LiveRenderer {
                 &glam::Mat4::IDENTITY, &glam::Mat4::IDENTITY, max_lod, /*cube_snapshot=*/0.0, /*zconv_vulkan=*/1.0));
 
             self.resolve_bind = None; // rebind resolve against the new probe resources
-            self.probe_captured = false; // fresh arrays -> re-capture the sky
-            self.probe_convolved = false; // ...and re-convolve into radiance/irradiance slot 0
+            self.probe_baked = false; // fresh arrays -> re-run the two-pass single-bounce bake
         }
     }
 
@@ -2977,7 +2991,7 @@ impl LiveRenderer {
     /// once per (re)allocation; convolve_probe then GGX-prefilters/convolves the scratch into radiance +
     /// irradiance slot 0.
     fn capture_probe_environment(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        if self.probe_captured || !self.sky_fs_enabled || self.probe_radiance.is_none() {
+        if !self.sky_fs_enabled || self.probe_radiance.is_none() {
             return;
         }
         self.ensure_sky_fs(device);
@@ -3306,7 +3320,6 @@ impl LiveRenderer {
         if had_terrain {
             queue.write_buffer(&self.terrain_typed_ubo, 0, bytemuck::cast_slice(&main_terrain)); // restore main view_proj
         }
-        self.probe_captured = true;
     }
 
     /// S3: convolve the captured environment (probe_scratch mip chain) into the DEFAULT probe's radiance +
@@ -3315,10 +3328,7 @@ impl LiveRenderer {
     /// convolution (irradianceGenF) at res 16, one quad per face. Per-face rotation = look_at(dir,up).inverse()
     /// using the SAME face basis as the capture, so scratch (input) and radiance/irradiance (output) share
     /// orientation. Runs once after capture; the resolve then samples real sky ambient + reflections at slot 0.
-    fn convolve_probe(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        if self.probe_convolved || !self.probe_captured {
-            return;
-        }
+    fn convolve_probe(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, do_radiance: bool, do_irradiance: bool) {
         let (Some(scratch_view), Some(rad_tex), Some(irr_tex), Some(rad_pipe), Some(irr_pipe), Some(gen_bgl), Some(vbuf)) = (
             self.probe_scratch_view.as_ref(), self.probe_radiance.as_ref(), self.probe_irradiance.as_ref(),
             self.radiance_gen_pipeline.as_ref(), self.irradiance_gen_pipeline.as_ref(),
@@ -3391,22 +3401,56 @@ impl LiveRenderer {
             p.set_vertex_buffer(0, vbuf.slice(..));
             p.draw(0..4, 0..1);
         };
-        for i in 0..mips {
-            for cf in 0..6u32 {
-                let v = face2d(rad_tex, i, cf); // slot 0 default probe = layers 0..5
-                gen_pass(&mut enc, rad_pipe, &v, (i * 6 + cf) as u64);
+        if do_radiance {
+            for i in 0..mips {
+                for cf in 0..6u32 {
+                    let v = face2d(rad_tex, i, cf); // slot 0 default probe = layers 0..5
+                    gen_pass(&mut enc, rad_pipe, &v, (i * 6 + cf) as u64);
+                }
             }
         }
-        for cf in 0..6u32 {
-            let v = face2d(irr_tex, 0, cf);
-            gen_pass(&mut enc, irr_pipe, &v, (mips * 6 + cf) as u64);
+        if do_irradiance {
+            for cf in 0..6u32 {
+                let v = face2d(irr_tex, 0, cf);
+                gen_pass(&mut enc, irr_pipe, &v, (mips * 6 + cf) as u64);
+            }
         }
         queue.submit([enc.finish()]);
-        self.probe_convolved = true;
     }
 
     /// #4: the deferred resolve pipeline (fullscreen post.vert + resolve.frag) + its bind
     /// group (Env UBO + the two G-buffer textures).
+    /// S3-C: set the DEFAULT probe's refParams (slot 0) = (irradiance-scale, radiance-scale, fadeIn, znear).
+    /// Toggled between the ambiance pass (0, 0.5) and radiance pass (ambiance, 1) to drive the single bounce,
+    /// matching stock's is_ambiance_pass ambscale/radscale (llreflectionmapmanager.cpp:1132-1211).
+    fn set_default_refparams(&self, queue: &wgpu::Queue, irr_scale: f32, rad_scale: f32) {
+        let mut b = [0u8; 16];
+        put_vec4(&mut b, 0, [irr_scale, rad_scale, 1.0, 0.1]);
+        queue.write_buffer(&self.probe_ubo, RP_OFF_REFPARAMS as u64, &b);
+    }
+
+    /// S3-C: bake the default probe in stock's two passes (single-bounce lighting, llreflectionmapmanager.cpp
+    /// :773-780). Ambiance pass: refParams=(0, 0.5) -> the capture's terrain resolve gets analytic ambient +
+    /// half old radiance (direct-lit) -> convolve IRRADIANCE. Radiance pass: refParams=(probe_ambiance, 1) ->
+    /// the capture now samples the FRESH irradiance (the single bounce) + full old radiance -> convolve
+    /// RADIANCE. ONE cycle, faithful to stock's per-update behaviour (it never converges within one update).
+    /// Leaves refParams at the display value (ambiance, 1) for the main-frame resolve (is_ambiance_pass=false).
+    fn bake_default_probe(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.probe_baked || !self.sky_fs_enabled || self.probe_radiance.is_none() {
+            return;
+        }
+        // Ambiance pass -> irradiance (scene lit direct-only: no probe irradiance, half old radiance).
+        self.set_default_refparams(queue, 0.0, 0.5);
+        self.capture_probe_environment(device, queue);
+        self.convolve_probe(device, queue, false, true);
+        // Radiance pass -> radiance (terrain now lit by the fresh irradiance = the single bounce).
+        self.set_default_refparams(queue, self.probe_ambiance, 1.0);
+        self.capture_probe_environment(device, queue);
+        self.convolve_probe(device, queue, true, false);
+        // refParams stays (ambiance, 1) -- the display resolve's is_ambiance_pass is false.
+        self.probe_baked = true;
+    }
+
     fn ensure_resolve(&mut self, device: &wgpu::Device) {
         if self.resolve_pipeline.is_none() {
             let vs = device.create_shader_module(wgpu::include_spirv!("../shaders/post.vert.spv"));
@@ -3802,8 +3846,7 @@ impl LiveRenderer {
             self.ensure_gbuffer(device, w, h);
             self.ensure_probes(device, queue); // P3: probe resources exist before the resolve binds them
             self.ensure_resolve(device);       // resolve pipeline needed by the terrain capture (below)
-            self.capture_probe_environment(device, queue); // S2: fill probe_scratch (sky + terrain + water + clouds)
-            self.convolve_probe(device, queue);            // S3: GGX-prefilter/convolve scratch -> radiance + irradiance slot 0
+            self.bake_default_probe(device, queue);        // S3/S3-C: two-pass single-bounce bake -> radiance + irradiance slot 0
         }
         if has_gb {
             self.ensure_pipeline_gb(device);

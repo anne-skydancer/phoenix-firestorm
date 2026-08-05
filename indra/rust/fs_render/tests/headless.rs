@@ -1266,10 +1266,13 @@ fn probe_terrain_capture_changes_faces() {
     aux[20]=0.4954; aux[21]=0.4954; aux[22]=0.6399; aux[23]=0.19;
     aux[24]=0.2447; aux[25]=0.4487; aux[26]=0.7599; aux[27]=0.4;
     aux[28]=5.0; aux[29]=0.001; aux[30]=-0.4799; aux[31]=0.0;
-    aux[32]=1.0; aux[34]=256.0; aux[35]=256.0;
-    let mut ubo = [0.0f32; 52];
+    aux[32]=1.0; aux[33]=1.5; aux[34]=256.0; aux[35]=256.0; // aux[33]=u49=sky_ambient_scale (so amblit != 0)
+    // World SL-Z-up sun_dir (u52-54) so the capture-terrain gets sun N.L (the resolve uses sundir, not lightnorm).
+    let sun_dir = { let v=[0.15f32, 0.30, 0.90]; let l=(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt(); [v[0]/l, v[1]/l, v[2]/l] };
+    let mut ubo = [0.0f32; 60];
     ubo[0..16].copy_from_slice(&glam::Mat4::IDENTITY.to_cols_array());
     ubo[16..52].copy_from_slice(&aux[0..36]);
+    ubo[52]=sun_dir[0]; ubo[53]=sun_dir[1]; ubo[54]=sun_dir[2];
 
     // A large flat terrain (z=0) centred under the eye. detail_tex_ids fall back to white.
     let dim = 16u32;
@@ -1350,6 +1353,101 @@ fn probe_terrain_capture_changes_faces() {
     // The terrain (lit ground) must change at least one face substantially vs sky-only.
     let max_delta = (0..6).map(|f| (0..3).map(|c| (sky[f][c] - terr[f][c]).abs()).fold(0f32, f32::max)).fold(0f32, f32::max);
     assert!(max_delta > 0.02, "terrain did not change any probe face (sky {:?} terr {:?})", sky, terr);
+}
+
+/// P3-S3-C single bounce: the two-pass bake feeds the fresh IRRADIANCE back into the radiance-pass capture
+/// (stock's single-bounce lighting, llreflectionmapmanager.cpp:773-780). With classic_mode=0 (PBR resolve,
+/// float 59 = 0) and probe_ambiance>0, the terrain's ambient on the radiance pass is lit by the probe
+/// irradiance (refParams.x), so the terrain-facing radiance DIFFERS from an ambiance=0 bake (refParams.x=0 ->
+/// analytic ambient only). Proves the refParams toggle + irradiance feedback are wired through the capture.
+#[test]
+fn probe_single_bounce_lights_terrain() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping single-bounce test");
+        return;
+    };
+    let ln = { let v = [0.30f32, 0.90, 0.15]; let l = (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt(); [v[0]/l, v[1]/l, v[2]/l] };
+    let mut aux = [0.0f32; 48];
+    aux[0]=0.0; aux[1]=0.0; aux[2]=20.0; aux[3]=1605.0;                 // eye 20 m above ground
+    aux[4]=ln[0]; aux[5]=ln[1]; aux[6]=ln[2]; aux[7]=1.0;
+    aux[8]=0.7342; aux[9]=0.7815; aux[10]=0.8999; aux[11]=0.0001;
+    aux[12]=0.7342; aux[13]=0.7815; aux[14]=0.8999; aux[15]=1.0;
+    aux[16]=0.25; aux[17]=0.25; aux[18]=0.25; aux[19]=0.7;
+    aux[20]=0.4954; aux[21]=0.4954; aux[22]=0.6399; aux[23]=0.19;
+    aux[24]=0.2447; aux[25]=0.4487; aux[26]=0.7599; aux[27]=0.4;
+    aux[28]=5.0; aux[29]=0.001; aux[30]=-0.4799; aux[31]=0.0;
+    aux[32]=1.0; aux[33]=1.5; aux[34]=256.0; aux[35]=256.0;  // aux[33]=u49=sky_ambient_scale (RenderSkyAmbientScale)
+    // World SL-Z-up sun_dir (u52-54) -- what the engine's fullscreen_sky_ubo packs; the resolve uses THIS
+    // (not lightnorm) for terrain N.L. Un-swizzle of the sky lightnorm (toLightNorm = .yzx): sun = (ln.z,ln.x,ln.y).
+    let sun_dir = { let v=[0.15f32, 0.30, 0.90]; let l=(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt(); [v[0]/l, v[1]/l, v[2]/l] };
+    let mut ubo = [0.0f32; 60];
+    ubo[0..16].copy_from_slice(&glam::Mat4::IDENTITY.to_cols_array());
+    ubo[16..52].copy_from_slice(&aux[0..36]);
+    ubo[52]=sun_dir[0]; ubo[53]=sun_dir[1]; ubo[54]=sun_dir[2]; // u55=distance_mult, u59=classic_mode(0)
+
+    let dim = 16u32; let mpg = 8.0f32; let span = (dim as f32 - 1.0) * mpg;
+    let terrain = fs_render::scene::TerrainBlock {
+        dim, meters_per_grid: mpg, origin: [-span * 0.5, -span * 0.5, 0.0],
+        heights: vec![0.0; (dim * dim) as usize], gen: 1,
+        start_height: [0.0; 4], height_range: [1.0; 4], origin_global: [0.0, 0.0],
+        detail_scale: 1.0 / 12.0, detail_tex_ids: [0, 0, 0, 0], alpha_ramp_id: 0, pbr: false,
+    };
+    let mut tubo = [0.0f32; 32];
+    tubo[0..16].copy_from_slice(&glam::Mat4::IDENTITY.to_cols_array());
+    tubo[16]=ln[0]; tubo[17]=ln[1]; tubo[18]=ln[2];
+    tubo[20]=1.0; tubo[21]=1.0; tubo[22]=1.0;
+    tubo[24]=0.25; tubo[25]=0.25; tubo[26]=0.25;
+    tubo[28]=1.0/12.0;
+
+    let bake = |ambiance: f32| -> [f32; 3] {
+        let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        live.set_fullscreen_sky(&ubo);
+        live.ensure_terrain(&device, Some(&terrain));
+        live.set_terrain_ubo(&queue, &tubo);
+        live.set_probe_ambiance(ambiance);
+        let pos: [[f32; 4]; 3] = [[-0.6, -0.6, 0.0, 1.0], [0.6, -0.6, 0.0, 1.0], [0.0, 0.6, 0.0, 1.0]];
+        let nrm: [[f32; 4]; 3] = [[0.0, 0.0, 1.0, 0.0]; 3];
+        let mut vtx: Vec<u8> = bytemuck::cast_slice(&pos).to_vec();
+        vtx.extend_from_slice(bytemuck::cast_slice(&nrm));
+        let mut d: DrawDesc = unsafe { std::mem::zeroed() };
+        d.mode = 0; d.count = 3; d.typemask = 1 | 2; d.num_verts = 3; d.vtx_bytes = vtx.len() as u32;
+        d.depth_test = 1; d.depth_write = 1;
+        let id = glam::Mat4::IDENTITY.to_cols_array();
+        d.mvp = id; d.modelview = id; d.color = [1.0, 1.0, 1.0, 1.0]; d.min_alpha = -1.0;
+        let (w, h) = (64u32, 64u32);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("t"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        live.begin();
+        live.submit(&device, &queue, &d, &vtx, &[]);
+        live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+        // Radiance slot 0, mip 0, face 5 (down-facing / terrain) centre.
+        let (rad, _) = live.probe_outputs_debug().expect("probe outputs");
+        let res = 128u32; let stride = ((res*8+255)/256)*256;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (stride*res) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: rad, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: 5 }, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(res) } },
+            wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 });
+        queue.submit([enc.finish()]);
+        let sl = buf.slice(..); sl.map_async(wgpu::MapMode::Read, |_| {}); device.poll(wgpu::Maintain::Wait);
+        let data = sl.get_mapped_range();
+        let o = ((res/2)*stride + (res/2)*8) as usize;
+        [f16_to_f32(u16::from_le_bytes([data[o],data[o+1]])),
+         f16_to_f32(u16::from_le_bytes([data[o+2],data[o+3]])),
+         f16_to_f32(u16::from_le_bytes([data[o+4],data[o+5]]))]
+    };
+
+    let t0 = bake(0.0); // refParams.x=0 on the radiance pass -> analytic ambient only (no diffuse bounce)
+    let t1 = bake(0.6); // refParams.x=0.6 -> terrain lit by the fresh probe irradiance (single bounce)
+    eprintln!("terrain radiance face5: ambiance0 {:?} ambiance0.6 {:?}", t0, t1);
+    let diff = (0..3).map(|i| (t1[i]-t0[i]).abs()).fold(0f32, f32::max);
+    assert!(diff > 0.01, "single-bounce feedback did not change terrain radiance: t0={:?} t1={:?}", t0, t1);
 }
 
 /// P3-S2 water: the self-contained forward water is captured into the probe faces. Captures the

@@ -166,10 +166,29 @@ Original spec:
 - Headless VERIFIED (`probe_convolve_fills_radiance_and_irradiance`): radiance mip 0 == the captured sky
   faces (roughness-0 passthrough, matches to ~1e-3); irradiance == smooth positive per-face ambient. The
   three capture tests re-pointed at `probe_scratch`. No regressions (only the 2 pre-existing sky failures).
-- **NOT in S3 (deferred, see below):** the single-bounce feedback (irradiance-from-direct-only →
-  radiance-from-scene-with-irradiance). Mechanism now known precisely (llreflectionmapmanager.cpp:773-780,
-  12-call cadence); belongs with the manager scheduler slice. Open question for then: single iteration vs
-  iterate-to-convergence for the continuous loop.
+### S3-C — single-bounce feedback — DONE (headless verified)
+- Whole-chain read: the single bounce is expressed by toggling the DEFAULT probe's `refParams.x/y` between
+  two capture passes (NOT a separate render path). `is_ambiance_pass` → `ambscale`/`radscale`
+  (llreflectionmapmanager.cpp:1131-1211): ambiance pass `refParams=(0, 0.5)` (direct-lit: analytic ambient +
+  half old radiance) → convolve IRRADIANCE; radiance pass `refParams=(minimum_ambiance, 1)` so the capture's
+  terrain resolve samples the FRESH irradiance → convolve RADIANCE. `resolve.frag` already consumes it
+  (`tapRefMap` × `.y`, `tapIrradianceMap` `mix(amblit, probe_irr*.x, min(.x,1))`).
+- Implemented: `bake_default_probe` (two passes) + `convolve_probe(do_radiance, do_irradiance)` +
+  `set_default_refparams` + `set_probe_ambiance`. ONE cycle (faithful: stock never converges within an
+  update; the temporal loop converges over subsequent in-world frames). Replaces the old single capture.
+- **Gating (from the code):** the diffuse bounce needs `classic_mode == 0` (resolve.frag:406/425 — legacy
+  classic bypasses probe ambient) AND `minimum_ambiance = getReflectionProbeAmbiance() > 0` (getAmbiance()=0
+  for the default probe). Legacy sky (ambiance 0) → diffuse bounce inert (amblit), exactly as stock; the
+  radiance (0.5→1) part still affects terrain specular.
+- Headless VERIFIED (`probe_single_bounce_lights_terrain`): ambiance 0→0.6 shifts the terrain-facing radiance
+  toward the sky's blue irradiance (grey [0.047] → bluish [0.038,0.046,0.084]).
+- **Finding (not a bug):** removing the old `refParams.x=1` default exposed that the hand-packed probe TEST
+  UBOs omit `sun_dir` (u52-54) + `sky_ambient_scale` (u49), so the capture-terrain got no sun/amblit and read
+  black (the grey-seed probe ambient had masked it). The engine's `fullscreen_sky_ubo` DOES pack these
+  (scene.rs:536,541-542), so in-world the capture-terrain is lit; the fix was to pack a realistic sky UBO in
+  the terrain/single-bounce tests.
+
+Deferred with the manager scheduler: the multi-frame 12-call cadence, priority/occlusion, realtime probes.
 
 ### S4 — updateUniforms: pack the default probe (headless: resolve consumes it → non-zero sky ambient)
 - Pack ReflectionProbes: refmapCount=1; refSphere[0] = view-space (0,0,-?) + r4096 (64 m above cam →
@@ -190,11 +209,9 @@ Original spec:
 ## Deferred beyond this plan
 - Automatic 32 m-grid + manual box/sphere probes (need object geometry; the walk/mix/parallax consumer is
   already verified) — geometry stratum.
-- The full manager scheduler (12-render single-bounce, priority, occlusion, realtime probes). Includes the
-  single-bounce feedback: irradiance pass captures direct-only lighting → generates irradiance; radiance
-  pass captures the scene lit by that irradiance (+ prior radiance) → generates radiance
-  (llreflectionmapmanager.cpp:773-780). Needs the `isRadiancePass()` "direct only" toggle traced into the
-  deferred resolve, and a decision on single-iteration vs iterate-to-convergence headlessly.
+- The full manager scheduler: the multi-frame 12-call cadence (one face/frame, ~2 s refresh), priority,
+  occlusion, and realtime/hero probes. (The single-bounce feedback itself is DONE — see S3-C above; this is
+  only the temporal scheduling that spreads it across frames + the multi-probe machinery.)
 - 4× supersample — DONE in S3 (CAP_SUPER=4). Still deferred: faithful `R11F_G11F_B10F` cube format (we use
   `Rgba16Float`).
 - P4: hero (mirror) probes + SSR generation.

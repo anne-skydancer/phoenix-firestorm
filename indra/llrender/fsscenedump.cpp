@@ -223,8 +223,13 @@ typedef int(__cdecl* fsr_ui_begin_t)();
 // <FS:VkBridge> U2/U3/U6: clip rect (GL device px, bottom-left; w<0 = no clip) + the LLRender
 // eBlendFactor pair (getCurrBlendSFactor/DFactor) + flags (bit0 = gSolidColorProgram). Lockstep.
 typedef int(__cdecl* fsr_ui_submit_t)(const float*, U32, U32, U32, const U8*, S32, S32, S32, S32, U32, U32, U32);
+// <FS:VkBridge> R1: offscreen snapshot -- render the CURRENT fed frame to an offscreen (w,h) target +
+// read back (components 3=RGB / 4=RGBA, GL bottom-up). The null-GL stub can't render offscreen; this is
+// how engine-mode captures at a requested resolution instead of glReadPixels of the stale present.
+typedef int(__cdecl* fsr_snapshot_t)(U32, U32, U32, U8*);
 static fsr_ui_begin_t sFsrUiBegin = nullptr;
 static fsr_ui_submit_t sFsrUiSubmit = nullptr;
+static fsr_snapshot_t sFsrSnapshot = nullptr;
 static std::unordered_map<U64, U32> sSkinIds;
 static std::unordered_map<U32, U32> sSkinSentFrame;
 static U32 sNextSkinId = 1;
@@ -263,6 +268,7 @@ static void bindLive()
     sFsrDecFree = (fsr_decfree_t)GetProcAddress(dll, "fsr_decoded_free");
     sFsrUiBegin = (fsr_ui_begin_t)GetProcAddress(dll, "fsr_ui_begin");
     sFsrUiSubmit = (fsr_ui_submit_t)GetProcAddress(dll, "fsr_ui_submit");
+    sFsrSnapshot = (fsr_snapshot_t)GetProcAddress(dll, "fsr_snapshot");
     sLive = (sFsrBegin && sFsrSubmit && sFsrEnd);
     sTapDraws = (getenv("FS_TAP_DRAWS") != nullptr); // native-vulkan: draw tap retired unless debugging
     LL_INFOS("SceneDump") << "P3c live bridge " << (sLive ? "ARMED" : "FAILED")
@@ -271,6 +277,14 @@ static void bindLive()
 }
 
 bool liveActive() { return sLive; }
+
+// <FS:VkBridge> R1: engine-mode snapshot -- render the current fed frame to an offscreen w*h target and
+// fill `out` (components 3/4, GL bottom-up). Returns false if the engine/export is unavailable so the
+// caller can fall back. The viewer feeds the snapshot camera/scene via display() before calling this.
+bool snapshot(U32 w, U32 h, U32 components, U8* out)
+{
+    return sLive && sFsrSnapshot && out && sFsrSnapshot(w, h, components, out) != 0;
+}
 
 // <FS:VkBridge> A.3: the native-VK UI feed is active when the engine is live and the legacy draw
 // tap is retired (its normal native-vulkan state). With FS_TAP_DRAWS on (debug), the tap already

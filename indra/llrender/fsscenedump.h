@@ -29,6 +29,11 @@ namespace FSSceneDump
     bool active();
     // <FS:VkBridge> P3c live bridge
     bool liveActive();
+    // <FS:VkBridge> R1: engine-mode offscreen snapshot -- render the current fed frame to a private
+    // (w,h) target + read back into `out` (components 3=RGB / 4=RGBA, GL bottom-up row order). The
+    // null-GL stub can't render offscreen, so this replaces glReadPixels of the stale present. Returns
+    // false if unavailable (caller falls back). Feed the snapshot camera/scene via display() first.
+    bool snapshot(U32 w, U32 h, U32 components, U8* out);
     // <FS:VkBridge> A.3 native-VK UI: honest feed from LLRender::flush (its OWN matrices + the
     // immediate verts; no glGet, no tap). uiActive() gates the flush hook; uiBegin() clears the
     // engine's per-frame UI list (once per frame); uiSubmit() forwards one flush as a UI draw.

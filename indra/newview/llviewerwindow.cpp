@@ -6330,8 +6330,35 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
     F32 depth_conversion_factor_1 = (LLViewerCamera::getInstance()->getFar() + LLViewerCamera::getInstance()->getNear()) / (2.f * LLViewerCamera::getInstance()->getFar() * LLViewerCamera::getInstance()->getNear());
     F32 depth_conversion_factor_2 = (LLViewerCamera::getInstance()->getFar() - LLViewerCamera::getInstance()->getNear()) / (2.f * LLViewerCamera::getInstance()->getFar() * LLViewerCamera::getInstance()->getNear());
 
+    // <FS:VkBridge> R1: engine-mode capture. Under the null-GL stub the viewer renders nothing offscreen
+    // and glReadPixels returns the stale UI-composited on-screen frame -- so the tiling loop below can't
+    // produce a correct snapshot. Instead feed the snapshot view to the engine and render it to a private
+    // offscreen target at the buffer resolution, then let the shared finalize scale it to image_width/
+    // height. `raw` (image_buffer_x/y) already carries the image aspect ratio, so setting the camera to
+    // that aspect makes the render 1:1 and undistorted. Interface-off + COLOR only for now (engine-mode
+    // UI-in-snapshot and depth readback are follow-ups).
+    bool engine_captured = false;
+    if (FSSceneDump::liveActive() && !show_ui && type == LLSnapshotModel::SNAPSHOT_TYPE_COLOR
+        && image_buffer_x > 0 && image_buffer_y > 0)
+    {
+        const F32 saved_aspect = LLViewerCamera::getInstance()->getAspect();
+        const LLRect saved_wvr = mWorldViewRectRaw;
+        LLViewerCamera::getInstance()->setAspect((F32)image_buffer_x / (F32)image_buffer_y);
+        mWorldViewRectRaw.set(0, image_buffer_y, image_buffer_x, 0);
+        LLViewerCamera::getInstance()->setViewHeightInPixels(image_buffer_y);
+        gDisplaySwapBuffers = false;
+        gDepthDirty = true;
+        display(do_rebuild, 1.0f, 0, true); // feed the snapshot view (deferred skips render_ui -> no UI fed)
+        engine_captured = FSSceneDump::snapshot((U32)image_buffer_x, (U32)image_buffer_y,
+                                                (U32)raw->getComponents(), raw->getData());
+        mWorldViewRectRaw = saved_wvr;
+        LLViewerCamera::getInstance()->setAspect(saved_aspect);
+        LLViewerCamera::getInstance()->setViewHeightInPixels(saved_wvr.getHeight());
+    }
+
     // Subimages are in fact partial rendering of the final view. This happens when the final view is bigger than the screen.
     // In most common cases, scale_factor is 1 and there's no more than 1 iteration on x and y
+    if (!engine_captured)
     for (int subimage_y = 0; subimage_y < scale_factor; ++subimage_y)
     {
         S32 subimage_y_offset = llclamp(buffer_y_offset - (subimage_y * window_height), 0, window_height);;

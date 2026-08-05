@@ -404,6 +404,15 @@ pub struct LiveRenderer {
     // S2-remainder: a face-res half-res cloud target + its composite bind, for capturing clouds per face.
     probe_cap_cloud: Option<(wgpu::TextureView, u32, u32)>,
     probe_cap_cloud_comp_bind: Option<wgpu::BindGroup>,
+    // S2-terrain: a probe_res mini-frame scene target (the deferred terrain resolve can't write the cube it
+    // samples, so the mini-frame renders here, then is copied to the cube face) + a face-res G-buffer/depth
+    // + a face resolve bind (binding 0 = probe_cap_ubo, textures = the face G-buffer). terrain_ubo_cache
+    // holds the main terrain UBO so the per-face view_proj swap can be restored.
+    probe_cap_scene: Option<wgpu::Texture>,
+    probe_cap_gbuf: Option<[wgpu::TextureView; 4]>,
+    probe_cap_depth: Option<wgpu::TextureView>,
+    probe_cap_resolve_bind: Option<wgpu::BindGroup>,
+    terrain_ubo_cache: std::cell::Cell<[f32; 32]>,
     // S1: Post-params UBO consumed by post_tonemap.frag (std140, 32 bytes).
     post_ubo: wgpu::Buffer,
     post_exposure: f32,    // RenderExposure clamp[0.5,4]
@@ -980,6 +989,11 @@ impl LiveRenderer {
             probe_captured: false,
             probe_cap_cloud: None,
             probe_cap_cloud_comp_bind: None,
+            probe_cap_scene: None,
+            probe_cap_gbuf: None,
+            probe_cap_depth: None,
+            probe_cap_resolve_bind: None,
+            terrain_ubo_cache: std::cell::Cell::new([0.0f32; 32]),
             post_ubo,
             // S1 defaults: non-legacy baseline (settings.xml RenderExposure=1, TonemapType=1
             // ACES, TonemapMix=0.7). S3 overrides these per sky regime (legacy => mix=0,
@@ -1780,6 +1794,7 @@ impl LiveRenderer {
 
     /// Feed the terrain UBO (view_proj reverse-Z + world sun/sunlight/ambient + hdr_scale).
     pub fn set_terrain_ubo(&self, queue: &wgpu::Queue, ubo: &[f32; 32]) {
+        self.terrain_ubo_cache.set(*ubo); // remember the main UBO so the probe capture can swap+restore view_proj
         queue.write_buffer(&self.terrain_typed_ubo, 0, bytemuck::cast_slice(ubo));
     }
 
@@ -2615,11 +2630,74 @@ impl LiveRenderer {
         self.probe_radiance.as_ref().map(|t| (t, self.probe_count))
     }
 
+    /// S2-terrain: (re)create the probe-capture mini-frame targets -- a probe_res scene target, a face-res
+    /// G-buffer (RT0-3) + depth, and the face resolve bind (resolve_bgl, but binding 0 = probe_cap_ubo and
+    /// the G-buffer textures = the face G-buffer). Lazy.
+    fn ensure_probe_capture_targets(&mut self, device: &wgpu::Device) {
+        let res = self.probe_res;
+        let mk = |fmt: wgpu::TextureFormat, usage: wgpu::TextureUsages, label: &str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label), size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt, usage, view_formats: &[],
+            }).create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        if self.probe_cap_scene.is_none() {
+            self.probe_cap_scene = Some(device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("probe-cap-scene"), size: wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: SCENE_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+            }));
+        }
+        if self.probe_cap_gbuf.is_none() {
+            let att = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            self.probe_cap_gbuf = Some([
+                mk(GBUF_ALBEDO_FORMAT, att, "probe-cap-gb0"),
+                mk(GBUF_NORMAL_FORMAT, att, "probe-cap-gb1"),
+                mk(GBUF_SPEC_FORMAT, att, "probe-cap-gb2"),
+                mk(GBUF_EMISSIVE_FORMAT, att, "probe-cap-gb3"),
+            ]);
+        }
+        if self.probe_cap_depth.is_none() {
+            self.probe_cap_depth = Some(mk(wgpu::TextureFormat::Depth32Float, wgpu::TextureUsages::RENDER_ATTACHMENT, "probe-cap-depth"));
+        }
+        if self.probe_cap_resolve_bind.is_none() {
+            let Self {
+                resolve_bgl, probe_cap_ubo, probe_cap_gbuf, probe_depth_view, probe_ubo,
+                probe_radiance_view, probe_irradiance_view, probe_sampler, probe_params_ubo,
+                brdf_lut_view, probe_cap_resolve_bind, ..
+            } = self;
+            if let (Some(gb), Some(depth), Some(rad), Some(irr), Some(brdf)) = (
+                probe_cap_gbuf.as_ref(), probe_depth_view.as_ref(), probe_radiance_view.as_ref(),
+                probe_irradiance_view.as_ref(), brdf_lut_view.as_ref(),
+            ) {
+                *probe_cap_resolve_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("probe-cap-resolve-bind"),
+                    layout: resolve_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: probe_cap_ubo.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&gb[0]) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&gb[1]) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&gb[2]) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&gb[3]) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(depth) },
+                        wgpu::BindGroupEntry { binding: 6, resource: probe_ubo.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(rad) },
+                        wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(irr) },
+                        wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(probe_sampler) },
+                        wgpu::BindGroupEntry { binding: 10, resource: probe_params_ubo.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::TextureView(brdf) },
+                    ],
+                }));
+            }
+        }
+    }
+
     /// S2: capture the sky ENVIRONMENT into the 6 faces of the radiance cube's SCRATCH layer, one face per
-    /// 90deg-FOV camera -- a mini deferred-frame per face (stock's display_cube_face). Currently: procedural
-    /// sky (sky_fullscreen.frag) + volumetric clouds (cloud raymarch -> composite over the sky), each with a
-    /// per-face sky UBO (current WL params, camera swapped). Captured once per (re)allocation; S3 convolves
-    /// the scratch into the radiance mip chain + irradiance. (Terrain + water fold in next.)
+    /// 90deg-FOV camera -- a mini deferred-frame per face (stock's display_cube_face). Renders sky +
+    /// (deferred) terrain + volumetric clouds into a probe_res scene target, then copies it to the cube face
+    /// (the deferred resolve samples the probe cubes, so it can't render into the cube it reads). Each pass
+    /// uses a per-face camera. Captured once per (re)allocation; S3 convolves the scratch into radiance +
+    /// irradiance. (Water -- tapped forward geometry -- folds in next.)
     fn capture_probe_environment(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         if self.probe_captured || !self.sky_fs_enabled || self.probe_radiance.is_none() {
             return;
@@ -2659,15 +2737,33 @@ impl LiveRenderer {
             }
         }
 
-        let (Some(sky_pipe), Some(bind), Some(rad)) =
-            (self.sky_fs_pipeline.as_ref(), self.probe_cap_bind.as_ref(), self.probe_radiance.as_ref())
-        else { return; };
-        // Clouds are optional (may be disabled); capture them only if the whole path is present.
+        self.ensure_probe_capture_targets(device);
+        let (Some(sky_pipe), Some(bind), Some(rad), Some(cap_scene)) = (
+            self.sky_fs_pipeline.as_ref(), self.probe_cap_bind.as_ref(),
+            self.probe_radiance.as_ref(), self.probe_cap_scene.as_ref(),
+        ) else { return; };
+        let cap_scene_view = cap_scene.create_view(&wgpu::TextureViewDescriptor::default());
+        // Clouds optional (may be disabled); capture only if the whole path is present.
         let clouds = match (self.cloud_pipeline.as_ref(), self.cloud_comp_pipeline.as_ref(),
                             self.probe_cap_cloud.as_ref(), self.probe_cap_cloud_comp_bind.as_ref()) {
             (Some(cp), Some(ccp), Some((cv, _, _)), Some(ccb)) => Some((cp, ccp, cv, ccb)),
             _ => None,
         };
+        // Terrain optional (deferred: G-buffer fill -> resolve). Select legacy or PBR splat like the main pass.
+        let terrain = if self.terrain_index_count > 0 {
+            let use_pbr = self.terrain_is_pbr && self.pbr_gb_pipeline.is_some() && self.pbr_gb_bind.is_some();
+            let (tp, tb) = if use_pbr { (self.pbr_gb_pipeline.as_ref(), self.pbr_gb_bind.as_ref()) }
+                           else { (self.terrain_gb_pipeline.as_ref(), self.terrain_gb_bind.as_ref()) };
+            match (tp, tb, self.terrain_vbuf.as_ref(), self.terrain_ibuf.as_ref(),
+                   self.probe_cap_gbuf.as_ref(), self.probe_cap_depth.as_ref(),
+                   self.probe_cap_resolve_bind.as_ref(), self.resolve_pipeline.as_ref()) {
+                (Some(tp), Some(tb), Some(vb), Some(ib), Some(gb), Some(dep), Some(rb), Some(rp)) =>
+                    Some((tp, tb, vb, ib, gb, dep, rb, rp)),
+                _ => None,
+            }
+        } else { None };
+        let had_terrain = terrain.is_some();
+        let terrain_indices = self.terrain_index_count;
 
         let wl = self.sky_fs_data; // current WL params (copy); we swap only the camera per face
         let eye = glam::Vec3::new(wl[16], wl[17], wl[18]);
@@ -2681,28 +2777,31 @@ impl LiveRenderer {
             (glam::Vec3::NEG_Z, glam::Vec3::NEG_Y),
         ];
         let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.5, 2000.0);
+        // reverse-Z terrain view_proj remap (matches scene.rs terrain_ubo).
+        let rev = glam::Mat4::from_cols(
+            glam::Vec4::new(1.0, 0.0, 0.0, 0.0), glam::Vec4::new(0.0, 1.0, 0.0, 0.0),
+            glam::Vec4::new(0.0, 0.0, -1.0, 0.0), glam::Vec4::new(0.0, 0.0, 1.0, 1.0));
+        let proj_t = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.5, 8192.0);
+        let main_terrain = self.terrain_ubo_cache.get();
+        let res = self.probe_res;
         let scratch = self.probe_count; // first scratch cube (radiance array = count + 2)
         for (f, (dir, up)) in faces.iter().enumerate() {
             let view = glam::Mat4::look_at_rh(eye, eye + *dir, *up);
-            let inv_vp = (proj * view).inverse();
             let mut ubo = wl;
-            ubo[0..16].copy_from_slice(&inv_vp.to_cols_array()); // swap inv_view_proj; keep cam + WL params
+            ubo[0..16].copy_from_slice(&(proj * view).inverse().to_cols_array()); // face inv_view_proj (sky)
             queue.write_buffer(&self.probe_cap_ubo, 0, bytemuck::cast_slice(&ubo));
-
-            let face_view = rad.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("probe-cap-face"),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                base_array_layer: scratch * 6 + f as u32,
-                array_layer_count: Some(1),
-                ..Default::default()
-            });
+            if had_terrain {
+                let mut tu = main_terrain;
+                tu[0..16].copy_from_slice(&((rev * proj_t) * view).to_cols_array()); // face reverse-Z view_proj
+                queue.write_buffer(&self.terrain_typed_ubo, 0, bytemuck::cast_slice(&tu));
+            }
             let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("probe-cap-enc") });
-            // sky background -> face (Clear).
+            // sky background -> cap_scene (Clear).
             {
                 let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("probe-cap-sky"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &face_view, resolve_target: None,
+                        view: &cap_scene_view, resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
@@ -2711,7 +2810,47 @@ impl LiveRenderer {
                 rp.set_bind_group(0, bind, &[]);
                 rp.draw(0..3, 0..1);
             }
-            // clouds -> half-res target, then composite over the face (Load, alpha blend).
+            // terrain (deferred): G-buffer fill -> resolve the lit terrain over the sky in cap_scene (Load;
+            // discards where no terrain, so the sky shows through).
+            if let Some((tp, tb, vb, ib, gb, dep, rb, rpipe)) = terrain {
+                {
+                    let ca_load = wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
+                    let mut gbp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("probe-cap-terrain-gb"),
+                        color_attachments: &[
+                            Some(wgpu::RenderPassColorAttachment { view: &gb[0], resolve_target: None, ops: ca_load }),
+                            Some(wgpu::RenderPassColorAttachment { view: &gb[1], resolve_target: None, ops: ca_load }),
+                            Some(wgpu::RenderPassColorAttachment { view: &gb[2], resolve_target: None, ops: ca_load }),
+                            Some(wgpu::RenderPassColorAttachment { view: &gb[3], resolve_target: None, ops: ca_load }),
+                        ],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: dep,
+                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None, occlusion_query_set: None,
+                    });
+                    gbp.set_pipeline(tp);
+                    gbp.set_bind_group(0, tb, &[]);
+                    gbp.set_vertex_buffer(0, vb.slice(..));
+                    gbp.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    gbp.draw_indexed(0..terrain_indices, 0, 0..1);
+                }
+                {
+                    let mut rpass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("probe-cap-terrain-resolve"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &cap_scene_view, resolve_target: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+                    });
+                    rpass.set_pipeline(rpipe);
+                    rpass.set_bind_group(0, rb, &[]);
+                    rpass.draw(0..3, 0..1);
+                }
+            }
+            // clouds -> half-res target, then composite over cap_scene (Load, alpha blend).
             if let Some((cp, ccp, cv, ccb)) = clouds {
                 {
                     let mut clp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2730,7 +2869,7 @@ impl LiveRenderer {
                     let mut cmp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("probe-cap-cloud-comp"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &face_view, resolve_target: None,
+                            view: &cap_scene_view, resolve_target: None,
                             ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                         })],
                         depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
@@ -2740,7 +2879,15 @@ impl LiveRenderer {
                     cmp.draw(0..3, 0..1);
                 }
             }
+            // copy the mini-frame into the cube face (radiance scratch layer).
+            enc.copy_texture_to_texture(
+                wgpu::ImageCopyTexture { texture: cap_scene, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::ImageCopyTexture { texture: rad, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: scratch * 6 + f as u32 }, aspect: wgpu::TextureAspect::All },
+                wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 });
             queue.submit([enc.finish()]);
+        }
+        if had_terrain {
+            queue.write_buffer(&self.terrain_typed_ubo, 0, bytemuck::cast_slice(&main_terrain)); // restore main view_proj
         }
         self.probe_captured = true;
     }
@@ -3141,8 +3288,8 @@ impl LiveRenderer {
         if has_gb || has_terrain {
             self.ensure_gbuffer(device, w, h);
             self.ensure_probes(device, queue); // P3: probe resources exist before the resolve binds them
-            self.capture_probe_environment(device, queue); // S2: fill the radiance scratch cube (sky + clouds)
-            self.ensure_resolve(device);
+            self.ensure_resolve(device);       // resolve pipeline needed by the terrain capture (below)
+            self.capture_probe_environment(device, queue); // S2: fill the radiance scratch cube (sky + terrain + clouds)
         }
         if has_gb {
             self.ensure_pipeline_gb(device);

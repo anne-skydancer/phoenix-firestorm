@@ -92,25 +92,23 @@ Original spec:
 - Seed a valid default probe (D2): refmapCount=1, neutral irradiance cube, identity-ish ProbeParams.
 - **Recompile `resolve.frag.spv`** (glslc). Headless: `deferred_resolve_*` + a new probe-plumbing test pass.
 
-### S2 — Sky-environment capture into the radiance cube scratch layer  ◑ PARTIAL (2026-08-04): sky + clouds DONE
+### S2 — Sky-environment capture into the radiance cube scratch layer  ◑ PARTIAL (2026-08-05): sky + terrain + clouds DONE
 
-**RESUME HERE next session — build TERRAIN with the same discipline (excavate → plan → implement → verify).**
-Done + verified: procedural **sky** (S2 sky commit) + volumetric **clouds** (S2 clouds commit) capture into
-the 6 faces of the radiance scratch cube via `capture_probe_environment` (mini deferred-frame per face:
-sky-fs → face; cloud raymarch → half-res target → composite over the face; per-face 90° camera). Test
-`probe_sky_capture_fills_scratch_faces` passes (real per-direction gradient; clouds shift the values).
+Done + verified: **sky** + deferred **terrain** + volumetric **clouds** captured into the 6 faces of the
+radiance scratch cube via `capture_probe_environment` — now a real mini deferred-frame per face rendered
+into a `cap_scene` target (probe_res) then COPIED to the cube face (the terrain resolve samples the probe
+cubes, so it can't render into the cube it reads). Per face: sky-fs → cap_scene; terrain-gb → face G-buffer
+→ resolve over the sky (Load); clouds → composite (Load); copy cap_scene → cube face. Terrain uses a per-face
+reverse-Z view_proj (`rev*proj*view`, swap `terrain_typed_ubo[0..16]` per face, cache+restore via a Cell);
+face resolve bind = `resolve_bgl` with binding 0 = `probe_cap_ubo` + the face G-buffer. IMPORTANT: `ensure_resolve`
+must run BEFORE the capture (the terrain resolve needs `resolve_pipeline`) — reordered in flush_clear.
+Tests: `probe_sky_capture_fills_scratch_faces` (sky+clouds gradient), `probe_terrain_capture_changes_faces`
+(terrain turns the down-facing face from blue sky → grey lit ground [0.20,0.22,0.26]). 9/11 headless pass; the
+2 `fullscreen_sky_*` failures are PRE-EXISTING (sky conformance).
 
-REMAINING for D1 (in priority order):
-- **TERRAIN** (~S1-sized, the big one): a face-sized G-buffer (4 RTs + depth at probe_res) + `terrain-gb`
-  fill with a face camera (swap `terrain_typed_ubo` view_proj per face; cache+restore the main via a Cell)
-  + a **face resolve bind** (binding 0 = `probe_cap_ubo`, textures = the face G-buffer) rendering into the
-  cube face (LoadOp::Load, over the sky). Verify headless by FEEDING a heightmap (`set_terrain` +
-  `set_terrain_ubo`) and reading the lower faces for a ground color. Files: `live.rs` capture method +
-  new cap_gbuf/cap_depth/cap_resolve_bind fields + a `probe_terrain_capture_*` headless test.
-- **WATER** (smaller, last): tapped forward geometry (baked MVP) — needs a per-face re-camera path for
-  tapped draws. Flag if not trivially re-runnable.
-
-Then S3 (convolution — makes the probe actually light the scene) → S4 (per-frame packing) → S5 (in-world).
+REMAINING for D1: **WATER** (tapped forward geometry, baked MVP) — needs a per-face re-camera path for tapped
+draws; flag if not trivially re-runnable. Then S3 (convolution — makes the probe actually light the scene)
+→ S4 (per-frame packing) → S5 (in-world).
 
 Original spec:
 Landed: `probe_cap_ubo` + `probe_cap_bind` + `capture_probe_sky()` — 6 face cameras (90° FOV, standard

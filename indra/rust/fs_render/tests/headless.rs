@@ -1012,6 +1012,113 @@ fn probe_sky_capture_fills_scratch_faces() {
     eprintln!("probe capture faces (center rgb): {:?}", face_rgb);
 }
 
+/// P3-S2 terrain: the deferred terrain is captured into the probe faces. Renders the environment capture
+/// with vs without a flat terrain below the probe eye and asserts the terrain changes the faces (the lit
+/// ground replaces the sky in the down-looking faces). Confirms the mini-frame terrain-gb + resolve per
+/// face works (face G-buffer + face resolve bind + the reverse-Z view_proj swap).
+#[test]
+fn probe_terrain_capture_changes_faces() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping probe terrain test");
+        return;
+    };
+    // Realistic WL sky (52-float UBO), eye 20 m above a flat ground.
+    let ln = { let v = [0.30f32, 0.90, 0.15]; let l = (v[0]*v[0]+v[1]*v[1]+v[2]*v[2]).sqrt(); [v[0]/l, v[1]/l, v[2]/l] };
+    let mut aux = [0.0f32; 48];
+    aux[0]=0.0; aux[1]=0.0; aux[2]=20.0; aux[3]=1605.0;                 // cam eye = (0,0,20)
+    aux[4]=ln[0]; aux[5]=ln[1]; aux[6]=ln[2]; aux[7]=1.0;
+    aux[8]=0.7342; aux[9]=0.7815; aux[10]=0.8999; aux[11]=0.0001;
+    aux[12]=0.7342; aux[13]=0.7815; aux[14]=0.8999; aux[15]=1.0;
+    aux[16]=0.25; aux[17]=0.25; aux[18]=0.25; aux[19]=0.7;
+    aux[20]=0.4954; aux[21]=0.4954; aux[22]=0.6399; aux[23]=0.19;
+    aux[24]=0.2447; aux[25]=0.4487; aux[26]=0.7599; aux[27]=0.4;
+    aux[28]=5.0; aux[29]=0.001; aux[30]=-0.4799; aux[31]=0.0;
+    aux[32]=1.0; aux[34]=256.0; aux[35]=256.0;
+    let mut ubo = [0.0f32; 52];
+    ubo[0..16].copy_from_slice(&glam::Mat4::IDENTITY.to_cols_array());
+    ubo[16..52].copy_from_slice(&aux[0..36]);
+
+    // A large flat terrain (z=0) centred under the eye. detail_tex_ids fall back to white.
+    let dim = 16u32;
+    let mpg = 8.0f32;
+    let span = (dim as f32 - 1.0) * mpg;
+    let terrain = fs_render::scene::TerrainBlock {
+        dim, meters_per_grid: mpg, origin: [-span * 0.5, -span * 0.5, 0.0],
+        heights: vec![0.0; (dim * dim) as usize], gen: 1,
+        start_height: [0.0; 4], height_range: [1.0; 4], origin_global: [0.0, 0.0],
+        detail_scale: 1.0 / 12.0, detail_tex_ids: [0, 0, 0, 0], alpha_ramp_id: 0, pbr: false,
+    };
+    // terrain UBO: view_proj is swapped per-face by the capture; only [16..32] (sun/ambient/detail) matter.
+    let mut tubo = [0.0f32; 32];
+    tubo[0..16].copy_from_slice(&glam::Mat4::IDENTITY.to_cols_array());
+    tubo[16]=ln[0]; tubo[17]=ln[1]; tubo[18]=ln[2];
+    tubo[20]=1.0; tubo[21]=1.0; tubo[22]=1.0;                          // sun_color white
+    tubo[24]=0.25; tubo[25]=0.25; tubo[26]=0.25;                       // ambient
+    tubo[28]=1.0/12.0;                                                  // detail_scale
+
+    let capture = |with_terrain: bool| -> [[f32; 3]; 6] {
+        let mut live = LiveRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb);
+        live.set_fullscreen_sky(&ubo);
+        if with_terrain {
+            live.ensure_terrain(&device, Some(&terrain));
+            live.set_terrain_ubo(&queue, &tubo);
+        }
+        // A G-buffer quad guarantees the probe block runs (has_gb) even without terrain.
+        let pos: [[f32; 4]; 3] = [[-0.6, -0.6, 0.0, 1.0], [0.6, -0.6, 0.0, 1.0], [0.0, 0.6, 0.0, 1.0]];
+        let nrm: [[f32; 4]; 3] = [[0.0, 0.0, 1.0, 0.0]; 3];
+        let mut vtx: Vec<u8> = bytemuck::cast_slice(&pos).to_vec();
+        vtx.extend_from_slice(bytemuck::cast_slice(&nrm));
+        let mut d: DrawDesc = unsafe { std::mem::zeroed() };
+        d.mode = 0; d.count = 3; d.typemask = 1 | 2; d.num_verts = 3; d.vtx_bytes = vtx.len() as u32;
+        d.depth_test = 1; d.depth_write = 1;
+        let id = glam::Mat4::IDENTITY.to_cols_array();
+        d.mvp = id; d.modelview = id; d.color = [1.0, 1.0, 1.0, 1.0]; d.min_alpha = -1.0;
+        let (w, h) = (64u32, 64u32);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("t"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        live.begin();
+        live.submit(&device, &queue, &d, &vtx, &[]);
+        live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+
+        let (rad, scratch) = live.probe_radiance_debug().expect("radiance");
+        let res = 128u32;
+        let stride = ((res * 8 + 255) / 256) * 256;
+        let mut out = [[0f32; 3]; 6];
+        for f in 0..6u32 {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None, size: (stride * res) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            enc.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture { texture: rad, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: scratch * 6 + f }, aspect: wgpu::TextureAspect::All },
+                wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(res) } },
+                wgpu::Extent3d { width: res, height: res, depth_or_array_layers: 1 });
+            queue.submit([enc.finish()]);
+            let slice = buf.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::Maintain::Wait);
+            let data = slice.get_mapped_range();
+            let o = ((res / 2) * stride + (res / 2) * 8) as usize;
+            for c in 0..3 { out[f as usize][c] = f16_to_f32(u16::from_le_bytes([data[o + c*2], data[o + c*2 + 1]])); }
+            drop(data); buf.unmap();
+        }
+        out
+    };
+
+    let sky = capture(false);
+    let terr = capture(true);
+    eprintln!("sky-only  faces: {:?}", sky);
+    eprintln!("w/terrain faces: {:?}", terr);
+    // The terrain (lit ground) must change at least one face substantially vs sky-only.
+    let max_delta = (0..6).map(|f| (0..3).map(|c| (sky[f][c] - terr[f][c]).abs()).fold(0f32, f32::max)).fold(0f32, f32::max);
+    assert!(max_delta > 0.02, "terrain did not change any probe face (sky {:?} terr {:?})", sky, terr);
+}
+
 fn f16_to_f32(h: u16) -> f32 {
     let sign = ((h >> 15) & 1) as u32;
     let exp = ((h >> 10) & 0x1f) as u32;

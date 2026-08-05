@@ -1832,6 +1832,28 @@ void LLRender::flush()
         // glGet, ZERO tap. uiActive() is true only under native-vulkan (engine live, tap retired).
         if (count > 0 && FSSceneDump::uiActive())
         {
+            // <FS:VkBridge> U6: gSolidColorProgram has NO per-vertex color attribute (mAttributeMask
+            // lacks MAP_COLOR), so its tint rides the DIFFUSE_COLOR uniform (mColorsp is stale/white for
+            // the batch) and its fragment is vec4(color.rgb, texel.a*color.a). Detect it, read the cached
+            // uniform value (NO glGet -- LLGLSLShader::mValue), stamp it into the per-vertex color so the
+            // engine's ui_solid.frag reproduces it, and flag the draw solid.
+            LLGLSLShader* sh = LLGLSLShader::sCurBoundShaderPtr;
+            bool solid = sh && !(sh->mAttributeMask & LLVertexBuffer::MAP_COLOR);
+            LLColor4U solidCol(255, 255, 255, 255);
+            if (solid)
+            {
+                GLint loc = (LLShaderMgr::DIFFUSE_COLOR < (S32)sh->mUniform.size())
+                          ? sh->mUniform[LLShaderMgr::DIFFUSE_COLOR] : -1;
+                LLGLSLShader::uniform_value_map_t::const_iterator it = sh->mValue.find(loc);
+                if (it != sh->mValue.end())
+                {
+                    const LLVector4& v = it->second;
+                    solidCol = LLColor4U((U8)llclamp((S32)(v.mV[0]*255.f+0.5f), 0, 255),
+                                         (U8)llclamp((S32)(v.mV[1]*255.f+0.5f), 0, 255),
+                                         (U8)llclamp((S32)(v.mV[2]*255.f+0.5f), 0, 255),
+                                         (U8)llclamp((S32)(v.mV[3]*255.f+0.5f), 0, 255));
+                }
+            }
             static std::vector<U8> sUiVtx;
             sUiVtx.resize((size_t)count * 24);
             U8* p = sUiVtx.data();
@@ -1840,13 +1862,13 @@ void LLRender::flush()
                 memcpy(p, mVerticesp[i].getF32ptr(), 12); // x,y,z (drop w)
                 F32 uv[2] = { mTexcoordsp[i].mV[0], mTexcoordsp[i].mV[1] };
                 memcpy(p + 12, uv, 8);
-                const LLColor4U& c = mColorsp[i];
+                const LLColor4U& c = solid ? solidCol : mColorsp[i];
                 p[20] = c.mV[0]; p[21] = c.mV[1]; p[22] = c.mV[2]; p[23] = c.mV[3];
                 p += 24;
             }
             glm::mat4 mvp = mMatrix[MM_PROJECTION][mMatIdx[MM_PROJECTION]]
                           * mMatrix[MM_MODELVIEW][mMatIdx[MM_MODELVIEW]];
-            FSSceneDump::uiSubmit(&mvp[0][0], getTexUnit(0)->mCurrTexture, mMode, (U32)count, sUiVtx.data());
+            FSSceneDump::uiSubmit(&mvp[0][0], getTexUnit(0)->mCurrTexture, mMode, (U32)count, sUiVtx.data(), solid);
         }
 
         resetStriders(count);

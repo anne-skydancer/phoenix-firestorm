@@ -36,7 +36,7 @@ namespace FSSceneDump
     // u8x4 color} = 24B each; `mode` = LLRender::eGeomModes.
     bool uiActive();
     void uiBegin();
-    void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8* verts);
+    void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8* verts, bool solid);
     // <FS:VkBridge> UI-complete: the cached-font path (LLFontVertexBuffer) replays glyph geometry
     // via LLVertexBufferData::draw() -> LLVertexBuffer::drawArrays, which NEVER calls LLRender::flush
     // -- so the flush hook structurally cannot see cached text (button labels, editors, list rows,

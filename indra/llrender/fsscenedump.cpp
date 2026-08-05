@@ -220,9 +220,9 @@ static fsr_decview_t sFsrDecView = nullptr;
 static fsr_decfree_t sFsrDecFree = nullptr;
 // <FS:VkBridge> A.3 native-VK UI feed (honest LLRender::flush -> engine, no glGet, no tap)
 typedef int(__cdecl* fsr_ui_begin_t)();
-// <FS:VkBridge> U2/U3: widened once -- clip rect (GL device px, bottom-left; w<0 = no clip) + the
-// LLRender eBlendFactor pair (getCurrBlendSFactor/DFactor). Viewer + engine rebuild in lockstep.
-typedef int(__cdecl* fsr_ui_submit_t)(const float*, U32, U32, U32, const U8*, S32, S32, S32, S32, U32, U32);
+// <FS:VkBridge> U2/U3/U6: clip rect (GL device px, bottom-left; w<0 = no clip) + the LLRender
+// eBlendFactor pair (getCurrBlendSFactor/DFactor) + flags (bit0 = gSolidColorProgram). Lockstep.
+typedef int(__cdecl* fsr_ui_submit_t)(const float*, U32, U32, U32, const U8*, S32, S32, S32, S32, U32, U32, U32);
 static fsr_ui_begin_t sFsrUiBegin = nullptr;
 static fsr_ui_submit_t sFsrUiSubmit = nullptr;
 static std::unordered_map<U64, U32> sSkinIds;
@@ -287,17 +287,19 @@ void uiSetScissor(int x, int y, int w, int h, bool enabled)
     sUiScissor.x = x; sUiScissor.y = y; sUiScissor.w = w; sUiScissor.h = h; sUiScissor.enabled = enabled;
 }
 
-void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8* verts)
+void uiSubmit(const float* mvp16, U32 tex_id, U32 mode, U32 vtx_count, const U8* verts, bool solid)
 {
     if (!sFsrUiSubmit) return;
-    // U2 clip (GL device px; w<0 => no clip) + U3 blend (current eBlendFactor pair, cached -> no glGet).
+    // U2 clip (GL device px; w<0 => no clip) + U3 blend (current eBlendFactor pair, cached -> no glGet)
+    // + U6 solid flag (gSolidColorProgram; the flush hook already stamped DIFFUSE_COLOR into the verts).
     S32 cx = sUiScissor.enabled ? sUiScissor.x : 0;
     S32 cy = sUiScissor.enabled ? sUiScissor.y : 0;
     S32 cw = sUiScissor.enabled ? sUiScissor.w : -1;
     S32 ch = sUiScissor.enabled ? sUiScissor.h : 0;
     U32 bs = (U32)gGL.getCurrBlendSFactor();
     U32 bd = (U32)gGL.getCurrBlendDFactor();
-    sFsrUiSubmit(mvp16, tex_id, mode, vtx_count, verts, cx, cy, cw, ch, bs, bd);
+    U32 flags = solid ? 1u : 0u;
+    sFsrUiSubmit(mvp16, tex_id, mode, vtx_count, verts, cx, cy, cw, ch, bs, bd, flags);
 }
 
 // <FS:VkBridge> UI-complete: capture a cached-font replay (LLFontVertexBuffer::renderBuffers) that
@@ -336,7 +338,8 @@ void uiSubmitBufferData(const LLVertexBufferData& d)
     S32 ch = sUiScissor.enabled ? sUiScissor.h : 0;
     U32 bs = (U32)gGL.getCurrBlendSFactor();
     U32 bd = (U32)gGL.getCurrBlendDFactor();
-    sFsrUiSubmit(glm::value_ptr(mvp), d.mTexName, (U32)d.mMode, d.mCount, buf.data(), cx, cy, cw, ch, bs, bd);
+    // Cached-font geometry is always text under gUIProgram (per-vertex color) -> never solid.
+    sFsrUiSubmit(glm::value_ptr(mvp), d.mTexName, (U32)d.mMode, d.mCount, buf.data(), cx, cy, cw, ch, bs, bd, 0u);
 }
 
 void textureUploaded(U32 id, U32 w, U32 h, const U8* rgba)

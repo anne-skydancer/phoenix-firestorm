@@ -207,8 +207,13 @@ caps line width at 1 on most backends. Defer to the in-world residual pass.
   `Rgba8Unorm`, 3D keeps sRGB); the UI already targets `self.format` so the Δ48 vanishes. Real-engine
   convergence pinned (translucent gray → 96); 3D scene byte-unchanged (6 tonemap/sky oracles pass, same
   expected values). Remaining A residual: the translucent-textured-image Δ6 is closed by the raw UI view.
-- **U2 — Clipping/scissor (B):** tap captures the clip rect at flush; ABI widen; `UiDraw` clip; UI pass
-  `set_scissor_rect` with UI-scale + llfloor/llceil+1. Assert nested-clip fixture.
+- **U2 — Clipping/scissor (B):** engine side ✅ DONE (`UiDraw.clip`; `ui_submit` clip arg; UI pass
+  `set_scissor_rect` with the GL bottom-left → wgpu top-left Y-flip + clamp; convergence pinned in
+  `headless.rs::ui_scissor_clips_draw`). **Pending (U2b, C++ coordinated ABI):** `LLScreenClipRect::
+  updateScissorRegion` → `FSSceneDump::uiSetScissor(x,y,w,h,enabled)` (llui→llrender hook, mirroring the
+  existing `textureUploaded`/`bufferDirty` hooks; passes the SAME llfloor/llceil+1 UI-scaled rect it feeds
+  `glScissor`); `fsr_ui_submit` ABI widened once (clip + blend, for U3); `fsscenedump` stamps the current
+  scissor onto each `uiSubmit`/`uiSubmitBufferData`. Verified in-world at U5 (needs a viewer build).
 - **U3 — Blend modes (C):** tap captures src/dst factors; same ABI bump as U2; pipeline cache by blend key.
   Assert additive + multiply fixtures.
 - **U4 — Per-surface sampler filter (D):** per-texture filter carried at upload/draw; nearest for fonts,

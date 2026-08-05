@@ -1626,8 +1626,8 @@ fn ui_pass_renders_textured_and_solid_quads() {
 
     live.begin();
     live.ui_begin();
-    live.ui_submit(&identity, 42, 0, &left);  // textured red (left)
-    live.ui_submit(&identity, 0, 0, &right);  // solid green (right, white fallback)
+    live.ui_submit(&identity, 42, 0, &left, None);  // textured red (left)
+    live.ui_submit(&identity, 0, 0, &right, None);  // solid green (right, white fallback)
 
     let (w, h) = (64u32, 48u32);
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -1707,8 +1707,8 @@ fn ui_color_space_srgb_blend_matches_stock() {
         let mut live = LiveRenderer::new(&device, &queue, fmt);
         live.begin();
         live.ui_begin();
-        live.ui_submit(&identity, 0, 0, &quad([64, 64, 64, 255]));    // opaque background
-        live.ui_submit(&identity, 0, 0, &quad([128, 128, 128, 128])); // translucent mid-gray over it
+        live.ui_submit(&identity, 0, 0, &quad([64, 64, 64, 255]), None);    // opaque background
+        live.ui_submit(&identity, 0, 0, &quad([128, 128, 128, 128]), None); // translucent mid-gray over it
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ui-cs-target"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1756,4 +1756,66 @@ fn ui_color_space_srgb_blend_matches_stock() {
     let srgb = center(wgpu::TextureFormat::Rgba8UnormSrgb);
     assert!(srgb[0] as i32 - unorm[0] as i32 >= 30,
         "UI color-space: an sRGB target must visibly diverge from stock (linear-space blend washout); got srgb={:?} unorm={:?}", srgb, unorm);
+}
+
+/// U2 CONVERGENCE PIN (scissor stratum): the UI pass honors the per-draw clip that mirrors stock's
+/// LLScreenClipRect scissor. A full-screen WHITE panel clipped to the centre must leave the corners
+/// showing the (unclipped) grey background -- proving overflow (minimap, list/editor content) no longer
+/// escapes its bounds. The clip is a GL device-px rect (bottom-left origin); the pass converts to wgpu.
+#[test]
+fn ui_scissor_clips_draw() {
+    let Some((device, queue)) = headless() else {
+        eprintln!("no Vulkan adapter; skipping headless UI scissor test");
+        return;
+    };
+    let fmt = wgpu::TextureFormat::Rgba8Unorm;
+    let mut live = LiveRenderer::new(&device, &queue, fmt);
+    let (w, h) = (32u32, 32u32);
+    let identity: [f32; 16] = [1.,0.,0.,0., 0.,1.,0.,0., 0.,0.,1.,0., 0.,0.,0.,1.];
+    let quad = |c: [u8; 4]| -> Vec<u8> {
+        let mut v = Vec::new();
+        for &(x, y) in &[(-1f32,-1f32), (1.,-1.), (1.,1.), (-1.,-1.), (1.,1.), (-1.,1.)] {
+            ui_vtx(&mut v, x, y, 0.0, 0.0, c);
+        }
+        v
+    };
+    live.begin();
+    live.ui_begin();
+    live.ui_submit(&identity, 0, 0, &quad([40, 40, 40, 255]), None);                       // grey bg, no clip
+    live.ui_submit(&identity, 0, 0, &quad([255, 255, 255, 255]), Some([8, 8, 16, 16]));    // white, clipped to centre
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ui-clip-target"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        format: fmt, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    live.flush_clear(&device, &queue, &view, w, h, wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 });
+    let stride = ((w * 4 + 255) / 256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ui-clip-rb"), size: (stride * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ui-clip-rb") });
+    enc.copy_texture_to_buffer(
+        wgpu::ImageCopyTexture { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::ImageCopyBuffer { buffer: &buf, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    queue.submit([enc.finish()]);
+    let slice = buf.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::Maintain::Wait);
+    let data = slice.get_mapped_range();
+    let px = |x: u32, y: u32| -> [u8; 3] { let o = (y * stride + x * 4) as usize; [data[o], data[o + 1], data[o + 2]] };
+    let corner = px(2, 2);        // outside the centre clip -> grey bg survives
+    let centre = px(w / 2, h / 2); // inside the clip -> white
+    let edge = px(2, h / 2);      // left edge, outside x-range of the clip -> grey bg
+    drop(data);
+    buf.unmap();
+
+    assert!(centre[0] >= 254, "clipped white panel must fill the centre clip rect, got {:?}", centre);
+    assert!((corner[0] as i32 - 40).abs() <= 1, "outside the clip the grey background must survive (white escaped its bounds), got {:?}", corner);
+    assert!((edge[0] as i32 - 40).abs() <= 1, "left edge is outside the clip x-range -> grey, got {:?}", edge);
 }

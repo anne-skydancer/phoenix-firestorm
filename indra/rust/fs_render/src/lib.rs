@@ -790,7 +790,9 @@ pub unsafe extern "C" fn fsr_ui_submit(mvp: *const f32, tex_id: u32, mode: u32, 
     let mut g = ENGINE.lock().unwrap();
     let Some(e) = g.as_mut() else { return 0 };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        e.live.ui_submit(&m, tex_id, mode, vbytes);
+        // U2: clip is None until the C++ tap ABI is widened to mirror LLScreenClipRect (next step);
+        // the engine scissor mechanism is exercised via ui_submit's clip arg in the headless pin.
+        e.live.ui_submit(&m, tex_id, mode, vbytes, None);
     }));
     if r.is_err() { 0 } else { 1 }
 }

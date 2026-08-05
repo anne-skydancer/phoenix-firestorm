@@ -312,6 +312,10 @@ struct UiDraw {
     first_vertex: u32,  // into ui_verts (post mode-expansion)
     vertex_count: u32,
     line: bool,         // LINES/LINE_STRIP -> line pipeline; else triangle pipeline
+    // U2 scissor: the active UI clip at flush time, in GL device pixels (bottom-left origin) exactly as
+    // LLScreenClipRect::updateScissorRegion computes it (llfloor origin, llceil+1 extent, UI-scaled).
+    // None = no clip (draw full). Converted to wgpu top-left in the UI pass (needs the target height).
+    clip: Option<[i32; 4]>, // [x, y_bottom, w, h]
 }
 
 /// U1: build the (srgb, unorm) view pair for a dual-viewed texture. Created Rgba8UnormSrgb with
@@ -3671,7 +3675,9 @@ impl LiveRenderer {
     /// {vec3 pos, vec2 uv, u8x4 color} (24B/vtx); `mode` is LLRender::eGeomModes. Strips/fans are
     /// expanded to lists so one triangle (or line) pipeline covers the whole frame in painter's
     /// order. `mvp` is the viewer's OWN projection*modelview -- no glGet, no tap.
-    pub fn ui_submit(&mut self, mvp: &[f32; 16], tex_id: u32, mode: u32, verts: &[u8]) {
+    /// `clip` = the active UI scissor at flush time in GL device pixels (bottom-left origin), None for
+    /// no clip. From FSSceneDump's mirror of LLScreenClipRect (U2); the UI pass converts to wgpu.
+    pub fn ui_submit(&mut self, mvp: &[f32; 16], tex_id: u32, mode: u32, verts: &[u8], clip: Option<[i32; 4]>) {
         const STRIDE: usize = 24;
         let n = verts.len() / STRIDE;
         if n == 0 { return; }
@@ -3689,7 +3695,7 @@ impl LiveRenderer {
         }
         let vertex_count = (self.ui_verts.len() / STRIDE) as u32 - first_vertex;
         if vertex_count == 0 { return; }
-        self.ui_draws.push(UiDraw { mvp: *mvp, tex_id, first_vertex, vertex_count, line });
+        self.ui_draws.push(UiDraw { mvp: *mvp, tex_id, first_vertex, vertex_count, line, clip });
     }
 
     /// Flash diagnostic: dump the LARGE UI draws (screen coverage > 0.3) captured this frame, to
@@ -4307,8 +4313,23 @@ impl LiveRenderer {
                 occlusion_query_set: None,
             });
             up.set_vertex_buffer(0, ui_vbuf.slice(..));
+            let (tw, th) = (w as i32, h as i32);
             for (i, d) in self.ui_draws.iter().enumerate() {
                 let Some(bind) = binds.get(&d.tex_id) else { continue };
+                // U2: apply the UI clip. LLScreenClipRect gives a GL device-px rect (bottom-left
+                // origin); convert to wgpu (top-left) and clamp to the target. None resets to the
+                // full target -- a prior draw may have left a tighter scissor.
+                match d.clip {
+                    Some([gx, gy, gw, gh]) => {
+                        let x0 = gx.clamp(0, tw);
+                        let x1 = (gx + gw).clamp(0, tw);
+                        let y0 = (th - (gy + gh)).clamp(0, th); // GL top edge -> wgpu y
+                        let y1 = (th - gy).clamp(0, th);        // GL bottom edge -> wgpu y+h
+                        if x1 <= x0 || y1 <= y0 { continue; }   // fully clipped -> draw nothing
+                        up.set_scissor_rect(x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+                    }
+                    None => up.set_scissor_rect(0, 0, w, h),
+                }
                 up.set_pipeline(if d.line { line } else { tri });
                 up.set_bind_group(0, bind, &[(i as u64 * ALIGN) as u32]);
                 up.draw(d.first_vertex..d.first_vertex + d.vertex_count, 0..1);

@@ -264,7 +264,7 @@ DesktopNotifierLinux::DesktopNotifierLinux()
 
         LL_INFOS( "DesktopNotifierLinux" ) << "Linux desktop notification icon: " << m_strIcon << LL_ENDL;
 
-        m_pNotification = m_pLibNotify->mNotificationNew( "Firestorm", "Intializing", m_strIcon.c_str(), 0 );
+        m_pNotification = m_pLibNotify->mNotificationNew( "Vulkanstorm", "Intializing", m_strIcon.c_str(), 0 );
     }
     else
     {

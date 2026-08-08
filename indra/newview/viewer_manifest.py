@@ -699,6 +699,10 @@ class Windows_x86_64_Manifest(ViewerManifest):
             # For textures
             self.path_optional("openjp2.dll")
 
+            # Grok J2C decoder DLL (opt-in via USE_GROK, mutually exclusive with Kakadu)
+            if self.args.get('usegrok') == 'ON':
+                self.path("grokj2k.dll")
+
             # These need to be installed as a SxS assembly, currently a 'private' assembly.
             # See http://msdn.microsoft.com/en-us/library/ms235291(VS.80).aspx
             self.path("msvcp140.dll")
@@ -2513,6 +2517,7 @@ if __name__ == "__main__":
         dict(name='discord', description="""Indication discord social sdk libraries are needed""", default='OFF'),
         dict(name='fmodstudio', description="""Indication if fmod studio libraries are needed""", default='OFF'),
         dict(name='openal', description="""Indication openal libraries are needed""", default='OFF'),
+        dict(name='usegrok', description="""Indication the Grok J2C decoder DLL is bundled (mutually exclusive with Kakadu)""", default='OFF'),
         dict(name='tracy', description="""Indication tracy profiler is enabled""", default='OFF'),
         dict(name='velopack', description="""Use Velopack installer instead of NSIS""", default='OFF'),
         dict(name='avx2', description="""Indication avx2 instruction set is enabled""", default='OFF'),

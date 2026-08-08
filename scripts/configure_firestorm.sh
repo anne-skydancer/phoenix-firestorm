@@ -34,6 +34,7 @@ WANTS_PACKAGE=$FALSE
 WANTS_VELOPACK=$FALSE
 WANTS_VERSION=$FALSE
 WANTS_KDU=$FALSE
+WANTS_GROK=$FALSE
 WANTS_FMODSTUDIO=$FALSE
 WANTS_OPENAL=$FALSE
 WANTS_OPENSIM=$TRUE
@@ -74,6 +75,7 @@ showUsage()
     echo "  --chan  [Release|Beta|Private]   : Private is the default, sets channel"
     echo "  --btype [Release|RelWithDebInfo] : Release is default, whether to use symbols"
     echo "  --kdu                    : Build with KDU"
+    echo "  --grok                   : Build with Grok (GrokImageCompression) J2C decoder"
     echo "  --package                : Build installer"
     echo "  --velopack               : Build with velopack (Overrides --package)"
     echo "  --no-package             : Build without installer (Overrides --package)"
@@ -103,7 +105,7 @@ getArgs()
 # $* = the options passed in from main
 {
     if [ $# -gt 0 ]; then
-      while getoptex "clean build config version package velopack no-package fmodstudio openal ninja vscode compiler-cache jobs: platform: kdu opensim no-opensim singlegrid: havok avx avx2 tracy lto crashreporting testbuild: help chan: btype:" "$@" ; do
+      while getoptex "clean build config version package velopack no-package fmodstudio openal ninja vscode compiler-cache jobs: platform: kdu grok opensim no-opensim singlegrid: havok avx avx2 tracy lto crashreporting testbuild: help chan: btype:" "$@" ; do
 
           #ensure options are valid
           if [  -z "$OPTOPT"  ] ; then
@@ -121,6 +123,7 @@ getArgs()
                           fi
                           ;;
           kdu)            WANTS_KDU=$TRUE;;
+          grok)           WANTS_GROK=$TRUE;;
           fmodstudio)     WANTS_FMODSTUDIO=$TRUE;;
           openal)         WANTS_OPENAL=$TRUE;;
           opensim)        WANTS_OPENSIM=$TRUE;;
@@ -317,6 +320,7 @@ fi
 echo -e "configure_firestorm.sh" > "$LOG"
 echo -e "       PLATFORM: $TARGET_PLATFORM"                                    | tee -a "$LOG"
 echo -e "            KDU: `b2a $WANTS_KDU`"                                    | tee -a "$LOG"
+echo -e "           GROK: `b2a $WANTS_GROK`"                                   | tee -a "$LOG"
 echo -e "     FMODSTUDIO: `b2a $WANTS_FMODSTUDIO`"                             | tee -a "$LOG"
 echo -e "         OPENAL: `b2a $WANTS_OPENAL`"                                 | tee -a "$LOG"
 echo -e "        OPENSIM: `b2a $WANTS_OPENSIM`"                                | tee -a "$LOG"
@@ -462,6 +466,11 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
     else
         KDU="-DUSE_KDU:BOOL=OFF"
     fi
+    if [ $WANTS_GROK -eq $TRUE ] ; then
+        GROK="-DUSE_GROK:BOOL=ON"
+    else
+        GROK="-DUSE_GROK:BOOL=OFF"
+    fi
     if [ $WANTS_FMODSTUDIO -eq $TRUE ] ; then
         FMODSTUDIO="-DUSE_FMODSTUDIO:BOOL=ON"
     else
@@ -606,7 +615,7 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
         fi
     fi
 
-    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $KDU $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
+    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $KDU $GROK $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
           $UNATTENDED -DLL_TESTS:BOOL=OFF -DADDRESS_SIZE:STRING=$AUTOBUILD_ADDRSIZE -DCMAKE_BUILD_TYPE:STRING=$BTYPE $CACHE_OPT \
           $CRASH_REPORTING -DVIEWER_SYMBOL_FILE:STRING="${VIEWER_SYMBOL_FILE:-}" $LL_ARGS_PASSTHRU ${VSCODE_FLAGS:-} | tee "$LOG"
     configure_status=${PIPESTATUS[0]}

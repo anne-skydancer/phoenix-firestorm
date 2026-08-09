@@ -660,7 +660,11 @@ F32 LLSpatialPartition::calcDistance(LLSpatialGroup* group, LLCamera& camera)
         dist = eye.getLength3().getF32();
         eye.normalize3fast();
 
-        if (!group->hasState(LLSpatialGroup::ALPHA_DIRTY))
+        static LLCachedControl<bool> render_alpha_oit(gSavedSettings, "RenderAlphaOIT", true);
+        // Under order-independent alpha (PPLL) the per-pixel resolve makes the intra-group
+        // view-angle re-sort -- and the mesh rebuild it triggers on every camera move --
+        // unnecessary. Only run it on the legacy sorted-alpha path (OIT off or unsupported HW).
+        if (!(render_alpha_oit && LLPipeline::sRenderAlphaOITSupported) && !group->hasState(LLSpatialGroup::ALPHA_DIRTY))
         {
             if (!group->getSpatialPartition()->isBridge())
             {

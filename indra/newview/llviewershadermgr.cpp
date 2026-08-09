@@ -203,6 +203,7 @@ LLGLSLShader            gDeferredPostTonemapLegacyGammaCorrectProgram;
 LLGLSLShader            gNoPostTonemapLegacyGammaCorrectProgram;
 LLGLSLShader            gDeferredPostGammaCorrectProgram;
 LLGLSLShader            gLegacyPostGammaCorrectProgram;
+LLGLSLShader            gAlphaOITResolveProgram;
 LLGLSLShader            gExposureProgram;
 LLGLSLShader            gExposureProgramNoFade;
 LLGLSLShader            gLuminanceProgram;
@@ -2488,6 +2489,22 @@ bool LLViewerShaderMgr::loadShadersDeferred()
         gDeferredPostGammaCorrectProgram.mShaderFiles.push_back(make_pair("deferred/postDeferredGammaCorrect.glsl", GL_FRAGMENT_SHADER));
         gDeferredPostGammaCorrectProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
         success = gDeferredPostGammaCorrectProgram.createShader();
+        llassert(success);
+    }
+
+    if (success && gGLManager.mGLVersion >= 4.4f)
+    {   // Vulkanstorm: alpha OIT (per-pixel linked list) resolve. Built only on GL 4.4+ (SSBO +
+        // image load/store). The alpha shaders' capture path (ALPHA_OIT) and the OIT pipeline are
+        // gated on the same capability, so on older HW this program is absent and
+        // compositeAlphaOIT() is a no-op -- the legacy sorted-alpha path runs instead.
+        gAlphaOITResolveProgram.mName = "Alpha OIT Resolve";
+        gAlphaOITResolveProgram.mFeatures.isDeferred = true;
+        gAlphaOITResolveProgram.mShaderFiles.clear();
+        gAlphaOITResolveProgram.clearPermutations();
+        gAlphaOITResolveProgram.mShaderFiles.push_back(make_pair("deferred/postDeferredNoTCV.glsl", GL_VERTEX_SHADER));
+        gAlphaOITResolveProgram.mShaderFiles.push_back(make_pair("deferred/alphaOITResolveF.glsl", GL_FRAGMENT_SHADER));
+        gAlphaOITResolveProgram.mShaderLevel = mShaderLevel[SHADER_DEFERRED];
+        success = gAlphaOITResolveProgram.createShader();
         llassert(success);
     }
 

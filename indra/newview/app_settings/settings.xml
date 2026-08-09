@@ -11827,6 +11827,42 @@ Change of this parameter will affect the layout of buttons in notification toast
     <integer>0</integer>
   </map>
 
+  <key>RenderAlphaOIT</key>
+  <map>
+    <key>Comment</key>
+    <string>Order-independent transparency for main-view alpha (per-pixel linked list). When off, use the legacy sorted-alpha path. Requires GL 4.4+ hardware; ignored (legacy path) otherwise.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
+    <integer>1</integer>
+  </map>
+
+  <key>RenderAlphaOITNodesPerPixel</key>
+  <map>
+    <key>Comment</key>
+    <string>Average per-pixel transparent-layer budget for the alpha OIT node pool (VRAM = W*H*this*12 bytes). Fragments beyond the pool are dropped (tail-blend). Change requires a graphics-settings reallocate.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>8</integer>
+  </map>
+
+  <key>RenderAlphaOITStats</key>
+  <map>
+    <key>Comment</key>
+    <string>Debug: read back and log alpha OIT node-pool usage each frame (peak/percent). Adds a GPU sync; leave off except when tuning RenderAlphaOITNodesPerPixel.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
+    <integer>0</integer>
+  </map>
+
   <key>RenderDepthOfField</key>
   <map>
     <key>Comment</key>

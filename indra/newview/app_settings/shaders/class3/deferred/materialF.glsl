@@ -23,6 +23,10 @@
 * $/LicenseInfo$
 */
 
+#extension GL_ARB_shader_storage_buffer_object : enable
+#extension GL_ARB_shader_image_load_store : enable
+#extension GL_ARB_shader_atomic_counters : enable
+
 /*[EXTRA_CODE_HERE]*/
 
 //class1/deferred/materialF.glsl
@@ -57,6 +61,26 @@ vec4 encodeNormal(vec3 n, float env, float gbuffer_flag);
 #if (DIFFUSE_ALPHA_MODE == DIFFUSE_ALPHA_MODE_BLEND)
 
 out vec4 frag_color;
+
+#ifdef ALPHA_OIT
+// ---- alpha OIT (per-pixel linked list) capture ----
+layout(early_fragment_tests) in;   // depth-cull occluded fragments before the append side effect
+layout(binding = 0, r32ui) uniform coherent uimage2D oit_head;
+layout(std430, binding = 0) buffer OITNodePool { uint oit_nodes[]; };
+layout(binding = 0, offset = 0) uniform atomic_uint oit_counter;
+uniform int oit_mode;       // 0 = normal output, 1 = append to the list
+uniform int oit_node_cap;   // node pool capacity; overflow drops the fragment
+void oit_append(vec4 c, float z)
+{
+    uint idx = atomicCounterIncrement(oit_counter);
+    if (idx >= uint(oit_node_cap)) return;
+    uint prev = imageAtomicExchange(oit_head, ivec2(gl_FragCoord.xy), idx);
+    uint base = idx * 3u;
+    oit_nodes[base + 0u] = packUnorm4x8(clamp(c, vec4(0.0), vec4(1.0)));
+    oit_nodes[base + 1u] = floatBitsToUint(z);
+    oit_nodes[base + 2u] = prev;
+}
+#endif
 
 #ifdef HAS_SUN_SHADOW
 float sampleDirectionalShadow(vec3 pos, vec3 norm, vec2 pos_screen);
@@ -424,7 +448,13 @@ void main()
     float final_scale = 1;
     if (classic_mode > 0)
         final_scale = 1.1;
+#ifdef ALPHA_OIT
+    vec4 oit_out = max(vec4(color * final_scale, al), vec4(0));
+    if (oit_mode == 1) { oit_append(oit_out, gl_FragCoord.z); discard; }
+    frag_color = oit_out;
+#else
     frag_color = max(vec4(color * final_scale, al), vec4(0));
+#endif
 
 #else // mode is not DIFFUSE_ALPHA_MODE_BLEND, encode to gbuffer
     // deferred path               // See: C++: addDeferredAttachment(), shader: softenLightF.glsl

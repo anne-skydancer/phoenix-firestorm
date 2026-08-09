@@ -675,13 +675,6 @@ class Windows_x86_64_Manifest(ViewerManifest):
             if self.args['discord'] == 'ON':
                 self.path("discord_partner_sdk.dll")
 
-            # Mesh 3rd party libs needed for auto LOD and collada reading
-            try:
-                self.path("glod.dll")
-            except RuntimeError as err:
-                print (err.message)
-                print ("Skipping GLOD library (assumming linked statically)")
-
             # Get fmodstudio dll if needed
             # if self.args['fmodstudio'] == 'ON':
             if self.args['fmodstudio'].lower() == 'on':

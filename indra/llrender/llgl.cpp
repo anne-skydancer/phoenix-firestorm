@@ -48,6 +48,7 @@
 #include "llstacktrace.h"
 
 #include "llglheaders.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J0> RHI seam: gRHI handle + rhi_create_gl backend
 #include "llglslshader.h"
 
 #include "glm/glm.hpp"
@@ -1306,6 +1307,12 @@ bool LLGLManager::initGL()
     }
 
     initGLStates();
+
+    // <FSVulkan P2 J0> GL is fully initialized here -- bootstrap the RHI GL backend so render
+    // code can route through the seam. GL backend handles ARE GL names, so this is transparent
+    // (parity by construction); a VK backend swaps in behind the same gRHI vtable later. Dormant
+    // until the first consumer (J1) is routed -- creation only fills the vtable, no GL calls.
+    gRHI = rhi_create_gl(nullptr);
 
     return true;
 }

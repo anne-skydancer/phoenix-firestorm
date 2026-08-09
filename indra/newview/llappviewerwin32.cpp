@@ -1127,6 +1127,64 @@ bool LLAppViewerWin32::reportCustomToBugsplat(const std::string &description)
     return false;
 }
 
+// <FS> Choose which opengl32.dll backs the delay-loaded GL imports, before the
+// GL context is created in initWindow():
+//   "native" -> system GPU driver (System32\opengl32.dll)
+//   "zink"   -> bundled Mesa Zink (GL-over-Vulkan) in the exe's mesa\ subdir
+//   "auto"   -> zink if bundled (mesa\opengl32.dll present), else native
+// opengl32 is /DELAYLOAD-ed. For Zink we add the mesa\ subdir to the DLL search
+// path with SetDllDirectory so the delay-load's bare-name resolution of
+// "opengl32.dll" (and its libgallium_wgl.dll dependency) finds the bundled Mesa
+// build there; for native we leave the search path alone and opengl32 resolves
+// System32. NOTE: simply LoadLibrary-ing the full mesa\ path does NOT redirect
+// the delay-load -- it resolves the bare name through the search path first
+// (mesa\ is not on it -> System32) and only then dedupes by full path, so a
+// differently-pathed copy never intercepts. Changing RenderGLBackend requires a
+// restart (opengl32 binds once per process). An unrecognized value is treated
+// as "auto", so a mistyped setting can never break rendering.
+void LLAppViewerWin32::selectGLBackend()
+{
+    std::string backend = gSavedSettings.getString("RenderGLBackend");
+    LLStringUtil::toLower(backend);
+
+    const std::string mesa_dir = gDirUtilp->getExecutableDir() + "\\mesa";
+    const bool have_mesa = gDirUtilp->fileExists(mesa_dir + "\\opengl32.dll");
+
+    bool want_zink;
+    if (backend == "native")    want_zink = false;
+    else if (backend == "zink") want_zink = true;
+    else                        want_zink = have_mesa; // "auto" / unrecognized
+
+    if (!want_zink)
+    {
+        LL_INFOS("RenderInit") << "GL backend: native opengl32 (system driver)." << LL_ENDL;
+        return;
+    }
+
+    if (!have_mesa)
+    {
+        LL_WARNS("RenderInit") << "GL backend: Zink requested but '" << mesa_dir
+                               << "\\opengl32.dll' not found; using native opengl32." << LL_ENDL;
+        return;
+    }
+
+    // Prepend the mesa\ subdir to the DLL search path so the delay-loaded
+    // opengl32.dll and its libgallium_wgl.dll dependency resolve to the bundled
+    // Mesa Zink build instead of System32.
+    std::wstring wmesa = ll_convert<std::wstring>(mesa_dir);
+    if (SetDllDirectoryW(wmesa.c_str()))
+    {
+        LL_INFOS("RenderInit") << "GL backend: Mesa Zink (added '" << mesa_dir
+                               << "' to the DLL search path)." << LL_ENDL;
+    }
+    else
+    {
+        LL_WARNS("RenderInit") << "GL backend: SetDllDirectory failed for '" << mesa_dir
+                               << "' (GetLastError=" << GetLastError()
+                               << "); may fall back to native opengl32." << LL_ENDL;
+    }
+}
+
 bool LLAppViewerWin32::initWindow()
 {
     // This is a workaround/hotfix for a change in Windows 11 24H2 (and possibly later)

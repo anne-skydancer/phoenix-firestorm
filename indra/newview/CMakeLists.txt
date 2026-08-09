@@ -2310,7 +2310,7 @@ if (WINDOWS)
     set_target_properties(${VIEWER_BINARY_NAME}
         PROPERTIES
         # *TODO -reenable this once we get server usage sorted out
-        LINK_FLAGS "/debug /NODEFAULTLIB:LIBCMT /SUBSYSTEM:WINDOWS /LARGEADDRESSAWARE /NOEXP /NOIMPLIB"
+        LINK_FLAGS "/debug /NODEFAULTLIB:LIBCMT /SUBSYSTEM:WINDOWS /LARGEADDRESSAWARE /NOEXP /NOIMPLIB /DELAYLOAD:opengl32.dll /DELAYLOAD:glu32.dll delayimp.lib"
         LINK_FLAGS_DEBUG "/NODEFAULTLIB:\"LIBCMT;LIBCMTD;MSVCRT\" /INCREMENTAL:NO /LARGEADDRESSAWARE /NOEXP /NOIMPLIB"
         LINK_FLAGS_RELEASE "/FORCE:MULTIPLE /MAP\"secondlife-bin.MAP\" /OPT:REF /LARGEADDRESSAWARE /NOEXP /NOIMPLIB"
         )
@@ -2356,6 +2356,16 @@ if (WINDOWS)
             )
     endif (NOT USE_KDU)
     # </FS:Ansariel>
+
+    # Mesa Zink GL-over-Vulkan override DLLs (opt-in via USE_MESAZINK; staged
+    # by Copy3rdPartyLibs). Listed here so the viewer manifest copy step
+    # depends on them and they are staged before that step runs.
+    if (USE_MESAZINK)
+      list(APPEND COPY_INPUT_DEPENDENCIES
+           ${SHARED_LIB_STAGING_DIR}/libgallium_wgl.dll
+           ${SHARED_LIB_STAGING_DIR}/opengl32.dll
+          )
+    endif ()
 
     # Grok J2C decoder DLL (opt-in via USE_GROK; staged by
     # indra/llimagej2cgrok POST_BUILD). Listed here so the viewer manifest
@@ -2411,6 +2421,7 @@ if (WINDOWS)
         "--fmodstudio=${USE_FMODSTUDIO}"
         "--openal=${USE_OPENAL}"
         "--usegrok=${USE_GROK}"
+        "--mesazink=${USE_MESAZINK}"
         "--tracy=${USE_TRACY}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"
         --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2454,6 +2465,7 @@ if (WINDOWS)
             "--fmodstudio=${USE_FMODSTUDIO}"
             "--openal=${USE_OPENAL}"
             "--usegrok=${USE_GROK}"
+            "--mesazink=${USE_MESAZINK}"
             "--tracy=${USE_TRACY}"
             "--avx2=${USE_AVX2_OPTIMIZATION}"
             --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2523,6 +2535,7 @@ if (WINDOWS)
               "--fmodstudio=${USE_FMODSTUDIO}"
               "--openal=${USE_OPENAL}"
               "--usegrok=${USE_GROK}"
+              "--mesazink=${USE_MESAZINK}"
               "--tracy=${USE_TRACY}"
               "--velopack=${USE_VELOPACK}"
               "--avx2=${USE_AVX2_OPTIMIZATION}"
@@ -2747,6 +2760,7 @@ if (LINUX)
         "--fmodstudio=${USE_FMODSTUDIO}"
         "--openal=${USE_OPENAL}"
         "--usegrok=${USE_GROK}"
+        "--mesazink=${USE_MESAZINK}"
         "--tracy=${USE_TRACY}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"        
         --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2777,6 +2791,7 @@ if (LINUX)
       "--fmodstudio=${USE_FMODSTUDIO}"
       "--openal=${USE_OPENAL}"
       "--usegrok=${USE_GROK}"
+      "--mesazink=${USE_MESAZINK}"
       "--tracy=${USE_TRACY}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
       --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2873,6 +2888,7 @@ if (DARWIN)
       "--fmodstudio=${USE_FMODSTUDIO}"
       "--openal=${USE_OPENAL}"
       "--usegrok=${USE_GROK}"
+      "--mesazink=${USE_MESAZINK}"
       "--tracy=${USE_TRACY}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
       --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2911,6 +2927,7 @@ if (DARWIN)
           "--fmodstudio=${USE_FMODSTUDIO}"
           "--openal=${USE_OPENAL}"
           "--usegrok=${USE_GROK}"
+          "--mesazink=${USE_MESAZINK}"
           "--tracy=${USE_TRACY}"
           "--avx2=${USE_AVX2_OPTIMIZATION}"          
           --build=${CMAKE_CURRENT_BINARY_DIR}

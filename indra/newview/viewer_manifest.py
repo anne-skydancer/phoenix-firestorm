@@ -703,6 +703,16 @@ class Windows_x86_64_Manifest(ViewerManifest):
             if self.args.get('usegrok') == 'ON':
                 self.path("grokj2k.dll")
 
+            # Mesa Zink GL-over-Vulkan override DLLs (opt-in via USE_MESAZINK).
+            # Stock builds ship no opengl32.dll. The viewer preloads
+            # mesa\opengl32.dll at startup only when RenderGLBackend selects
+            # Zink (see LLAppViewerWin32::selectGLBackend); otherwise native
+            # GL is used.
+            if self.args.get('mesazink') == 'ON':
+                with self.prefix(dst="mesa"):
+                    self.path("libgallium_wgl.dll")
+                    self.path("opengl32.dll")
+
             # These need to be installed as a SxS assembly, currently a 'private' assembly.
             # See http://msdn.microsoft.com/en-us/library/ms235291(VS.80).aspx
             self.path("msvcp140.dll")
@@ -2518,6 +2528,7 @@ if __name__ == "__main__":
         dict(name='fmodstudio', description="""Indication if fmod studio libraries are needed""", default='OFF'),
         dict(name='openal', description="""Indication openal libraries are needed""", default='OFF'),
         dict(name='usegrok', description="""Indication the Grok J2C decoder DLL is bundled (mutually exclusive with Kakadu)""", default='OFF'),
+        dict(name='mesazink', description="""Indication Mesa Zink GL-over-Vulkan DLL overrides are bundled""", default='OFF'),
         dict(name='tracy', description="""Indication tracy profiler is enabled""", default='OFF'),
         dict(name='velopack', description="""Use Velopack installer instead of NSIS""", default='OFF'),
         dict(name='avx2', description="""Indication avx2 instruction set is enabled""", default='OFF'),

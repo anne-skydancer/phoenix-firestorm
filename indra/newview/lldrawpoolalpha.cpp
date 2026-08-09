@@ -199,14 +199,47 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     // already being setup for rendering
     LLGLSLShader::unbind();
 
-    if (!LLPipeline::sRenderingHUDs)
-    {
-        // first pass, render rigged objects only and render to depth buffer
-        forwardRender(true);
-    }
+    static LLCachedControl<bool> render_alpha_oit(gSavedSettings, "RenderAlphaOIT", true);
+    // OIT (per-pixel linked list) runs only on the main-view post-water alpha pool, and only on
+    // capable HW (GL 4.4+). HUD, impostor and cube-snapshot renders fall back to the legacy
+    // sorted-alpha path.
+    bool use_oit = getType() == LLDrawPool::POOL_ALPHA_POST_WATER
+                && LLPipeline::sRenderAlphaOITSupported
+                && !LLPipeline::sRenderingHUDs
+                && !LLPipeline::sImpostorRender
+                && !gCubeSnapshot
+                && render_alpha_oit;
 
-    // second pass, regular forward alpha rendering
-    forwardRender();
+    if (use_oit)
+    {
+        // opaque GLTF scene to screen+depth first, then capture normal-alpha fragments into
+        // the per-pixel linked list, draw the in-order residual (custom-blend / particles /
+        // fullbright + emissive glow) to screen, and resolve the list over screen sorted.
+        drawGLTFScene();
+
+        gPipeline.beginAlphaOITCapture();
+        setOITMode(1);
+        forwardRender(true,  ALPHA_OIT_CAPTURE);   // rigged normal-alpha -> linked list
+        forwardRender(false, ALPHA_OIT_CAPTURE);   // non-rigged normal-alpha -> linked list
+        setOITMode(0);
+        gPipeline.endAlphaOITCapture();
+
+        forwardRender(true,  ALPHA_OIT_RESIDUAL);  // residual + glow -> screen, in-order
+        forwardRender(false, ALPHA_OIT_RESIDUAL);
+
+        gPipeline.compositeAlphaOIT();             // sorted resolve over screen
+    }
+    else
+    {
+        if (!LLPipeline::sRenderingHUDs)
+        {
+            // first pass, render rigged objects only and render to depth buffer
+            forwardRender(true);
+        }
+
+        // second pass, regular forward alpha rendering
+        forwardRender();
+    }
 
     // final pass, render to depth for depth of field effects
     if (!LLPipeline::sImpostorRender && LLPipeline::RenderDepthOfField && !gCubeSnapshot && !LLPipeline::sRenderingHUDs && getType() == LLDrawPool::POOL_ALPHA_POST_WATER)
@@ -229,21 +262,29 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     }
 }
 
-void LLDrawPoolAlpha::forwardRender(bool rigged)
+void LLDrawPoolAlpha::forwardRender(bool rigged, EAlphaOITPhase oit_phase)
 {
     gPipeline.enableLightsDynamic();
 
     LLGLSPipelineAlpha gls_pipeline_alpha;
 
     //enable writing to alpha for emissive effects
-    gGL.setColorMask(true, true);
+    // The OIT capture pass leaves color masked off (set by beginAlphaOITCapture): fragments
+    // append to the per-pixel list and discard, so nothing is written to screen here.
+    if (oit_phase != ALPHA_OIT_CAPTURE)
+    {
+        gGL.setColorMask(true, true);
+    }
 
-    bool write_depth = rigged ||
-        LLDrawPoolWater::sSkipScreenCopy
+    // Never write depth in the capture pass -- the shared G-buffer depth (opaque occluders)
+    // must survive so the list resolve can reject fragments behind opaque geometry.
+    bool write_depth = (oit_phase != ALPHA_OIT_CAPTURE) &&
+        (rigged
+        || LLDrawPoolWater::sSkipScreenCopy
         // we want depth written so that rendered alpha will
         // contribute to the alpha mask used for impostors
         || LLPipeline::sImpostorRenderAlphaDepthPass
-        || getType() == LLDrawPoolAlpha::POOL_ALPHA_PRE_WATER; // needed for accurate water fog
+        || getType() == LLDrawPoolAlpha::POOL_ALPHA_PRE_WATER); // needed for accurate water fog
 
 
     LLGLDepthTest depth(GL_TRUE, write_depth ? GL_TRUE : GL_FALSE);
@@ -254,7 +295,9 @@ void LLDrawPoolAlpha::forwardRender(bool rigged)
     mAlphaDFactor = LLRender::BF_ONE_MINUS_SOURCE_ALPHA;       // }
     gGL.blendFunc(mColorSFactor, mColorDFactor, mAlphaSFactor, mAlphaDFactor);
 
-    if (rigged && mType == LLDrawPool::POOL_ALPHA_POST_WATER)
+    // Legacy path draws the GLTF scene to depth here; the OIT path does it once up-front
+    // via drawGLTFScene(), so skip it in the capture/residual phases.
+    if (oit_phase == ALPHA_OIT_NONE && rigged && mType == LLDrawPool::POOL_ALPHA_POST_WATER)
     { // draw GLTF scene to depth buffer before rigged alpha
         LL::GLTFSceneManager::instance().render(false, false);
         LL::GLTFSceneManager::instance().render(false, true);
@@ -264,17 +307,80 @@ void LLDrawPoolAlpha::forwardRender(bool rigged)
 
     // If the face is more than 90% transparent, then don't update the Depth buffer for Dof
     // We don't want the nearly invisible objects to cause of DoF effects
-    renderAlpha(getVertexDataMask() | LLVertexBuffer::MAP_TEXTURE_INDEX | LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD1 | LLVertexBuffer::MAP_TEXCOORD2, false, rigged);
+    renderAlpha(getVertexDataMask() | LLVertexBuffer::MAP_TEXTURE_INDEX | LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD1 | LLVertexBuffer::MAP_TEXCOORD2, false, rigged, oit_phase);
 
-    gGL.setColorMask(true, false);
+    if (oit_phase != ALPHA_OIT_CAPTURE)
+    {
+        gGL.setColorMask(true, false);
+    }
 
-    if (!rigged && getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER)
+    if (!rigged && oit_phase != ALPHA_OIT_CAPTURE && getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER)
     { //render "highlight alpha" on final non-rigged pass
         // NOTE -- hacky call here protected by !rigged instead of alongside "forwardRender"
         // so renderDebugAlpha is executed while gls_pipeline_alpha and depth GL state
         // variables above are still in scope
         renderDebugAlpha();
     }
+}
+
+// Draw the opaque GLTF scene to screen+depth once, before the OIT capture pass. Extracted
+// from forwardRender()'s legacy rigged prepass so the unified capture path runs it a single time.
+void LLDrawPoolAlpha::drawGLTFScene()
+{
+    if (getType() != LLDrawPool::POOL_ALPHA_POST_WATER)
+    {
+        return;
+    }
+    LL::GLTFSceneManager::instance().render(false, false);
+    LL::GLTFSceneManager::instance().render(false, true);
+    LL::GLTFSceneManager::instance().render(false, false, true);
+    LL::GLTFSceneManager::instance().render(false, true, true);
+}
+
+// Flip the alpha-blend shader family between normal output (mode 0) and PPLL atomic-append
+// (mode 1). Touches the simple/fullbright/pbr shaders, their rigged variants, and the BLEND
+// material variants -- the same programs the linked-list capture writes from.
+void LLDrawPoolAlpha::setOITMode(S32 mode)
+{
+    static const LLStaticHashedString sOITMode("oit_mode");
+    static const LLStaticHashedString sOITNodeCap("oit_node_cap");
+    // node-pool capacity gates the append (idx >= cap -> drop). MUST be set or it defaults to
+    // 0 and every append bails out, emptying every list.
+    S32 node_cap = (S32)gPipeline.getAlphaOITNodeCap();
+
+    // bind, set oit_mode + oit_node_cap, and do the same for the rigged sibling
+    auto apply = [&](LLGLSLShader* sh)
+    {
+        if (!sh)
+        {
+            return;
+        }
+        sh->bind();
+        sh->uniform1i(sOITMode, mode);
+        sh->uniform1i(sOITNodeCap, node_cap);
+        if (sh->mRiggedVariant && sh->mRiggedVariant != sh)
+        {
+            sh->mRiggedVariant->bind();
+            sh->mRiggedVariant->uniform1i(sOITMode, mode);
+            sh->mRiggedVariant->uniform1i(sOITNodeCap, node_cap);
+        }
+    };
+
+    apply(simple_shader);
+    apply(fullbright_shader);
+    apply(pbr_shader);
+
+    // material shaders: only the BLEND (diffuse-alpha-mode == 1) variants participate
+    LLGLSLShader* materialShader = gDeferredMaterialProgram;
+    for (int i = 0; i < LLMaterial::SHADER_COUNT * 2; ++i)
+    {
+        if ((i & 0x3) == 1)
+        {
+            apply(&materialShader[i]);
+        }
+    }
+
+    LLGLSLShader::unbind();
 }
 
 void LLDrawPoolAlpha::renderDebugAlpha()
@@ -580,7 +686,7 @@ void LLDrawPoolAlpha::renderRiggedPbrEmissives(std::vector<LLDrawInfo*>& emissiv
     }
 }
 
-void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
+void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged, EAlphaOITPhase oit_phase)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL;
     bool initialized_lighting = false;
@@ -681,6 +787,18 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                 {
                     continue;
                 }
+
+                // OIT phase routing: every standard src-alpha-over batch enters the linked
+                // list (CAPTURE) so it sorts per-pixel -- INCLUDING fullbright alpha, which is
+                // just src-over without lighting. Only custom/additive blends (which can't be
+                // over-composited in one list) stay "residual" and draw in-order to screen
+                // (RESIDUAL). skip_main gates only this batch's on-screen/list draw; emissive
+                // glow (below) is collected regardless, but never in CAPTURE.
+                bool custom_blend = !(params.mBlendFuncSrc == LLRender::BF_SOURCE_ALPHA &&
+                                      params.mBlendFuncDst == LLRender::BF_ONE_MINUS_SOURCE_ALPHA);
+                bool residual_draw = custom_blend;
+                bool skip_main = (oit_phase == ALPHA_OIT_CAPTURE  &&  residual_draw) ||
+                                 (oit_phase == ALPHA_OIT_RESIDUAL && !residual_draw);
 
                 LL_PROFILE_ZONE_NAMED_CATEGORY_DRAWPOOL("ra - push batch");
 
@@ -798,6 +916,7 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
 
                 bool tex_setup = TexSetup(&params, (mat != nullptr));
 
+                if (!skip_main)
                 {
                     gGL.blendFunc((LLRender::eBlendFactor) params.mBlendFuncSrc, (LLRender::eBlendFactor) params.mBlendFuncDst, mAlphaSFactor, mAlphaDFactor);
 
@@ -821,7 +940,9 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                 }
 
                 // If this alpha mesh has glow, then draw it a second time to add the destination-alpha (=glow).  Interleaving these state-changing calls is expensive, but glow must be drawn Z-sorted with alpha.
-                if (getType() != LLDrawPool::POOL_ALPHA_PRE_WATER &&
+                // Glow is order-independent additive into screen.a: never collected in CAPTURE.
+                if (oit_phase != ALPHA_OIT_CAPTURE &&
+                    getType() != LLDrawPool::POOL_ALPHA_PRE_WATER &&
                     params.mVertexBuffer->hasDataType(LLVertexBuffer::TYPE_EMISSIVE))
                 {
                     if (params.mAvatar != nullptr)
@@ -857,8 +978,9 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                 }
             }
 
-            // render emissive faces into alpha channel for bloom effects
-            if (!depth_only)
+            // render emissive faces into alpha channel for bloom effects (glow lives in
+            // screen.a, outside the OIT capture -- accumulated in the residual/legacy pass)
+            if (!depth_only && oit_phase != ALPHA_OIT_CAPTURE)
             {
                 gPipeline.enableLightsDynamic();
 

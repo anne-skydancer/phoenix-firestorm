@@ -51,6 +51,12 @@ public:
     };
     virtual U32 getVertexDataMask() { return VERTEX_DATA_MASK; }
 
+    // Order-independent-transparency (PPLL) sub-pass of the alpha pool.
+    //   NONE     -- legacy sorted-alpha path (OIT off / excluded surface)
+    //   CAPTURE  -- normal-alpha geometry appends fragments to the per-pixel linked list
+    //   RESIDUAL -- custom-blend / particles / fullbright + glow drawn in-order to screen
+    enum EAlphaOITPhase { ALPHA_OIT_NONE = 0, ALPHA_OIT_CAPTURE, ALPHA_OIT_RESIDUAL };
+
     LLDrawPoolAlpha(U32 type);
     /*virtual*/ ~LLDrawPoolAlpha();
 
@@ -58,14 +64,20 @@ public:
     /*virtual*/ void renderPostDeferred(S32 pass);
     /*virtual*/ S32  getNumPasses() { return 1; }
 
-    void forwardRender(bool write_depth = false);
+    void forwardRender(bool rigged = false, EAlphaOITPhase oit_phase = ALPHA_OIT_NONE);
     /*virtual*/ void prerender();
 
     void renderDebugAlpha();
 
+    // draw the opaque GLTF scene to screen+depth before the OIT capture pass (unified path)
+    void drawGLTFScene();
+
     void renderGroupAlpha(LLSpatialGroup* group, U32 type, U32 mask, bool texture = true);
-    void renderAlpha(U32 mask, bool depth_only = false, bool rigged = false);
+    void renderAlpha(U32 mask, bool depth_only = false, bool rigged = false, EAlphaOITPhase oit_phase = ALPHA_OIT_NONE);
     void renderAlphaHighlight();
+
+    // flip the alpha-blend shader variants between normal output (0) and PPLL append (1)
+    void setOITMode(S32 mode);
 
     static bool sShowDebugAlpha;
     static bool sShowDebugAlphaRigged;

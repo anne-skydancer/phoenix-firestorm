@@ -158,6 +158,17 @@ public:
     void tonemap(LLRenderTarget* src, LLRenderTarget* dst, bool gamma_correct);
     void gammaCorrect(LLRenderTarget* src, LLRenderTarget* dst);
     void generateGlow(LLRenderTarget* src);
+
+    // Alpha order-independent transparency (per-pixel linked list). The capture pass appends
+    // normal-alpha fragments to a node pool keyed by a per-pixel head-pointer image; the
+    // composite resolves each pixel's list back-to-front over screen. Direct-GL (no RHI),
+    // gated on GL 4.4+ (see LLPipeline::sRenderAlphaOITSupported).
+    void beginAlphaOITCapture();   // reset counter + clear head image, bind storage, color off
+    void endAlphaOITCapture();     // barrier so the resolve sees all appended fragments
+    void compositeAlphaOIT();      // sorted resolve of the lists over mRT->screen
+    void allocateAlphaOITBuffers(U32 w, U32 h);  // (re)create head image / node pool / counter
+    void releaseAlphaOITBuffers();               // destroy them
+    U32  getAlphaOITNodeCap() const { return mAlphaOITNodeCap; }  // node-pool capacity (append overflow guard)
     void applyCAS(LLRenderTarget* src, LLRenderTarget* dst);
     void applyFXAA(LLRenderTarget* src, LLRenderTarget* dst);
     void generateSMAABuffers(LLRenderTarget* src);
@@ -689,6 +700,7 @@ public:
     static bool             sDistortionRender;
     static bool             sImpostorRender;
     static bool             sImpostorRenderAlphaDepthPass;
+    static bool             sRenderAlphaOITSupported;   // Vulkanstorm: alpha OIT (PPLL) HW capable (GL 4.4+)
     static bool             sShowJellyDollAsImpostor;
     static bool             sUnderWaterRender;
     static bool             sRenderGlow;
@@ -786,6 +798,15 @@ public:
 
     // a single triangle that covers the whole screen
     LLPointer<LLVertexBuffer> mScreenTriangleVB;
+
+    // Alpha OIT (per-pixel linked list) GPU resources, stored as raw GL names (uint, 0 = none).
+    // Allocated at main-view render resolution; see beginAlphaOITCapture().
+    U32 mAlphaOITHead = 0;      // R32UI per-pixel head-pointer image (0xFFFFFFFF = empty)
+    U32 mAlphaOITNodes = 0;     // SSBO node pool: uint[nodeCap*3] = { packedRGBA, depthBits, next }
+    U32 mAlphaOITCounter = 0;   // atomic counter buffer: next free node index
+    U32 mAlphaOITWidth = 0;
+    U32 mAlphaOITHeight = 0;
+    U32 mAlphaOITNodeCap = 0;   // number of nodes the pool holds
 
     //utility buffer for rendering cubes, 8 vertices are corners of a cube [-1, 1]
     LLPointer<LLVertexBuffer> mCubeVB;

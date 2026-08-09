@@ -59,7 +59,6 @@ if(WINDOWS)
     set(release_src_dir "${ARCH_PREBUILT_DIRS_RELEASE}")
     set(release_files
         #openjp2.dll # <FS:Ansariel> Only copy OpenJPEG dll if needed
-        glod.dll # <FS:Beq> restore GLOD
         )
 
     # <FS:Ansariel> Only copy OpenJPEG dll if needed

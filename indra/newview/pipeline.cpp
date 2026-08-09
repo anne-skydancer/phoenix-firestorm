@@ -98,6 +98,7 @@
 #include "llworld.h"
 #include "llcubemap.h"
 #include "llviewershadermgr.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J1> route PPLL alpha-OIT storage ops through gRHI
 #include "llviewerstats.h"
 #include "llviewerjoystick.h"
 #include "llviewerdisplay.h"
@@ -7998,8 +7999,8 @@ void LLPipeline::copyScreenSpaceReflections(LLRenderTarget* src, LLRenderTarget*
 void LLPipeline::allocateAlphaOITBuffers(U32 w, U32 h)
 {
     // capability gate: match the shader-side ALPHA_OIT define (llshadermgr.cpp) and the resolve
-    // program gate (llviewershadermgr.cpp) -- all keyed to GL 4.4.
-    sRenderAlphaOITSupported = (gGLManager.mGLVersion >= 4.4f);
+    // program gate (llviewershadermgr.cpp) -- all keyed to GL 4.4 -- and require the RHI seam.
+    sRenderAlphaOITSupported = gRHI && (gGLManager.mGLVersion >= 4.4f);
     if (!sRenderAlphaOITSupported)
     {
         releaseAlphaOITBuffers();
@@ -8016,29 +8017,22 @@ void LLPipeline::allocateAlphaOITBuffers(U32 w, U32 h)
     }
     releaseAlphaOITBuffers();
 
-    // head-pointer image: one R32UI per pixel (0xFFFFFFFF = empty). Immutable storage
-    // (glTexStorage2D) so it can be bound as an image (load/store) -- required under Zink/VK.
-    glGenTextures(1, &mAlphaOITHead);
-    glBindTexture(GL_TEXTURE_2D, mAlphaOITHead);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, (GLsizei)w, (GLsizei)h);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    // <FSVulkan P2 J1> storage allocated through the RHI seam (was raw GL). head-pointer image:
+    // one R32UI per pixel (0xFFFFFFFF = empty), immutable storage so it can bind as an image.
+    RhiTextureDesc hd = {};
+    hd.width = w;  hd.height = h;  hd.depth = 1;  hd.levels = 1;
+    hd.format   = RHI_FMT_R32UI;
+    hd.filter   = RHI_FILTER_NEAREST;   // integer image; never filtered
+    hd.wrap     = RHI_WRAP_CLAMP;
+    hd.immutable = 1;                   // must be immutable to bind as an image (Zink/VK requirement)
+    mAlphaOITHead = gRHI->texture_create(&hd);
 
     // node pool: node_cap entries x 3 uints { packedRGBA, depthBits, next }
-    glGenBuffers(1, &mAlphaOITNodes);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, mAlphaOITNodes);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)node_cap * 3 * sizeof(U32), nullptr, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    mAlphaOITNodes = gRHI->buffer_create(RHI_BUF_STREAM, (size_t)node_cap * 3 * sizeof(U32), nullptr);
 
-    // atomic counter: single uint next-free-node allocator
+    // atomic counter: single uint next-free-node allocator, zero-initialized
     U32 zero = 0;
-    glGenBuffers(1, &mAlphaOITCounter);
-    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, mAlphaOITCounter);
-    glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(U32), &zero, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
+    mAlphaOITCounter = gRHI->buffer_create(RHI_BUF_STREAM, sizeof(U32), &zero);
 
     mAlphaOITWidth   = w;
     mAlphaOITHeight  = h;
@@ -8051,15 +8045,19 @@ void LLPipeline::allocateAlphaOITBuffers(U32 w, U32 h)
 
 void LLPipeline::releaseAlphaOITBuffers()
 {
-    if (mAlphaOITHead)    { glDeleteTextures(1, &mAlphaOITHead);   mAlphaOITHead = 0; }
-    if (mAlphaOITNodes)   { glDeleteBuffers(1, &mAlphaOITNodes);   mAlphaOITNodes = 0; }
-    if (mAlphaOITCounter) { glDeleteBuffers(1, &mAlphaOITCounter); mAlphaOITCounter = 0; }
+    if (!gRHI)
+    {
+        return; // no seam -> nothing was ever allocated
+    }
+    if (mAlphaOITHead)    { gRHI->texture_destroy(mAlphaOITHead); mAlphaOITHead = 0; }
+    if (mAlphaOITNodes)   { gRHI->buffer_destroy(mAlphaOITNodes); mAlphaOITNodes = 0; }
+    if (mAlphaOITCounter) { gRHI->buffer_destroy(mAlphaOITCounter); mAlphaOITCounter = 0; }
     mAlphaOITWidth = mAlphaOITHeight = mAlphaOITNodeCap = 0;
 }
 
 void LLPipeline::beginAlphaOITCapture()
 {
-    if (!mAlphaOITHead)
+    if (!gRHI || !mAlphaOITHead)
     {
         return;
     }
@@ -8067,20 +8065,16 @@ void LLPipeline::beginAlphaOITCapture()
 
     // reset the free-node allocator and clear every per-pixel head to "empty"
     U32 zero = 0;
-    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, mAlphaOITCounter);
-    glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(U32), &zero);
-    glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
-
-    U32 clear_head = 0xFFFFFFFFu;
-    glClearTexImage(mAlphaOITHead, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, &clear_head);
+    gRHI->buffer_update(mAlphaOITCounter, 0, sizeof(U32), &zero);
+    gRHI->clear_texture_u32(mAlphaOITHead, 0xFFFFFFFFu);
 
     // the CPU clear/reset must be visible before the append shaders touch these
-    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    gRHI->memory_barrier(RHI_BARRIER_ALL);
 
     // bind storage: head image (unit 0, rw), node pool (SSBO 0), counter (atomic 0)
-    glBindImageTexture(0, mAlphaOITHead, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mAlphaOITNodes);
-    glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, mAlphaOITCounter);
+    gRHI->bind_image_texture(0, mAlphaOITHead, 0, 0, 0, RHI_IMG_READ_WRITE, RHI_FMT_R32UI);
+    gRHI->bind_buffer_base(RHI_BB_STORAGE, 0, mAlphaOITNodes);
+    gRHI->bind_buffer_base(RHI_BB_ATOMIC_COUNTER, 0, mAlphaOITCounter);
 
     // fragments append to the list and discard; nothing is written to color during capture
     gGL.setColorMask(false, false);
@@ -8088,18 +8082,18 @@ void LLPipeline::beginAlphaOITCapture()
 
 void LLPipeline::endAlphaOITCapture()
 {
-    if (!mAlphaOITHead)
+    if (!gRHI || !mAlphaOITHead)
     {
         return;
     }
     // make all appended nodes + head-image writes visible to the resolve pass
-    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    gRHI->memory_barrier(RHI_BARRIER_ALL);
     gGL.setColorMask(true, true);
 }
 
 void LLPipeline::compositeAlphaOIT()
 {
-    if (!mAlphaOITHead || !gAlphaOITResolveProgram.mProgramObject)
+    if (!gRHI || !mAlphaOITHead || !gAlphaOITResolveProgram.mProgramObject)
     {
         return;
     }
@@ -8111,9 +8105,7 @@ void LLPipeline::compositeAlphaOIT()
     if (oit_stats && mAlphaOITCounter)
     {
         U32 used = 0;
-        glBindBuffer(GL_ARRAY_BUFFER, mAlphaOITCounter);
-        glGetBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(U32), &used);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        gRHI->buffer_read(mAlphaOITCounter, 0, sizeof(U32), &used);
         static U32 s_peak = 0;
         s_peak = llmax(s_peak, used);
         static S32 s_throttle = 0;
@@ -8138,8 +8130,8 @@ void LLPipeline::compositeAlphaOIT()
     gAlphaOITResolveProgram.bind();
 
     // head image (read) + node pool (SSBO) -- same binding points the capture wrote to
-    glBindImageTexture(0, mAlphaOITHead, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32UI);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mAlphaOITNodes);
+    gRHI->bind_image_texture(0, mAlphaOITHead, 0, 0, 0, RHI_IMG_READ, RHI_FMT_R32UI);
+    gRHI->bind_buffer_base(RHI_BB_STORAGE, 0, mAlphaOITNodes);
 
     mScreenTriangleVB->setBuffer();
     mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);

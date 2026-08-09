@@ -39,7 +39,7 @@ out vec4 frag_color;
 
 #ifdef ALPHA_OIT
 // ---- alpha OIT (per-pixel linked list) capture ----
-layout(early_fragment_tests) in;   // depth-cull occluded fragments before the append side effect
+    // no early_fragment_tests: occlusion is rejected in the resolve (alphaOITResolveF) by depth compare;
 layout(binding = 0, r32ui) uniform coherent uimage2D oit_head;
 layout(std430, binding = 0) buffer OITNodePool { uint oit_nodes[]; };
 layout(binding = 0, offset = 0) uniform atomic_uint oit_counter;

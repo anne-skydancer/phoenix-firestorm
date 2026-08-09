@@ -796,7 +796,11 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged, EAlpha
                 // glow (below) is collected regardless, but never in CAPTURE.
                 bool custom_blend = !(params.mBlendFuncSrc == LLRender::BF_SOURCE_ALPHA &&
                                       params.mBlendFuncDst == LLRender::BF_ONE_MINUS_SOURCE_ALPHA);
-                bool residual_draw = custom_blend;
+                // Particles are excluded from OIT capture and stay on the legacy/residual path:
+                // a dynamic spray has no stable per-pixel layering to sort, and its heavy overdraw
+                // would hammer the single atomic node-allocator (thousands of appends/pixel/frame
+                // -> serialization -> big FPS hit near an emitter).
+                bool residual_draw = custom_blend || is_particle_or_hud_particle;
                 bool skip_main = (oit_phase == ALPHA_OIT_CAPTURE  &&  residual_draw) ||
                                  (oit_phase == ALPHA_OIT_RESIDUAL && !residual_draw);
 

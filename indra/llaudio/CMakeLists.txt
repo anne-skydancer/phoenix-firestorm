@@ -6,6 +6,7 @@ include(00-Common)
 include(LLAudio)
 include(FMODSTUDIO)
 include(OPENAL)
+include(SOLOUD)
 include(LLCommon)
 include(LLWindow)
 
@@ -52,6 +53,18 @@ if (TARGET ll::openal)
     )
 endif ()
 
+if (TARGET ll::soloud)
+  list(APPEND llaudio_SOURCE_FILES
+    llaudioengine_soloud.cpp
+    lllistener_soloud.cpp
+    )
+
+  list(APPEND llaudio_HEADER_FILES
+    llaudioengine_soloud.h
+    lllistener_soloud.h
+    )
+endif ()
+
 list(APPEND llaudio_SOURCE_FILES ${llaudio_HEADER_FILES})
 
 add_library (llaudio ${llaudio_SOURCE_FILES})
@@ -69,4 +82,7 @@ if( TARGET ll::openal )
 endif()
 if( TARGET ll::fmodstudio )
     target_link_libraries( llaudio ll::fmodstudio )
+endif()
+if( TARGET ll::soloud )
+    target_link_libraries( llaudio ll::soloud )
 endif()

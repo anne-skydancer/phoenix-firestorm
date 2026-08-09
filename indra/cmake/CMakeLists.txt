@@ -55,6 +55,7 @@ set(cmake_SOURCE_FILES
         Prebuilt.cmake
         PulseAudio.cmake
         Python.cmake
+        SOLOUD.cmake
         SSE2NEON.cmake
         TemplateCheck.cmake
         TinyEXR.cmake

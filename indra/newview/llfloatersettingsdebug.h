@@ -92,6 +92,7 @@ protected:
     LLColorSwatchCtrl* mColorSwatch;
     LLLineEditor* mValText;
     LLRadioGroup* mBooleanCombo;
+    LLRadioGroup* mGLBackendRadio; // <FS> radio selector for the RenderGLBackend string setting
     LLButton* mCopyButton;
     LLButton* mDefaultButton;
     LLButton* mSanityButton;

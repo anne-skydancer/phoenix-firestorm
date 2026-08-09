@@ -935,6 +935,13 @@ PREINSTALL_REMOVE:
 #Delete "$INSTDIR\$INSTEXE"
 Delete "$INSTDIR\$VIEWER_EXE"
 
+# <FS> Remove flat Mesa Zink DLLs left by older installs. They now live in a
+# mesa\ subdir; a leftover flat opengl32.dll next to the exe would always win
+# the delay-loaded GL import and defeat the native-GL backend option (see
+# LLAppViewerWin32::selectGLBackend).
+Delete "$INSTDIR\opengl32.dll"
+Delete "$INSTDIR\libgallium_wgl.dll"
+
 # Remove old shader files first so fallbacks will work. See DEV-5663
 RMDir /r "$INSTDIR\app_settings\shaders"
 

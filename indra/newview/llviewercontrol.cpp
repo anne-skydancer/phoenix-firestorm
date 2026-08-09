@@ -1298,10 +1298,27 @@ void setting_setup_signal_listener(LLControlGroup& group, const std::string& set
     });
 }
 
+static bool handleRenderGLBackendChanged(const LLSD& newvalue)
+{
+    // opengl32 binds once per process, so switching the GL backend needs a full
+    // restart. Prompt to shut down now (relaunch manually), mirroring the
+    // skin-change flow (ChangeSkin).
+    LLNotificationsUtil::add("GraphicsBackendChanged", LLSD(), LLSD(),
+        [](const LLSD& notification, const LLSD& response)
+        {
+            if (LLNotificationsUtil::getSelectedOption(notification, response) == 0)
+            {
+                LLAppViewer::instance()->requestQuit();
+            }
+        });
+    return true;
+}
+
 void settings_setup_listeners()
 {
     LL_PROFILE_ZONE_SCOPED;
     setting_setup_signal_listener(gSavedSettings, "FirstPersonAvatarVisible", handleRenderAvatarMouselookChanged);
+    setting_setup_signal_listener(gSavedSettings, "RenderGLBackend", handleRenderGLBackendChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderFarClip", handleRenderFarClipChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderTerrainScale", handleTerrainScaleChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderTerrainPBRScale", handlePBRTerrainScaleChanged);

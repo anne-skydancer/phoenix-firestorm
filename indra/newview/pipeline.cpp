@@ -8137,6 +8137,10 @@ void LLPipeline::compositeAlphaOIT()
 
     gAlphaOITResolveProgram.bind();
 
+    // opaque scene depth: the resolve rejects captured fragments that are behind opaque geometry
+    // (the capture shaders no longer use early_fragment_tests -- see alphaOITResolveF).
+    gAlphaOITResolveProgram.bindTexture(LLShaderMgr::DEFERRED_DEPTH, &mRT->deferredScreen, true);
+
     // head image (read) + node pool (SSBO) -- same binding points the capture wrote to
     glBindImageTexture(0, mAlphaOITHead, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32UI);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, mAlphaOITNodes);
@@ -8144,6 +8148,7 @@ void LLPipeline::compositeAlphaOIT()
     mScreenTriangleVB->setBuffer();
     mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
 
+    gAlphaOITResolveProgram.disableTexture(LLShaderMgr::DEFERRED_DEPTH, mRT->deferredScreen.getUsage());
     gAlphaOITResolveProgram.unbind();
 
     // Restore the state the rest of the frame expects. compositeAlphaOIT() is appended to

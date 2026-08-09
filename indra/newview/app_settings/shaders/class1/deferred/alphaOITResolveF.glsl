@@ -37,6 +37,7 @@ out vec4 frag_color;
 
 layout(binding = 0, r32ui) uniform readonly uimage2D oit_head;   // per-pixel list head (0xFFFFFFFF = empty)
 layout(std430, binding = 0) buffer OITNodePool { uint oit_nodes[]; };  // flat: [3*i]=rgba8, [+1]=depth, [+2]=next
+uniform sampler2D depthMap;   // opaque scene depth (DEFERRED_DEPTH) -- occlusion reject vs captured nodes
 
 // Nodes up to this cap are exact-sorted + composited. Anything beyond spills to an
 // order-independent weighted-average tail (below), so deep stacks degrade instead of dropping.
@@ -45,6 +46,12 @@ layout(std430, binding = 0) buffer OITNodePool { uint oit_nodes[]; };  // flat: 
 void main()
 {
     ivec2 coord = ivec2(gl_FragCoord.xy);
+    // Opaque scene depth at this pixel. The capture shaders have NO early_fragment_tests (it is
+    // expensive on Zink and, being compile-time, perturbed the normal alpha path), so fragments
+    // behind opaque geometry were still appended -- reject them here. Standard depth (nearer =
+    // smaller z): keep nz <= opaque_z, the same LEQUAL test the hardware early test used.
+    float opaque_z = texelFetch(depthMap, coord, 0).r;
+
     uint idx = imageLoad(oit_head, coord).r;
     if (idx == 0xFFFFFFFFu)
     {
@@ -56,11 +63,16 @@ void main()
     int cnt = 0;
     while (idx != 0xFFFFFFFFu && cnt < OIT_MAX_LAYERS)
     {
-        uint base = idx * 3u;
-        ncol[cnt] = oit_nodes[base + 0u];
-        ndep[cnt] = uintBitsToFloat(oit_nodes[base + 1u]);
-        idx = oit_nodes[base + 2u];
-        cnt++;
+        uint  base = idx * 3u;
+        float nz   = uintBitsToFloat(oit_nodes[base + 1u]);
+        uint  nxt  = oit_nodes[base + 2u];
+        if (nz <= opaque_z)   // visible (in front of opaque) -> keep; else occluded -> skip
+        {
+            ncol[cnt] = oit_nodes[base + 0u];
+            ndep[cnt] = nz;
+            cnt++;
+        }
+        idx = nxt;
     }
 
     // tail: any nodes beyond the exact-sort cap are blended order-independently (coverage-
@@ -71,11 +83,16 @@ void main()
     float tail_trans = 1.0;         // prod(1 - c.a) -> tail coverage = 1 - tail_trans
     while (idx != 0xFFFFFFFFu)
     {
-        vec4 c = unpackUnorm4x8(oit_nodes[idx * 3u]);
-        tail_wsum  += c.rgb * c.a;
-        tail_asum  += c.a;
-        tail_trans *= (1.0 - c.a);
-        idx = oit_nodes[idx * 3u + 2u];
+        uint  base = idx * 3u;
+        float nz   = uintBitsToFloat(oit_nodes[base + 1u]);
+        if (nz <= opaque_z)   // occlusion reject (same LEQUAL test as the exact-sort loop)
+        {
+            vec4 c = unpackUnorm4x8(oit_nodes[base + 0u]);
+            tail_wsum  += c.rgb * c.a;
+            tail_asum  += c.a;
+            tail_trans *= (1.0 - c.a);
+        }
+        idx = oit_nodes[base + 2u];
     }
 
     // insertion sort DESCENDING by window depth. Standard depth (near=0, far=1): largest z is

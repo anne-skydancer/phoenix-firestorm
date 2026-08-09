@@ -1886,7 +1886,17 @@ void LLModel::Decomposition::fromLLSD(LLSD& decomp)
         const LLSD::Binary& hulls = decomp["HullList"].asBinary();
         const LLSD::Binary& position = decomp["Positions"].asBinary();
 
-        U16* p = (U16*) &position[0];
+        // <FS> Memory-safety: HullList declares each hull's point count, but the
+        // Positions blob is a fixed size. A crafted/corrupt HullList that
+        // over-claims would walk this pointer past the end of the blob. Bound
+        // every read against the available U16 count and refuse a corrupt
+        // decomposition (ported from the Rust decomp.rs hardening; the accepted
+        // shapes are byte-identical, only the OOB read is removed).
+        const size_t avail_u16 = position.size() / 2; // U16 slots in Positions
+        size_t used_u16 = 0;
+        bool overclaim = false;
+
+        U16* p = (U16*) position.data();
 
         mHull.resize(hulls.size());
 
@@ -1907,7 +1917,7 @@ void LLModel::Decomposition::fromLLSD(LLSD& decomp)
 
         range = max-min;
 
-        for (U32 i = 0; i < hulls.size(); ++i)
+        for (U32 i = 0; i < hulls.size() && !overclaim; ++i)
         {
             U16 count = (hulls[i] == 0) ? 256 : hulls[i];
 
@@ -1918,6 +1928,11 @@ void LLModel::Decomposition::fromLLSD(LLSD& decomp)
 
             for (U32 j = 0; j < count; ++j)
             {
+                if (used_u16 + 3 > avail_u16) // <FS> over-claim: stop before OOB read
+                {
+                    overclaim = true;
+                    break;
+                }
                 U64 test = (U64) p[0] | ((U64) p[1] << 16) | ((U64) p[2] << 32);
                 //point must be unique
                 //llassert(valid.find(test) == valid.end());
@@ -1928,12 +1943,18 @@ void LLModel::Decomposition::fromLLSD(LLSD& decomp)
                     (F32) p[1]/65535.f*range.mV[1]+min.mV[1],
                     (F32) p[2]/65535.f*range.mV[2]+min.mV[2]));
                 p += 3;
-
-
+                used_u16 += 3;
             }
 
             //each hull must contain at least 4 unique points
             //llassert(valid.size() > 3);
+        }
+
+        if (overclaim)
+        {
+            LL_WARNS("MeshRepo") << "Physics decomposition HullList over-claims the Positions blob ("
+                                 << avail_u16 << " U16 slots); refusing corrupt decomposition." << LL_ENDL;
+            mHull.clear();
         }
     }
 

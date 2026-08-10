@@ -48,6 +48,7 @@
 #include "llstacktrace.h"
 
 #include "llglheaders.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J0> RHI seam: gRHI handle + rhi_create_gl backend
 #include "llglslshader.h"
 
 #include "glm/glm.hpp"
@@ -1307,6 +1308,12 @@ bool LLGLManager::initGL()
 
     initGLStates();
 
+    // <FSVulkan P2 J0> GL is fully initialized here -- bootstrap the RHI GL backend so render
+    // code can route through the seam. GL backend handles ARE GL names, so this is transparent
+    // (parity by construction); a VK backend swaps in behind the same gRHI vtable later. Dormant
+    // until the first consumer (J1) is routed -- creation only fills the vtable, no GL calls.
+    gRHI = rhi_create_gl(nullptr);
+
     return true;
 }
 
@@ -2561,6 +2568,31 @@ LLGLState::LLGLState(LLGLenum state, S32 enabled) :
     }
 }
 
+// <FSVulkan P2 J2a> map an LLGLState GL capability enum to its RhiCapability (the exact inverse
+// of rhi_gl.cpp gl_cap). RHI_CAP_UNKNOWN => the seam does not enumerate this cap; caller falls
+// back to raw GL so behavior is preserved.
+static RhiCapability rhi_cap_from_gl(GLenum g)
+{
+    switch (g)
+    {
+        case GL_BLEND:                     return RHI_CAP_BLEND;
+        case GL_CULL_FACE:                 return RHI_CAP_CULL_FACE;
+        case GL_DEPTH_TEST:                return RHI_CAP_DEPTH_TEST;
+        case GL_STENCIL_TEST:              return RHI_CAP_STENCIL_TEST;
+        case GL_SCISSOR_TEST:              return RHI_CAP_SCISSOR_TEST;
+        case GL_POLYGON_OFFSET_FILL:       return RHI_CAP_POLYGON_OFFSET_FILL;
+        case GL_POLYGON_OFFSET_LINE:       return RHI_CAP_POLYGON_OFFSET_LINE;
+        case GL_DEPTH_CLAMP:               return RHI_CAP_DEPTH_CLAMP;
+        case GL_MULTISAMPLE:               return RHI_CAP_MULTISAMPLE;
+        case GL_PROGRAM_POINT_SIZE:        return RHI_CAP_PROGRAM_POINT_SIZE;
+        case GL_CLIP_DISTANCE0:            return RHI_CAP_CLIP_DISTANCE0;
+        case GL_ALPHA_TEST:               return RHI_CAP_ALPHA_TEST;
+        case GL_LINE_SMOOTH:               return RHI_CAP_LINE_SMOOTH;
+        case GL_TEXTURE_CUBE_MAP_SEAMLESS: return RHI_CAP_TEXTURE_CUBE_MAP_SEAMLESS;
+        default:                           return RHI_CAP_UNKNOWN;
+    }
+}
+
 void LLGLState::setEnabled(S32 enabled)
 {
     if (!mState)
@@ -2574,13 +2606,20 @@ void LLGLState::setEnabled(S32 enabled)
     else if (enabled == ENABLED_STATE && sStateMap[mState] != GL_TRUE)
     {
         gGL.flush();
-        glEnable(mState);
+        // <FSVulkan P2 J2a> route the enable through the RHI seam (falls back to raw GL when gRHI
+        // is absent or the cap isn't enumerated). gl_cap is the exact inverse of rhi_cap_from_gl,
+        // so the GL enum round-trips unchanged -- parity by construction.
+        RhiCapability cap = rhi_cap_from_gl(mState);
+        if (gRHI && cap != RHI_CAP_UNKNOWN) { gRHI->set_capability(cap, 1); }
+        else { glEnable(mState); }
         sStateMap[mState] = GL_TRUE;
     }
     else if (enabled == DISABLED_STATE && sStateMap[mState] != GL_FALSE)
     {
         gGL.flush();
-        glDisable(mState);
+        RhiCapability cap = rhi_cap_from_gl(mState);
+        if (gRHI && cap != RHI_CAP_UNKNOWN) { gRHI->set_capability(cap, 0); }
+        else { glDisable(mState); }
         sStateMap[mState] = GL_FALSE;
     }
     mIsEnabled = enabled;
@@ -2819,6 +2858,24 @@ LLGLUserClipPlane::~LLGLUserClipPlane()
     disable();
 }
 
+// <FSVulkan P2 J2c> map a GL depth-compare enum to RhiCompare -- the inverse of the GL backend's
+// gl_compare(), so gl_compare(rhi_cmp_from_gl(f)) == f and routing is parity by construction.
+static RhiCompare rhi_cmp_from_gl(GLenum f)
+{
+    switch (f)
+    {
+        case GL_NEVER:    return RHI_CMP_NEVER;
+        case GL_LESS:     return RHI_CMP_LESS;
+        case GL_EQUAL:    return RHI_CMP_EQUAL;
+        case GL_LEQUAL:   return RHI_CMP_LEQUAL;
+        case GL_GREATER:  return RHI_CMP_GREATER;
+        case GL_NOTEQUAL: return RHI_CMP_NOTEQUAL;
+        case GL_GEQUAL:   return RHI_CMP_GEQUAL;
+        case GL_ALWAYS:   return RHI_CMP_ALWAYS;
+        default:          return RHI_CMP_LESS;   // GL default (GL_LESS)
+    }
+}
+
 LLGLDepthTest::LLGLDepthTest(GLboolean depth_enabled, GLboolean write_enabled, GLenum depth_func)
 : mPrevDepthEnabled(sDepthEnabled), mPrevDepthFunc(sDepthFunc), mPrevWriteEnabled(sWriteEnabled)
 {
@@ -2836,20 +2893,26 @@ LLGLDepthTest::LLGLDepthTest(GLboolean depth_enabled, GLboolean write_enabled, G
     if (depth_enabled != sDepthEnabled)
     {
         gGL.flush();
-        if (depth_enabled) glEnable(GL_DEPTH_TEST);
+        // <FSVulkan P2 J2c> route depth-test enable through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_test(depth_enabled ? 1 : 0); }
+        else if (depth_enabled) glEnable(GL_DEPTH_TEST);
         else glDisable(GL_DEPTH_TEST);
         sDepthEnabled = depth_enabled;
     }
     if (depth_func != sDepthFunc)
     {
         gGL.flush();
-        glDepthFunc(depth_func);
+        // <FSVulkan P2 J2c> route depth-func through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_func(rhi_cmp_from_gl(depth_func)); }
+        else glDepthFunc(depth_func);
         sDepthFunc = depth_func;
     }
     if (write_enabled != sWriteEnabled)
     {
         gGL.flush();
-        glDepthMask(write_enabled);
+        // <FSVulkan P2 J2c> route depth-write mask through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_write(write_enabled ? 1 : 0); }
+        else glDepthMask(write_enabled);
         sWriteEnabled = write_enabled;
     }
 }
@@ -2861,20 +2924,26 @@ LLGLDepthTest::~LLGLDepthTest()
     if (sDepthEnabled != mPrevDepthEnabled )
     {
         gGL.flush();
-        if (mPrevDepthEnabled) glEnable(GL_DEPTH_TEST);
+        // <FSVulkan P2 J2c> route depth-test restore through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_test(mPrevDepthEnabled ? 1 : 0); }
+        else if (mPrevDepthEnabled) glEnable(GL_DEPTH_TEST);
         else glDisable(GL_DEPTH_TEST);
         sDepthEnabled = mPrevDepthEnabled;
     }
     if (sDepthFunc != mPrevDepthFunc)
     {
         gGL.flush();
-        glDepthFunc(mPrevDepthFunc);
+        // <FSVulkan P2 J2c> route depth-func restore through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_func(rhi_cmp_from_gl(mPrevDepthFunc)); }
+        else glDepthFunc(mPrevDepthFunc);
         sDepthFunc = mPrevDepthFunc;
     }
     if (sWriteEnabled != mPrevWriteEnabled )
     {
         gGL.flush();
-        glDepthMask(mPrevWriteEnabled);
+        // <FSVulkan P2 J2c> route depth-write restore through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_write(mPrevWriteEnabled ? 1 : 0); }
+        else glDepthMask(mPrevWriteEnabled);
         sWriteEnabled = mPrevWriteEnabled;
     }
 }

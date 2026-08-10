@@ -28,6 +28,7 @@
 // Header Files
 //-----------------------------------------------------------------------------
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi_map.h"   // <FSVulkan P2 J2 sweep> route fixed-function state through gRHI
 
 #include "llviewerjoint.h"
 
@@ -119,13 +120,13 @@ U32 LLViewerJoint::render( F32 pixelArea, bool first_pass, bool is_dummy )
             else
             {
                 // Render Inside (no Z buffer write)
-                glCullFace(GL_FRONT);
+                if (gRHI) gRHI->set_cull_face(rhi_cull_face_from_gl(GL_FRONT)); else glCullFace(GL_FRONT);
                 {
                     LLGLDepthTest gls_depth(GL_TRUE, GL_FALSE);
                     triangle_count += drawShape( pixelArea, first_pass, is_dummy  );
                 }
                 // Render Outside (write to the Z buffer)
-                glCullFace(GL_BACK);
+                if (gRHI) gRHI->set_cull_face(rhi_cull_face_from_gl(GL_BACK)); else glCullFace(GL_BACK);
                 {
                     triangle_count += drawShape( pixelArea, false, is_dummy  );
                 }

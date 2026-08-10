@@ -34,6 +34,7 @@ set(llrender_SOURCE_FILES
     lluiimage.cpp
     llvertexbuffer.cpp
     llglcommonfunc.cpp
+    rhi/rhi_gl.cpp
     )
     
 set(llrender_HEADER_FILES
@@ -66,6 +67,7 @@ set(llrender_HEADER_FILES
     lluiimage.inl
     llvertexbuffer.h
     llglcommonfunc.h
+    rhi/rhi.h
     )
 
 list(APPEND llrender_SOURCE_FILES ${llrender_HEADER_FILES})

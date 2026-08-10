@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J2 sweep> route point size through gRHI
 
 #include "llmodelpreview.h"
 
@@ -4346,7 +4347,7 @@ bool LLModelPreview::render()
                         // glPointSize(PREVIEW_DEG_POINT_SIZE);
                         // gPipeline.enableLightsFullbright();
                         gGL.setLineWidth(deg_edge_width());
-                        glPointSize(deg_point_size());
+                        if (gRHI) gRHI->set_point_size(deg_point_size()); else glPointSize(deg_point_size());
                         // gPipeline.enableLightsFullbright(); // This may need to be restored when I fined the cause of the black rendering
                         // </FS:Beq>
                         //show degenerate triangles
@@ -4426,7 +4427,7 @@ bool LLModelPreview::render()
                             gGL.popMatrix();
                         }
                         gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
-                        glPointSize(1.f);
+                        if (gRHI) gRHI->set_point_size(1.f); else glPointSize(1.f);
                         gPipeline.enableLightsPreview();
                         gGL.setSceneBlendType(LLRender::BT_ALPHA);
                     }

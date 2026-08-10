@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi_map.h"   // <FSVulkan P2 J2 sweep> route fixed-function state through gRHI
 
 #include "llviewerdisplay.h"
 
@@ -1806,9 +1807,9 @@ static void renderChatRangeSphere(const LLVector3& center, F32 radius, const LLC
         gGL.pushMatrix();
         {
             gGL.scalef(radius, radius, radius);
-            glCullFace(GL_FRONT);
+            if (gRHI) gRHI->set_cull_face(rhi_cull_face_from_gl(GL_FRONT)); else glCullFace(GL_FRONT);
             gSphere.render();
-            glCullFace(GL_BACK);
+            if (gRHI) gRHI->set_cull_face(rhi_cull_face_from_gl(GL_BACK)); else glCullFace(GL_BACK);
             gSphere.render();
         }
         gGL.popMatrix();

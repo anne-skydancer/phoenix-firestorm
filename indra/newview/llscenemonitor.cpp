@@ -433,7 +433,7 @@ void LLSceneMonitor::calcDiffAggregate()
     LLGLDepthTest depth(true, false, GL_ALWAYS);
     if(!mDebugViewerVisible)
     {
-        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        gGL.setColorMask(false, false, false, false);   // <FSVulkan J2 sweep> de-leak -> gGL (on seam via J2b)
     }
 
     LLGLSLShader* cur_shader = NULL;
@@ -464,7 +464,7 @@ void LLSceneMonitor::calcDiffAggregate()
 
     if(!mDebugViewerVisible)
     {
-        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        gGL.setColorMask(true, true, true, true);   // <FSVulkan J2 sweep> de-leak -> gGL (on seam via J2b)
     }
 #endif
 }

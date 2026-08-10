@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi_map.h"   // <FSVulkan P2 J2 sweep> route polygon mode through gRHI
 
 #include "pipeline.h"
 
@@ -4233,7 +4234,7 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
 
     if (gUseWireframe)
     {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     }
 
     if (&camera == LLViewerCamera::getInstance())
@@ -4356,7 +4357,7 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
 
     if (gUseWireframe)
     {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
 }
 
@@ -4369,7 +4370,7 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
 
     if (gUseWireframe)
     {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     }
 
     U32 cur_type = 0;
@@ -4500,7 +4501,7 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
 
     if (gUseWireframe)
     {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
 }
 
@@ -4986,7 +4987,7 @@ void LLPipeline::renderPhysicsDisplay()
     gDebugProgram.bind();
 
     LLGLEnable polygon_offset_line(GL_POLYGON_OFFSET_LINE);
-    glPolygonOffset(3.f, 3.f);
+    if (gRHI) gRHI->set_polygon_offset(3.f, 3.f); else glPolygonOffset(3.f, 3.f);
     gGL.setLineWidth(3.f);
     LLGLEnable blend(GL_BLEND);
     gGL.setSceneBlendType(LLRender::BT_ALPHA);
@@ -5003,7 +5004,7 @@ void LLPipeline::renderPhysicsDisplay()
 
         if (wireframe)
         {
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         }
 
         for (LLWorld::region_list_t::const_iterator iter = LLWorld::getInstance()->getRegionList().begin();
@@ -5026,7 +5027,7 @@ void LLPipeline::renderPhysicsDisplay()
 
         if (wireframe)
         {
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         }
     }
     gGL.setLineWidth(1.f);
@@ -5107,7 +5108,7 @@ void LLPipeline::renderDebug()
                         glClearColor(clearColor.mV[0],clearColor.mV[1],clearColor.mV[2],0);
                         glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // no stencil -- deprecated | GL_STENCIL_BUFFER_BIT);
                         gGL.setColorMask(true, false);
-                        glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                     }
 
                     //NavMesh
@@ -5137,7 +5138,7 @@ void LLPipeline::renderDebug()
                         gPathfindingProgram.bind();
 
                         gGL.flush();
-                        glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                         gGL.setLineWidth(1.0f); // <FS> Line width OGL core profile fix by Rye Mutt
                         gGL.flush();
                     }
@@ -5194,11 +5195,11 @@ void LLPipeline::renderDebug()
                             LLGLDisable cull(i >= 2 ? GL_CULL_FACE : 0);
 
                             gGL.flush();
-                            glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
                             //get rid of some z-fighting
                             LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
-                            glPolygonOffset(1.0f, 1.0f);
+                            if (gRHI) gRHI->set_polygon_offset(1.0f, 1.0f); else glPolygonOffset(1.0f, 1.0f);
 
                             //render to depth first to avoid blending artifacts
                             gGL.setColorMask(false, false);
@@ -5206,7 +5207,7 @@ void LLPipeline::renderDebug()
                             gGL.setColorMask(true, false);
 
                             //get rid of some z-fighting
-                            glPolygonOffset(0.f, 0.f);
+                            if (gRHI) gRHI->set_polygon_offset(0.f, 0.f); else glPolygonOffset(0.f, 0.f);
 
                             LLGLEnable blend(GL_BLEND);
 
@@ -5220,7 +5221,7 @@ void LLPipeline::renderDebug()
                                 }
 
                                 LLGLEnable lineOffset(GL_POLYGON_OFFSET_LINE);
-                                glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+                                if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
                                 F32 offset = gSavedSettings.getF32("PathfindingLineOffset");
 
@@ -5231,7 +5232,7 @@ void LLPipeline::renderDebug()
                                     LLGLEnable blend(GL_BLEND);
                                     LLGLDepthTest depth(GL_TRUE, GL_FALSE, GL_GREATER);
 
-                                    glPolygonOffset(offset, -offset);
+                                    if (gRHI) gRHI->set_polygon_offset(offset, -offset); else glPolygonOffset(offset, -offset);
 
                                     if (gSavedSettings.getBOOL("PathfindingXRayWireframe"))
                                     { //draw hidden wireframe as darker and less opaque
@@ -5240,15 +5241,15 @@ void LLPipeline::renderDebug()
                                     }
                                     else
                                     {
-                                        glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                                        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                                         gPathfindingProgram.uniform1f(sAmbiance, ambiance);
                                         llPathingLibInstance->renderNavMeshShapesVBO( render_order[i] );
-                                        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                                        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
                                     }
                                 }
 
                                 { //draw visible wireframe as brighter, thicker and more opaque
-                                    glPolygonOffset(offset, offset);
+                                    if (gRHI) gRHI->set_polygon_offset(offset, offset); else glPolygonOffset(offset, offset);
                                     gPathfindingProgram.uniform1f(sAmbiance, 1.f);
                                     gPathfindingProgram.uniform1f(sTint, 1.f);
                                     gPathfindingProgram.uniform1f(sAlphaScale, 1.f);
@@ -5260,12 +5261,12 @@ void LLPipeline::renderDebug()
                                     gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
                                 }
 
-                                glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                                if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                             }
                         }
                     }
 
-                    glPolygonOffset(0.f, 0.f);
+                    if (gRHI) gRHI->set_polygon_offset(0.f, 0.f); else glPolygonOffset(0.f, 0.f);
 
                     if ( pathfindingConsole->isRenderNavMesh() && pathfindingConsole->isRenderXRay() )
                     {   //render navmesh xray
@@ -5275,7 +5276,7 @@ void LLPipeline::renderDebug()
                         LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
 
                         F32 offset = gSavedSettings.getF32("PathfindingLineOffset");
-                        glPolygonOffset(offset, -offset);
+                        if (gRHI) gRHI->set_polygon_offset(offset, -offset); else glPolygonOffset(offset, -offset);
 
                         LLGLEnable blend(GL_BLEND);
                         LLGLDepthTest depth(GL_TRUE, GL_FALSE, GL_GREATER);
@@ -5288,10 +5289,10 @@ void LLPipeline::renderDebug()
 
                         if (gSavedSettings.getBOOL("PathfindingXRayWireframe"))
                         { //draw hidden wireframe as darker and less opaque
-                            glPolygonMode( GL_FRONT_AND_BACK, GL_LINE );
+                            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
                             gPathfindingProgram.uniform1f(sAmbiance, 1.f);
                             llPathingLibInstance->renderNavMesh();
-                            glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+                            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                         }
                         else
                         {
@@ -5310,7 +5311,7 @@ void LLPipeline::renderDebug()
                         gGL.setLineWidth(1.0f); // <FS> Line width OGL core profile fix by Rye Mutt
                     }
 
-                    glPolygonOffset(0.f, 0.f);
+                    if (gRHI) gRHI->set_polygon_offset(0.f, 0.f); else glPolygonOffset(0.f, 0.f);
 
                     gGL.flush();
                     gPathfindingProgram.unbind();

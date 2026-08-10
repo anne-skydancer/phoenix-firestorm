@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J2 sweep> route polygon offset through gRHI
 
 #include "lldrawpoolbump.h"
 
@@ -524,7 +525,7 @@ void LLDrawPoolBump::renderBump(U32 pass)
     gGL.diffuseColor4f(1,1,1,1);
     /// Get rid of z-fighting with non-bump pass.
     LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(-1.0f, -1.0f);
+    if (gRHI) gRHI->set_polygon_offset(-1.0f, -1.0f); else glPolygonOffset(-1.0f, -1.0f);
     pushBumpBatches(pass);
 }
 

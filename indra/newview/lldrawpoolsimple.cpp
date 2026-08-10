@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J2 sweep> route polygon offset through gRHI
 
 #include "lldrawpoolsimple.h"
 
@@ -51,7 +52,7 @@ void LLDrawPoolGlow::renderPostDeferred(S32 pass)
     gGL.flush();
     /// Get rid of z-fighting with non-glow pass.
     LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(-1.0f, -1.0f);
+    if (gRHI) gRHI->set_polygon_offset(-1.0f, -1.0f); else glPolygonOffset(-1.0f, -1.0f);
     gGL.setSceneBlendType(LLRender::BT_ADD);
 
     LLGLDepthTest depth(GL_TRUE, GL_FALSE);

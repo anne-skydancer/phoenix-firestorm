@@ -25,6 +25,8 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi_map.h"   // <FSVulkan P2 J2 sweep> route polygon mode through gRHI
+#include "rhi/rhi.h"   // <FSVulkan P2 J2 sweep> route polygon offset through gRHI
 
 #include "lldrawable.h" // lldrawable needs to be included before llface
 #include "llface.h"
@@ -671,9 +673,9 @@ void LLFace::renderOneWireframe(const LLColor4 &color, F32 fogCfx, bool wirefram
         LLGLDisable depth(wireframe_selection ? 0 : GL_BLEND);
 
         LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
-        glPolygonOffset(3.f, 3.f);
+        if (gRHI) gRHI->set_polygon_offset(3.f, 3.f); else glPolygonOffset(3.f, 3.f);
         gGL.setLineWidth(5.f); // <FS> Line width OGL core profile fix by Rye Mutt
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         renderFace(mDrawablep, this);
     }
 }

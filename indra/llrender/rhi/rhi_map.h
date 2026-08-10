@@ -75,4 +75,39 @@ inline RhiStencilOp rhi_stencil_op_from_gl(GLenum op)
     }
 }
 
+// glBindBuffer / glBufferData / glBufferSubData target (R2 · J3)
+inline RhiBufferTarget rhi_buftgt_from_gl(GLenum t)
+{
+    switch (t)
+    {
+        case GL_ARRAY_BUFFER:         return RHI_BUFTGT_VERTEX;
+        case GL_ELEMENT_ARRAY_BUFFER: return RHI_BUFTGT_INDEX;
+        case GL_UNIFORM_BUFFER:       return RHI_BUFTGT_UNIFORM;
+        default:                      return RHI_BUFTGT_VERTEX;
+    }
+}
+
+// glBufferData usage hint (R2 · J3)
+inline RhiBufferHint rhi_bufhint_from_gl(GLenum usage)
+{
+    switch (usage)
+    {
+        case GL_STATIC_DRAW:  return RHI_BUFHINT_STATIC;
+        case GL_DYNAMIC_DRAW: return RHI_BUFHINT_DYNAMIC;
+        case GL_STREAM_DRAW:  return RHI_BUFHINT_STREAM;
+        default:              return RHI_BUFHINT_STATIC;
+    }
+}
+
+// index element type (R7 · J3) -- glDrawRangeElements type / mIndicesType
+inline RhiIndexType rhi_idxtype_from_gl(GLenum t)
+{
+    switch (t)
+    {
+        case GL_UNSIGNED_SHORT: return RHI_IDX_U16;
+        case GL_UNSIGNED_INT:   return RHI_IDX_U32;
+        default:                return RHI_IDX_U16;
+    }
+}
+
 #endif // LL_RHI_MAP_H

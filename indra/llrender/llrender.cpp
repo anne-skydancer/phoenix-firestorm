@@ -866,7 +866,9 @@ bool LLRender::init(bool needs_vertex_buffer)
     gGL.setSceneBlendType(LLRender::BT_ALPHA);
     gGL.setAmbientLightColor(LLColor4::black);
 
-    glCullFace(GL_BACK);
+    // <FSVulkan P2 J2d> route the default cull-face target through the seam (raw-GL fallback)
+    if (gRHI) { gRHI->set_cull_face(RHI_CF_BACK); }
+    else glCullFace(GL_BACK);
 
     // necessary for reflection maps
     glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
@@ -1560,7 +1562,9 @@ void LLRender::setLineWidth(F32 line_width)
             flush();
         }
         mLineWidth = line_width;
-        glLineWidth(line_width);
+        // <FSVulkan P2 J2d> route line width through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_line_width(line_width); }
+        else glLineWidth(line_width);
     }
 }
 // </FS>

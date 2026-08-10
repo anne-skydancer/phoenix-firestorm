@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi_map.h"   // <FSVulkan P2 J2 sweep> route fixed-function state through gRHI
 #include "llviewerwindow.h"
 
 
@@ -5279,9 +5280,9 @@ void LLViewerWindow::renderSelections( bool for_gl_pick, bool pick_parcel_walls,
                         gSphere.render();
 
                         // Render Inside
-                        glCullFace(GL_FRONT);
+                        if (gRHI) gRHI->set_cull_face(rhi_cull_face_from_gl(GL_FRONT)); else glCullFace(GL_FRONT);
                         gSphere.render();
-                        glCullFace(GL_BACK);
+                        if (gRHI) gRHI->set_cull_face(rhi_cull_face_from_gl(GL_BACK)); else glCullFace(GL_BACK);
 
                         gGL.popMatrix();
                     }

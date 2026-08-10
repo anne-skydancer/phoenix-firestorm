@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J2 sweep> route point size through gRHI
 
 #include "llreflectionmapmanager.h"
 
@@ -1402,7 +1403,7 @@ void renderReflectionProbe(LLReflectionMap* probe, std::map<LLSpatialGroup*, int
         float pointSize = (dupByGroup || dupByObject || dupByLoc)
                             ? bigSize
                             : normalSize;
-        glPointSize(pointSize);
+        if (gRHI) gRHI->set_point_size(pointSize); else glPointSize(pointSize);
         gGL.begin(gGL.POINTS);
         gGL.vertex3fv(po);
         gGL.end();

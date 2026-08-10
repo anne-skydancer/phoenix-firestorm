@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J2 sweep> route polygon offset through gRHI
 
 #include "llmanipscale.h"
 
@@ -306,7 +307,7 @@ void LLManipScale::render()
 
             {
                 LLGLEnable poly_offset(GL_POLYGON_OFFSET_FILL);
-                glPolygonOffset( -2.f, -2.f);
+                if (gRHI) gRHI->set_polygon_offset( -2.f, -2.f); else glPolygonOffset( -2.f, -2.f);
 
                 renderCorners( bbox );
                 renderFaces( bbox );
@@ -316,7 +317,7 @@ void LLManipScale::render()
                     renderGuidelinesPart( bbox );
                 }
 
-                glPolygonOffset( 0.f, 0.f);
+                if (gRHI) gRHI->set_polygon_offset( 0.f, 0.f); else glPolygonOffset( 0.f, 0.f);
             }
         }
         gGL.popMatrix();

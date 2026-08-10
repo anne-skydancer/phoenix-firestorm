@@ -4986,7 +4986,7 @@ void LLPipeline::renderPhysicsDisplay()
     gDebugProgram.bind();
 
     LLGLEnable polygon_offset_line(GL_POLYGON_OFFSET_LINE);
-    glPolygonOffset(3.f, 3.f);
+    if (gRHI) gRHI->set_polygon_offset(3.f, 3.f); else glPolygonOffset(3.f, 3.f);
     gGL.setLineWidth(3.f);
     LLGLEnable blend(GL_BLEND);
     gGL.setSceneBlendType(LLRender::BT_ALPHA);
@@ -5198,7 +5198,7 @@ void LLPipeline::renderDebug()
 
                             //get rid of some z-fighting
                             LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
-                            glPolygonOffset(1.0f, 1.0f);
+                            if (gRHI) gRHI->set_polygon_offset(1.0f, 1.0f); else glPolygonOffset(1.0f, 1.0f);
 
                             //render to depth first to avoid blending artifacts
                             gGL.setColorMask(false, false);
@@ -5206,7 +5206,7 @@ void LLPipeline::renderDebug()
                             gGL.setColorMask(true, false);
 
                             //get rid of some z-fighting
-                            glPolygonOffset(0.f, 0.f);
+                            if (gRHI) gRHI->set_polygon_offset(0.f, 0.f); else glPolygonOffset(0.f, 0.f);
 
                             LLGLEnable blend(GL_BLEND);
 
@@ -5231,7 +5231,7 @@ void LLPipeline::renderDebug()
                                     LLGLEnable blend(GL_BLEND);
                                     LLGLDepthTest depth(GL_TRUE, GL_FALSE, GL_GREATER);
 
-                                    glPolygonOffset(offset, -offset);
+                                    if (gRHI) gRHI->set_polygon_offset(offset, -offset); else glPolygonOffset(offset, -offset);
 
                                     if (gSavedSettings.getBOOL("PathfindingXRayWireframe"))
                                     { //draw hidden wireframe as darker and less opaque
@@ -5248,7 +5248,7 @@ void LLPipeline::renderDebug()
                                 }
 
                                 { //draw visible wireframe as brighter, thicker and more opaque
-                                    glPolygonOffset(offset, offset);
+                                    if (gRHI) gRHI->set_polygon_offset(offset, offset); else glPolygonOffset(offset, offset);
                                     gPathfindingProgram.uniform1f(sAmbiance, 1.f);
                                     gPathfindingProgram.uniform1f(sTint, 1.f);
                                     gPathfindingProgram.uniform1f(sAlphaScale, 1.f);
@@ -5265,7 +5265,7 @@ void LLPipeline::renderDebug()
                         }
                     }
 
-                    glPolygonOffset(0.f, 0.f);
+                    if (gRHI) gRHI->set_polygon_offset(0.f, 0.f); else glPolygonOffset(0.f, 0.f);
 
                     if ( pathfindingConsole->isRenderNavMesh() && pathfindingConsole->isRenderXRay() )
                     {   //render navmesh xray
@@ -5275,7 +5275,7 @@ void LLPipeline::renderDebug()
                         LLGLEnable polyOffset(GL_POLYGON_OFFSET_FILL);
 
                         F32 offset = gSavedSettings.getF32("PathfindingLineOffset");
-                        glPolygonOffset(offset, -offset);
+                        if (gRHI) gRHI->set_polygon_offset(offset, -offset); else glPolygonOffset(offset, -offset);
 
                         LLGLEnable blend(GL_BLEND);
                         LLGLDepthTest depth(GL_TRUE, GL_FALSE, GL_GREATER);
@@ -5310,7 +5310,7 @@ void LLPipeline::renderDebug()
                         gGL.setLineWidth(1.0f); // <FS> Line width OGL core profile fix by Rye Mutt
                     }
 
-                    glPolygonOffset(0.f, 0.f);
+                    if (gRHI) gRHI->set_polygon_offset(0.f, 0.f); else glPolygonOffset(0.f, 0.f);
 
                     gGL.flush();
                     gPathfindingProgram.unbind();

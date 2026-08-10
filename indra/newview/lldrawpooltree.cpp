@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J2 sweep> route polygon offset through gRHI
 
 #include "lldrawpooltree.h"
 
@@ -116,7 +117,7 @@ void LLDrawPoolTree::beginShadowPass(S32 pass)
 
     static LLCachedControl<F32> shadow_offset(gSavedSettings, "RenderDeferredTreeShadowOffset");
     static LLCachedControl<F32> shadow_bias(gSavedSettings, "RenderDeferredTreeShadowBias");
-    glPolygonOffset(shadow_offset(), shadow_bias());
+    if (gRHI) gRHI->set_polygon_offset(shadow_offset(), shadow_bias()); else glPolygonOffset(shadow_offset(), shadow_bias());
 
     LLEnvironment& environment = LLEnvironment::instance();
 
@@ -139,7 +140,7 @@ void LLDrawPoolTree::endShadowPass(S32 pass)
     //                  gSavedSettings.getF32("RenderDeferredSpotShadowBias"));
     static LLCachedControl<F32> RenderDeferredSpotShadowOffset(gSavedSettings, "RenderDeferredSpotShadowOffset");
     static LLCachedControl<F32> RenderDeferredSpotShadowBias(gSavedSettings, "RenderDeferredSpotShadowBias");
-    glPolygonOffset(RenderDeferredSpotShadowOffset, RenderDeferredSpotShadowBias);
+    if (gRHI) gRHI->set_polygon_offset(RenderDeferredSpotShadowOffset, RenderDeferredSpotShadowBias); else glPolygonOffset(RenderDeferredSpotShadowOffset, RenderDeferredSpotShadowBias);
     // </FS:PP>
 
     gDeferredTreeShadowProgram.unbind();

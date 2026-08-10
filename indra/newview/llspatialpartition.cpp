@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi_map.h"   // <FSVulkan P2 J2 sweep> route polygon mode through gRHI
 #include "rhi/rhi.h"   // <FSVulkan P2 J2 sweep> route polygon offset through gRHI
 
 #include "llspatialpartition.h"
@@ -1687,7 +1688,7 @@ void renderOctree(LLSpatialGroup* group)
 
         {
             LLGLDepthTest gl_depth(false, false);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
             gGL.diffuseColor4f(1,0,0,group->mBuilt);
             gGL.flush();
@@ -1784,7 +1785,7 @@ void renderOctree(LLSpatialGroup* group)
                     gGL.popMatrix();
                 }
             }
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             gDebugProgram.bind(); // make sure non-rigged variant is bound
             gGL.diffuseColor4f(1,1,1,1);
         }
@@ -2226,10 +2227,10 @@ void renderMeshBaseHullWithOutline(LLVOVolume* volume, U32 data_mask, LLColor4& 
             gGL.diffuseColor4fv(color.mV);
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mBaseHullMesh.mPositions);
 
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             gGL.diffuseColor4fv(line_color.mV);
             LLVertexBuffer::drawArrays(LLRender::TRIANGLES, decomp->mBaseHullMesh.mPositions);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         }
         else
         {
@@ -2282,12 +2283,12 @@ void render_hull_with_outline(LLModel::PhysicsMesh& mesh, const LLColor4& color,
 {
     gGL.diffuseColor4fv(color.mV);
     LLVertexBuffer::drawArrays(LLRender::TRIANGLES, mesh.mPositions);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     gGL.setLineWidth(3.f); // <FS> Line width OGL core profile fix by Rye Mutt
     gGL.diffuseColor4fv(line_color.mV);
     LLVertexBuffer::drawArrays(LLRender::TRIANGLES, mesh.mPositions);
     gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 }
 // </FS:Beq>
 
@@ -3090,7 +3091,7 @@ void renderRaycast(LLDrawable* drawablep)
                     dir.setSub(end, start);
 
                     gGL.flush();
-                    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                    if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
                     {
                         //render face positions
@@ -3109,7 +3110,7 @@ void renderRaycast(LLDrawable* drawablep)
                     }
 
                     gGL.popMatrix();
-                    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                    if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                 }
             }
         }
@@ -3697,7 +3698,7 @@ void LLSpatialPartition::renderDebug()
 
             LLGLEnable blend(GL_BLEND);
             LLGLDepthTest depth_under(GL_TRUE, GL_FALSE, GL_GREATER);
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             gGL.diffuseColor4f(0.5f, 0.0f, 0, 0.25f);
 
             LLGLEnable offset(GL_POLYGON_OFFSET_LINE);
@@ -3706,7 +3707,7 @@ void LLSpatialPartition::renderDebug()
             LLOctreeRenderXRay xray(camera);
             xray.traverse(mOctree);
 
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         }
     }
     gDebugProgram.unbind();

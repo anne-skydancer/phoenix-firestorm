@@ -1908,7 +1908,7 @@ void render_ui_2d()
     // Render 2D UI elements that overlay the world (no z compare)
 
     //  Disable wireframe mode below here, as this is HUD/menus
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     //  Menu overlays, HUD, etc
     gViewerWindow->setup2DRender();

@@ -25,6 +25,7 @@
  */
 
 #include "llviewerprecompiledheaders.h"
+#include "rhi/rhi_map.h"   // <FSVulkan P2 J2 sweep> route polygon mode through gRHI
 
 // file include
 #define LLSELECTMGR_CPP
@@ -6897,7 +6898,7 @@ void LLSelectMgr::renderSilhouettes(bool for_hud)
             }
         }
 
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_LINE)); else glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
         S32 num_tes = llmin((S32)objectp->getNumTEs(), (S32)objectp->getNumFaces()); // avatars have TEs but no faces
         for (S32 te = 0; te < num_tes; ++te)
@@ -6912,7 +6913,7 @@ void LLSelectMgr::renderSilhouettes(bool for_hud)
         gGL.popMatrix();
 
         gGL.setLineWidth(1.f); // <FS> Line width OGL core profile fix by Rye Mutt
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        if (gRHI) gRHI->set_polygon_mode(rhi_polygon_mode_from_gl(GL_FILL)); else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
         if (shader)
         {

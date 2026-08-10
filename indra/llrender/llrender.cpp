@@ -882,8 +882,9 @@ bool LLRender::init(bool needs_vertex_buffer)
 
     { //bind a dummy vertex array object so we're core profile compliant
         U32 ret;
-        glGenVertexArrays(1, &ret);
-        glBindVertexArray(ret);
+        // <FSVulkan P2 J3e> route the core-profile dummy VAO through the seam (raw-GL fallback)
+        if (gRHI) { ret = gRHI->vao_gen(); gRHI->vao_bind(ret); }
+        else { glGenVertexArrays(1, &ret); glBindVertexArray(ret); }
     }
 
     if (needs_vertex_buffer)

@@ -114,3 +114,43 @@ is fiddlier). The rewrites are deferred because they're rewrites, not routing.
   Any per-junction visual diff = a routing bug, caught in-world before checkpoint.
 - `rhi_create_vulkan` is declared but undefined (no VK backend) — harmless, unused.
   `rhi_destroy` is defined in `rhi_gl.cpp`.
+
+## 8) J3 detail — LLVertexBuffer + draw (R2/R7)  [in progress]
+
+**J0–J2 complete**, integrated to master (`ee9d2dcdee`): seam + PPLL (J1) + all
+render STATE on the seam (J2a–d abstractions + newview state sweep, GL+Zink
+verified). J3 is the geometry backbone.
+
+**Scope (settled 2026-08-10):** route `LLVertexBuffer`'s GL through the seam's
+purpose-built *granular R2/R7* ops. Parity by construction — RhiBuffer handles ARE
+GL names, so `mGLBuffer`/`mGLIndices` stay `U32`. Concentrated in one file
+(`llvertexbuffer.cpp`) plus the one global VAO in `llrender.cpp` init. No per-instance
+VAO, no `glMapBuffer` (CPU-shadow + `glBufferSubData` flush model).
+
+**GL surface → op:** `glGenBuffers`→`buffer_gen(_n)`, `glBindBuffer`→`buffer_bind`,
+`glBufferData`→`buffer_data`, `glBufferSubData`→`buffer_subdata`,
+`glDeleteBuffers`→`buffer_del(_n)`, `glVertexAttrib(I)Pointer`→`vertex_attrib`,
+`glEnable/DisableVertexAttribArray`→`enable/disable_vertex_attrib`,
+`glDrawRangeElements`→`draw_range_elements`, `glDrawArrays`→`draw_arrays`.
+
+**Maps (`rhi_map.h`):** `rhi_buftgt_from_gl`, `rhi_bufhint_from_gl`, `rhi_idxtype_from_gl`.
+`RhiPrimitive` = direct from the LLRender mode index (index-parity, no map).
+`RhiVertexFormat` is per-attribute in `setupVertexBuffer` (position=FLOAT,
+color/emissive=U8_NORM, clothweight=FLOAT_NORM, joint=U16_INT, texture_index=U32_INT).
+
+**Sub-junctions** (each built + in-world verified — **highest-blast junction**: all
+geometry flows here, so a routing error = total corruption/crash, not subtle; verify
+avatars/objects/terrain/water/UI on GL **and** Zink):
+- **J3a** — extend `rhi_map.h` (buftgt/bufhint/idxtype). ✅
+- **J3b** — buffers (gen/bind/data/subdata/del), preserving `sGLRenderBuffer/Indices`
+  redundant-bind tracking + raw-GL fallback. ✅ (building)
+- **J3c** — attributes (`setupVertexBuffer` + `setupClientArrays`), the format mapping.
+- **J3d** — draw (`draw`/`drawRange`/`drawRangeFast`/`drawArrays`).
+- **J3e** — the global VAO in `llrender.cpp` init.
+
+**Explicitly deferred (explored, NOT J3):**
+- `glFenceSync`/`glWaitSync` in `llvertexbuffer.cpp` are **dead** (commented out) — no
+  live R9 in LLVertexBuffer.
+- ~6 live newview buffer/draw leaks are **not geometry**: a manual `GL_UNIFORM_BUFFER`
+  in `llreflectionmapmanager` (→ J6 uniforms/UBO or J7 sweep) + a client-array
+  `glDrawElements` in `llspatialpartition` (physics hull, → J7 straggler / VBO-ify).

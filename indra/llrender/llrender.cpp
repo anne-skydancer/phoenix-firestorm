@@ -35,6 +35,7 @@
 #include "llrendertarget.h"
 #include "lltexture.h"
 #include "llshadermgr.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J2b> route blend + colormask through gRHI
 #include "hbxxh.h"
 #include "glm/gtc/type_ptr.hpp"
 
@@ -1382,6 +1383,26 @@ void LLRender::setColorMask(bool writeColor, bool writeAlpha)
     setColorMask(writeColor, writeColor, writeColor, writeAlpha);
 }
 
+// <FSVulkan P2 J2b> map LLRender::eBlendFactor to RhiBlendFactor -- consistent with sGLBlendFactor
+// so gl_blend(rhi_blend_from_ll(f)) == sGLBlendFactor[f] (parity by construction).
+static RhiBlendFactor rhi_blend_from_ll(LLRender::eBlendFactor f)
+{
+    switch (f)
+    {
+        case LLRender::BF_ONE:                    return RHI_BF_ONE;
+        case LLRender::BF_ZERO:                   return RHI_BF_ZERO;
+        case LLRender::BF_DEST_COLOR:             return RHI_BF_DST_COLOR;
+        case LLRender::BF_SOURCE_COLOR:           return RHI_BF_SRC_COLOR;
+        case LLRender::BF_ONE_MINUS_DEST_COLOR:   return RHI_BF_ONE_MINUS_DST_COLOR;
+        case LLRender::BF_ONE_MINUS_SOURCE_COLOR: return RHI_BF_ONE_MINUS_SRC_COLOR;
+        case LLRender::BF_DEST_ALPHA:             return RHI_BF_DST_ALPHA;
+        case LLRender::BF_SOURCE_ALPHA:           return RHI_BF_SRC_ALPHA;
+        case LLRender::BF_ONE_MINUS_DEST_ALPHA:   return RHI_BF_ONE_MINUS_DST_ALPHA;
+        case LLRender::BF_ONE_MINUS_SOURCE_ALPHA: return RHI_BF_ONE_MINUS_SRC_ALPHA;
+        default:                                  return RHI_BF_ZERO;  // BF_UNDEF -> GL_ZERO
+    }
+}
+
 void LLRender::setColorMask(bool writeColorR, bool writeColorG, bool writeColorB, bool writeAlpha)
 {
     flush();
@@ -1396,10 +1417,15 @@ void LLRender::setColorMask(bool writeColorR, bool writeColorG, bool writeColorB
         mCurrColorMask[2] = writeColorB;
         mCurrColorMask[3] = writeAlpha;
 
-        glColorMask(writeColorR ? GL_TRUE : GL_FALSE,
-                    writeColorG ? GL_TRUE : GL_FALSE,
-                    writeColorB ? GL_TRUE : GL_FALSE,
-                    writeAlpha ? GL_TRUE : GL_FALSE);
+        // <FSVulkan P2 J2b> route through the seam (raw-GL fallback if gRHI absent)
+        if (gRHI) { gRHI->set_color_mask(writeColorR, writeColorG, writeColorB, writeAlpha); }
+        else
+        {
+            glColorMask(writeColorR ? GL_TRUE : GL_FALSE,
+                        writeColorG ? GL_TRUE : GL_FALSE,
+                        writeColorB ? GL_TRUE : GL_FALSE,
+                        writeAlpha ? GL_TRUE : GL_FALSE);
+        }
     }
 }
 
@@ -1446,7 +1472,13 @@ void LLRender::blendFunc(eBlendFactor sfactor, eBlendFactor dfactor)
         mCurrBlendColorDFactor = dfactor;
         mCurrBlendAlphaDFactor = dfactor;
         flush();
-        glBlendFunc(sGLBlendFactor[sfactor], sGLBlendFactor[dfactor]);
+        // <FSVulkan P2 J2b> route through the seam (2-arg: color==alpha; raw-GL fallback)
+        if (gRHI)
+        {
+            RhiBlendFactor s = rhi_blend_from_ll(sfactor), d = rhi_blend_from_ll(dfactor);
+            gRHI->set_blend_func(s, d, s, d);
+        }
+        else { glBlendFunc(sGLBlendFactor[sfactor], sGLBlendFactor[dfactor]); }
     }
 }
 
@@ -1467,8 +1499,17 @@ void LLRender::blendFunc(eBlendFactor color_sfactor, eBlendFactor color_dfactor,
         mCurrBlendAlphaDFactor = alpha_dfactor;
         flush();
 
-        glBlendFuncSeparate(sGLBlendFactor[color_sfactor], sGLBlendFactor[color_dfactor],
-                           sGLBlendFactor[alpha_sfactor], sGLBlendFactor[alpha_dfactor]);
+        // <FSVulkan P2 J2b> route through the seam (raw-GL fallback if gRHI absent)
+        if (gRHI)
+        {
+            gRHI->set_blend_func(rhi_blend_from_ll(color_sfactor), rhi_blend_from_ll(color_dfactor),
+                                 rhi_blend_from_ll(alpha_sfactor), rhi_blend_from_ll(alpha_dfactor));
+        }
+        else
+        {
+            glBlendFuncSeparate(sGLBlendFactor[color_sfactor], sGLBlendFactor[color_dfactor],
+                               sGLBlendFactor[alpha_sfactor], sGLBlendFactor[alpha_dfactor]);
+        }
     }
 }
 

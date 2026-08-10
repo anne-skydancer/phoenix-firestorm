@@ -2858,6 +2858,24 @@ LLGLUserClipPlane::~LLGLUserClipPlane()
     disable();
 }
 
+// <FSVulkan P2 J2c> map a GL depth-compare enum to RhiCompare -- the inverse of the GL backend's
+// gl_compare(), so gl_compare(rhi_cmp_from_gl(f)) == f and routing is parity by construction.
+static RhiCompare rhi_cmp_from_gl(GLenum f)
+{
+    switch (f)
+    {
+        case GL_NEVER:    return RHI_CMP_NEVER;
+        case GL_LESS:     return RHI_CMP_LESS;
+        case GL_EQUAL:    return RHI_CMP_EQUAL;
+        case GL_LEQUAL:   return RHI_CMP_LEQUAL;
+        case GL_GREATER:  return RHI_CMP_GREATER;
+        case GL_NOTEQUAL: return RHI_CMP_NOTEQUAL;
+        case GL_GEQUAL:   return RHI_CMP_GEQUAL;
+        case GL_ALWAYS:   return RHI_CMP_ALWAYS;
+        default:          return RHI_CMP_LESS;   // GL default (GL_LESS)
+    }
+}
+
 LLGLDepthTest::LLGLDepthTest(GLboolean depth_enabled, GLboolean write_enabled, GLenum depth_func)
 : mPrevDepthEnabled(sDepthEnabled), mPrevDepthFunc(sDepthFunc), mPrevWriteEnabled(sWriteEnabled)
 {
@@ -2875,20 +2893,26 @@ LLGLDepthTest::LLGLDepthTest(GLboolean depth_enabled, GLboolean write_enabled, G
     if (depth_enabled != sDepthEnabled)
     {
         gGL.flush();
-        if (depth_enabled) glEnable(GL_DEPTH_TEST);
+        // <FSVulkan P2 J2c> route depth-test enable through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_test(depth_enabled ? 1 : 0); }
+        else if (depth_enabled) glEnable(GL_DEPTH_TEST);
         else glDisable(GL_DEPTH_TEST);
         sDepthEnabled = depth_enabled;
     }
     if (depth_func != sDepthFunc)
     {
         gGL.flush();
-        glDepthFunc(depth_func);
+        // <FSVulkan P2 J2c> route depth-func through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_func(rhi_cmp_from_gl(depth_func)); }
+        else glDepthFunc(depth_func);
         sDepthFunc = depth_func;
     }
     if (write_enabled != sWriteEnabled)
     {
         gGL.flush();
-        glDepthMask(write_enabled);
+        // <FSVulkan P2 J2c> route depth-write mask through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_write(write_enabled ? 1 : 0); }
+        else glDepthMask(write_enabled);
         sWriteEnabled = write_enabled;
     }
 }
@@ -2900,20 +2924,26 @@ LLGLDepthTest::~LLGLDepthTest()
     if (sDepthEnabled != mPrevDepthEnabled )
     {
         gGL.flush();
-        if (mPrevDepthEnabled) glEnable(GL_DEPTH_TEST);
+        // <FSVulkan P2 J2c> route depth-test restore through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_test(mPrevDepthEnabled ? 1 : 0); }
+        else if (mPrevDepthEnabled) glEnable(GL_DEPTH_TEST);
         else glDisable(GL_DEPTH_TEST);
         sDepthEnabled = mPrevDepthEnabled;
     }
     if (sDepthFunc != mPrevDepthFunc)
     {
         gGL.flush();
-        glDepthFunc(mPrevDepthFunc);
+        // <FSVulkan P2 J2c> route depth-func restore through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_func(rhi_cmp_from_gl(mPrevDepthFunc)); }
+        else glDepthFunc(mPrevDepthFunc);
         sDepthFunc = mPrevDepthFunc;
     }
     if (sWriteEnabled != mPrevWriteEnabled )
     {
         gGL.flush();
-        glDepthMask(mPrevWriteEnabled);
+        // <FSVulkan P2 J2c> route depth-write restore through the seam (raw-GL fallback)
+        if (gRHI) { gRHI->set_depth_write(mPrevWriteEnabled ? 1 : 0); }
+        else glDepthMask(mPrevWriteEnabled);
         sWriteEnabled = mPrevWriteEnabled;
     }
 }

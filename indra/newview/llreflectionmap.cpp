@@ -27,6 +27,8 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llreflectionmap.h"
+#include "rhi/rhi.h"       // <FSVulkan P2 J7> route occlusion query through gRHI
+#include "rhi/rhi_map.h"   // rhi_querytype_from_gl
 #include "pipeline.h"
 #include "llviewerwindow.h"
 #include "llviewerregion.h"
@@ -45,7 +47,7 @@ LLReflectionMap::~LLReflectionMap()
 {
     if (mOcclusionQuery)
     {
-        glDeleteQueries(1, &mOcclusionQuery);
+        if (gRHI) gRHI->query_destroy(mOcclusionQuery); else glDeleteQueries(1, &mOcclusionQuery);
     }
 }
 
@@ -370,7 +372,7 @@ void LLReflectionMap::doOcclusion(const LLVector4a& eye)
     if (mOcclusionQuery == 0)
     { // no query was previously issued, allocate one and issue
         LL_PROFILE_ZONE_NAMED_CATEGORY_PIPELINE("rmdo - glGenQueries");
-        glGenQueries(1, &mOcclusionQuery);
+        if (gRHI) mOcclusionQuery = gRHI->query_create(); else glGenQueries(1, &mOcclusionQuery);
         do_query = true;
     }
     else
@@ -378,12 +380,12 @@ void LLReflectionMap::doOcclusion(const LLVector4a& eye)
         // if previous query is available
         LL_PROFILE_ZONE_NAMED_CATEGORY_PIPELINE("rmdo - glGetQueryObject");
         GLuint result = 0;
-        glGetQueryObjectuiv(mOcclusionQuery, GL_QUERY_RESULT_AVAILABLE, &result);
+        if (gRHI) result = (GLuint)gRHI->query_available(mOcclusionQuery); else glGetQueryObjectuiv(mOcclusionQuery, GL_QUERY_RESULT_AVAILABLE, &result);
 
         if (result > 0)
         {
             do_query = true;
-            glGetQueryObjectuiv(mOcclusionQuery, GL_QUERY_RESULT, &result);
+            if (gRHI) { uint64_t _r = 0; gRHI->query_result(mOcclusionQuery, &_r); result = (GLuint)_r; } else glGetQueryObjectuiv(mOcclusionQuery, GL_QUERY_RESULT, &result);
             mOccluded = result == 0;
             mOcclusionPendingFrames = 0;
         }
@@ -396,7 +398,7 @@ void LLReflectionMap::doOcclusion(const LLVector4a& eye)
     if (do_query)
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_PIPELINE("rmdo - push query");
-        glBeginQuery(GL_ANY_SAMPLES_PASSED, mOcclusionQuery);
+        if (gRHI) gRHI->query_begin(RHI_QUERY_ANY_SAMPLES, mOcclusionQuery); else glBeginQuery(GL_ANY_SAMPLES_PASSED, mOcclusionQuery);
 
         LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr;
 
@@ -405,7 +407,7 @@ void LLReflectionMap::doOcclusion(const LLVector4a& eye)
 
         gPipeline.mCubeVB->drawRange(LLRender::TRIANGLE_FAN, 0, 7, 8, get_box_fan_indices(LLViewerCamera::getInstance(), mOrigin));
 
-        glEndQuery(GL_ANY_SAMPLES_PASSED);
+        if (gRHI) gRHI->query_end(RHI_QUERY_ANY_SAMPLES); else glEndQuery(GL_ANY_SAMPLES_PASSED);
     }
 #endif
 }

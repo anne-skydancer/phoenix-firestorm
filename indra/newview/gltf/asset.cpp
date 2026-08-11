@@ -33,6 +33,7 @@
 #include "../llviewertexturelist.h"
 #include "../pipeline.h"
 #include "buffer_util.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J7> route UBO management through gRHI
 #include "llimagejpeg.h"
 #include "../llskinningutil.h"
 
@@ -180,12 +181,12 @@ void Asset::uploadTransforms()
 
     if (mNodesUBO == 0)
     {
-        glGenBuffers(1, &mNodesUBO);
+        if (gRHI) mNodesUBO = gRHI->buffer_gen(); else glGenBuffers(1, &mNodesUBO);
     }
 
-    glBindBuffer(GL_UNIFORM_BUFFER, mNodesUBO);
-    glBufferData(GL_UNIFORM_BUFFER, glmp.size() * sizeof(F32), glmp.data(), GL_STREAM_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    if (gRHI) gRHI->buffer_bind(RHI_BUFTGT_UNIFORM, mNodesUBO); else glBindBuffer(GL_UNIFORM_BUFFER, mNodesUBO);
+    if (gRHI) gRHI->buffer_data(RHI_BUFTGT_UNIFORM, glmp.size() * sizeof(F32), glmp.data(), RHI_BUFHINT_STREAM); else glBufferData(GL_UNIFORM_BUFFER, glmp.size() * sizeof(F32), glmp.data(), GL_STREAM_DRAW);
+    if (gRHI) gRHI->buffer_bind(RHI_BUFTGT_UNIFORM, 0); else glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
 void Asset::uploadMaterials()
@@ -229,12 +230,12 @@ void Asset::uploadMaterials()
 
     if (mMaterialsUBO == 0)
     {
-        glGenBuffers(1, &mMaterialsUBO);
+        if (gRHI) mMaterialsUBO = gRHI->buffer_gen(); else glGenBuffers(1, &mMaterialsUBO);
     }
 
-    glBindBuffer(GL_UNIFORM_BUFFER, mMaterialsUBO);
-    glBufferData(GL_UNIFORM_BUFFER, md.size() * sizeof(vec4), md.data(), GL_STREAM_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    if (gRHI) gRHI->buffer_bind(RHI_BUFTGT_UNIFORM, mMaterialsUBO); else glBindBuffer(GL_UNIFORM_BUFFER, mMaterialsUBO);
+    if (gRHI) gRHI->buffer_data(RHI_BUFTGT_UNIFORM, md.size() * sizeof(vec4), md.data(), RHI_BUFHINT_STREAM); else glBufferData(GL_UNIFORM_BUFFER, md.size() * sizeof(vec4), md.data(), GL_STREAM_DRAW);
+    if (gRHI) gRHI->buffer_bind(RHI_BUFTGT_UNIFORM, 0); else glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
 S32 Asset::lineSegmentIntersect(const LLVector4a& start, const LLVector4a& end,

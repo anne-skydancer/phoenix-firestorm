@@ -690,10 +690,10 @@ void GLTFSceneManager::render(Asset& asset, U8 variant)
 
                 if (!rigged)
                 {
-                    glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_NODES, asset.mNodesUBO);
+                    if (gRHI) gRHI->bind_uniform_block(LLGLSLShader::UB_GLTF_NODES, asset.mNodesUBO); else glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_NODES, asset.mNodesUBO);
                 }
 
-                glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_MATERIALS, asset.mMaterialsUBO);
+                if (gRHI) gRHI->bind_uniform_block(LLGLSLShader::UB_GLTF_MATERIALS, asset.mMaterialsUBO); else glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_MATERIALS, asset.mMaterialsUBO);
 
                 for (U32 i = 0; i < TEXTURE_TYPE_COUNT; ++i)
                 {
@@ -733,7 +733,7 @@ void GLTFSceneManager::render(Asset& asset, U8 variant)
                     LL_PROFILE_ZONE_NAMED_CATEGORY_GLTF("gltfdc - bind skin");
                     llassert(node.mSkin != INVALID_INDEX);
                     Skin& skin = asset.mSkins[node.mSkin];
-                    glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_JOINTS, skin.mUBO);
+                    if (gRHI) gRHI->bind_uniform_block(LLGLSLShader::UB_GLTF_JOINTS, skin.mUBO); else glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_GLTF_JOINTS, skin.mUBO);
                 }
                 else
                 {

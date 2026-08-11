@@ -469,6 +469,74 @@ public:
 
     void setLineWidth(F32 line_width); // <FS> Line width OGL core profile fix by Rye Mutt
 
+    // Rasterizer polygon fill mode, routed through LLRender so redundant
+    // changes are elided (cached) and the core-profile requirement that the
+    // face be GL_FRONT_AND_BACK is enforced in one place -- a raw
+    // glPolygonMode() naming GL_FRONT or GL_BACK alone is illegal in a core
+    // context. The face is always GL_FRONT_AND_BACK; callers pick the fill.
+    enum ePolygonMode
+    {
+        PM_POINT,
+        PM_LINE,
+        PM_FILL
+    };
+    void setPolygonMode(ePolygonMode mode);
+
+    // Rasterizer polygon offset (depth bias), cached and routed through
+    // LLRender so redundant changes are elided. Enabling/disabling
+    // GL_POLYGON_OFFSET_FILL/LINE stays with the caller (LLGLEnable); this
+    // only sets the factor/units.
+    void setPolygonOffset(F32 factor, F32 units);
+
+    // Set the active viewport AND record it in gGLViewport -- the "screen
+    // viewport" that FBO-stack restore, unprojection, and the VIEWPORT shader
+    // uniform read back as source of truth. Offscreen/target-local viewport
+    // changes that must NOT be recorded keep calling glViewport directly.
+    void setViewport(S32 x, S32 y, S32 width, S32 height);
+
+    // Point size for GL_POINTS, cached like setLineWidth.
+    void setPointSize(F32 size);
+
+    // Rasterizer cull face, cached & routed through LLRender. Enabling/disabling
+    // GL_CULL_FACE stays with the caller (LLGLEnable); this only picks the face.
+    enum eCullFace
+    {
+        CF_FRONT,
+        CF_BACK,
+        CF_FRONT_AND_BACK
+    };
+    void setCullFace(eCullFace face);
+
+    // Framebuffer clear color, recorded and routed through LLRender. NOT
+    // deduped: window-init code (below llrender) sets glClearColor directly,
+    // so a skip-if-unchanged cache could desync -- always apply.
+    void setClearColor(F32 r, F32 g, F32 b, F32 a);
+
+    // Framebuffer clear with engine-neutral flags (no GLbitfield in the
+    // public signature). Uses the current clear color / depth / stencil.
+    enum eClearFlags
+    {
+        CLEAR_COLOR   = 0x1,
+        CLEAR_DEPTH   = 0x2,
+        CLEAR_STENCIL = 0x4
+    };
+    void clear(U32 flags);
+
+    // Stencil state, engine-neutral enums (no GLenum in the public signature).
+    enum eStencilFunc
+    {
+        SF_NEVER, SF_LESS, SF_EQUAL, SF_LEQUAL,
+        SF_GREATER, SF_NOTEQUAL, SF_GEQUAL, SF_ALWAYS
+    };
+    enum eStencilOp
+    {
+        SO_KEEP, SO_ZERO, SO_REPLACE, SO_INCR,
+        SO_DECR, SO_INVERT, SO_INCR_WRAP, SO_DECR_WRAP
+    };
+    void setStencilFunc(eStencilFunc func, S32 ref, U32 mask);
+    void setStencilOp(eStencilOp sfail, eStencilOp dpfail, eStencilOp dppass);
+    void setStencilMask(U32 mask);
+
     LLTexUnit* getTexUnit(U32 index);
 
     U32 getCurrentTexUnitIndex(void) const { return mCurrTextureUnitIndex; }
@@ -520,6 +588,12 @@ private:
     F32             mMaxLineWidthSmooth;
     F32             mMaxLineWidthAliased;
     // </FS:Ansariel>
+    ePolygonMode    mPolygonMode;
+    F32             mPolygonOffsetFactor;
+    F32             mPolygonOffsetUnits;
+    F32             mPointSize;
+    eCullFace       mCullFace;
+    LLColor4        mClearColor;
 
     LLPointer<LLVertexBuffer>   mBuffer;
     LLStrider<LLVector4a>       mVerticesp;

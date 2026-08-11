@@ -40,6 +40,7 @@
 #include "llvertexbuffer.h"
 #include "llviewerdisplay.h"
 #include "llrender.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J7> route offscreen viewport through gRHI
 #include "pipeline.h"
 #include "llglslshader.h"
 
@@ -132,10 +133,10 @@ void LLViewerDynamicTexture::preRender(bool clear_depth)
     mCamera.setView(camera->getView());
     mCamera.setNear(camera->getNear());
 
-    glViewport(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight);
+    if (gRHI) gRHI->set_viewport(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight); else glViewport(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight);
     if (clear_depth)
     {
-        glClear(GL_DEPTH_BUFFER_BIT);
+        gGL.clear(LLRender::CLEAR_DEPTH);
     }
 }
 
@@ -222,7 +223,7 @@ bool LLViewerDynamicTexture::updateAllInstances()
                 llassert(dynamicTexture->getFullWidth() <= width);
                 llassert(dynamicTexture->getFullHeight() <= height);
 
-                glClear(GL_DEPTH_BUFFER_BIT);
+                gGL.clear(LLRender::CLEAR_DEPTH);
 
                 gGL.color4f(1.f, 1.f, 1.f, 1.f);
                 dynamicTexture->setBoundTarget(&renderTarget);

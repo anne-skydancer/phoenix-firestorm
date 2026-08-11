@@ -32,6 +32,7 @@
 #include "llspatialpartition.h"
 #include "llviewerregion.h"
 #include "pipeline.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J7> route offscreen viewport through gRHI
 #include "llviewershadermgr.h"
 #include "llviewercontrol.h"
 #include "llenvironment.h"
@@ -488,7 +489,7 @@ void LLHeroProbeManager::generateRadiance(LLReflectionMap* probe)
                 if (i != mMipChain.size() - 1)
                 {
                     res /= 2;
-                    glViewport(0, 0, res, res);
+                    if (gRHI) gRHI->set_viewport(0, 0, res, res); else glViewport(0, 0, res, res);
                 }
             }
 

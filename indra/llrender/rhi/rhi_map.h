@@ -58,6 +58,40 @@ inline RhiPolygonMode rhi_polygon_mode_from_gl(GLenum mode)
     }
 }
 
+// glStencilOp action -- inverse of the GL backend's gl_set_stencil_op (rhi_gl.cpp),
+// whose forward table is { KEEP, ZERO, REPLACE, INCR, DECR, INVERT, INCR_WRAP, DECR_WRAP }.
+inline RhiStencilOp rhi_stencil_op_from_gl(GLenum op)
+{
+    switch (op)
+    {
+        case GL_KEEP:      return RHI_SO_KEEP;
+        case GL_ZERO:      return RHI_SO_ZERO;
+        case GL_REPLACE:   return RHI_SO_REPLACE;
+        case GL_INCR:      return RHI_SO_INCR;
+        case GL_DECR:      return RHI_SO_DECR;
+        case GL_INVERT:    return RHI_SO_INVERT;
+        case GL_INCR_WRAP: return RHI_SO_INCR_WRAP;
+        case GL_DECR_WRAP: return RHI_SO_DECR_WRAP;
+        default:           return RHI_SO_KEEP;
+    }
+}
+
+// glBeginQuery/glEndQuery target -- inverse of the GL backend's gl_query_target
+// (rhi_gl.cpp), so gl_query_target(rhi_querytype_from_gl(t)) == t. Covers every
+// query target the newview occlusion / perf / timer paths use (R10 · J7).
+inline RhiQueryType rhi_querytype_from_gl(GLenum target)
+{
+    switch (target)
+    {
+        case GL_ANY_SAMPLES_PASSED:                  return RHI_QUERY_ANY_SAMPLES;
+        case GL_SAMPLES_PASSED:                      return RHI_QUERY_SAMPLES;
+        case GL_TIME_ELAPSED:                        return RHI_QUERY_TIME_ELAPSED;
+        case GL_PRIMITIVES_GENERATED:                return RHI_QUERY_PRIMITIVES;
+        case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN: return RHI_QUERY_XFB_PRIMITIVES;
+        default:                                     return RHI_QUERY_ANY_SAMPLES;
+    }
+}
+
 // glBufferData usage hint (R2 · J3)
 inline RhiBufferHint rhi_bufhint_from_gl(GLenum usage)
 {

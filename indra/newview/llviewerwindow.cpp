@@ -861,7 +861,7 @@ public:
             S32 x_raw = (S32)llround(coord.mX * gViewerWindow->getWindowWidthRaw() / (F32) gViewerWindow->getWindowWidthScaled());
             S32 y_raw = (S32)llround(coord.mY * gViewerWindow->getWindowHeightRaw() / (F32) gViewerWindow->getWindowHeightScaled());
 
-            glReadPixels(x_raw, y_raw, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
+            if (gRHI) gRHI->read_pixels(x_raw, y_raw, 1, 1, RHI_FMT_RGBA8, color); else glReadPixels(x_raw, y_raw, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
             addText(xpos, ypos, llformat("Pixel <%1d, %1d> R:%1d G:%1d B:%1d A:%1d", x_raw, y_raw, color[0], color[1], color[2], color[3]));
             ypos += y_inc;
         }
@@ -5186,7 +5186,7 @@ void LLViewerWindow::renderSelections( bool for_gl_pick, bool pick_parcel_walls,
                     gDebugProgram.bind();
                 }
                 gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE); // no textures needed
-                glClearColor(0, 0, 0, 0); // bg black
+                gGL.setClearColor(0, 0, 0, 0); // bg black
                 gGL.setColorMask(true, true); // write color and alpha info
                 gGL.color4f(1.f, 1.f, 1.f, 0.5);
                 gGL.matrixMode(LLRender::MM_MODELVIEW);
@@ -6171,7 +6171,7 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
     gSnapshotNoPost = no_post;
     gDisplaySwapBuffers = false;
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    gGL.clear(LLRender::CLEAR_DEPTH | LLRender::CLEAR_COLOR); // stencil buffer is deprecated | LLRender::CLEAR_STENCIL);
     setCursor(UI_CURSOR_WAIT);
 
     // Hide all the UI widgets first and draw a frame
@@ -6370,23 +6370,37 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
                     {
                         if (type == LLSnapshotModel::SNAPSHOT_TYPE_COLOR)
                         {
-                            glReadPixels(
+                            if (gRHI)
+                            {
+                                gRHI->read_pixels(subimage_x_offset, out_y + subimage_y_offset, read_width, 1, RHI_FMT_RGB8, raw->getData() + output_buffer_offset);
+                            }
+                            else
+                            {
+                                glReadPixels(
                                      subimage_x_offset, out_y + subimage_y_offset,
                                      read_width, 1,
                                      GL_RGB, GL_UNSIGNED_BYTE,
                                      raw->getData() + output_buffer_offset
                                      );
+                            }
                         }
                         // <FS:Ansariel> FIRE-15667: 24bit depth maps
                         else if (type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH24)
                         {
                             LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GLfloat)); // need to store floating point values
-                            glReadPixels(
+                            if (gRHI)
+                            {
+                                gRHI->read_pixels(subimage_x_offset, out_y + subimage_y_offset, read_width, 1, RHI_FMT_DEPTH32F, depth_line_buffer->getData());
+                            }
+                            else
+                            {
+                                glReadPixels(
                                          subimage_x_offset, out_y + subimage_y_offset,
                                          read_width, 1,
                                          GL_DEPTH_COMPONENT, GL_FLOAT,
                                          depth_line_buffer->getData()// current output pixel is beginning of buffer...
                                          );
+                            }
 
                             for (S32 i = 0; i < (S32)read_width; i++)
                             {
@@ -6415,12 +6429,19 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
                             //LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GL_FLOAT)); // need to store floating point values
                             LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GLfloat)); // need to store floating point values
                             // </FS>
-                            glReadPixels(
+                            if (gRHI)
+                            {
+                                gRHI->read_pixels(subimage_x_offset, out_y + subimage_y_offset, read_width, 1, RHI_FMT_DEPTH32F, depth_line_buffer->getData());
+                            }
+                            else
+                            {
+                                glReadPixels(
                                          subimage_x_offset, out_y + subimage_y_offset,
                                          read_width, 1,
                                          GL_DEPTH_COMPONENT, GL_FLOAT,
                                          depth_line_buffer->getData()// current output pixel is beginning of buffer...
                                          );
+                            }
 
                             for (S32 i = 0; i < (S32)read_width; i++)
                             {
@@ -6517,7 +6538,7 @@ bool LLViewerWindow::simpleSnapshot(LLImageRaw* raw, S32 image_width, S32 image_
     LL_PROFILE_ZONE_SCOPED_CATEGORY_APP;
     gDisplaySwapBuffers = false;
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    gGL.clear(LLRender::CLEAR_DEPTH | LLRender::CLEAR_COLOR); // stencil buffer is deprecated | LLRender::CLEAR_STENCIL);
     setCursor(UI_CURSOR_WAIT);
 
     bool prev_draw_ui = gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI);
@@ -6583,13 +6604,20 @@ bool LLViewerWindow::simpleSnapshot(LLImageRaw* raw, S32 image_width, S32 image_
 
     LLImageDataSharedLock lock(raw);
 
-    glReadPixels(
-        0, 0,
-        image_width,
-        image_height,
-        GL_RGB, GL_UNSIGNED_BYTE,
-        raw->getData()
-    );
+    if (gRHI)
+    {
+        gRHI->read_pixels(0, 0, image_width, image_height, RHI_FMT_RGB8, raw->getData());
+    }
+    else
+    {
+        glReadPixels(
+            0, 0,
+            image_width,
+            image_height,
+            GL_RGB, GL_UNSIGNED_BYTE,
+            raw->getData()
+        );
+    }
     stop_glerror();
 
     gDisplaySwapBuffers = false;
@@ -6662,7 +6690,7 @@ bool LLViewerWindow::cubeSnapshot(const LLVector3& origin, LLCubeMapArray* cubea
 
     gPipeline.pushRenderTypeMask();
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    gGL.clear(LLRender::CLEAR_DEPTH | LLRender::CLEAR_COLOR); // stencil buffer is deprecated | LLRender::CLEAR_STENCIL);
 
     U32 dynamic_render_types[] = {
         LLPipeline::RENDER_TYPE_AVATAR,
@@ -6883,7 +6911,7 @@ void LLViewerWindow::setup2DViewport(S32 x_offset, S32 y_offset)
     gGLViewport[1] = mWindowRectRaw.mBottom + y_offset;
     gGLViewport[2] = mWindowRectRaw.getWidth();
     gGLViewport[3] = mWindowRectRaw.getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    gGL.setViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
 }
 
 
@@ -6901,7 +6929,7 @@ void LLViewerWindow::setup3DViewport(S32 x_offset, S32 y_offset)
     gGLViewport[1] = mWorldViewRectRaw.mBottom + y_offset;
     gGLViewport[2] = mWorldViewRectRaw.getWidth();
     gGLViewport[3] = mWorldViewRectRaw.getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    gGL.setViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
 }
 
 void LLViewerWindow::revealIntroPanel()

@@ -830,8 +830,14 @@ LLRender::LLRender()
     mLineWidth(1.f), // <FS> Line width OGL core profile fix by Rye Mutt
     // <FS:Ansariel> Don't ignore OpenGL max line width
     mMaxLineWidthSmooth(1.f),
-    mMaxLineWidthAliased(1.f)
+    mMaxLineWidthAliased(1.f),
     // </FS:Ansariel>
+    mPolygonMode(PM_FILL),
+    mPolygonOffsetFactor(0.f),
+    mPolygonOffsetUnits(0.f),
+    mPointSize(1.f),
+    mCullFace(CF_BACK),
+    mClearColor(0.f, 0.f, 0.f, 0.f)
 {
     for (U32 i = 0; i < LL_NUM_TEXTURE_LAYERS; i++)
     {
@@ -1594,6 +1600,132 @@ void LLRender::setLineWidth(F32 line_width)
     }
 }
 // </FS>
+
+void LLRender::setPolygonMode(ePolygonMode mode)
+{
+    if (mPolygonMode != mode || mDirty)
+    {
+        // Flush any pending immediate-mode geometry so it rasterizes under the
+        // mode it was queued with, not the one we are switching to (flush is a
+        // no-op when nothing is buffered).
+        flush();
+        mPolygonMode = mode;
+        if (gRHI)
+        {
+            gRHI->set_polygon_mode(mode == PM_LINE ? RHI_PM_LINE : (mode == PM_POINT ? RHI_PM_POINT : RHI_PM_FILL));
+        }
+        else
+        {
+            GLenum gl_mode = GL_FILL;
+            if (mode == PM_LINE) gl_mode = GL_LINE;
+            else if (mode == PM_POINT) gl_mode = GL_POINT;
+            glPolygonMode(GL_FRONT_AND_BACK, gl_mode);
+        }
+    }
+}
+
+void LLRender::setPolygonOffset(F32 factor, F32 units)
+{
+    if (mPolygonOffsetFactor != factor || mPolygonOffsetUnits != units || mDirty)
+    {
+        // Flush pending immediate-mode geometry so it rasterizes under the
+        // offset it was queued with (no-op when nothing is buffered).
+        flush();
+        mPolygonOffsetFactor = factor;
+        mPolygonOffsetUnits = units;
+        if (gRHI) gRHI->set_polygon_offset(factor, units); else glPolygonOffset(factor, units);
+    }
+}
+
+void LLRender::setViewport(S32 x, S32 y, S32 width, S32 height)
+{
+    gGLViewport[0] = x;
+    gGLViewport[1] = y;
+    gGLViewport[2] = width;
+    gGLViewport[3] = height;
+    if (gRHI) gRHI->set_viewport(x, y, width, height); else glViewport(x, y, width, height);
+}
+
+void LLRender::setPointSize(F32 size)
+{
+    if (mPointSize != size || mDirty)
+    {
+        flush();
+        mPointSize = size;
+        if (gRHI) gRHI->set_point_size(size); else glPointSize(size);
+    }
+}
+
+void LLRender::setCullFace(eCullFace face)
+{
+    if (mCullFace != face || mDirty)
+    {
+        flush();
+        mCullFace = face;
+        if (gRHI)
+        {
+            gRHI->set_cull_face(face == CF_FRONT ? RHI_CF_FRONT : (face == CF_FRONT_AND_BACK ? RHI_CF_FRONT_AND_BACK : RHI_CF_BACK));
+        }
+        else
+        {
+            GLenum gl_face = GL_BACK;
+            if (face == CF_FRONT) gl_face = GL_FRONT;
+            else if (face == CF_FRONT_AND_BACK) gl_face = GL_FRONT_AND_BACK;
+            glCullFace(gl_face);
+        }
+    }
+}
+
+void LLRender::setClearColor(F32 r, F32 g, F32 b, F32 a)
+{
+    mClearColor.set(r, g, b, a);
+    if (gRHI) gRHI->set_clear_color(r, g, b, a); else glClearColor(r, g, b, a);
+}
+
+void LLRender::clear(U32 flags)
+{
+    if (gRHI)
+    {
+        U32 rf = 0;
+        if (flags & CLEAR_COLOR)   rf |= RHI_CLEAR_COLOR;
+        if (flags & CLEAR_DEPTH)   rf |= RHI_CLEAR_DEPTH;
+        if (flags & CLEAR_STENCIL) rf |= RHI_CLEAR_STENCIL;
+        gRHI->target_clear(rf);
+        return;
+    }
+    GLbitfield mask = 0;
+    if (flags & CLEAR_COLOR)   mask |= GL_COLOR_BUFFER_BIT;
+    if (flags & CLEAR_DEPTH)   mask |= GL_DEPTH_BUFFER_BIT;
+    if (flags & CLEAR_STENCIL) mask |= GL_STENCIL_BUFFER_BIT;
+    glClear(mask);
+}
+
+void LLRender::setStencilFunc(eStencilFunc func, S32 ref, U32 mask)
+{
+    static const GLenum gl_func[] =
+    {
+        GL_NEVER, GL_LESS, GL_EQUAL, GL_LEQUAL,
+        GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS
+    };
+    if (gRHI) gRHI->set_stencil_func((RhiCompare)func, ref, mask);
+    else glStencilFunc(gl_func[func], ref, mask);
+}
+
+void LLRender::setStencilOp(eStencilOp sfail, eStencilOp dpfail, eStencilOp dppass)
+{
+    static const GLenum gl_op[] =
+    {
+        GL_KEEP, GL_ZERO, GL_REPLACE, GL_INCR,
+        GL_DECR, GL_INVERT, GL_INCR_WRAP, GL_DECR_WRAP
+    };
+    if (gRHI) gRHI->set_stencil_op((RhiStencilOp)sfail, (RhiStencilOp)dpfail, (RhiStencilOp)dppass);
+    else glStencilOp(gl_op[sfail], gl_op[dpfail], gl_op[dppass]);
+}
+
+void LLRender::setStencilMask(U32 mask)
+{
+    if (gRHI) gRHI->set_stencil_mask(mask); else glStencilMask(mask);
+}
 
 bool LLRender::verifyTexUnitActive(U32 unitToVerify)
 {

@@ -28,6 +28,9 @@
 
 #include "llvoavatar.h"
 
+#include "rhi/rhi.h"       // <FSVulkan P2 J7> route GPU timer query through gRHI
+#include "rhi/rhi_map.h"   // rhi_querytype_from_gl
+
 #include <stdio.h>
 #include <ctype.h>
 #include <sstream>
@@ -13159,27 +13162,27 @@ void LLVOAvatar::placeProfileQuery()
 {
     if (mGPUTimerQuery == 0)
     {
-        glGenQueries(1, &mGPUTimerQuery);
+        if (gRHI) mGPUTimerQuery = gRHI->query_create(); else glGenQueries(1, &mGPUTimerQuery);
     }
 
-    glBeginQuery(GL_TIME_ELAPSED, mGPUTimerQuery);
+    if (gRHI) gRHI->query_begin(RHI_QUERY_TIME_ELAPSED, mGPUTimerQuery); else glBeginQuery(GL_TIME_ELAPSED, mGPUTimerQuery);
 }
 
 void LLVOAvatar::readProfileQuery(S32 retries)
 {
     if (!mGPUProfilePending)
     {
-        glEndQuery(GL_TIME_ELAPSED);
+        if (gRHI) gRHI->query_end(RHI_QUERY_TIME_ELAPSED); else glEndQuery(GL_TIME_ELAPSED);
         mGPUProfilePending = true;
     }
 
     GLuint64 result = 0;
-    glGetQueryObjectui64v(mGPUTimerQuery, GL_QUERY_RESULT_AVAILABLE, &result);
+    if (gRHI) result = (GLuint64)gRHI->query_available(mGPUTimerQuery); else glGetQueryObjectui64v(mGPUTimerQuery, GL_QUERY_RESULT_AVAILABLE, &result);
 
     if (result == GL_TRUE || --retries <= 0)
     { // query available, readback result
         GLuint64 time_elapsed = 0;
-        glGetQueryObjectui64v(mGPUTimerQuery, GL_QUERY_RESULT, &time_elapsed);
+        if (gRHI) gRHI->query_result(mGPUTimerQuery, &time_elapsed); else glGetQueryObjectui64v(mGPUTimerQuery, GL_QUERY_RESULT, &time_elapsed);
         mGPURenderTime = time_elapsed / 1000000.f;
         mGPUProfilePending = false;
 

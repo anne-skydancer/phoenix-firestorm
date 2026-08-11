@@ -58,6 +58,24 @@ inline RhiPolygonMode rhi_polygon_mode_from_gl(GLenum mode)
     }
 }
 
+// glStencilOp action -- inverse of the GL backend's gl_set_stencil_op (rhi_gl.cpp),
+// whose forward table is { KEEP, ZERO, REPLACE, INCR, DECR, INVERT, INCR_WRAP, DECR_WRAP }.
+inline RhiStencilOp rhi_stencil_op_from_gl(GLenum op)
+{
+    switch (op)
+    {
+        case GL_KEEP:      return RHI_SO_KEEP;
+        case GL_ZERO:      return RHI_SO_ZERO;
+        case GL_REPLACE:   return RHI_SO_REPLACE;
+        case GL_INCR:      return RHI_SO_INCR;
+        case GL_DECR:      return RHI_SO_DECR;
+        case GL_INVERT:    return RHI_SO_INVERT;
+        case GL_INCR_WRAP: return RHI_SO_INCR_WRAP;
+        case GL_DECR_WRAP: return RHI_SO_DECR_WRAP;
+        default:           return RHI_SO_KEEP;
+    }
+}
+
 // glBufferData usage hint (R2 · J3)
 inline RhiBufferHint rhi_bufhint_from_gl(GLenum usage)
 {

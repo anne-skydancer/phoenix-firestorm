@@ -135,7 +135,7 @@ void LLViewerDynamicTexture::preRender(bool clear_depth)
     glViewport(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight);
     if (clear_depth)
     {
-        glClear(GL_DEPTH_BUFFER_BIT);
+        gGL.clear(LLRender::CLEAR_DEPTH);
     }
 }
 
@@ -222,7 +222,7 @@ bool LLViewerDynamicTexture::updateAllInstances()
                 llassert(dynamicTexture->getFullWidth() <= width);
                 llassert(dynamicTexture->getFullHeight() <= height);
 
-                glClear(GL_DEPTH_BUFFER_BIT);
+                gGL.clear(LLRender::CLEAR_DEPTH);
 
                 gGL.color4f(1.f, 1.f, 1.f, 1.f);
                 dynamicTexture->setBoundTarget(&renderTarget);

@@ -5186,7 +5186,7 @@ void LLViewerWindow::renderSelections( bool for_gl_pick, bool pick_parcel_walls,
                     gDebugProgram.bind();
                 }
                 gGL.getTexUnit(0)->unbind(LLTexUnit::TT_TEXTURE); // no textures needed
-                glClearColor(0, 0, 0, 0); // bg black
+                gGL.setClearColor(0, 0, 0, 0); // bg black
                 gGL.setColorMask(true, true); // write color and alpha info
                 gGL.color4f(1.f, 1.f, 1.f, 0.5);
                 gGL.matrixMode(LLRender::MM_MODELVIEW);
@@ -6171,7 +6171,7 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
     gSnapshotNoPost = no_post;
     gDisplaySwapBuffers = false;
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    gGL.clear(LLRender::CLEAR_DEPTH | LLRender::CLEAR_COLOR); // stencil buffer is deprecated | LLRender::CLEAR_STENCIL);
     setCursor(UI_CURSOR_WAIT);
 
     // Hide all the UI widgets first and draw a frame
@@ -6517,7 +6517,7 @@ bool LLViewerWindow::simpleSnapshot(LLImageRaw* raw, S32 image_width, S32 image_
     LL_PROFILE_ZONE_SCOPED_CATEGORY_APP;
     gDisplaySwapBuffers = false;
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    gGL.clear(LLRender::CLEAR_DEPTH | LLRender::CLEAR_COLOR); // stencil buffer is deprecated | LLRender::CLEAR_STENCIL);
     setCursor(UI_CURSOR_WAIT);
 
     bool prev_draw_ui = gPipeline.hasRenderDebugFeatureMask(LLPipeline::RENDER_DEBUG_FEATURE_UI);
@@ -6662,7 +6662,7 @@ bool LLViewerWindow::cubeSnapshot(const LLVector3& origin, LLCubeMapArray* cubea
 
     gPipeline.pushRenderTypeMask();
 
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT); // stencil buffer is deprecated | GL_STENCIL_BUFFER_BIT);
+    gGL.clear(LLRender::CLEAR_DEPTH | LLRender::CLEAR_COLOR); // stencil buffer is deprecated | LLRender::CLEAR_STENCIL);
 
     U32 dynamic_render_types[] = {
         LLPipeline::RENDER_TYPE_AVATAR,

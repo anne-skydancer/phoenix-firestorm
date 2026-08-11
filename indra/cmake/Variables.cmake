@@ -141,37 +141,13 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 endif (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-  set(DARWIN 1)
-
-  string(REGEX MATCH "-mmacosx-version-min=([^ ]+)" scratch "$ENV{LL_BUILD}")
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "${CMAKE_MATCH_1}" CACHE STRING "macOS Deploy Target" FORCE)
-  message(STATUS "CMAKE_OSX_DEPLOYMENT_TARGET = '${CMAKE_OSX_DEPLOYMENT_TARGET}'")
-
-  # Use dwarf symbols for most libraries for compilation speed
-  set(CMAKE_XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT "dwarf")
-
-  string(REGEX MATCH "-O([^ ]*)" scratch "$ENV{LL_BUILD}")
-  set(CMAKE_XCODE_ATTRIBUTE_GCC_OPTIMIZATION_LEVEL "${CMAKE_MATCH_1}")
-  message(STATUS "CMAKE_XCODE_ATTRIBUTE_GCC_OPTIMIZATION_LEVEL = '${CMAKE_XCODE_ATTRIBUTE_GCC_OPTIMIZATION_LEVEL}'")
-
-  set(CMAKE_XCODE_ATTRIBUTE_GCC_STRICT_ALIASING NO)
-  set(CMAKE_XCODE_ATTRIBUTE_GCC_FAST_MATH NO)
-  set(CMAKE_XCODE_ATTRIBUTE_CLANG_X86_VECTOR_INSTRUCTIONS sse4.2)
-  # we must hard code this to off for now.  xcode's built in signing does not
-  # handle embedded app bundles such as CEF and others. Any signing for local
-  # development must be done after the build as we do in viewer_manifest.py for
-  # released builds
-  # https://stackoverflow.com/a/54296008
-  # With Xcode 14.1, apparently you must take drastic steps to prevent
-  # implicit signing.
-  set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED NO)
-  set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED NO)
-  # "-" represents "Sign to Run Locally" and empty string represents "Do Not Sign"
-  set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "")
-  set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "")
-  set(CMAKE_XCODE_ATTRIBUTE_DISABLE_MANUAL_TARGET_ORDER_BUILD_WARNING YES)
-  set(CMAKE_XCODE_ATTRIBUTE_GCC_WARN_64_TO_32_BIT_CONVERSION NO)
-  set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS Build Arch" FORCE)
+  # Vulkanstorm is a PC-only fork: Windows / Linux / FreeBSD. macOS is not a
+  # supported target -- Apple froze OpenGL at 4.1 (no SSBO / atomics / image
+  # load-store that the alpha-OIT and Vulkan work rely on), so the viewer could
+  # not run there. Fail the configure early rather than build something broken.
+  # (DARWIN is intentionally left unset, so every remaining if(DARWIN) block is
+  # inert; those are pruned separately.)
+  message(FATAL_ERROR "macOS is not supported by Vulkanstorm (Windows / Linux / FreeBSD only).")
 endif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
 # Default deploy grid

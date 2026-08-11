@@ -27,6 +27,8 @@
 #include "llviewerprecompiledheaders.h"
 #include "llrendertarget.h"
 #include "llscenemonitor.h"
+#include "rhi/rhi.h"       // <FSVulkan P2 J7> route samples-passed query through gRHI
+#include "rhi/rhi_map.h"   // rhi_querytype_from_gl
 #include "llviewerwindow.h"
 #include "llviewerdisplay.h"
 #include "llviewercontrol.h"
@@ -444,14 +446,14 @@ void LLSceneMonitor::calcDiffAggregate()
 
     if(mDiffState == EXECUTE_DIFF)
     {
-        glBeginQuery(GL_SAMPLES_PASSED, mQueryObject);
+        if (gRHI) gRHI->query_begin(RHI_QUERY_SAMPLES, mQueryObject); else glBeginQuery(GL_SAMPLES_PASSED, mQueryObject);
     }
 
     gl_draw_scaled_target(0, 0, S32(mDiff->getWidth() * mDiffPixelRatio), S32(mDiff->getHeight() * mDiffPixelRatio), mDiff);
 
     if(mDiffState == EXECUTE_DIFF)
     {
-        glEndQuery(GL_SAMPLES_PASSED);
+        if (gRHI) gRHI->query_end(RHI_QUERY_SAMPLES); else glEndQuery(GL_SAMPLES_PASSED);
         mDiffState = WAIT_ON_RESULT;
     }
 
@@ -482,11 +484,11 @@ void LLSceneMonitor::fetchQueryResult()
         mDiffState = WAITING_FOR_NEXT_DIFF;
 
         GLuint available = 0;
-        glGetQueryObjectuiv(mQueryObject, GL_QUERY_RESULT_AVAILABLE, &available);
+        if (gRHI) available = (GLuint)gRHI->query_available(mQueryObject); else glGetQueryObjectuiv(mQueryObject, GL_QUERY_RESULT_AVAILABLE, &available);
         if(available)
         {
             GLuint count = 0;
-            glGetQueryObjectuiv(mQueryObject, GL_QUERY_RESULT, &count);
+            if (gRHI) { uint64_t _r = 0; gRHI->query_result(mQueryObject, &_r); count = (GLuint)_r; } else glGetQueryObjectuiv(mQueryObject, GL_QUERY_RESULT, &count);
 
             mDiffResult = sqrtf(count * 0.5f / (mDiff->getWidth() * mDiff->getHeight() * mDiffPixelRatio * mDiffPixelRatio)); //0.5 -> (front face + back face)
 

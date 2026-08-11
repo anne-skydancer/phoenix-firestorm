@@ -795,7 +795,7 @@ void LLPipeline::destroyGL()
 
     if (mMeshDirtyQueryObject)
     {
-        glDeleteQueries(1, &mMeshDirtyQueryObject);
+        if (gRHI) gRHI->query_destroy(mMeshDirtyQueryObject); else glDeleteQueries(1, &mMeshDirtyQueryObject);
         mMeshDirtyQueryObject = 0;
     }
 }

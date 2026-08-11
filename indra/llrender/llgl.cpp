@@ -1008,9 +1008,6 @@ LLGLManager::LLGLManager() :
     mIsAMD(false),
     mIsNVIDIA(false),
     mIsIntel(false),
-#if LL_DARWIN
-    mIsMobileGF(false),
-#endif
     mHasRequirements(true),
     mDriverVersionMajor(1),
     mDriverVersionMinor(0),
@@ -1081,40 +1078,6 @@ bool LLGLManager::initGL()
         LL_ERRS("RenderInit") << "Calling init on LLGLManager after already initialized!" << LL_ENDL;
     }
 
-#if 0 && LL_WINDOWS
-    if (!glGetStringi)
-    {
-        glGetStringi = (PFNGLGETSTRINGIPROC) GLH_EXT_GET_PROC_ADDRESS("glGetStringi");
-    }
-
-    //reload extensions string (may have changed after using wglCreateContextAttrib)
-    if (glGetStringi)
-    {
-        std::stringstream str;
-
-        GLint count = 0;
-        glGetIntegerv(GL_NUM_EXTENSIONS, &count);
-        for (GLint i = 0; i < count; ++i)
-        {
-            std::string ext = ll_safe_string((const char*) glGetStringi(GL_EXTENSIONS, i));
-            str << ext << " ";
-            LL_DEBUGS("GLExtensions") << ext << LL_ENDL;
-        }
-
-        {
-            PFNWGLGETEXTENSIONSSTRINGARBPROC wglGetExtensionsStringARB = 0;
-            wglGetExtensionsStringARB = (PFNWGLGETEXTENSIONSSTRINGARBPROC)wglGetProcAddress("wglGetExtensionsStringARB");
-            if(wglGetExtensionsStringARB)
-            {
-                str << (const char*) wglGetExtensionsStringARB(wglGetCurrentDC());
-            }
-        }
-
-        free(gGLHExts.mSysExts);
-        std::string extensions = str.str();
-        gGLHExts.mSysExts = strdup(extensions.c_str());
-    }
-#endif
 
     // Extract video card strings and convert to upper case to
     // work around driver-to-driver variation in capitalization.
@@ -1188,48 +1151,6 @@ bool LLGLManager::initGL()
     // if hardware detection has all failed the this will correct for that
     // U32 old_vram = mVRAM;
     // mVRAM = 0;
-
-#if 0 //LL_WINDOWS <FS:Ansariel> Special handling down below
-    if (mHasAMDAssociations)
-    {
-        GLuint gl_gpus_count = wglGetGPUIDsAMD(0, 0);
-        if (gl_gpus_count > 0)
-        {
-            GLuint* ids = new GLuint[gl_gpus_count];
-            wglGetGPUIDsAMD(gl_gpus_count, ids);
-
-            GLuint mem_mb = 0;
-            for (U32 i = 0; i < gl_gpus_count; i++)
-            {
-                wglGetGPUInfoAMD(ids[i],
-                    WGL_GPU_RAM_AMD,
-                    GL_UNSIGNED_INT,
-                    sizeof(GLuint),
-                    &mem_mb);
-                if (mVRAM < mem_mb)
-                {
-                    // basically pick the best AMD and trust driver/OS to know to switch
-                    mVRAM = mem_mb;
-                }
-            }
-        }
-        if (mVRAM != 0)
-        {
-            LL_WARNS("RenderInit") << "VRAM Detected (AMDAssociations):" << mVRAM << LL_ENDL;
-        }
-    }
-    else if (mHasNVXGpuMemoryInfo)
-    {
-        GLint mem_kb = 0;
-        glGetIntegerv(GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, &mem_kb);
-        mVRAM = mem_kb / 1024;
-
-        if (mVRAM != 0)
-        {
-            LL_WARNS("RenderInit") << "VRAM Detected (NVXGpuMemoryInfo):" << mVRAM << LL_ENDL;
-        }
-    }
-#endif
 
 // <FS:Beq> remove this so that we can attempt to use driver specifics
 // if it fails we will pick up the `old_vram` value , which is either WMI or the combined dxdiag number
@@ -1454,22 +1375,6 @@ void LLGLManager::initExtensions()
     glh_init_extensions("");
 #endif
 // </FS:Zi>
-
-#if LL_DARWIN
-    GLint num_extensions = 0;
-    std::string all_extensions{""};
-    glGetIntegerv(GL_NUM_EXTENSIONS, &num_extensions);
-    for(GLint i = 0; i < num_extensions; ++i) {
-        char const * extension = (char const *)glGetStringi(GL_EXTENSIONS, i);
-        all_extensions += extension;
-        all_extensions += ' ';
-    }
-    if (num_extensions)
-    {
-        all_extensions += "GL_ARB_multitexture GL_ARB_texture_cube_map GL_ARB_texture_compression "; // These are in 3.2 core, but not listed by OSX
-        gGLHExts.mSysExts = strdup(all_extensions.data());
-    }
-#endif
 
     // NOTE: version checks against mGLVersion should bias down by 0.01 because of F32 errors
 

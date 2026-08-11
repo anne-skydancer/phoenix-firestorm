@@ -293,41 +293,6 @@ bool LLFontRegistry::parseFontInfo(const std::string& xml_filename)
     }
 
     // <FS:Kadah> Dont load from skins now
-#if 0
-    const string_vec_t xml_paths = gDirUtilp->findSkinnedFilenames(LLDir::XUI, xml_filename);
-
-    if (xml_paths.empty())
-    {
-        // We didn't even find one single XUI file
-        return false;
-    }
-
-    for (string_vec_t::const_iterator path_it = xml_paths.begin();
-         path_it != xml_paths.end();
-         ++path_it)
-    {
-        LLXMLNodePtr root;
-        bool parsed_file = LLXMLNode::parseFile(*path_it, root, NULL);
-
-        if (!parsed_file)
-            continue;
-
-        if ( root.isNull() || ! root->hasName( "fonts" ) )
-        {
-            LL_WARNS() << "Bad font info file: " << *path_it << LL_ENDL;
-            continue;
-        }
-
-        std::string root_name;
-        root->getAttributeString("name",root_name);
-        if (root->hasName("fonts"))
-        {
-            // Expect a collection of children consisting of "font" or "font_size" entries
-            bool init_succ = init_from_xml(this, root);
-            success = success || init_succ;
-        }
-    }
-#endif
     // </FS:Kadah>
     //if (success)
     //  dump();
@@ -339,8 +304,6 @@ std::string currentOsName()
 {
 #if LL_WINDOWS
     return "Windows";
-#elif LL_DARWIN
-    return "Mac";
 #elif LL_LINUX
     return "Linux";
 #else
@@ -623,11 +586,6 @@ LLFontGL *LLFontRegistry::createFont(const LLFontDescriptor& desc)
     font_search_paths.push_back(gDirUtilp->getExpandedFilename(LL_PATH_USER_SETTINGS , "fonts", ""));
     // <FS:Ansariel> Search executable path as well - in case we run from within VS (seems to work without as well, but just to be safe)
     font_search_paths.push_back(gDirUtilp->getExpandedFilename(LL_PATH_EXECUTABLE, "fonts", ""));
-#if LL_DARWIN
-    font_search_paths.push_back(MACOSX_FONT_PATH_LIBRARY);
-    font_search_paths.push_back(MACOSX_FONT_PATH_LIBRARY + MACOSX_FONT_SUPPLEMENTAL);
-    font_search_paths.push_back(LLFontGL::getFontPathSystem() + MACOSX_FONT_SUPPLEMENTAL);
-#endif
 
     // The fontname string may contain multiple font file names separated by semicolons.
     // Break it apart and try loading each one, in order.

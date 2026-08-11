@@ -1844,9 +1844,6 @@ LLVertexBuffer* LLRender::genBuffer(U32 attribute_mask, S32 count)
         vb->setColorData(mColorsp.get());
     }
 
-#if LL_DARWIN
-    vb->unmapBuffer();
-#endif
     vb->unbind();
 
     return vb;

@@ -315,13 +315,11 @@ static GLuint gen_buffer()
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_VERTEX("gen buffer");
         sIndex = pool_size;
-#if !LL_DARWIN
         if (!gGLManager.mIsAMD)
         {
             vb_buffer_gen_n(pool_size, sNamePool);
         }
         else
-#endif
         { // work around for AMD driver bug
             for (U32 i = 0; i < pool_size; ++i)
             {
@@ -609,15 +607,6 @@ public:
             }
         }
 
-#if 0
-        LL_INFOS() << llformat("(%d/%d)/%d MB (distributed/allocated)/total in VBO Pool. Overhead: %d percent. Hit rate: %d percent",
-            mDistributed / 1000000,
-            mAllocated / 1000000,
-            (mAllocated + mReserved) / 1000000, // total bytes
-            ((mAllocated+mReserved-mDistributed)*100)/llmax(mDistributed, (U64) 1), // overhead percent
-            (mHits*100)/llmax(mMisses+mHits, (U32)1)) // hit rate percent
-            << LL_ENDL;
-#endif
     }
 
     void clear()
@@ -894,45 +883,6 @@ bool LLVertexBuffer::validateRange(U32 start, U32 end, U32 count, U32 indices_of
     }
 
     {
-#if 0  // not a reliable test for VBOs that are not backed by a CPU buffer
-        U16* idx = (U16*) mMappedIndexData+indices_offset;
-        for (U32 i = 0; i < count; ++i)
-        {
-            llassert(idx[i] >= start);
-            llassert(idx[i] <= end);
-
-            if (idx[i] < start || idx[i] > end)
-            {
-                LL_ERRS() << "Index out of range: " << idx[i] << " not in [" << start << ", " << end << "]" << LL_ENDL;
-            }
-        }
-
-        LLVector4a* v = (LLVector4a*)mMappedData;
-
-        for (U32 i = start; i <= end; ++i)
-        {
-            if (!v[i].isFinite3())
-            {
-                LL_ERRS() << "Non-finite vertex position data detected." << LL_ENDL;
-            }
-        }
-
-        LLGLSLShader* shader = LLGLSLShader::sCurBoundShaderPtr;
-
-        if (shader && shader->mFeatures.mIndexedTextureChannels > 1)
-        {
-            LLVector4a* v = (LLVector4a*) mMappedData;
-
-            for (U32 i = start; i < end; i++)
-            {
-                U32 idx = (U32) (v[i][3]+0.25f);
-                if (idx >= (U32)shader->mFeatures.mIndexedTextureChannels)
-                {
-                    LL_ERRS() << "Bad texture index found in vertex data stream." << LL_ENDL;
-                }
-            }
-        }
-#endif
     }
 
     return true;

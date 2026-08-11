@@ -38,10 +38,6 @@
 #include "hbxxh.h"
 #include "llsdserialize.h"
 
-#if LL_DARWIN
-#include "OpenGL/OpenGL.h"
-#endif
-
  // Print-print list of shader included source files that are linked together via glAttachShader()
  // i.e. On macOS / OSX the AMD GLSL linker will display an error if a varying is left in an undefined state.
 #define DEBUG_SHADER_INCLUDES 0
@@ -458,14 +454,6 @@ bool LLGLSLShader::createShader()
     mLightHash = 0xFFFFFFFF;
 
     llassert_always(!mShaderFiles.empty());
-
-#if LL_DARWIN
-    if(!gGLManager.mIsApple)
-    {
-        // work-around missing mix(vec3,vec3,bvec3)
-        mDefines["OLD_SELECT"] = "1";
-    }
-#endif
 
     mShaderHash = hash();
 

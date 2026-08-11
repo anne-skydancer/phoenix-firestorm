@@ -112,11 +112,6 @@ public:
     // hints to the render pipe
     U32 mDownScaleMethod = 0; // see settings.xml RenderDownScaleMethod
 
-#if LL_DARWIN
-    // Needed to distinguish problem cards on older Macs that break with Materials
-    bool mIsMobileGF;
-#endif
-
     // Whether this version of GL is good enough for SL to use
     bool mHasRequirements;
 
@@ -170,11 +165,7 @@ void clear_glerror();
 // stop_glerror is still needed on OS X but has performance implications
 // use macro below to conditionally add stop_glerror to non-release builds
 // on OS X
-#if LL_DARWIN && !LL_RELEASE_FOR_DOWNLOAD
-#define STOP_GLERROR stop_glerror()
-#else
 #define STOP_GLERROR
-#endif
 
 #define llglassertok_always() assert_glerror()
 

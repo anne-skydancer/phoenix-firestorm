@@ -1346,11 +1346,7 @@ LLFontGL* LLFontGL::getFontDefault()
 // static
 std::string LLFontGL::getFontPathSystem()
 {
-#if LL_DARWIN
-    // HACK for macOS
-    return "/System/Library/Fonts/";
-
-#elif LL_WINDOWS
+#if LL_WINDOWS
     auto system_root = LLStringUtil::getenv("SystemRoot");
     if (! system_root.empty())
     {

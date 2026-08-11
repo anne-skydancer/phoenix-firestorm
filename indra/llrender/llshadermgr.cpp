@@ -33,10 +33,6 @@
 #include "llsdserialize.h"
 #include "hbxxh.h"
 
-#if LL_DARWIN
-#include "OpenGL/OpenGL.h"
-#endif
-
 // Lots of STL stuff in here, using namespace std to keep things more readable
 using std::vector;
 using std::pair;
@@ -463,13 +459,6 @@ GLuint LLShaderMgr::loadShaderFile(const std::string& filename, S32 & shader_lev
 {
 
 // endsure work-around for missing GLSL funcs gets propogated to feature shader files (e.g. srgbF.glsl)
-#if LL_DARWIN
-    if (!gGLManager.mIsApple && defines)
-    {
-        (*defines)["OLD_SELECT"] = "1";
-    }
-#endif
-
     GLenum error = GL_NO_ERROR;
 
     error = glGetError();
@@ -493,24 +482,6 @@ GLuint LLShaderMgr::loadShaderFile(const std::string& filename, S32 & shader_lev
 
     std::string open_file_name;
 
-#if 0  // WIP -- try to come up with a way to fallback to an error shader without needing debug stubs all over the place in the shader tree
-    if (shader_level == -1)
-    {
-        // use "error" fallback
-        if (type == GL_VERTEX_SHADER)
-        {
-            open_file_name = gDirUtilp->getExpandedFilename(LL_PATH_APP_SETTINGS, "shaders/errorV.glsl");
-        }
-        else
-        {
-            llassert(type == GL_FRAGMENT_SHADER);  // type must be vertex or fragment shader
-            open_file_name = gDirUtilp->getExpandedFilename(LL_PATH_APP_SETTINGS, "shaders/errorF.glsl");
-        }
-
-        file = LLFile::fopen(open_file_name, "r");
-    }
-    else
-#endif
     {
         //find the most relevant file
         for (gpu_class = try_gpu_class; gpu_class > 0; gpu_class--)

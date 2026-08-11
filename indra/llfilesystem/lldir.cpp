@@ -53,9 +53,6 @@
 #if LL_WINDOWS
 #include "lldir_win32.h"
 LLDir_Win32 gDirUtil;
-#elif LL_DARWIN
-#include "lldir_mac.h"
-LLDir_Mac gDirUtil;
 #else
 #include "lldir_linux.h"
 LLDir_Linux gDirUtil;
@@ -1325,11 +1322,6 @@ void LLDir::openDir(const std::string& filepath)
     }
     params.executable = system_root + "\\explorer.exe";
     params.args.add("/select,");
-    params.args.add(filepath);
-#elif LL_DARWIN
-    // macOS: Use 'open' command with -R flag to reveal in Finder
-    params.executable = "/usr/bin/open";
-    params.args.add("-R");
     params.args.add(filepath);
 #elif LL_LINUX
     // Linux: Use xdg-open to open the directory

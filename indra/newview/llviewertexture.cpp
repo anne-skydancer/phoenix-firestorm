@@ -398,16 +398,6 @@ void LLViewerTextureManager::init()
     {
         for (S32 j = 0; j<dim; j++)
         {
-#if 0
-            const S32 border = 2;
-            if (i<border || j<border || i>=(dim-border) || j>=(dim-border))
-            {
-                *data++ = 0xff;
-                *data++ = 0xff;
-                *data++ = 0xff;
-            }
-            else
-#endif
             {
                 *data++ = 0x7f;
                 *data++ = 0x7f;
@@ -3266,10 +3256,6 @@ void LLViewerMediaTexture::updateClass()
     LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
     static const F32 MAX_INACTIVE_TIME = 30.f;
 
-#if 0
-    //force to play media.
-    gSavedSettings.setBOOL("AudioStreamingMedia", true);
-#endif
 
     for(media_map_t::iterator iter = sMediaMap.begin(); iter != sMediaMap.end(); )
     {

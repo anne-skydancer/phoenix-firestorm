@@ -30,12 +30,6 @@
 
 #include <cstdlib>
 
-#ifdef LL_DARWIN
-#include <sys/types.h>
-#include <unistd.h>
-#include <sys/sysctl.h>
-#endif
-
 #include "llcommon.h"
 #include "llapr.h"
 #include "llerrorcontrol.h"
@@ -66,11 +60,6 @@ bool unix_post_minidump_callback(const char *dump_dir,
                       void *context, bool succeeded);
 #endif
 
-# if LL_DARWIN
-/* OSX doesn't support SIGRT* */
-S32 LL_SMACKDOWN_SIGNAL = SIGUSR1;
-S32 LL_HEARTBEAT_SIGNAL = SIGUSR2;
-# else // linux or (assumed) other similar unixoid
 /* We want reliable delivery of our signals - SIGRT* is it. */
 /* Old LinuxThreads versions eat SIGRTMIN+0 to SIGRTMIN+2, avoid those. */
 /* Note that SIGRTMIN/SIGRTMAX may expand to a glibc function call with a
@@ -78,7 +67,6 @@ S32 LL_HEARTBEAT_SIGNAL = SIGUSR2;
    expressions.  SIGRTMAX may return -1 on rare broken setups. */
 S32 LL_SMACKDOWN_SIGNAL = (SIGRTMAX >= 0) ? (SIGRTMAX-1) : SIGUSR1;
 S32 LL_HEARTBEAT_SIGNAL = (SIGRTMAX >= 0) ? (SIGRTMAX-0) : SIGUSR2;
-# endif // LL_DARWIN
 #endif // !LL_WINDOWS
 
 // the static application instance

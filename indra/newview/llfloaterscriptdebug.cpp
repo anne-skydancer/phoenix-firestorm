@@ -223,21 +223,6 @@ void LLFloaterScriptDebug::addScriptLine(const LLChat& chat)
         }
     }
 
-#if 0
-    // add to "All" floater
-    LLFloaterScriptDebugOutput* floaterp =  LLFloaterReg::getTypedInstance<LLFloaterScriptDebugOutput>("script_debug_output", LLUUID::null);
-    if (floaterp)
-    {
-        floaterp->addLine(message, user_name, color);
-    }
-
-    // add to specific script instance floater
-    floaterp = LLFloaterReg::getTypedInstance<LLFloaterScriptDebugOutput>("script_debug_output", source_id);
-    if (floaterp)
-    {
-        floaterp->addLine(message, floater_label, color);
-    }
-#endif
     // </FS:Kadah> [FSllOwnerSayToScriptDebugWindow]
 }
 
@@ -282,24 +267,6 @@ LLFloaterScriptDebugOutput::~LLFloaterScriptDebugOutput()
 
 // <FS:Kadah> [FSllOwnerSayToScriptDebugWindow]
 
-#if 0
-void LLFloaterScriptDebugOutput::addLine(const std::string &utf8mesg, const std::string &user_name, const LLColor4& color)
-{
-    if (mObjectID.isNull())
-    {
-        setCanTearOff(false);
-        setCanClose(false);
-    }
-    else
-    {
-        setTitle(user_name);
-        setShortTitle(user_name);
-    }
-
-    mHistoryEditor->appendText(utf8mesg, true, LLStyle::Params().color(color));
-    mHistoryEditor->blockUndo();
-}
-#endif
 
 void LLFloaterScriptDebugOutput::addLine(const LLChat& chat, const std::string &user_name)
 {

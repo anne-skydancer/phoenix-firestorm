@@ -155,10 +155,6 @@
 #endif
 
 // <FS:LO> FIRE-23606 Reveal path to external script editor in prefernces
-#if LL_DARWIN
-#include <CoreFoundation/CFURL.h>
-#include <CoreFoundation/CFBundle.h>    // [FS:CR]
-#endif
 // </FS:LO>
 
 //<FS:HG> FIRE-6340, FIRE-6567 - Setting Bandwidth issues
@@ -1976,54 +1972,6 @@ void LLFloaterPreference::changeExternalEditorPath(const std::vector<std::string
 {
     const std::string chosen_path = filenames[0];
     std::string executable_path = chosen_path;
-#if LL_DARWIN
-    // on Mac, if it's an application bundle, figure out the actual path from the Info.plist file
-    CFStringRef path_cfstr = CFStringCreateWithCString(kCFAllocatorDefault, chosen_path.c_str(), kCFStringEncodingMacRoman);        // get path as a CFStringRef
-    CFURLRef path_url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, path_cfstr, kCFURLPOSIXPathStyle, true);         // turn it into a CFURLRef
-    CFBundleRef chosen_bundle = CFBundleCreate(kCFAllocatorDefault, path_url);                                              // get a handle for the bundle
-    CFRelease(path_url);    // [FS:CR] Don't leave a mess clean up our objects after we use them
-    LLSD args;
-    if (NULL != chosen_bundle)
-    {
-        CFDictionaryRef bundleInfoDict = CFBundleGetInfoDictionary(chosen_bundle);                                              // get the bundle's dictionary
-        CFRelease(chosen_bundle);   // [FS:CR] Don't leave a mess clean up our objects after we use them
-        if (NULL != bundleInfoDict)
-        {
-            CFStringRef executable_cfstr = (CFStringRef)CFDictionaryGetValue(bundleInfoDict, CFSTR("CFBundleExecutable"));  // get the name of the actual executable (e.g. TextEdit or firefox-bin)
-            const int max_file_length = 256;                                                                                      // <FS:Beq/> another new complaint from clang
-            char executable_buf[max_file_length];
-            if (CFStringGetCString(executable_cfstr, executable_buf, max_file_length, kCFStringEncodingMacRoman))           // convert CFStringRef to char*
-            {
-                executable_path += std::string("/Contents/MacOS/") + std::string(executable_buf);                           // append path to executable directory and then executable name to exec path
-            }
-            else
-            {
-                std::string warning = "Unable to get CString from CFString for executable path";
-                LL_WARNS() << warning << LL_ENDL;
-                args["MESSAGE"] = warning;
-                LLNotificationsUtil::add("GenericAlert", args);
-            }
-        }
-        else
-        {
-            std::string warning = "Unable to get bundle info dictionary from application bundle";
-            LL_WARNS() << warning << LL_ENDL;
-            args["MESSAGE"] = warning;
-            LLNotificationsUtil::add("GenericAlert", args);
-        }
-    }
-    else
-    {
-        if (-1 != executable_path.find(".app")) // only warn if this path actually had ".app" in it, i.e. it probably just wasn'nt an app bundle and that's okay
-        {
-            std::string warning = std::string("Unable to get bundle from path \"") + chosen_path + std::string("\"");
-            LL_WARNS() << warning << LL_ENDL;
-            args["MESSAGE"] = warning;
-            LLNotificationsUtil::add("GenericAlert", args);
-        }
-    }
-
-#endif
     {
         std::string bin = executable_path;
         if (!bin.empty())
@@ -3995,10 +3943,8 @@ bool LLPanelPreferenceGraphics::postBuild()
         }
     }
 
-#if !LL_DARWIN
     LLCheckBoxCtrl *use_HiDPI = getChild<LLCheckBoxCtrl>("use HiDPI");
     use_HiDPI->setEnabled(false);
-#endif
     // </FS:Ansariel>
 
     resetDirtyChilds();
@@ -4010,9 +3956,6 @@ bool LLPanelPreferenceGraphics::postBuild()
 
 
 // <FS:CR> Hide this until we have fullscreen mode functional on OSX again
-#ifdef LL_DARWIN
-    getChild<LLCheckBoxCtrl>("Fullscreen Mode")->setVisible(false);
-#endif // LL_DARWIN
 // </FS:CR>
 
     return LLPanelPreference::postBuild();

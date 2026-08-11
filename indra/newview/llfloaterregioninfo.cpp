@@ -453,13 +453,6 @@ void LLFloaterRegionInfo::processRegionInfo(LLMessageSystem* msg)
     {
         return;
     }
-#if 0
-    // We need to re-request environment setting here,
-    // otherwise after we apply (send) updated region settings we won't get them back,
-    // so our environment won't be updated.
-    // This is also the way to know about externally changed region environment.
-    LLEnvManagerNew::instance().requestRegionSettings();
-#endif
     LLTabContainer* tab = floater->getChild<LLTabContainer>("region_panels");
 
     LLViewerRegion* region = gAgent.getRegion();

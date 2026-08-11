@@ -942,23 +942,6 @@ bool LLWindowSDL::createContext(int x, int y, int width, int height, int bits, b
         return false;
     }
 
-#if 0  // *FIX: we're going to brave it for now...
-    if (alphaBits < 8)
-    {
-        close();
-        setupFailure(
-            "Second Life is unable to run because it can't get an 8 bit alpha\n"
-            "channel.  Usually this is due to video card driver issues.\n"
-            "Please make sure you have the latest video card drivers installed.\n"
-            "Also be sure your monitor is set to True Color (32-bit) in\n"
-            "Control Panels -> Display -> Settings.\n"
-            "If you continue to receive this message, contact customer service.",
-            "Error",
-            OSMB_OK);
-        return false;
-    }
-#endif
-
 #if LL_X11
     /* Grab the window manager specific information */
     SDL_SysWMinfo info;
@@ -1343,18 +1326,6 @@ bool LLWindowSDL::getCursorPosition(LLCoordWindow *position)
 
 F32 LLWindowSDL::getNativeAspectRatio()
 {
-#if 0
-    // RN: this hack presumes that the largest supported resolution is monitor-limited
-    // and that pixels in that mode are square, therefore defining the native aspect ratio
-    // of the monitor...this seems to work to a close approximation for most CRTs/LCDs
-    S32 num_resolutions;
-    LLWindowResolution* resolutions = getSupportedResolutions(num_resolutions);
-
-
-    return ((F32)resolutions[num_resolutions - 1].mWidth / (F32)resolutions[num_resolutions - 1].mHeight);
-    //rn: AC
-#endif
-
     // MBW -- there are a couple of bad assumptions here.  One is that the display list won't include
     //      ridiculous resolutions nobody would ever use.  The other is that the list is in order.
 

@@ -2752,9 +2752,6 @@ void LLAgent::endAnimationUpdateUI()
         // Only pop if we have pushed...
         if (true == mViewsPushed)
         {
-#if 0 // Use this once all floaters are registered
-            LLFloaterReg::restoreVisibleInstances();
-#else // Use this for now
             LLFloaterView::skip_list_t skip_list;
             if (LLFloaterReg::findInstance("mini_map"))
             {
@@ -2798,7 +2795,6 @@ void LLAgent::endAnimationUpdateUI()
             // </FS:Ansariel> [FS communication UI]
 
             gFloaterView->popVisibleAll(skip_list);
-#endif
             mViewsPushed = false;
             gFocusMgr.setKeyboardFocus(NULL);   // <FS:Zi> make sure no floater has focus  after restoring them
         }
@@ -2925,16 +2921,6 @@ void LLAgent::endAnimationUpdateUI()
 
         // hide all floaters except the mini map
 
-#if 0 // Use this once all floaters are registered
-        std::set<std::string> exceptions;
-        exceptions.insert("mini_map");
-        if(gSavedSettings.getBOOL("FSShowStatsBarInMouselook"))
-        {
-            exceptions.insert("stats");
-        }
-        exceptions.insert("script_floater"); // <FS:LO> //FIRE-6385: Show all script dialogs still after leaving mouselook
-        LLFloaterReg::hideVisibleInstances(exceptions);
-#else // Use this for now
         LLFloaterView::skip_list_t skip_list;
         skip_list.insert(LLFloaterReg::findInstance("mini_map"));
         // <FS:Ansariel> Beacons floater doesn't need to be open for us to show beacon
@@ -2957,7 +2943,6 @@ void LLAgent::endAnimationUpdateUI()
         }
         // </FS:Ansariel>
         gFloaterView->pushVisibleAll(false, skip_list);
-#endif
 
         // <FS:PP> FIRE-8868: Show UI in mouselook
         gConsole->setVisible( true );
@@ -4793,24 +4778,6 @@ bool LLAgent::teleportCore(bool is_local)
     {
         gAgentAvatarp->getOffObject();
     }
-
-#if 0
-    // This should not exist. It has been added, removed, added, and now removed again.
-    // This change needs to come from the simulator. Otherwise, the agent ends up out of
-    // sync with other viewers. Discuss in DEV-14145/VWR-6744 before reenabling.
-
-    // Stop all animation before actual teleporting
-        if (isAgentAvatarValid())
-    {
-        for ( LLVOAvatar::AnimIterator anim_it= gAgentAvatarp->mPlayingAnimations.begin();
-              anim_it != gAgentAvatarp->mPlayingAnimations.end();
-              ++anim_it)
-               {
-                       gAgentAvatarp->stopMotion(anim_it->first);
-               }
-               gAgentAvatarp->processAnimationStateChanges();
-       }
-#endif
 
     // Don't call LLFirstUse::useTeleport because we don't know
     // yet if the teleport will succeed.  Look in

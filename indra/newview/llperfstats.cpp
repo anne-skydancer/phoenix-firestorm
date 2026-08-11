@@ -185,13 +185,6 @@ namespace LLPerfStats
             // RENDER_MESHREPO,
             StatType_t::RENDER_IDLE };
 
-#if 0
-        static constexpr std::initializer_list<StatType_t> avatarStatsToAvg = {
-            StatType_t::RENDER_GEOMETRY,
-            StatType_t::RENDER_SHADOWS,
-            StatType_t::RENDER_COMBINED,
-            StatType_t::RENDER_IDLE };
-#endif
 
         // <FS:Beq> restore FPSLimit reporting
         // if( /*sceneStats[static_cast<size_t>(StatType_t::RENDER_FPSLIMIT)] != 0 ||*/ sceneStats[static_cast<size_t>(StatType_t::RENDER_SLEEP)] != 0 )

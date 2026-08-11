@@ -312,12 +312,6 @@ bool LLVolumeLODGroup::derefLOD(LLVolume *volumep)
         {
             llassert_always(mLODRefs[i] > 0);
             mLODRefs[i]--;
-#if 0 // SJB: Possible opt: keep other lods around
-            if (!mLODRefs[i])
-            {
-                mVolumeLODs[i] = NULL;
-            }
-#endif
             return true;
         }
     }

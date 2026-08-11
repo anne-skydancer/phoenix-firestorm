@@ -27,46 +27,6 @@
 #ifndef _LLCORE_HTTP_SETPRIORITY_H_
 #define _LLCORE_HTTP_SETPRIORITY_H_
 
-#if 0 // DEPRECATED
-#include "httpcommon.h"
-#include "httprequest.h"
-#include "_httpoperation.h"
-#include "_refcounted.h"
-
-
-namespace LLCore
-{
-
-
-/// HttpOpSetPriority is an immediate request that
-/// searches the various queues looking for a given
-/// request handle and changing it's priority if
-/// found.
-///
-/// *NOTE:  This will very likely be removed in the near future
-/// when priority is removed from the library.
-
-class HttpOpSetPriority : public HttpOperation
-{
-public:
-    HttpOpSetPriority(HttpHandle handle);
-
-    virtual ~HttpOpSetPriority();
-
-private:
-    HttpOpSetPriority(const HttpOpSetPriority &);           // Not defined
-    void operator=(const HttpOpSetPriority &);              // Not defined
-
-public:
-    virtual void stageFromRequest(HttpService *);
-
-protected:
-    // Request Data
-    HttpHandle                  mHandle;
-}; // end class HttpOpSetPriority
-
-}  // end namespace LLCore
-#endif
 
 #endif  // _LLCORE_HTTP_SETPRIORITY_H_
 

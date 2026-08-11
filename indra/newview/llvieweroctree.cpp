@@ -1514,13 +1514,6 @@ void LLViewerOctreeCull::visit(const OctreeNode* branch)
 //virtual
 void LLViewerOctreeDebug::visit(const OctreeNode* branch)
 {
-#if 0
-    LL_INFOS() << "Node: " << (U32)branch << " # Elements: " << branch->getElementCount() << " # Children: " << branch->getChildCount() << LL_ENDL;
-    for (U32 i = 0; i < branch->getChildCount(); i++)
-    {
-        LL_INFOS() << "Child " << i << " : " << (U32)branch->getChild(i) << LL_ENDL;
-    }
-#endif
     LLViewerOctreeGroup* group = (LLViewerOctreeGroup*) branch->getListener(0);
     processGroup(group);
 }
@@ -1528,27 +1521,5 @@ void LLViewerOctreeDebug::visit(const OctreeNode* branch)
 //virtual
 void LLViewerOctreeDebug::processGroup(LLViewerOctreeGroup* group)
 {
-#if 0
-    const LLVector4a* vec4 = group->getBounds();
-    LLVector3 vec[2];
-    vec[0].set(vec4[0].getF32ptr());
-    vec[1].set(vec4[1].getF32ptr());
-    LL_INFOS() << "Bounds: " << vec[0] << " : " << vec[1] << LL_ENDL;
-
-    vec4 = group->getExtents();
-    vec[0].set(vec4[0].getF32ptr());
-    vec[1].set(vec4[1].getF32ptr());
-    LL_INFOS() << "Extents: " << vec[0] << " : " << vec[1] << LL_ENDL;
-
-    vec4 = group->getObjectBounds();
-    vec[0].set(vec4[0].getF32ptr());
-    vec[1].set(vec4[1].getF32ptr());
-    LL_INFOS() << "ObjectBounds: " << vec[0] << " : " << vec[1] << LL_ENDL;
-
-    vec4 = group->getObjectExtents();
-    vec[0].set(vec4[0].getF32ptr());
-    vec[1].set(vec4[1].getF32ptr());
-    LL_INFOS() << "ObjectExtents: " << vec[0] << " : " << vec[1] << LL_ENDL;
-#endif
 }
 //--------------------------------------------------------------

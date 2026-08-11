@@ -339,21 +339,3 @@ const LLUUID SND_STONE_STONE_04         ("ea296329-0f09-4993-af1b-e6784bab1dc9")
 
 
 // extra guids
-#if 0
-const LLUUID SND_ ("a839b8ac-b0af-4ba9-9fde-188754744e02");
-const LLUUID SND_ ("20165fa8-836f-4993-85dc-1529172dcd14");
-const LLUUID SND_ ("fba8e17b-a4b3-4693-9fce-c14800f8a349");
-const LLUUID SND_ ("2d48db8b-7260-4b02-ad2a-b2c6bee60e94");
-const LLUUID SND_ ("956d344b-1808-4d8b-88b1-cbc82b7a96a1");
-const LLUUID SND_ ("b8303cc6-f0b4-4c6f-a199-81f87aba342e");
-const LLUUID SND_ ("fbf7cd0c-bc8f-4cba-9c19-11f4dd03a06b");
-const LLUUID SND_ ("85047f7d-933a-4ce5-a7b5-34670243e1ab");
-const LLUUID SND_ ("0f81acf7-6a2e-4490-957f-c7b0eda00559");
-const LLUUID SND_ ("5631a6a1-79b4-4de8-bccf-1880b6882da1");
-const LLUUID SND_ ("43c87a6b-ffb2-437b-89a0-9deba890a4fc");
-const LLUUID SND_ ("58878d1d-3156-4d01-ac3c-0c4fb99f4d53");
-const LLUUID SND_ ("9a83f321-44bf-40f6-b006-46c085515345");
-const LLUUID SND_ ("ff144533-33ab-40f2-bac8-39c34699ecc4");
-const LLUUID SND_ ("09018e87-d52c-4cd5-9805-015f413319e7");
-const LLUUID SND_ ("17d4c057-7edd-401e-9589-d5b9fe981bf2");
-#endif

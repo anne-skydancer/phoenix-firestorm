@@ -66,23 +66,3 @@ LLChainIOFactory::~LLChainIOFactory()
 {
 }
 
-#if 0
-bool LLChainIOFactory::build(LLIOPipe* in, LLIOPipe* out) const
-{
-    if(!in || !out)
-    {
-        return false;
-    }
-    LLIOPipe* first = NULL;
-    LLIOPipe* last = NULL;
-    if(build_impl(first, last) && first && last)
-    {
-        in->connect(first);
-        last->connect(out);
-        return true;
-    }
-    LLIOPipe::ptr_t foo(first);
-    LLIOPipe::ptr_t bar(last);
-    return false;
-}
-#endif

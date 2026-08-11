@@ -5559,46 +5559,6 @@ void LLInventoryModel::processInventoryDescendents(LLMessageSystem* msg,void**)
 ///----------------------------------------------------------------------------
 
 
-#if 0
-bool decompress_file(const char* src_filename, const char* dst_filename)
-{
-    bool rv = false;
-    gzFile src = NULL;
-    U8* buffer = NULL;
-    LLFILE* dst = NULL;
-    S32 bytes = 0;
-    const S32 DECOMPRESS_BUFFER_SIZE = 32000;
-
-    // open the files
-    src = gzopen(src_filename, "rb");
-    if(!src) goto err_decompress;
-    dst = LLFile::fopen(dst_filename, "wb");
-    if(!dst) goto err_decompress;
-
-    // decompress.
-    buffer = new U8[DECOMPRESS_BUFFER_SIZE + 1];
-
-    do
-    {
-        bytes = gzread(src, buffer, DECOMPRESS_BUFFER_SIZE);
-        if (bytes < 0)
-        {
-            goto err_decompress;
-        }
-
-        fwrite(buffer, bytes, 1, dst);
-    } while(gzeof(src) == 0);
-
-    // success
-    rv = true;
-
- err_decompress:
-    if(src != NULL) gzclose(src);
-    if(buffer != NULL) delete[] buffer;
-    if(dst != NULL) fclose(dst);
-    return rv;
-}
-#endif
 
 
 ///----------------------------------------------------------------------------
@@ -5681,16 +5641,6 @@ void LLInventoryModel::FetchItemHttpHandler::processData(LLSD & content, LLCore:
 {
     start_new_inventory_observer();
 
-#if 0
-    LLUUID agent_id;
-    agent_id = content["agent_id"].asUUID();
-    if (agent_id != gAgent.getID())
-    {
-        LL_WARNS(LOG_INV) << "Got a inventory update for the wrong agent: " << agent_id
-                          << LL_ENDL;
-        return;
-    }
-#endif
 
     LLInventoryModel::item_array_t items;
     LLInventoryModel::update_map_t update;

@@ -30,9 +30,6 @@
 #define LL_MAKEDLL
 #if defined(_WIN32) || defined(_WIN64)
 #define WEBRTC_WIN 1
-#elif defined(__APPLE__)
-#define WEBRTC_MAC 1
-#define WEBRTC_POSIX 1
 #elif __linux__
 #define WEBRTC_LINUX 1
 #define WEBRTC_POSIX 1

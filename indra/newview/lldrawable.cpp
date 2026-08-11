@@ -1456,38 +1456,6 @@ void LLSpatialBridge::transformExtents(const LLVector4a* src, LLVector4a* dst)
 void LLDrawable::setVisible(LLCamera& camera, std::vector<LLDrawable*>* results, bool for_select)
 {
     LLViewerOctreeEntryData::setVisible();
-
-#if 0 && !LL_RELEASE_FOR_DOWNLOAD
-    //crazy paranoid rules checking
-    if (getVOVolume())
-    {
-        if (!isRoot())
-        {
-            if (isActive() && !mParent->isActive())
-            {
-                LL_ERRS() << "Active drawable has static parent!" << LL_ENDL;
-            }
-
-            if (isStatic() && !mParent->isStatic())
-            {
-                LL_ERRS() << "Static drawable has active parent!" << LL_ENDL;
-            }
-
-            if (mSpatialBridge)
-            {
-                LL_ERRS() << "Child drawable has spatial bridge!" << LL_ENDL;
-            }
-        }
-        else if (isActive() && !mSpatialBridge)
-        {
-            LL_ERRS() << "Active root drawable has no spatial bridge!" << LL_ENDL;
-        }
-        else if (isStatic() && mSpatialBridge.notNull())
-        {
-            LL_ERRS() << "Static drawable has spatial bridge!" << LL_ENDL;
-        }
-    }
-#endif
 }
 
 class LLOctreeMarkNotCulled: public OctreeTraveler

@@ -52,10 +52,6 @@
 #define skipwin(arg) skip(arg)
 #define skipmac(arg)
 #define skiplinux(arg)
-#elif LL_DARWIN
-#define skipwin(arg)
-#define skipmac(arg) skip(arg)
-#define skiplinux(arg)
 #elif LL_LINUX
 #define skipwin(arg)
 #define skipmac(arg)

@@ -561,34 +561,6 @@ void LLFace::renderSelected(LLViewerTexture *imagep, const LLColor4& color)
 
         if (mDrawablep->isState(LLDrawable::RIGGED))
         {
-#if 0 // TODO --  there is no way this won't destroy our GL machine as implemented, rewrite it to not rely on software skinning
-            LLVOVolume* volume = mDrawablep->getVOVolume();
-            if (volume)
-            {
-                LLRiggedVolume* rigged = volume->getRiggedVolume();
-                if (rigged)
-                {
-                    // called when selecting a face during edit of a mesh object
-                    LLGLEnable offset(GL_POLYGON_OFFSET_FILL);
-                    glPolygonOffset(-1.f, -1.f);
-                    gGL.multMatrix((F32*) volume->getRelativeXform().mMatrix);
-                    const LLVolumeFace& vol_face = rigged->getVolumeFace(getTEOffset());
-                    // <FS:Ansariel> Use a vbo for the static LLVertexBuffer::drawArray/Element functions; by Drake Arconis/Shyotl Kuhr
-                    //LLVertexBuffer::unbind();
-                    //glVertexPointer(3, GL_FLOAT, 16, vol_face.mPositions);
-                    //if (vol_face.mTexCoords)
-                    //{
-                    //  glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-                    //  glTexCoordPointer(2, GL_FLOAT, 8, vol_face.mTexCoords);
-                    //}
-                    //gGL.syncMatrices();
-                    //glDrawElements(GL_TRIANGLES, vol_face.mNumIndices, GL_UNSIGNED_SHORT, vol_face.mIndices);
-                    //glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-                    LLVertexBuffer::drawElements(LLRender::TRIANGLES, vol_face.mPositions, vol_face.mTexCoords, vol_face.mNumIndices, vol_face.mIndices);
-                    // </FS:Ansariel>
-                }
-            }
-#endif
         }
         else
         {
@@ -734,28 +706,6 @@ void LLFace::printDebugInfo() const
         }
     }
 
-#if 0
-    LL_INFOS() << "Indices:" << LL_ENDL;
-    LL_INFOS() << "--------------------" << LL_ENDL;
-
-    const U32 *indicesp = getRawIndices();
-    S32 indices_count = getIndicesCount();
-    S32 geom_start = getGeomStart();
-
-    for (S32 i = 0; i < indices_count; i++)
-    {
-        LL_INFOS() << i << ":" << indicesp[i] << ":" << (S32)(indicesp[i] - geom_start) << LL_ENDL;
-    }
-    LL_INFOS() << LL_ENDL;
-
-    LL_INFOS() << "Vertices:" << LL_ENDL;
-    LL_INFOS() << "--------------------" << LL_ENDL;
-    for (S32 i = 0; i < mGeomCount; i++)
-    {
-        LL_INFOS() << mGeomIndex + i << ":" << poolp->getVertex(mGeomIndex + i) << LL_ENDL;
-    }
-    LL_INFOS() << LL_ENDL;
-#endif
 }
 
 // Transform the texture coordinates for this face.
@@ -2690,30 +2640,6 @@ bool LLFace::verify(const U32* indices_array) const
         ok = false;
         LL_INFOS() << "Face references invalid indices!" << LL_ENDL;
     }
-
-#if 0
-    S32 geom_start = getGeomStart();
-    S32 geom_count = mGeomCount;
-
-    const U32 *indicesp = indices_array ? indices_array + mIndicesIndex : getRawIndices();
-
-    for (S32 i = 0; i < indices_count; i++)
-    {
-        S32 delta = indicesp[i] - geom_start;
-        if (0 > delta)
-        {
-            LL_WARNS() << "Face index too low!" << LL_ENDL;
-            LL_INFOS() << "i:" << i << " Index:" << indicesp[i] << " GStart: " << geom_start << LL_ENDL;
-            ok = false;
-        }
-        else if (delta >= geom_count)
-        {
-            LL_WARNS() << "Face index too high!" << LL_ENDL;
-            LL_INFOS() << "i:" << i << " Index:" << indicesp[i] << " GEnd: " << geom_start + geom_count << LL_ENDL;
-            ok = false;
-        }
-    }
-#endif
 
     if (!ok)
     {

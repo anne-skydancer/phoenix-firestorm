@@ -480,22 +480,6 @@ void LLTransferManager::processTransferPacket(LLMessageSystem *msgp, void **)
             ttcp->deleteTransfer(ttp);
             return;
         }
-#if 0
-        // Spammy!
-        const S32 LL_TRANSFER_WARN_GAP = 10;
-        if(!ttp->gotInfo())
-        {
-            LL_WARNS() << "Got data packet before information in transfer "
-                << transfer_id << " from " << msgp->getSender()
-                << ", got " << packet_id << LL_ENDL;
-        }
-        else if((packet_id - ttp->getNextPacketID()) > LL_TRANSFER_WARN_GAP)
-        {
-            LL_WARNS() << "Out of order packet in transfer " << transfer_id
-                << " from " << msgp->getSender() << ", got " << packet_id
-                << " expecting " << ttp->getNextPacketID() << LL_ENDL;
-        }
-#endif
         return;
     }
 

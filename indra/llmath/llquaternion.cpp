@@ -606,16 +606,6 @@ F32 dot(const LLQuaternion &a, const LLQuaternion &b)
 
 // DEMO HACK: This lerp is probably inocrrect now due intermediate normalization
 // it should look more like the lerp below
-#if 0
-// linear interpolation
-LLQuaternion lerp(F32 t, const LLQuaternion &p, const LLQuaternion &q)
-{
-    LLQuaternion r;
-    r = t * (q - p) + p;
-    r.normalize();
-    return r;
-}
-#endif
 
 // lerp from identity to q
 LLQuaternion lerp(F32 t, const LLQuaternion &q)

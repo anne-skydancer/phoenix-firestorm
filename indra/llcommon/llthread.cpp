@@ -159,14 +159,6 @@ void LLThread::threadRun()
 #ifdef LL_WINDOWS
     set_thread_name(-1, mName.c_str());
 
-#if 0 // probably a bad idea, see usage of SetThreadIdealProcessor in LLWindowWin32)
-    HANDLE hThread = GetCurrentThread();
-    if (hThread)
-    {
-        SetThreadAffinityMask(hThread, (DWORD_PTR) 0xFFFFFFFFFFFFFFFE);
-    }
-#endif
-
 #endif
 
     LL_PROFILER_SET_THREAD_NAME( mName.c_str() );

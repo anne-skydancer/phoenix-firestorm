@@ -324,34 +324,6 @@ S32 LLChicletBar::getChicletPanelShrinkHeadroom() const
 void LLChicletBar::fitWithTopInfoBar()
 {
     // <FS:Zi> We don't use the mini location panel in Firestorm
-    #if 0
-    LLPanelTopInfoBar& top_info_bar = LLPanelTopInfoBar::instance();
-
-    LLRect rect = getRect();
-    S32 width = rect.getWidth();
-
-    if (top_info_bar.getVisible())
-    {
-        S32 delta = top_info_bar.calcScreenRect().mRight - calcScreenRect().mLeft;
-        if (delta < 0 && rect.mLeft < llabs(delta))
-            delta = -rect.mLeft;
-        rect.setLeftTopAndSize(rect.mLeft + delta, rect.mTop, rect.getWidth(), rect.getHeight());
-        width = rect.getWidth() - delta;
-    }
-    else
-    {
-        LLView* parent = getParent();
-        if (parent)
-        {
-            LLRect parent_rect = parent->getRect();
-            rect.setLeftTopAndSize(0, rect.mTop, rect.getWidth(), rect.getHeight());
-            width = parent_rect.getWidth();
-        }
-    }
-
-    setRect(rect);
-    LLPanel::reshape(width, rect.getHeight(), false);
-    #endif
     // </FS:Zi>
 }
 

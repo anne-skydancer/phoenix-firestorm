@@ -150,12 +150,6 @@ void LLTracker::drawHUDArrow()
 
     case TRACKING_LOCATION:
         // HACK -- try to keep the location just above the terrain
-#if 0
-        // UNHACKED by CRO - keep location where the location is
-        instance()->mTrackedPositionGlobal.mdV[VZ] =
-                0.9f * instance()->mTrackedPositionGlobal.mdV[VZ]
-                + 0.1f * (LLWorld::getInstance()->resolveLandHeightGlobal(getTrackedPositionGlobal()) + 1.5f);
-#endif
         instance()->mTrackedPositionGlobal.mdV[VZ] = llclamp((F32)instance()->mTrackedPositionGlobal.mdV[VZ], LLWorld::getInstance()->resolveLandHeightGlobal(getTrackedPositionGlobal()) + 1.5f, (F32)instance()->getTrackedPositionGlobal().mdV[VZ]);
         instance()->drawMarker( getTrackedPositionGlobal(), map_track_color );
         break;

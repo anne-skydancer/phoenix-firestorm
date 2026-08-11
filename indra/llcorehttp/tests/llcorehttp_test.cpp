@@ -49,29 +49,6 @@
 #include "llproxy.h"
 #include "llcleanup.h"
 
-#if 0   // lltut provides main and runner
-
-namespace tut
-{
-    test_runner_singleton runner;
-}
-
-int main()
-{
-    curl_global_init(CURL_GLOBAL_ALL);
-
-    // *FIXME:  Need threaded/SSL curl setup here.
-
-    tut::reporter reporter;
-
-    tut::runner.get().set_callback(&reporter);
-    tut::runner.get().run_tests();
-    return !reporter.all_ok();
-
-    curl_global_cleanup();
-}
-
-#endif // 0
 
 void init_curl()
 {

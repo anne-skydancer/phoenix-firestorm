@@ -47,10 +47,6 @@
 #include <sys/time.h>
 #include <sched.h>
 #include "lltimer.h"
-#elif LL_DARWIN
-#include <sys/time.h>
-#include "lltimer.h"    // get_clock_count()
-#include <mach/mach_time.h>
 #else
 #error "architecture not supported"
 #endif
@@ -64,7 +60,7 @@ bool        BlockTimer::sLog             = false;
 std::string BlockTimer::sLogName         = "";
 bool        BlockTimer::sMetricLog       = false;
 
-#if LL_LINUX || (LL_DARWIN && LL_ARM64)
+#if LL_LINUX
 U64         BlockTimer::sClockResolution = 1000000000; // Nanosecond resolution
 #else
 U64         BlockTimer::sClockResolution = 1000000; // Microsecond resolution
@@ -151,12 +147,12 @@ void BlockTimer::setLogLock(LLMutex* lock)
 
 
 //static
-#if (LL_DARWIN || LL_LINUX) && !(defined(__i386__) || defined(__amd64__))
+#if LL_LINUX && !(defined(__i386__) || defined(__amd64__))
 U64 BlockTimer::countsPerSecond()
 {
     return sClockResolution;
 }
-#else // windows or x86-mac or x86-linux
+#else // windows or x86-linux
 U64 BlockTimer::countsPerSecond()
 {
 #if LL_FASTTIMER_USE_RDTSC || !LL_WINDOWS

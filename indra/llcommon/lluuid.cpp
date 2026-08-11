@@ -494,84 +494,6 @@ S32 LLUUID::getNodeID(unsigned char* node_id)
     return retval;
 }
 
-#elif LL_DARWIN
-// macOS version of the UUID generation code...
-/*
- * Get an ethernet hardware address, if we can find it...
- */
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <net/if.h>
-#include <net/if_types.h>
-#include <net/if_dl.h>
-#include <net/route.h>
-#include <ifaddrs.h>
-
- // static
-S32 LLUUID::getNodeID(unsigned char* node_id)
-{
-    int i;
-    unsigned char* a = NULL;
-    struct ifaddrs* ifap, * ifa;
-    int rv;
-    S32 result = 0;
-
-    if ((rv = getifaddrs(&ifap)) == -1)
-    {
-        return -1;
-    }
-    if (ifap == NULL)
-    {
-        return -1;
-    }
-
-    for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next)
-    {
-        //      printf("Interface %s, address family %d, ", ifa->ifa_name, ifa->ifa_addr->sa_family);
-        for (i = 0; i < ifa->ifa_addr->sa_len; i++)
-        {
-            //          printf("%02X ", (unsigned char)ifa->ifa_addr->sa_data[i]);
-        }
-        //      printf("\n");
-
-        if (ifa->ifa_addr->sa_family == AF_LINK)
-        {
-            // This is a link-level address
-            struct sockaddr_dl* lla = (struct sockaddr_dl*)ifa->ifa_addr;
-
-            //          printf("\tLink level address, type %02X\n", lla->sdl_type);
-
-            if (lla->sdl_type == IFT_ETHER)
-            {
-                // Use the first ethernet MAC in the list.
-                // For some reason, the macro LLADDR() defined in net/if_dl.h doesn't expand correctly.  This is what it would do.
-                a = (unsigned char*)&((lla)->sdl_data);
-                a += (lla)->sdl_nlen;
-
-                if (!a[0] && !a[1] && !a[2] && !a[3] && !a[4] && !a[5])
-                {
-                    continue;
-                }
-
-                if (node_id)
-                {
-                    memcpy(node_id, a, 6);
-                    result = 1;
-                }
-
-                // We found one.
-                break;
-            }
-        }
-    }
-    freeifaddrs(ifap);
-
-    return result;
-}
-
 #else
 
 // Linux version of the UUID generation code...
@@ -591,9 +513,7 @@ S32 LLUUID::getNodeID(unsigned char* node_id)
 #define HAVE_NETINET_IN_H
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
-#if !LL_DARWIN
 #include <linux/sockios.h>
-#endif
 #endif
 
  // static

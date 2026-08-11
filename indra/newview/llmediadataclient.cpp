@@ -1012,16 +1012,6 @@ void LLObjectMediaNavigateClient::enqueue(Request::ptr_t request)
         }
     }
 
-#if 0
-    // Sadly, this doesn't work.  It ends up creating a race condition when the user navigates and then hits the "back" button
-    // where the navigate-back appears to be spurious and doesn't get broadcast.
-    if(request->getObject()->isCurrentMediaUrl(request->getFace(), request->getURL()))
-    {
-        // This navigate request is trying to send the face to the current URL.  Drop it.
-        LL_DEBUGS("LLMediaDataClient") << "dropping spurious request " << (*request) << LL_ENDL;
-    }
-    else
-#endif
     {
         LL_DEBUGS("LLMediaDataClient") << "queuing new request " << (*request) << LL_ENDL;
         mQueue.push_back(request);

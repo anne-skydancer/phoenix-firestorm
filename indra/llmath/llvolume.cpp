@@ -2486,33 +2486,6 @@ bool LLVolume::unpackVolumeFacesInternal(const LLSD& mdl)
                 }
             }
 
-#if 0 // keep this code for now in case we decide to add support for on-the-wire tangents
-            {
-                if (!tangent.empty())
-                {
-                    face.allocateTangents(face.mNumVertices);
-                    U16* t = (U16*)&(tangent[0]);
-
-                    // NOTE: tangents coming from the asset may not be mikkt space, but they should always be used by the GLTF shaders to
-                    // maintain compliance with the GLTF spec
-                    LLVector4a* t_out = face.mTangents;
-
-                    for (U32 j = 0; j < num_verts; ++j)
-                    {
-                        t_out->set((F32)t[0], (F32)t[1], (F32)t[2], (F32) t[3]);
-                        t_out->div(65535.f);
-                        t_out->mul(2.f);
-                        t_out->sub(1.f);
-
-                        F32* tp = t_out->getF32ptr();
-                        tp[3] = tp[3] < 0.f ? -1.f : 1.f;
-
-                        t_out++;
-                        t += 4;
-                    }
-                }
-            }
-#endif
 
             {
                 if (!tc.empty())

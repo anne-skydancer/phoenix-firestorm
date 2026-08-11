@@ -665,21 +665,6 @@ LLIOPipe::EStatus LLHTTPResponder::process_impl(
         char buf[HEADER_BUFFER_SIZE + 1];  /*Flawfinder: ignore*/
         S32 len = HEADER_BUFFER_SIZE;
 
-#if 0
-        if(true)
-        {
-        LLBufferArray::segment_iterator_t seg_iter = buffer->beginSegment();
-        char buf[1024];   /*Flawfinder: ignore*/
-        while(seg_iter != buffer->endSegment())
-        {
-            memcpy(buf, (*seg_iter).data(), (*seg_iter).size());      /*Flawfinder: ignore*/
-            buf[(*seg_iter).size()] = '\0';
-            LL_INFOS() << (*seg_iter).getChannel() << ": " << buf
-                    << LL_ENDL;
-            ++seg_iter;
-        }
-        }
-#endif
 
         PUMP_DEBUG;
         if(readHeaderLine(channels, buffer, (U8*)buf, len))
@@ -831,18 +816,6 @@ LLIOPipe::EStatus LLHTTPResponder::process_impl(
                 ++seg_iter;
                 std::for_each(seg_iter, buffer->endSegment(), change);
 
-#if 0
-                seg_iter = buffer->beginSegment();
-                char buf[1024];   /*Flawfinder: ignore*/
-                while(seg_iter != buffer->endSegment())
-                {
-                    memcpy(buf, (*seg_iter).data(), (*seg_iter).size());      /*Flawfinder: ignore*/
-                    buf[(*seg_iter).size()] = '\0';
-                    LL_INFOS() << (*seg_iter).getChannel() << ": " << buf
-                            << LL_ENDL;
-                    ++seg_iter;
-                }
-#endif
             }
             buffer->unlock();
             //

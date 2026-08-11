@@ -31,11 +31,6 @@
 
 #if defined(LL_WINDOWS)
 # include <psapi.h>
-#elif defined(LL_DARWIN)
-# include <sys/types.h>
-# include <mach/task.h>
-# include <mach/mach_init.h>
-#include <mach/mach_host.h>
 #elif LL_LINUX
 # include <unistd.h>
 # include <sys/resource.h>
@@ -121,30 +116,6 @@ void LLMemory::updateMemoryInfo()
     sAllocatedPageSizeInKB = U32Kilobytes::convert(U64Bytes(counters.PagefileUsage));
     sample(sVirtualMem, sAllocatedPageSizeInKB);
 
-#elif defined(LL_DARWIN)
-    task_vm_info info;
-    mach_msg_type_number_t  infoCount = TASK_VM_INFO_COUNT;
-    // MACH_TASK_BASIC_INFO reports the same resident_size, but does not tell us the reusable bytes or phys_footprint.
-    if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &infoCount) == KERN_SUCCESS)
-    {
-        // Our Windows definition of PagefileUsage is documented by Microsoft as "the total amount of
-        // memory that the memory manager has committed for a running process", which is rss.
-        sAllocatedPageSizeInKB = U32Kilobytes::convert(U64Bytes(info.resident_size));
-
-        // Activity Monitor => Inspect Process => Real Memory Size appears to report resident_size
-        // Activity monitor => main window memory column appears to report phys_footprint, which spot checks as at least 30% less.
-        //        I think that is because of compression, which isn't going to give us a consistent measurement. We want uncompressed totals.
-        //
-        // In between is resident_size - reusable. This is what Chrome source code uses, with source comments saying it is 'the "Real Memory" value
-        // reported for the app by the Memory Monitor in Instruments.' It is still about 8% bigger than phys_footprint.
-        //
-        // (On Windows, we use WorkingSetSize.)
-        sAllocatedMemInKB = U32Kilobytes::convert(U64Bytes(info.resident_size - info.reusable));
-     }
-    else
-    {
-        LL_WARNS() << "task_info failed" << LL_ENDL;
-    }
 #elif defined(LL_LINUX)
     // Use sysinfo() to get the total physical memory.
     struct sysinfo info;
@@ -235,36 +206,6 @@ U64 LLMemory::getCurrentRSS()
     }
 
     return counters.WorkingSetSize;
-}
-
-#elif defined(LL_DARWIN)
-
-//  if (sysctl(ctl, 2, &page_size, &size, NULL, 0) == -1)
-//  {
-//      LL_WARNS() << "Couldn't get page size" << LL_ENDL;
-//      return 0;
-//  } else {
-//      return page_size;
-//  }
-// }
-
-U64 LLMemory::getCurrentRSS()
-{
-    U64 residentSize = 0;
-    mach_task_basic_info_data_t basicInfo;
-    mach_msg_type_number_t  basicInfoCount = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&basicInfo, &basicInfoCount) == KERN_SUCCESS)
-    {
-        residentSize = basicInfo.resident_size;
-        // 64-bit macos apps allocate 32 GB or more at startup, and this is reflected in virtual_size.
-        // basicInfo.virtual_size is not what we want.
-    }
-    else
-    {
-        LL_WARNS() << "task_info failed" << LL_ENDL;
-    }
-
-    return residentSize;
 }
 
 #elif defined(LL_LINUX)

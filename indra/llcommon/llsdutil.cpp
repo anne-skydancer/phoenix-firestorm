@@ -35,8 +35,6 @@
 #   include "llwin32headers.h" // for htonl
 #elif LL_LINUX
 #   include <netinet/in.h>
-#elif LL_DARWIN
-#   include <arpa/inet.h>
 #endif
 
 #include "llsdserialize.h"

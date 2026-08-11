@@ -406,23 +406,6 @@ bool LLPolyMorphTarget::setInfo(LLPolyMorphTargetInfo* info)
     return new LLPolyMorphTarget(*this);
 }
 
-#if 0 // obsolete
-//-----------------------------------------------------------------------------
-// parseData()
-//-----------------------------------------------------------------------------
-bool LLPolyMorphTarget::parseData(LLXmlTreeNode* node)
-{
-    LLPolyMorphTargetInfo* info = new LLPolyMorphTargetInfo;
-
-    info->parseXml(node);
-    if (!setInfo(info))
-    {
-        delete info;
-        return false;
-    }
-    return true;
-}
-#endif
 
 //-----------------------------------------------------------------------------
 // getVertexDistortion()

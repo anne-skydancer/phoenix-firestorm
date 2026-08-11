@@ -1086,14 +1086,8 @@ std::string LLStringOps::sPM;
 // static
 bool LLStringOps::isEmoji(llwchar a)
 {
-#if 0   // Do not consider special characters that might have a corresponding
-        // glyph in the monochorme fallback fonts as a "genuine" emoji. HB
-    return a == 0xa9 || a == 0xae || (a >= 0x2000 && a < 0x3300) ||
-           (a >= 0x1f000 && a < 0x20000);
-#else
     // These are indeed "genuine" emojis, we *do want* rendered as such. HB
     return a >= 0x1f000 && a < 0x20000;
-#endif
 }
 
 S32 LLStringOps::collate(const llwchar* a, const llwchar* b)

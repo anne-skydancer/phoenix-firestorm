@@ -674,10 +674,6 @@ void MediaPluginCEF::receiveMessage(const char* message_string)
                 }
 #endif
                 settings.disable_gpu = mDisableGPU;
-#if LL_DARWIN
-                settings.disable_network_service = mDisableNetworkService;
-                settings.use_mock_keychain = mUseMockKeyChain;
-#endif
                 // these were added to facilitate loading images directly into a local
                 // web page for the prototype 360 project in 2017 - something that is
                 // disallowed normally by the browser security model. Now the the source
@@ -731,10 +727,6 @@ void MediaPluginCEF::receiveMessage(const char* message_string)
 
                 // now we can set page zoom factor
                 F32 factor = (F32)message_in.getValueReal("factor");
-#if LL_DARWIN
-                //temporary fix for SL-10473: issue with displaying checkboxes on Mojave
-                factor*=1.001;
-#endif
                 mCEFLib->setPageZoom(factor);
 
                 // Plugin gets to decide the texture parameters to use.
@@ -904,24 +896,6 @@ void MediaPluginCEF::receiveMessage(const char* message_string)
             }
             else if (message_name == "key_event")
             {
-#if LL_DARWIN
-                std::string event = message_in.getValue("event");
-                LLSD native_key_data = message_in.getValueLLSD("native_key_data");
-
-                dullahan::EKeyEvent key_event = dullahan::KE_KEY_UP;
-                if (event == "down")
-                {
-                    key_event = dullahan::KE_KEY_DOWN;
-                }
-                else if (event == "repeat")
-                {
-                    key_event = dullahan::KE_KEY_REPEAT;
-                }
-
-                keyEvent(key_event, native_key_data);
-
-//#elif LL_WINDOWS // <FS:ND/> Windows & Linux
-#else
                 std::string event = message_in.getValue("event");
                 LLSD native_key_data = message_in.getValueLLSD("native_key_data");
 
@@ -937,7 +911,6 @@ void MediaPluginCEF::receiveMessage(const char* message_string)
                 }
 
                 keyEvent(key_event, native_key_data);
-#endif
             }
             else if (message_name == "enable_media_plugin_debugging")
             {
@@ -996,10 +969,6 @@ void MediaPluginCEF::receiveMessage(const char* message_string)
             if (message_name == "set_page_zoom_factor")
             {
                 F32 factor = (F32)message_in.getValueReal("factor");
-#if LL_DARWIN
-                //temporary fix for SL-10473: issue with displaying checkboxes on Mojave
-                factor*=1.001;
-#endif
                 mCEFLib->setPageZoom(factor);
             }
             if (message_name == "browse_stop")
@@ -1081,24 +1050,7 @@ void MediaPluginCEF::receiveMessage(const char* message_string)
 //
 void MediaPluginCEF::keyEvent(dullahan::EKeyEvent key_event, LLSD native_key_data = LLSD::emptyMap())
 {
-#if LL_DARWIN
-    U32 event_modifiers = native_key_data["event_modifiers"].asInteger();
-    U32 event_keycode = native_key_data["event_keycode"].asInteger();
-    U32 event_chars = native_key_data["event_chars"].asInteger();
-    U32 event_umodchars = native_key_data["event_umodchars"].asInteger();
-    bool event_isrepeat = native_key_data["event_isrepeat"].asBoolean();
-
-    // adding new code below in unicodeInput means we don't send ascii chars
-    // here too or we get double key presses on a mac.
-    bool esc_key = (event_umodchars == 27);
-    bool tab_key_up = (event_umodchars == 9) && (key_event == dullahan::EKeyEvent::KE_KEY_UP);
-    if ((esc_key || ((unsigned char)event_chars < 0x10 || (unsigned char)event_chars >= 0x7f )) && !tab_key_up)
-    {
-        mCEFLib->nativeKeyboardEventOSX(key_event, event_modifiers,
-                                        event_keycode, event_chars,
-                                        event_umodchars, event_isrepeat);
-    }
-#elif LL_WINDOWS
+#if LL_WINDOWS
     U32 msg = ll_U32_from_sd(native_key_data["msg"]);
     U32 wparam = ll_U32_from_sd(native_key_data["w_param"]);
     U64 lparam = ll_U32_from_sd(native_key_data["l_param"]);
@@ -1132,26 +1084,7 @@ void MediaPluginCEF::keyEvent(dullahan::EKeyEvent key_event, LLSD native_key_dat
 
 void MediaPluginCEF::unicodeInput(std::string event, LLSD native_key_data = LLSD::emptyMap())
 {
-#if LL_DARWIN
-    // i didn't think this code was needed for macOS but without it, the IME
-    // input in japanese (and likely others too) doesn't work correctly.
-    // see maint-7654
-    U32 event_modifiers = native_key_data["event_modifiers"].asInteger();
-    U32 event_keycode = native_key_data["event_keycode"].asInteger();
-    U32 event_chars = native_key_data["event_chars"].asInteger();
-    U32 event_umodchars = native_key_data["event_umodchars"].asInteger();
-    bool event_isrepeat = native_key_data["event_isrepeat"].asBoolean();
-
-    dullahan::EKeyEvent key_event = dullahan::KE_KEY_UP;
-    if (event == "down")
-    {
-        key_event = dullahan::KE_KEY_DOWN;
-    }
-
-    mCEFLib->nativeKeyboardEventOSX(key_event, event_modifiers,
-                                    event_keycode, event_chars,
-                                    event_umodchars, event_isrepeat);
-#elif LL_WINDOWS
+#if LL_WINDOWS
     event = ""; // not needed here but prevents unused var warning as error
     U32 msg = ll_U32_from_sd(native_key_data["msg"]);
     U32 wparam = ll_U32_from_sd(native_key_data["w_param"]);

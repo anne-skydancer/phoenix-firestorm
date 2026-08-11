@@ -373,7 +373,7 @@ LLVivoxVoiceClient::LLVivoxVoiceClient() :
 //  gMuteListp->addObserver(&mutelist_listener);
 
 
-#if LL_DARWIN || LL_LINUX
+#if LL_LINUX
         // HACK: THIS DOES NOT BELONG HERE
         // When the vivox daemon dies, the next write attempt on our socket generates a SIGPIPE, which kills us.
         // This should cause us to ignore SIGPIPE and handle the error through proper channels.
@@ -999,10 +999,6 @@ bool LLVivoxVoiceClient::startAndLaunchDaemon()
         // On windows use exe (not work or RO) directory
         std::string exe_path = gDirUtilp->getExecutableDir();
         gDirUtilp->append(exe_path, "SLVoice.exe");
-#elif LL_DARWIN
-        // On MAC use resource directory
-        std::string exe_path = gDirUtilp->getAppRODataDir();
-        gDirUtilp->append(exe_path, "SLVoice");
 #else
         std::string exe_path = gDirUtilp->getExecutableDir();
         // <FS:ND> On Linux the viewer can run SLVoice.exe through wine (https://www.winehq.org/)

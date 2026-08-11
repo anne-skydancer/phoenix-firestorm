@@ -649,8 +649,7 @@ bool MediaPluginGStreamer10::startup()
 
         // Get symbols!
         std::vector< std::string > vctDSONames;
-#if LL_DARWIN
-#elif LL_WINDOWS
+#if LL_WINDOWS
         vctDSONames.push_back( "libgstreamer-1.0-0.dll"  );
         vctDSONames.push_back( "libgstapp-1.0-0.dll"  );
         vctDSONames.push_back( "libglib-2.0-0.dll" );

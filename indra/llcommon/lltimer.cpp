@@ -35,7 +35,7 @@
 
 #if LL_WINDOWS
 #   include "llwin32headers.h"
-#elif LL_LINUX || LL_DARWIN
+#elif LL_LINUX
 #   include <errno.h>
 #   include <sys/time.h>
 #else
@@ -67,42 +67,10 @@ LLTimer* LLTimer::sTimer = NULL;
 #if LL_WINDOWS
 
 
-#if 0
-void ms_sleep(U32 ms)
-{
-    // LL_PROFILE_ZONE_SCOPED;
-    using TimePoint = std::chrono::steady_clock::time_point;
-    auto resume_time = TimePoint::clock::now() + std::chrono::milliseconds(ms);
-    while (TimePoint::clock::now() < resume_time)
-    {
-        std::this_thread::yield(); //note: don't use LLThread::yield here to avoid yielding for too long
-    }
-}
-
-U32 micro_sleep(U64 us, U32 max_yields)
-{
-    // max_yields is unused; just fiddle with it to avoid warnings.
-    max_yields = 0;
-    ms_sleep((U32)(us / 1000));
-    return 0;
-}
-
-#else
-
 U32 micro_sleep(U64 us, U32 max_yields)
 {
     // LL_PROFILE_ZONE_SCOPED; // <FS:Beq/> remove pointless profiling
-#if 0
-    LARGE_INTEGER ft;
-    ft.QuadPart = -static_cast<S64>(us * 10);  // '-' using relative time
-
-    HANDLE timer = CreateWaitableTimer(NULL, true, NULL);
-    SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);
-    WaitForSingleObject(timer, INFINITE);
-    CloseHandle(timer);
-#else
     Sleep((DWORD)(us / 1000));
-#endif
 
     return 0;
 }
@@ -113,9 +81,7 @@ void ms_sleep(U32 ms)
     micro_sleep(ms * 1000, 0);
 }
 
-#endif
-
-#elif LL_LINUX || LL_DARWIN
+#elif LL_LINUX
 static void _sleep_loop(struct timespec& thiswait)
 {
     struct timespec nextwait;
@@ -233,7 +199,7 @@ F64 calc_clock_frequency()
 #endif // LL_WINDOWS
 
 
-#if LL_LINUX || LL_DARWIN
+#if LL_LINUX
 // Both Linux and Mac use gettimeofday for accurate time
 F64 calc_clock_frequency()
 {

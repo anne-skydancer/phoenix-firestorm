@@ -380,14 +380,6 @@ bool HttpPolicy::stageAfterCompletion(const HttpOpRequest::ptr_t &op)
         // *DEBUG:  For "[curl:bugs] #1420" tests.  This will interfere
         // with unit tests due to allocation retention by logging code.
         // But you won't be checking this in enabled.
-#if 0
-        if (op->mStatus == HttpStatus(HttpStatus::EXT_CURL_EASY, CURLE_OPERATION_TIMEDOUT))
-        {
-            LL_WARNS(LOG_CORE) << "HTTP request " << op->getHandle()
-                               << " timed out."
-                               << LL_ENDL;
-        }
-#endif
 
         // If this failed, we might want to retry.
         if (op->mPolicyRetries < op->mPolicyRetryLimit && op->mStatus.isRetryable())

@@ -37,13 +37,6 @@ void LLKeyboardHeadless::resetMaskKeys()
 MASK LLKeyboardHeadless::currentMask(bool for_mouse_event)
 { return MASK_NONE; }
 
-#ifdef LL_DARWIN
-void LLKeyboardHeadless::handleModifier(MASK mask)
-{
-
-}
-#endif
-
 void LLKeyboardHeadless::scanKeyboard()
 {
     for (S32 key = 0; key < KEY_COUNT; key++)

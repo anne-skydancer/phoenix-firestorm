@@ -3360,32 +3360,9 @@ void LLTextureFetch::threadedUpdate()
     LL_PROFILE_ZONE_SCOPED;
     llassert_always(mHttpRequest);
 
-#if 0
-    // Limit update frequency
-    const F32 PROCESS_TIME = 0.05f;
-    static LLFrameTimer process_timer;
-    if (process_timer.getElapsedTimeF32() < PROCESS_TIME)
-    {
-        return;
-    }
-    process_timer.reset();
-#endif
 
     commonUpdate();
 
-#if 0
-    const F32 INFO_TIME = 1.0f;
-    static LLFrameTimer info_timer;
-    if (info_timer.getElapsedTimeF32() >= INFO_TIME)
-    {
-        S32 q = mCurlGetRequest->getQueued();
-        if (q > 0)
-        {
-            LL_INFOS(LOG_TXT) << "Queued gets: " << q << LL_ENDL;
-            info_timer.reset();
-        }
-    }
-#endif
 }
 
 // <FS:Ansariel> OpenSim compatibility

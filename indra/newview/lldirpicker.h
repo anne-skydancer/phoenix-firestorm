@@ -40,18 +40,6 @@
 #include <shlobj.h>
 #endif
 
-#if LL_DARWIN
-
-// AssertMacros.h does bad things.
-#undef verify
-#undef check
-#undef require
-
-#include <vector>
-#include "llstring.h"
-
-#endif
-
 class LLFilePicker;
 
 class LLDirPicker
@@ -75,7 +63,7 @@ private:
     void buildDirname( void );
     bool check_local_file_access_enabled();
 
-#if LL_LINUX || LL_DARWIN
+#if LL_LINUX
     // On Linux we just implement LLDirPicker on top of LLFilePicker
     // <FS:ND> Seems like on OSX too ... Unless FLTK is used, then nope
 #ifndef LL_FLTK

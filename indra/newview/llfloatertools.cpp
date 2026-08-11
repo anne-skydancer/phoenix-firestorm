@@ -653,37 +653,6 @@ void LLFloaterTools::refresh()
     mTextLinkNumObjCount->setTextArg("[DESC]", desc_string);
     mTextLinkNumObjCount->setTextArg("[NUM]", num_string);
     // </FS:KC>
-#if 0
-    if (!gMeshRepo.meshRezEnabled())
-    {
-        std::string obj_count_string;
-        LLResMgr::getInstance()->getIntegerString(obj_count_string, LLSelectMgr::getInstance()->getSelection()->getRootObjectCount());
-        mTextSelectionCount->setTextArg("[OBJ_COUNT]", obj_count_string);
-        std::string prim_count_string;
-        LLResMgr::getInstance()->getIntegerString(prim_count_string, LLSelectMgr::getInstance()->getSelection()->getObjectCount());
-        mTextSelectionCount->setTextArg("[PRIM_COUNT]", prim_count_string);
-
-        // calculate selection rendering cost
-        if (sShowObjectCost)
-        {
-            std::string prim_cost_string;
-            S32 render_cost = LLSelectMgr::getInstance()->getSelection()->getSelectedObjectRenderCost();
-            LLResMgr::getInstance()->getIntegerString(prim_cost_string, render_cost);
-            // <FS:Ansariel> Was removed from floater_tools.xml as part of SH-1917 SH-1935
-            //getChild<LLUICtrl>("RenderingCost")->setTextArg("[COUNT]", prim_cost_string);
-        }
-
-        // disable the object and prim counts if nothing selected
-        bool have_selection = ! LLSelectMgr::getInstance()->getSelection()->isEmpty();
-        mTextLinkNumObjCount->setEnabled(have_selection);
-        //getChildView("obj_count")->setEnabled(have_selection);
-        // <FS:Ansariel> Was removed from floater_tools.xml as part of SH-1719
-        //getChildView("prim_count")->setEnabled(have_selection);
-        // <FS:Ansariel> Was removed from floater_tools.xml as part of SH-1917 SH-1935
-        //getChildView("RenderingCost")->setEnabled(have_selection && sShowObjectCost);
-    }
-    else
-#endif
     {
         LLObjectSelectionHandle selection = LLSelectMgr::getInstance()->getSelection();
         F32 link_cost = selection->getSelectedLinksetCost();

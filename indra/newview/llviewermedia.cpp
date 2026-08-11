@@ -3250,15 +3250,6 @@ void LLViewerMediaImpl::mouseCapture()
 //////////////////////////////////////////////////////////////////////////////////////////
 void LLViewerMediaImpl::scaleMouse(S32 *mouse_x, S32 *mouse_y)
 {
-#if 0
-    S32 media_width, media_height;
-    S32 texture_width, texture_height;
-    getMediaSize( &media_width, &media_height );
-    getTextureSize( &texture_width, &texture_height );
-    S32 y_delta = texture_height - media_height;
-
-    *mouse_y -= y_delta;
-#endif
 }
 
 

@@ -159,10 +159,6 @@
 #include "vlc/libvlc_version.h"
 #endif // LL_LINUX
 
-#if LL_DARWIN
-#include "llwindowmacosx.h"
-#endif
-
 // Third party library includes
 #include <boost/bind.hpp>
 #include <boost/algorithm/string.hpp>
@@ -324,17 +320,9 @@ static LLAppViewerListener sAppViewerListener(LLAppViewer::instance);
 //----------------------------------------------------------------------------
 // viewer.cpp - these are only used in viewer, should be easily moved.
 
-#if LL_DARWIN
-extern void init_apple_menu(const char* product);
-#endif // LL_DARWIN
-
 extern bool gRandomizeFramerate;
 extern bool gPeriodicSlowFrame;
 extern bool gDebugGL;
-
-#if LL_DARWIN
-extern bool gHiDPISupport;
-#endif
 
 ////////////////////////////////////////////////////////////
 // All from the last globals push...
@@ -351,8 +339,6 @@ LLUUID gLastAgentSessionId;
 
 #if LL_WINDOWS
 #   define LL_PLATFORM_KEY "win"
-#elif LL_DARWIN
-#   define LL_PLATFORM_KEY "mac"
 #elif LL_LINUX
 #   define LL_PLATFORM_KEY "lnx"
 #else
@@ -614,11 +600,7 @@ static void settings_to_globals()
 {
     LLSurface::setTextureSize(gSavedSettings.getU32("RegionTextureSize"));
 
-#if LL_DARWIN
-    LLRender::sGLCoreProfile = true;
-#else
     LLRender::sGLCoreProfile = gSavedSettings.getBOOL("RenderGLContextCoreProfile");
-#endif
     LLRender::sNsightDebugSupport = gSavedSettings.getBOOL("RenderNsightDebugSupport");
     LLImageGL::sGlobalUseAnisotropic    = gSavedSettings.getBOOL("RenderAnisotropic");
     LLImageGL::sCompressTextures        = gSavedSettings.getBOOL("RenderCompressTextures");
@@ -643,11 +625,6 @@ static void settings_to_globals()
     gDebugWindowProc = gSavedSettings.getBOOL("DebugWindowProc");
     gShowObjectUpdates = gSavedSettings.getBOOL("ShowObjectUpdates");
     LLWorldMapView::setScaleSetting(gSavedSettings.getF32("MapScale"));
-
-#if LL_DARWIN
-    LLWindowMacOSX::sUseMultGL = gSavedSettings.getBOOL("RenderAppleUseMultGL");
-    gHiDPISupport = gSavedSettings.getBOOL("RenderHiDPI");
-#endif
 }
 
 static void settings_modify()
@@ -1140,9 +1117,7 @@ bool LLAppViewer::init()
 
     // load MIME type -> media impl mappings
     std::string mime_types_name;
-#if LL_DARWIN
-    mime_types_name = "mime_types_mac.xml";
-#elif LL_LINUX
+#if LL_LINUX
     mime_types_name = "mime_types_linux.xml";
 #else
     mime_types_name = "mime_types.xml";
@@ -2140,9 +2115,6 @@ bool LLAppViewer::cleanup()
     LLKeyframeDataCache::clear();
 
     // End TransferManager before deleting systems it depends on (Audio, AssetStorage)
-#if 0 // this seems to get us stuck in an infinite loop...
-    gTransferManager.cleanup();
-#endif
 
     // Note: this is where gWorldMap used to be deleted.
 
@@ -2613,12 +2585,6 @@ bool LLAppViewer::initThreads()
 
     // get the number of concurrent threads that can run
     S32 cores = std::thread::hardware_concurrency();
-#if LL_DARWIN
-    if (!gGLManager.mIsApple)
-    {
-        cores /= 2;
-    }
-#endif
     U32 max_cores = gSavedSettings.getU32("EmulateCoreCount");
     if (max_cores != 0)
     {
@@ -3749,15 +3715,7 @@ bool LLAppViewer::initWindow()
         .height(gSavedSettings.getU32("WindowHeight"))
         .min_width(gSavedSettings.getU32("MinWindowWidth"))
         .min_height(gSavedSettings.getU32("MinWindowHeight"))
-#ifdef LL_DARWIN
-        // Setting it to true causes black screen with no UI displayed.
-        // Given that it's a DEBUG settings and application goes fullscreen
-        // on mac simply by expanding it, it was decided to not support/use
-        // this setting on mac.
-        .fullscreen(false)
-#else // LL_DARWIN
         .fullscreen(gSavedSettings.getBOOL("FullScreen"))
-#endif
         .ignore_pixel_depth(ignorePixelDepth)
         .first_run(mIsFirstRun);
 
@@ -4162,10 +4120,6 @@ LLSD LLAppViewer::getViewerInfo() const
     //info["TEXTURE_MEMORY"] = gGLManager.mVRAM;
     // </FS>
 
-#if LL_DARWIN
-    info["HIDPI"] = gHiDPISupport;
-#endif
-
     // Libraries
 
     info["J2C_VERSION"] = LLImageJ2C::getEngineInfo();
@@ -4386,9 +4340,6 @@ std::string LLAppViewer::getViewerInfoString(bool default_string) const
     }
     support << "\n" << LLTrans::getString("AboutOGL", args, default_string);
     //support << "\n\n" << LLTrans::getString("AboutSettings", args, default_string); // <FS> Custom sysinfo
-#if LL_DARWIN
-    support << "\n" << LLTrans::getString("AboutOSXHiDPI", args, default_string);
-#endif
     support << "\n\n" << LLTrans::getString("AboutLibs", args, default_string);
     // <FS> Custom sysinfo
     if (info.has("BANDWIDTH")) //For added info in help floater
@@ -5155,7 +5106,7 @@ void LLAppViewer::abortQuit()
 
 void LLAppViewer::migrateCacheDirectory()
 {
-#if LL_WINDOWS || LL_DARWIN
+#if LL_WINDOWS
     // NOTE: (Nyx) as of 1.21, cache for mac is moving to /library/caches/SecondLife from
     // /library/application support/SecondLife/cache This should clear/delete the old dir.
 
@@ -5207,21 +5158,13 @@ void LLAppViewer::migrateCacheDirectory()
             //purgeCache();
             gDirUtilp->setCacheDir(new_cache_dir);
 
-#if LL_DARWIN
-            // Clean up Mac files not deleted by removing *.*
-            std::string ds_store = old_cache_dir + "/.DS_Store";
-            if (gDirUtilp->fileExists(ds_store))
-            {
-                LLFile::remove(ds_store);
-            }
-#endif
             if (LLFile::rmdir(old_cache_dir) != 0)
             {
                 LL_WARNS() << "could not delete old cache directory " << old_cache_dir << LL_ENDL;
             }
         }
     }
-#endif // LL_WINDOWS || LL_DARWIN
+#endif // LL_WINDOWS
 }
 
 //static
@@ -6074,9 +6017,6 @@ void LLAppViewer::idle()
     // hover callbacks
     //
 
-#ifdef LL_DARWIN
-    if (!mQuitRequested)  //MAINT-4243
-#endif
     {
 //      LL_RECORD_BLOCK_TIME(FTM_IDLE_CB);
 

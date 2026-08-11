@@ -82,10 +82,8 @@ bool LLFloaterPreferenceGraphicsAdvanced::postBuild()
         }
     }
 
-#if !LL_DARWIN
     LLCheckBoxCtrl *use_HiDPI = getChild<LLCheckBoxCtrl>("use HiDPI");
     use_HiDPI->setVisible(false);
-#endif
 
     mComplexityChangedSignal = gSavedSettings.getControl("RenderAvatarMaxComplexity")->getCommitSignal()->connect(
         [this](LLControlVariable* control, const LLSD& new_val, const LLSD& old_val)

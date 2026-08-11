@@ -42,11 +42,7 @@
 using namespace std;
 
 
-#if LL_DARWIN
-    #include "slplugin-objc.h"
-#endif
-
-#if LL_DARWIN || LL_LINUX
+#if LL_LINUX
     #include <signal.h>
 #endif
 
@@ -64,7 +60,7 @@ using namespace std;
     Now that SLPlugin is a bundled app on the Mac, this is no longer necessary (it can just use a regular Info.plist file), but I'm leaving this comment in for posterity.
 */
 
-#if LL_DARWIN || LL_LINUX
+#if LL_LINUX
 // Signal handlers to make crashes not show an OS dialog...
 static void crash_handler(int sig)
 {
@@ -163,7 +159,7 @@ int main(int argc, char **argv)
     // display a crash message if something bad happens. The host app will
     // see the missing heartbeat and log appropriately.
     initExceptionHandler();
-#elif LL_DARWIN || LL_LINUX
+#elif LL_LINUX
     if(argc < 2)
     {
         LL_ERRS("slplugin") << "usage: " << argv[0] << " launcher_port" << LL_ENDL;
@@ -182,21 +178,10 @@ int main(int argc, char **argv)
     signal(SIGSEGV, &crash_handler);    // segmentation violation
     signal(SIGSYS, &crash_handler);     // non-existent system call invoked
 #endif
-# if LL_DARWIN
-    signal(SIGEMT, &crash_handler);     // emulate instruction executed
-
-    LLCocoaPlugin cocoa_interface;
-    cocoa_interface.setupCocoa();
-    cocoa_interface.createAutoReleasePool();
-#endif //LL_DARWIN
 
     LLPluginProcessChild *plugin = new LLPluginProcessChild();
 
     plugin->init(port);
-
-#if LL_DARWIN
-    cocoa_interface.deleteAutoReleasePool();
-#endif
 
     LLTimer timer;
     timer.start();
@@ -205,24 +190,10 @@ int main(int argc, char **argv)
     checkExceptionHandler();
 #endif
 
-#if LL_DARWIN
-
-    // If the plugin opens a new window (such as the Flash plugin's fullscreen player), we may need to bring this plugin process to the foreground.
-    // Use this to track the current frontmost window and bring this process to the front if it changes.
- //   cocoa_interface.mEventTarget = GetEventDispatcherTarget();
-#endif
     while(!plugin->isDone())
     {
-#if LL_DARWIN
-        cocoa_interface.createAutoReleasePool();
-#endif
         timer.reset();
         plugin->idle();
-#if LL_DARWIN
-        {
-            cocoa_interface.processEvents();
-        }
-#endif
         F64 elapsed = timer.getElapsedTimeF64();
         F64 remaining = plugin->getSleepTime() - elapsed;
 
@@ -255,9 +226,6 @@ int main(int argc, char **argv)
     //checkExceptionHandler();
 #endif
 
-#if LL_DARWIN
-        cocoa_interface.deleteAutoReleasePool();
-#endif
     }
     delete plugin;
 

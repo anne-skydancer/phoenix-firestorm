@@ -645,20 +645,6 @@ void LLFloaterBuyLandUI::updateWebSiteInfo()
     mPreflightAskBillableArea = askBillableArea;
     mPreflightAskCurrencyBuy = askCurrencyBuy;
 
-#if 0
-    // enable this code if you want the details to blank while we're talking
-    // to the web site... it's kind of jarring
-    mSiteValid = false;
-    mSiteMembershipUpgrade = false;
-    mSiteMembershipAction = "(waiting)";
-    mSiteMembershipPlanIDs.clear();
-    mSiteMembershipPlanNames.clear();
-    mSiteLandUseUpgrade = false;
-    mSiteLandUseAction = "(waiting)";
-    mSiteCurrencyEstimated = false;
-    mSiteCurrencyEstimatedCost = 0;
-#endif
-
     LLSD params = LLSD::emptyMap();
     params["agentId"] = gAgent.getID().asString();
     params["secureSessionId"] = gAgent.getSecureSessionID().asString();

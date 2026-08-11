@@ -525,62 +525,6 @@ LLWindowWin32::LLWindowWin32(LLWindowCallbacks* callbacks,
         SetProcessAffinityMask(hProcess, mask);
     }
 
-#if 0 // this is probably a bad idea, but keep it in your back pocket if you see what looks like
-        // process deprioritization during profiles
-    // force high thread priority
-    HANDLE hProcess = GetCurrentProcess();
-
-    if (hProcess)
-    {
-        int priority = GetPriorityClass(hProcess);
-        if (priority < REALTIME_PRIORITY_CLASS)
-        {
-            if (SetPriorityClass(hProcess, REALTIME_PRIORITY_CLASS))
-            {
-                LL_INFOS() << "Set process priority to REALTIME_PRIORITY_CLASS" << LL_ENDL;
-            }
-            else
-            {
-                LL_INFOS() << "Failed to set process priority: " << std::hex << GetLastError() << LL_ENDL;
-            }
-        }
-    }
-#endif
-
-#if 0  // this is also probably a bad idea, but keep it in your back pocket for getting main thread off of background thread cores (see also LLThread::threadRun)
-    HANDLE hThread = GetCurrentThread();
-
-    SYSTEM_INFO sysInfo;
-
-    GetSystemInfo(&sysInfo);
-    U32 core_count = sysInfo.dwNumberOfProcessors;
-
-    if (max_cores != 0)
-    {
-        core_count = llmin(core_count, max_cores);
-    }
-
-    if (hThread)
-    {
-        int priority = GetThreadPriority(hThread);
-
-        if (priority < THREAD_PRIORITY_TIME_CRITICAL)
-        {
-            if (SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL))
-            {
-                LL_INFOS() << "Set thread priority to THREAD_PRIORITY_TIME_CRITICAL" << LL_ENDL;
-            }
-            else
-            {
-                LL_INFOS() << "Failed to set thread priority: " << std::hex << GetLastError() << LL_ENDL;
-            }
-
-            // tell main thread to prefer core 0
-            SetThreadIdealProcessor(hThread, 0);
-        }
-    }
-#endif
-
 
     mFSAASamples = fsaa_samples;
     mIconResource = gIconResource;
@@ -5118,13 +5062,6 @@ void LLWindowWin32::LLWindowWin32Thread::run()
             getQueue().runPending();
         }
 
-#if 0
-        {
-            LL_PROFILE_ZONE_NAMED_CATEGORY_WIN32("w32t - Sleep");
-            logger.always("sleep(1)");
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-#endif
     }
 
     pauseTimeout();

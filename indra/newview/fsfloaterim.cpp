@@ -454,8 +454,6 @@ void FSFloaterIM::sendMsgFromInputEditor(EChatType type)
                     std::string str_operating_system_tag = "W";
 #elif LL_LINUX
                     std::string str_operating_system_tag = "L";
-#elif LL_DARWIN
-                    std::string str_operating_system_tag = "M";
 #endif
 
                     //RLV check

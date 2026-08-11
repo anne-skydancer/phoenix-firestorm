@@ -619,8 +619,6 @@ void display(bool rebuild, F32 zoom_factor, int subfield, bool for_snapshot)
             InvalidateRect((HWND)gViewerWindow->getPlatformWindow(), NULL, false);
             last_update_time = gFrameTimeSeconds;
         }
-#elif LL_DARWIN
-        // MBW -- Do something clever here.
 #endif
         // Not actually rendering, don't bother.
         return;

@@ -90,11 +90,6 @@ public:
     virtual bool    handleKeyDown(const NATIVE_KEY_TYPE key, MASK mask) = 0;
     // </FS:ND>
 
-#ifdef LL_DARWIN
-    // We only actually use this for macOS.
-    virtual void    handleModifier(MASK mask) = 0;
-#endif // LL_DARWIN
-
     // Asynchronously poll the control, alt, and shift keys and set the
     // appropriate internal key masks.
     virtual void    resetMaskKeys() = 0;

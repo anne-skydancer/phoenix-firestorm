@@ -94,9 +94,6 @@
 #include "rlvcommon.h"
 // [/RLVa:KB]
 
-#if LL_DARWIN
-#include "llwindowmacosx.h"
-#endif
 
 // Firestorm inclues
 #include "fsfloatercontacts.h"
@@ -595,16 +592,6 @@ static bool handleReflectionProbeCountChanged(const LLSD& newvalue)
     return true;
 }
 
-#if LL_DARWIN
-static bool handleAppleUseMultGLChanged(const LLSD& newvalue)
-{
-    if (gGLManager.mInited)
-    {
-        LLWindowMacOSX::setUseMultGL(newvalue.asBoolean());
-    }
-    return true;
-}
-#endif
 
 static bool handleHeroProbeResolutionChanged(const LLSD &newvalue)
 {
@@ -1371,9 +1358,6 @@ void settings_setup_listeners()
     setting_setup_signal_listener(gSavedSettings, "RenderReflectionProbeDetail", handleReflectionProbeDetailChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderReflectionProbeCount", handleReflectionProbeCountChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderReflectionsEnabled", handleReflectionProbeDetailChanged);
-#if LL_DARWIN
-    setting_setup_signal_listener(gSavedSettings, "RenderAppleUseMultGL", handleAppleUseMultGLChanged);
-#endif
     setting_setup_signal_listener(gSavedSettings, "RenderScreenSpaceReflections", handleReflectionProbeDetailChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderMirrors", handleReflectionProbeDetailChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderHeroProbeResolution", handleHeroProbeResolutionChanged);

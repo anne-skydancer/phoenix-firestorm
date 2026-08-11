@@ -34,9 +34,6 @@
 #include "llcontrol.h"
 
 extern LLControlGroup gSavedSettings;
-#if LL_DARWIN
-extern bool gHiDPISupport;
-#endif
 
 static int LOW_PRIORITY_TEXTURE_SIZE_DEFAULT = 256;
 
@@ -372,9 +369,6 @@ void LLPluginClassMedia::setSizeInternal(void)
         mRequestedMediaHeight = nextPowerOf2(mRequestedMediaHeight);
     }
 
-#if LL_DARWIN
-    if (!gHiDPISupport)
-#endif
 //<FS:TS> FIRE-30019: This clamp doesn't make sense on Linux, which can have
 //        huge windows without needing to turn on HiDPI support
 #if !LL_LINUX
@@ -640,14 +634,6 @@ bool LLPluginClassMedia::keyEvent(EKeyEventType type, int key_code, MASK modifie
             }
         break;
     }
-
-#if LL_DARWIN
-    if(modifiers & MASK_ALT)
-    {
-        // Option-key modified characters should be handled by the unicode input path instead of this one.
-        result = false;
-    }
-#endif
 
     if(result)
     {

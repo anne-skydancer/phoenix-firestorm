@@ -96,11 +96,7 @@ std::string LLFloater::sButtonToolTips[BUTTON_COUNT];
 
 std::string LLFloater::sButtonToolTipsIndex[BUTTON_COUNT]=
 {
-#ifdef LL_DARWIN
-    "BUTTON_CLOSE_DARWIN",  //"Close (Cmd-W)",  //BUTTON_CLOSE
-#else
     "BUTTON_CLOSE_WIN",     //"Close (Ctrl-W)", //BUTTON_CLOSE
-#endif
     // <FS:Ansariel> FIRE-11724: Snooze group chat
     "BUTTON_SNOOZE",        //"Snooze",     //BOTTON_SNOOZE
     // </FS:Ansariel>
@@ -2372,15 +2368,6 @@ void LLFloater::updateTitleButtons()
             }
         }
 
-#if 0       //KC: don't do this, see below
-        if (i == BUTTON_CLOSE && mButtonScale != 1.f)
-        {
-            //*HACK: always render close button for hosted floaters so
-            //that users don't accidentally hit the button when
-            //closing multiple windows in the chatterbox
-            enabled = true;
-        }
-#endif
 
         mButtons[i]->setEnabled(enabled);
 

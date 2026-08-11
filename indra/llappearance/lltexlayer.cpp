@@ -325,28 +325,6 @@ bool LLTexLayerSet::setInfo(const LLTexLayerSetInfo *info)
     return true;
 }
 
-#if 0 // obsolete
-//-----------------------------------------------------------------------------
-// parseData
-//-----------------------------------------------------------------------------
-
-bool LLTexLayerSet::parseData(LLXmlTreeNode* node)
-{
-    LLTexLayerSetInfo *info = new LLTexLayerSetInfo;
-
-    if (!info->parseXml(node))
-    {
-        delete info;
-        return false;
-    }
-    if (!setInfo(info))
-    {
-        delete info;
-        return false;
-    }
-    return true;
-}
-#endif
 
 void LLTexLayerSet::deleteCaches()
 {

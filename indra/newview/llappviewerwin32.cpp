@@ -742,9 +742,6 @@ void LLAppViewerWin32::bugsplatAddStaticAttributes(const LLSD& info)
         bugSplatMap.setAttribute("RLVa", info["RLV_VERSION"].asString());
         bugSplatMap.setAttribute("Mode", info["MODE"].asString());
         bugSplatMap.setAttribute("Skin", llformat("%s (%s)", info["SKIN"].asString().c_str(), info["THEME"].asString().c_str()));
-    #if LL_DARWIN
-        bugSplatMap.setAttribute("HiDPI", info["HIDPI"].asBoolean() ? "Enabled" : "Disabled");
-    #endif
         bugSplatMap.setAttribute("Max Texture Size", gSavedSettings.getU32("RenderMaxTextureResolution"));
     }
 

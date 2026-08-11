@@ -45,9 +45,6 @@ public:
     /*virtual*/ void    resetMaskKeys();
     /*virtual*/ MASK    currentMask(bool for_mouse_event);
     /*virtual*/ void    scanKeyboard();
-#ifdef LL_DARWIN
-    /*virtual*/ void    handleModifier(MASK mask);
-#endif
 };
 
 #endif

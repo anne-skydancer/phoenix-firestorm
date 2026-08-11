@@ -142,22 +142,7 @@ public:
 #endif // (LL_LINUX) && !(defined(__i386__) || defined(__amd64__))
 
 
-#if LL_DARWIN && LL_ARM64
-    //
-    // Mac implementation of CPU clock - non-x86.
-    //
-    static U64 getCPUClockCount64()
-    {
-        return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-    }
-
-    static U32 getCPUClockCount32()
-    {
-        return (U32)(getCPUClockCount64() >> 8);
-    }
-#endif // LL_DARWIN && LL_ARM64
-
-#if (LL_LINUX || LL_DARWIN) && (LL_X86 || LL_X86_64)
+#if LL_LINUX && (LL_X86 || LL_X86_64)
     //
     // Mac+Linux FAST x86 implementation of CPU clock
     //

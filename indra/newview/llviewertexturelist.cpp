@@ -1045,15 +1045,6 @@ void LLViewerTextureList::updateImageDecodePriority(LLViewerFetchedTexture* imag
         imagep->addTextureStats(max_vsize);
     }
 
-#if 0
-    imagep->setDebugText(llformat("%d/%d - %d/%d -- %d/%d",
-        (S32)sqrtf(max_vsize),
-        (S32)sqrtf(imagep->mMaxVirtualSize),
-        imagep->getDiscardLevel(),
-        imagep->getDesiredDiscardLevel(),
-        imagep->getWidth(),
-        imagep->getFullWidth()));
-#endif
 
     // make sure to addTextureStats for any spotlights that are using this texture
     for (S32 vi = 0; vi < imagep->getNumVolumes(LLRender::LIGHT_TEX); ++vi)

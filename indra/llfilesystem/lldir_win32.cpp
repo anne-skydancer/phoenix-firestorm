@@ -469,51 +469,6 @@ bool LLDir_Win32::fileExists(const std::string &filename) const
 }
 
 
-#if 0
-// Utility function to get version number of a DLL
-
-#define PACKVERSION(major,minor) MAKELONG(minor,major)
-
-DWORD GetDllVersion(LPCTSTR lpszDllName)
-{
-
-    HINSTANCE hinstDll;
-    DWORD dwVersion = 0;
-
-    hinstDll = LoadLibrary(lpszDllName);    /* Flawfinder: ignore */
-
-    if(hinstDll)
-    {
-        DLLGETVERSIONPROC pDllGetVersion;
-
-        pDllGetVersion = (DLLGETVERSIONPROC) GetProcAddress(hinstDll, "DllGetVersion");
-
-/*Because some DLLs might not implement this function, you
-  must test for it explicitly. Depending on the particular
-  DLL, the lack of a DllGetVersion function can be a useful
-  indicator of the version.
-*/
-        if(pDllGetVersion)
-        {
-            DLLVERSIONINFO dvi;
-            HRESULT hr;
-
-            ZeroMemory(&dvi, sizeof(dvi));
-            dvi.cbSize = sizeof(dvi);
-
-            hr = (*pDllGetVersion)(&dvi);
-
-            if(SUCCEEDED(hr))
-            {
-                dwVersion = PACKVERSION(dvi.dwMajorVersion, dvi.dwMinorVersion);
-            }
-        }
-
-        FreeLibrary(hinstDll);
-    }
-    return dwVersion;
-}
-#endif
 
 #endif
 

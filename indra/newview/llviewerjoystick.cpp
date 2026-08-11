@@ -233,15 +233,6 @@ std::string string_from_guid(const GUID &guid)
 
     return res;
 }
-#elif LL_DARWIN
-
-bool macos_devices_callback(std::string &product_name, LLSD &data, void* userdata)
-{
-    std::string product = data["product"].asString();
-
-    return LLViewerJoystick::getInstance()->initDevice(nullptr, product, data);
-}
-
 #endif
 
 
@@ -401,29 +392,6 @@ void LLViewerJoystick::init(bool autoenable)
             // space navigator is marked as DI8DEVCLASS_GAMECTRL in ndof lib
             device_type = DI8DEVCLASS_GAMECTRL;
             win_callback = &di8_devices_callback;
-#elif LL_DARWIN
-            osx_callback = macos_devices_callback;
-
-            if (mLastDeviceUUID.isMap())
-            {
-                std::string manufacturer = mLastDeviceUUID["manufacturer"].asString();
-                std::string product = mLastDeviceUUID["product"].asString();
-
-                strncpy(mNdofDev->manufacturer, manufacturer.c_str(), sizeof(mNdofDev->manufacturer));
-                strncpy(mNdofDev->product, product.c_str(), sizeof(mNdofDev->product));
-
-                if (ndof_init_first(mNdofDev, nullptr))
-                {
-                    mDriverState = JDS_INITIALIZING;
-                    // Saved device no longer exist
-                    // No device found
-                    LL_WARNS() << "ndof_init_first FAILED" << LL_ENDL;
-                }
-                else
-                {
-                    mDriverState = JDS_INITIALIZED;
-                }
-            }
 #endif
             if (mDriverState != JDS_INITIALIZED)
             {
@@ -498,28 +466,6 @@ void LLViewerJoystick::initDevice(LLSD &guid)
     // space navigator is marked as DI8DEVCLASS_GAMECTRL in ndof lib
     device_type = DI8DEVCLASS_GAMECTRL;
     win_callback = &di8_devices_callback;
-#elif LL_DARWIN
-    osx_callback = macos_devices_callback;
-    if (mLastDeviceUUID.isMap())
-    {
-        std::string manufacturer = mLastDeviceUUID["manufacturer"].asString();
-        std::string product = mLastDeviceUUID["product"].asString();
-
-        strncpy(mNdofDev->manufacturer, manufacturer.c_str(), sizeof(mNdofDev->manufacturer));
-        strncpy(mNdofDev->product, product.c_str(), sizeof(mNdofDev->product));
-
-        if (ndof_init_first(mNdofDev, nullptr))
-        {
-    mDriverState = JDS_INITIALIZING;
-            // Saved device no longer exist
-            // Np other device present
-            LL_WARNS() << "ndof_init_first FAILED" << LL_ENDL;
-        }
-        else
-    {
-            mDriverState = JDS_INITIALIZED;
-        }
-    }
 #endif
 
     if (mDriverState != JDS_INITIALIZED)
@@ -547,21 +493,6 @@ bool LLViewerJoystick::initDevice(void * preffered_device /*LPDIRECTINPUTDEVICE8
 #if LIB_NDOF
     mLastDeviceUUID = guid;
 
-#if LL_DARWIN
-    if (guid.isMap())
-    {
-        std::string manufacturer = mLastDeviceUUID["manufacturer"].asString();
-        std::string product = mLastDeviceUUID["product"].asString();
-
-        strncpy(mNdofDev->manufacturer, manufacturer.c_str(), sizeof(mNdofDev->manufacturer));
-        strncpy(mNdofDev->product, product.c_str(), sizeof(mNdofDev->product));
-    }
-    else
-    {
-        mNdofDev->product[0] = '\0';
-        mNdofDev->manufacturer[0] = '\0';
-    }
-#else
 #ifdef LL_LINUX
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-truncation"
@@ -573,7 +504,6 @@ bool LLViewerJoystick::initDevice(void * preffered_device /*LPDIRECTINPUTDEVICE8
 
     mNdofDev->product[ sizeof(mNdofDev->product)-1 ] = 0;
     mNdofDev->manufacturer[0] = '\0';
-#endif
 
     return initDevice(preffered_device);
 #else
@@ -1480,8 +1410,6 @@ bool LLViewerJoystick::isDeviceUUIDSet()
 #if LL_WINDOWS && !LL_MESA_HEADLESS
     // for ease of comparison and to dial less with platform specific variables, we store id as LLSD binary
     return mLastDeviceUUID.isBinary();
-#elif LL_DARWIN
-    return mLastDeviceUUID.isMap();
 #else
     return false;
 #endif
@@ -1503,17 +1431,6 @@ std::string LLViewerJoystick::getDeviceUUIDString()
         GUID guid;
         memcpy(&guid, &data[0], size);
         return string_from_guid(guid);
-    }
-    else
-    {
-        return std::string();
-    }
-#elif LL_DARWIN
-    if (mLastDeviceUUID.isMap())
-    {
-        std::string manufacturer = mLastDeviceUUID["manufacturer"].asString();
-        std::string product = mLastDeviceUUID["product"].asString();
-        return manufacturer + ":" + product;
     }
     else
     {
@@ -1566,19 +1483,6 @@ void LLViewerJoystick::loadDeviceIdFromSettings()
         // We store this data in LLSD since it can handle both GUID2 and long
         mLastDeviceUUID = LLSD(data);
     }
-#elif LL_DARWIN
-    if (!dev_id.isMap())
-    {
-        mLastDeviceUUID = LLSD();
-    }
-    else
-    {
-        std::string manufacturer = mLastDeviceUUID["manufacturer"].asString();
-        std::string product = mLastDeviceUUID["product"].asString();
-        LL_DEBUGS("Joystick") << "Looking for device by manufacturer: " << manufacturer << " and product: " << product <<  LL_ENDL;
-        // We store this data in LLSD since it can handle both GUID2 and long
-        mLastDeviceUUID = dev_id;
-    }
 #else
     mLastDeviceUUID = LLSD();
     //mLastDeviceUUID = gSavedSettings.getLLSD("JoystickDeviceUUID");
@@ -1616,7 +1520,7 @@ bool LLViewerJoystick::isLikeSpaceNavigator() const
 // -----------------------------------------------------------------------------
 void LLViewerJoystick::setSNDefaults()
 {
-#if LL_DARWIN || LL_LINUX
+#if LL_LINUX
     const float platformScale = 20.f;
     const float platformScaleAvXZ = 1.f;
     // The SpaceNavigator doesn't act as a 3D cursor on macOS / Linux.

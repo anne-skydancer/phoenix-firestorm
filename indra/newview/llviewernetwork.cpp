@@ -146,59 +146,6 @@ void LLGridManager::initialize(const std::string& grid_file)
     //LLSDSerialize::toPrettyXML(mGridList, out_llsd_xml);
     //out_llsd_xml.close();
 
-#if 0 //<FS:AW disabled for meeting havok sublicense requirements/>
-    LLSD other_grids;
-    llifstream llsd_xml;
-    if (!grid_file.empty())
-    {
-        LL_INFOS("GridManager")<<"Grid configuration file '"<<grid_file<<"'"<<LL_ENDL;
-        llsd_xml.open( grid_file.c_str(), std::ios::in | std::ios::binary );
-
-        // parse through the gridfile, inserting grids into the list unless
-        // they overwrite an existing grid.
-        if( llsd_xml.is_open())
-        {
-            LLSDSerialize::fromXMLDocument( other_grids, llsd_xml );
-            if(other_grids.isMap())
-            {
-                for(LLSD::map_iterator grid_itr = other_grids.beginMap();
-                    grid_itr != other_grids.endMap();
-                    ++grid_itr)
-                {
-                    LLSD::String key_name = grid_itr->first;
-                    LLSD grid = grid_itr->second;
-
-                    std::string existingGrid = getGrid(grid);
-                    if (mGridList.has(key_name) || !existingGrid.empty())
-                    {
-                        LL_WARNS("GridManager") << "Cannot override existing grid '" << key_name << "'; ignoring definition from '"<<grid_file<<"'" << LL_ENDL;
-                    }
-                    else if ( addGrid(grid) )
-                    {
-                        LL_INFOS("GridManager") << "added grid '"<<key_name<<"'"<<LL_ENDL;
-                    }
-                    else
-                    {
-                        LL_WARNS("GridManager") << "failed to add invalid grid '"<<key_name<<"'"<<LL_ENDL;
-                    }
-                }
-                llsd_xml.close();
-            }
-            else
-            {
-                LL_WARNS("GridManager")<<"Failed to parse grid configuration '"<<grid_file<<"'"<<LL_ENDL;
-            }
-        }
-        else
-        {
-            LL_WARNS("GridManager")<<"Failed to open grid configuration '"<<grid_file<<"'"<<LL_ENDL;
-        }
-    }
-    else
-    {
-        LL_DEBUGS("GridManager")<<"no grid file specified"<<LL_ENDL;
-    }
-#endif //<FS:AW disabled for meeting havok sublicense requirements/>
 
     // load a grid from the command line.
     // if the actual grid name is specified from the command line,

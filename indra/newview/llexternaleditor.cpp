@@ -51,8 +51,6 @@ LLExternalEditor::EErrorCode LLExternalEditor::setCommand(const std::string& env
         {
             os_cmd.append("\\explorer.exe \"%s\"");
         }
-#elif LL_DARWIN
-        static const std::string os_cmd = "/usr/bin/open -t \"%s\"";
 #elif LL_LINUX
         static const std::string os_cmd = "/usr/bin/xdg-open \"%s\"";
 #endif

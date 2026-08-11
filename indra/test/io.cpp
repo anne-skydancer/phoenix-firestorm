@@ -352,42 +352,6 @@ namespace tut
         delete[] temp;
     }
 
-#if 0
-    template<> template<>
-    void buffer_object::test<9>()
-    {
-        char buffer[1024];  /* Flawfinder: ignore */
-        S32 size = sprintf(buffer,
-                        "%d|%d|%s|%s|%s|%s|%s|%x|%x|%x|%x|%x|%s|%s|%d|%d|%x",
-                        7,
-                        7,
-                        "Hang Glider INFO",
-                        "18e84d1e-04a4-4c0d-8cb6-6c73477f0a9a",
-                        "0e346d8b-4433-4d66-a6b0-fd37083abc4c",
-                        "0e346d8b-4433-4d66-a6b0-fd37083abc4c",
-                        "00000000-0000-0000-0000-000000000000",
-                        0x7fffffff,
-                        0x7fffffff,
-                        0,
-                        0,
-                        0x7fffffff,
-                        "69e0d357-2e7c-8990-a2bc-7f61c868e5a3",
-                        "2004-06-04 16:09:17 note card",
-                        0,
-                        10,
-                        0) + 1;
-
-        //const char* expected = "7|7|Hang Glider INFO|18e84d1e-04a4-4c0d-8cb6-6c73477f0a9a|0e346d8b-4433-4d66-a6b0-fd37083abc4c|0e346d8b-4433-4d66-a6b0-fd37083abc4c|00000000-0000-0000-0000-000000000000|7fffffff|7fffffff|0|0|7fffffff|69e0d357-2e7c-8990-a2bc-7f61c868e5a3|2004-06-04 16:09:17 note card|0|10|0\0";
-
-        LLSD* bin_bucket = LLIMInfo::buildSDfrombuffer((U8*)buffer,size);
-
-        char post_buffer[1024];
-        U32 post_size;
-        LLIMInfo::getBinaryBucket(bin_bucket,(U8*)post_buffer,post_size);
-        ensure_equals("Buffer sizes",size,(S32)post_size);
-        ensure("Buffer content",!strcmp(buffer,post_buffer));
-    }
-#endif
 
     /*
     template<> template<>

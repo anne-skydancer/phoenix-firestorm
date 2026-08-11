@@ -166,10 +166,6 @@ LLMenuItemGL::LLMenuItemGL(const LLMenuItemGL::Params& p)
     mHighlightBackground(p.highlight_bg_color()),
     mHighlightForeground(p.highlight_fg_color())
 {
-#ifdef LL_DARWIN
-    // See if this Mac accelerator should really use the ctrl key and not get mapped to cmd
-    bool useMacCtrl = p.use_mac_ctrl;
-#endif // LL_DARWIN
 
     std::string shortcut = p.shortcut;
 // <FS> Remap shortcuts on Linux
@@ -183,12 +179,6 @@ LLMenuItemGL::LLMenuItemGL(const LLMenuItemGL::Params& p)
 // </FS>
     if (shortcut.find("control") != shortcut.npos)
     {
-#ifdef LL_DARWIN
-        if ( useMacCtrl )
-        {
-            mAcceleratorMask |= MASK_MAC_CONTROL;
-        }
-#endif // LL_DARWIN
         mAcceleratorMask |= MASK_CONTROL;
     }
     if (shortcut.find("alt") != shortcut.npos)

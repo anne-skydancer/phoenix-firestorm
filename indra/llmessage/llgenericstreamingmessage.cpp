@@ -32,24 +32,6 @@
 
 void LLGenericStreamingMessage::send(LLMessageSystem* msg)
 {
-#if 0 // viewer cannot send GenericStreamingMessage
-    msg->newMessageFast(_PREHASH_GenericStreamingMessage);
-
-    if (mData.size() < 1024 * 7)
-    { // disable warning about big messages unless we're sending a REALLY big message
-        msg->tempDisableWarnAboutBigMessage();
-    }
-    else
-    {
-        LL_WARNS("Messaging") << "Attempted to send too large GenericStreamingMessage, dropping." << LL_ENDL;
-        return;
-    }
-
-    msg->nextBlockFast(_PREHASH_MethodData);
-    msg->addU16Fast(_PREHASH_Method, mMethod);
-    msg->nextBlockFast(_PREHASH_DataBlock);
-    msg->addStringFast(_PREHASH_Data, mData.c_str());
-#endif
 }
 
 void LLGenericStreamingMessage::unpack(LLMessageSystem* msg)

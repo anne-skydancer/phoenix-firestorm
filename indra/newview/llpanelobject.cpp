@@ -962,32 +962,6 @@ void LLPanelObject::getState( )
         F32 radius_offset = volume_params.getRadiusOffset();
         // Limit radius offset, based on taper and hole size y.
 //KC: Phoenix capability
-#if 0
-        F32 radius_mag = fabs(radius_offset);
-        F32 hole_y_mag = fabs(scale_y);
-        F32 taper_y_mag  = fabs(taper_y);
-        // Check to see if the taper effects us.
-        if ( (radius_offset > 0.f && taper_y < 0.f) ||
-             (radius_offset < 0.f && taper_y > 0.f) )
-        {
-            // The taper does not help increase the radius offset range.
-            taper_y_mag = 0.f;
-        }
-        F32 max_radius_mag = 1.f - hole_y_mag * (1.f - taper_y_mag) / (1.f - hole_y_mag);
-        // Enforce the maximum magnitude.
-        if (radius_mag > max_radius_mag)
-        {
-            // Check radius offset sign.
-            if (radius_offset < 0.f)
-            {
-                radius_offset = -max_radius_mag;
-            }
-            else
-            {
-                radius_offset = max_radius_mag;
-            }
-        }
-#endif
         mSpinRadiusOffset->set( radius_offset);
         calcp->setVar(LLCalc::RADIUS_OFFSET, radius_offset);
 
@@ -1000,27 +974,6 @@ void LLPanelObject::getState( )
         F32 skew    = volume_params.getSkew();
         // Limit skew, based on revolutions hole size x.
 //KC: Phoenix capability
-#if 0
-        F32 skew_mag= fabs(skew);
-        F32 min_skew_mag = 1.0f - 1.0f / (revolutions * scale_x + 1.0f);
-        // Discontinuity; A revolution of 1 allows skews below 0.5.
-        if ( fabs(revolutions - 1.0f) < 0.001)
-            min_skew_mag = 0.0f;
-
-        // Clip skew.
-        if (skew_mag < min_skew_mag)
-        {
-            // Check skew sign.
-            if (skew < 0.0f)
-            {
-                skew = -min_skew_mag;
-            }
-            else
-            {
-                skew = min_skew_mag;
-            }
-        }
-#endif
         mSpinSkew->set( skew );
         calcp->setVar(LLCalc::SKEW, skew);
     }
@@ -1188,17 +1141,6 @@ void LLPanelObject::getState( )
 
     // Check if we need to limit the hollow based on the hole type.
 //KC: Phoenix capability
-#if 0
-    if (  selected_hole == MI_HOLE_SQUARE &&
-          ( selected_item == MI_CYLINDER || selected_item == MI_TORUS ||
-            selected_item == MI_PRISM    || selected_item == MI_RING  ||
-            selected_item == MI_SPHERE ) )
-    {
-        mSpinHollow->setMinValue(0.f);
-        mSpinHollow->setMaxValue(70.f);
-    }
-    else
-#endif
     {
         mSpinHollow->setMinValue(0.f);
 //      mSpinHollow->setMaxValue(100.f);
@@ -1972,15 +1914,6 @@ void LLPanelObject::getVolumeParams(LLVolumeParams& volume_params)
     F32 hollow = mSpinHollow->get() / 100.f;
 
 //KC: Phoenix capability
-#if 0
-    if (  selected_hole == MI_HOLE_SQUARE &&
-        ( selected_type == MI_CYLINDER || selected_type == MI_TORUS ||
-          selected_type == MI_PRISM    || selected_type == MI_RING  ||
-          selected_type == MI_SPHERE ) )
-    {
-        if (hollow > 0.7f) hollow = 0.7f;
-    }
-#endif
 
     volume_params.setHollow( hollow );
 
@@ -2025,80 +1958,6 @@ void LLPanelObject::getVolumeParams(LLVolumeParams& volume_params)
     F32 revolutions   = mSpinRevolutions->get();
 
 //KC: Phoenix capability
-#if 0
-    if ( selected_type == MI_SPHERE )
-    {
-        // Snap values to valid sphere parameters.
-        scale_x         = 1.0f;
-        scale_y         = 1.0f;
-        skew            = 0.0f;
-        taper_x         = 0.0f;
-        taper_y         = 0.0f;
-        radius_offset   = 0.0f;
-        revolutions     = 1.0f;
-    }
-    else if ( selected_type == MI_TORUS || selected_type == MI_TUBE ||
-              selected_type == MI_RING )
-    {
-        scale_x = llclamp(
-            scale_x,
-//          OBJECT_MIN_HOLE_SIZE,
-            mMinHoleSize,// <AW: opensim-limits>
-            OBJECT_MAX_HOLE_SIZE_X);
-        scale_y = llclamp(
-            scale_y,
-//          OBJECT_MIN_HOLE_SIZE,
-            mMinHoleSize,// <AW: opensim-limits>
-            OBJECT_MAX_HOLE_SIZE_Y);
-
-        // Limit radius offset, based on taper and hole size y.
-        F32 radius_mag = fabs(radius_offset);
-        F32 hole_y_mag = fabs(scale_y);
-        F32 taper_y_mag  = fabs(taper_y);
-        // Check to see if the taper effects us.
-        if ( (radius_offset > 0.f && taper_y < 0.f) ||
-             (radius_offset < 0.f && taper_y > 0.f) )
-        {
-            // The taper does not help increase the radius offset range.
-            taper_y_mag = 0.f;
-        }
-        F32 max_radius_mag = 1.f - hole_y_mag * (1.f - taper_y_mag) / (1.f - hole_y_mag);
-        // Enforce the maximum magnitude.
-        if (radius_mag > max_radius_mag)
-        {
-            // Check radius offset sign.
-            if (radius_offset < 0.f)
-            {
-                radius_offset = -max_radius_mag;
-            }
-            else
-            {
-                radius_offset = max_radius_mag;
-            }
-        }
-
-        // Check the skew value against the revolutions.
-        F32 skew_mag= fabs(skew);
-        F32 min_skew_mag = 1.0f - 1.0f / (revolutions * scale_x + 1.0f);
-        // Discontinuity; A revolution of 1 allows skews below 0.5.
-        if ( fabs(revolutions - 1.0f) < 0.001)
-            min_skew_mag = 0.0f;
-
-        // Clip skew.
-        if (skew_mag < min_skew_mag)
-        {
-            // Check skew sign.
-            if (skew < 0.0f)
-            {
-                skew = -min_skew_mag;
-            }
-            else
-            {
-                skew = min_skew_mag;
-            }
-        }
-    }
-#endif
 
     volume_params.setRatio( scale_x, scale_y );
     volume_params.setSkew(skew);

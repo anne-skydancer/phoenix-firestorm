@@ -52,12 +52,6 @@ void FSFloaterWhiteListHelper::populateWhitelistInfo()
     gDirUtilp->append(voiceexe_path, "SLVoice.exe");
     std::string dullahan_path = gDirUtilp->getLLPluginDir();
     std::string dullahan_exe =  "dullahan_host.exe";
-#elif LL_DARWIN
-    // On MAC use resource directory
-    std::string voiceexe_path = gDirUtilp->getAppRODataDir();
-    gDirUtilp->append(voiceexe_path, "SLVoice");
-    std::string dullahan_path = ""; // ignore dullahan on mac until we can identify it accurately
-    std::string dullahan_exe = "";
 #else
     std::string voiceexe_path = gDirUtilp->getExecutableDir();
     bool usingWine = gSavedSettings.getBOOL("FSLinuxEnableWin64VoiceProxy");

@@ -631,10 +631,6 @@ LLViewerPartGroup *LLViewerPartSim::put(LLViewerPart* part)
     LLViewerPartGroup *return_group = NULL ;
     if (part->mPosAgent.magVecSquared() > MAX_MAG || !part->mPosAgent.isFinite())
     {
-#if 0 && !LL_RELEASE_FOR_DOWNLOAD
-        LL_WARNS() << "LLViewerPartSim::put Part out of range!" << LL_ENDL;
-        LL_WARNS() << part->mPosAgent << LL_ENDL;
-#endif
     }
     else
     {

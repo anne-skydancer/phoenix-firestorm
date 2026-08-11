@@ -2091,25 +2091,6 @@ file_extensions[] =
     { "png", IMG_CODEC_PNG }
 };
 #define NUM_FILE_EXTENSIONS LL_ARRAY_SIZE(file_extensions)
-#if 0
-static std::string find_file(std::string &name, S8 *codec)
-{
-    std::string tname;
-    for (int i=0; i<(int)(NUM_FILE_EXTENSIONS); i++)
-    {
-        tname = name + "." + std::string(file_extensions[i].exten);
-        llifstream ifs(tname.c_str(), llifstream::binary);
-        if (ifs.is_open())
-        {
-            ifs.close();
-            if (codec)
-                *codec = file_extensions[i].codec;
-            return std::string(file_extensions[i].exten);
-        }
-    }
-    return std::string("");
-}
-#endif
 EImageCodec LLImageBase::getCodecFromExtension(const std::string& exten)
 {
     if (!exten.empty())
@@ -2122,93 +2103,6 @@ EImageCodec LLImageBase::getCodecFromExtension(const std::string& exten)
     }
     return IMG_CODEC_INVALID;
 }
-#if 0
-bool LLImageRaw::createFromFile(const std::string &filename, bool j2c_lowest_mip_only)
-{
-    std::string name = filename;
-    size_t dotidx = name.rfind('.');
-    S8 codec = IMG_CODEC_INVALID;
-    std::string exten;
-
-    deleteData(); // delete any existing data
-
-    if (dotidx != std::string::npos)
-    {
-        exten = name.substr(dotidx+1);
-        LLStringUtil::toLower(exten);
-        codec = getCodecFromExtension(exten);
-    }
-    else
-    {
-        exten = find_file(name, &codec);
-        name = name + "." + exten;
-    }
-    if (codec == IMG_CODEC_INVALID)
-    {
-        return false; // format not recognized
-    }
-
-    llifstream ifs(name.c_str(), llifstream::binary);
-    if (!ifs.is_open())
-    {
-        // SJB: changed from LL_INFOS() to LL_DEBUGS() to reduce spam
-        LL_DEBUGS() << "Unable to open image file: " << name << LL_ENDL;
-        return false;
-    }
-
-    ifs.seekg (0, std::ios::end);
-    int length = ifs.tellg();
-    if (j2c_lowest_mip_only && length > 2048)
-    {
-        length = 2048;
-    }
-    ifs.seekg (0, std::ios::beg);
-
-    if (!length)
-    {
-        LL_INFOS() << "Zero length file file: " << name << LL_ENDL;
-        return false;
-    }
-
-    LLPointer<LLImageFormatted> image = LLImageFormatted::createFromType(codec);
-    llassert(image.notNull());
-
-    U8 *buffer = image->allocateData(length);
-    ifs.read ((char*)buffer, length);
-    ifs.close();
-
-    bool success;
-
-    success = image->updateData();
-    if (success)
-    {
-        if (j2c_lowest_mip_only && codec == IMG_CODEC_J2C)
-        {
-            S32 width = image->getWidth();
-            S32 height = image->getHeight();
-            S32 discard_level = 0;
-            while (width > 1 && height > 1 && discard_level < MAX_DISCARD_LEVEL)
-            {
-                width >>= 1;
-                height >>= 1;
-                discard_level++;
-            }
-            ((LLImageJ2C *)((LLImageFormatted*)image))->setDiscardLevel(discard_level);
-        }
-        success = image->decode(this, 100000.0f);
-    }
-
-    image = NULL; // deletes image
-    if (!success)
-    {
-        deleteData();
-        LL_WARNS() << "Unable to decode image" << name << LL_ENDL;
-        return false;
-    }
-
-    return true;
-}
-#endif
 //---------------------------------------------------------------------------
 // LLImageFormatted
 //---------------------------------------------------------------------------

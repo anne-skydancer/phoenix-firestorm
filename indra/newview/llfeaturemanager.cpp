@@ -64,16 +64,12 @@
 #include <boost/filesystem.hpp>
 // </FS:Techwolf Lupindo>
 
-#if LL_DARWIN
-const char FEATURE_TABLE_FILENAME[] = "featuretable_mac.txt";
-#elif LL_LINUX
+#if LL_LINUX
 const char FEATURE_TABLE_FILENAME[] = "featuretable_linux.txt";
 #else
 const char FEATURE_TABLE_FILENAME[] = "featuretable.txt";
 #endif
 
-#if 0                               // consuming code in #if 0 below
-#endif
 LLFeatureInfo::LLFeatureInfo(const std::string& name, const bool available, const F32 level)
     : mValid(true), mName(name), mAvailable(available), mRecommendedLevel(level)
 {
@@ -489,13 +485,7 @@ bool LLFeatureManager::loadGPUClass()
 
         if (gbps < 0.f)
         { //couldn't bench, default to Low
-    #if LL_DARWIN
-        //GLVersion is misleading on OSX, just default to class 3 if we can't bench
-        LL_WARNS("RenderInit") << "Unable to get an accurate benchmark; defaulting to class 3" << LL_ENDL;
-        mGPUClass = GPU_CLASS_3;
-    #else
             mGPUClass = GPU_CLASS_0;
-    #endif
         }
         else if (gbps <= class1_gbps)
         {
@@ -713,11 +703,7 @@ void LLFeatureManager::applyBaseMasks()
         maskFeatures("Intel");
 
         static constexpr F32 TARGET_GL_VERSION =
-#if LL_DARWIN
-            4.09f;
-#else
             4.59f;
-#endif
 
         // check against 3.33 to avoid applying this fallback twice
         if (gGLManager.mGLVersion < TARGET_GL_VERSION && gGLManager.mGLVersion > 3.33f)

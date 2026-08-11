@@ -878,14 +878,6 @@ LLViewerRegion* LLWorld::getRegionFromID(const LLUUID& region_id)
 
 void LLWorld::updateAgentOffset(const LLVector3d &offset_global)
 {
-#if 0
-    for (region_list_t::iterator iter = mRegionList.begin();
-         iter != mRegionList.end(); ++iter)
-    {
-        LLViewerRegion* regionp = *iter;
-        regionp->setAgentOffset(offset_global);
-    }
-#endif
 }
 
 

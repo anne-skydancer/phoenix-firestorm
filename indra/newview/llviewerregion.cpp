@@ -390,9 +390,6 @@ void LLViewerRegionImpl::requestBaseCapabilitiesCoro(U64 regionHandle)
                 << "Capability '" << iter->first << "' is '" << iter->second << "'" << LL_ENDL;
         }
 
-#if 0
-        log_capabilities(mCapabilities);
-#endif
 
         LL_DEBUGS("AppInit", "Capabilities", "Teleport") << "received caps for handle " << regionHandle
                                                          << " region name " << regionp->getName() << LL_ENDL;
@@ -499,9 +496,6 @@ void LLViewerRegionImpl::requestBaseCapabilitiesCompleteCoro(U64 regionHandle)
             //LL_INFOS()<<"BaseCapabilitiesCompleteTracker New Caps "<<iter->first<<" "<< iter->second<<LL_ENDL;
         }
 
-#if 0
-        log_capabilities(impl->mCapabilities);
-#endif
 
         if (impl->mCapabilities.size() != impl->mSecondCapabilitiesTracker.size())
         {
@@ -789,9 +783,6 @@ LLViewerRegion::~LLViewerRegion()
     delete mParcelOverlay;
     delete mImpl->mLandp;
     delete mImpl->mEventPoll;
-#if 0
-    LLHTTPSender::clearSender(mImpl->mHost);
-#endif
     std::for_each(mImpl->mObjectPartition.begin(), mImpl->mObjectPartition.end(), DeletePointer());
 
     {

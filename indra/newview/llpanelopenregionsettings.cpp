@@ -166,20 +166,6 @@ class OpenRegionInfoUpdate : public LLHTTPNode
         {
             regionlimits->setAllowRenderWater(body["RenderWater"].asInteger() == 1 ? true : false);
         }
-#if 0 // *FIXME
-        if ( body.has("SayDistance") )
-        {
-            regionlimits->setSayDistance(body["SayDistance"].asReal());
-        }
-        if ( body.has("ShoutDistance") )
-        {
-            regionlimits->setShoutDistance(body["ShoutDistance"].asReal());
-        }
-        if ( body.has("WhisperDistance") )
-        {
-            regionlimits->setWhisperDistance(body["WhisperDistance"].asReal());
-        }
-#endif // FIXME
         if ( body.has("ToggleTeenMode") )
         {
             regionlimits->setEnableTeenMode(body["ToggleTeenMode"].asInteger() == 1 ? true : false);

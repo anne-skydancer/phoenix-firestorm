@@ -467,27 +467,6 @@ LLSD HttpCoroLLSDHandler::handleSuccess(LLCore::HttpResponse * response, LLCore:
 
     result = parseBody(response, success);
 
-#if 0
-    bool parsed = !((response->getBodySize() == 0) ||
-        !LLCoreHttpUtil::responseToLLSD(response, emit_parse_errors, result));
-
-    if (!parsed)
-    {
-        // Only emit a warning if we failed to parse when 'content-type' == 'application/llsd+xml'
-        LLCore::HttpHeaders::ptr_t headers(response->getHeaders());
-        const std::string *contentType = (headers) ? headers->find(HTTP_IN_HEADER_CONTENT_TYPE) : NULL;
-
-        if (contentType && (HTTP_CONTENT_LLSD_XML == *contentType))
-        {
-            std::string thebody = LLCoreHttpUtil::responseToString(response);
-            LL_WARNS("CoreHTTP") << "Failed to deserialize . " << response->getRequestURL() << " [status:" << response->getStatus().toString() << "] "
-                << " body: " << thebody << LL_ENDL;
-
-            // Replace the status with a new one indicating the failure.
-            status = LLCore::HttpStatus(499, "Failed to deserialize LLSD.");
-        }
-    }
-#endif
 
     if (!success)
     {

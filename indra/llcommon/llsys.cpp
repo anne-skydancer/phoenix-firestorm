@@ -59,20 +59,6 @@ using namespace llsd;
 #   include "llwin32headers.h"
 #   include <psapi.h>               // GetPerformanceInfo() et al.
 #   include <VersionHelpers.h>
-#elif LL_DARWIN
-#   include "llsys_objc.h"
-#   include <errno.h>
-#   include <sys/sysctl.h>
-#   include <sys/utsname.h>
-#   include <stdint.h>
-#   include <CoreServices/CoreServices.h>
-#   include <stdexcept>
-#   include <mach/host_info.h>
-#   include <mach/mach_host.h>
-#   include <mach/task.h>
-#   include <mach/task_info.h>
-#   include <sys/types.h>
-#   include <mach/mach_init.h>
 #elif LL_LINUX
 #   include <errno.h>
 #   include <sys/utsname.h>
@@ -268,53 +254,6 @@ LLOSInfo::LLOSInfo() :
 
     LLStringUtil::trim(mOSStringSimple);
     LLStringUtil::trim(mOSString);
-
-#elif LL_DARWIN
-
-    // Initialize mOSStringSimple to something like:
-    // "macOS 10.13.1"
-    {
-        const char * DARWIN_PRODUCT_NAME = "macOS";
-
-        int64_t major_version, minor_version, bugfix_version = 0;
-
-        if (LLGetDarwinOSInfo(major_version, minor_version, bugfix_version))
-        {
-            mMajorVer = major_version;
-            mMinorVer = minor_version;
-            mBuild = bugfix_version;
-
-            std::stringstream os_version_string;
-            os_version_string << DARWIN_PRODUCT_NAME << " " << mMajorVer << "." << mMinorVer << "." << mBuild;
-
-            // Put it in the OS string we are compiling
-            mOSStringSimple.append(os_version_string.str());
-        }
-        else
-        {
-            mOSStringSimple.append("Unable to collect OS info");
-        }
-    }
-
-    // Initialize mOSString to something like:
-    // "macOS 10.13.1 Darwin Kernel Version 10.7.0: Sat Jan 29 15:17:16 PST 2011; root:xnu-1504.9.37~1/RELEASE_I386 i386"
-    struct utsname un;
-    if(uname(&un) != -1)
-    {
-        mOSString = mOSStringSimple;
-        mOSString.append(" ");
-        mOSString.append(un.sysname);
-        mOSString.append(" ");
-        mOSString.append(un.release);
-        mOSString.append(" ");
-        mOSString.append(un.version);
-        mOSString.append(" ");
-        mOSString.append(un.machine);
-    }
-    else
-    {
-        mOSString = mOSStringSimple;
-    }
 
 #elif LL_LINUX
 
@@ -774,28 +713,11 @@ static U32Kilobytes LLMemoryAdjustKBResult(U32Kilobytes inKB)
 }
 #endif
 
-#if LL_DARWIN
-// static
-U32Kilobytes LLMemoryInfo::getHardwareMemSize()
-{
-    // This might work on Linux as well.  Someone check...
-    uint64_t phys = 0;
-    int mib[2] = { CTL_HW, HW_MEMSIZE };
-
-    size_t len = sizeof(phys);
-    sysctl(mib, 2, &phys, &len, NULL, 0);
-
-    return U64Bytes(phys);
-}
-#endif
 
 U32Kilobytes LLMemoryInfo::getPhysicalMemoryKB() const
 {
 #if LL_WINDOWS
     return LLMemoryAdjustKBResult(U32Kilobytes(mStatsMap["Total Physical KB"].asInteger()));
-
-#elif LL_DARWIN
-    return getHardwareMemSize();
 
 #elif LL_LINUX
     U64 phys = 0;
@@ -819,23 +741,6 @@ void LLMemoryInfo::getAvailableMemoryKB(U32Kilobytes& avail_mem_kb)
     LLSD statsMap(loadStatsMap());
 
     avail_mem_kb = (U32Kilobytes)statsMap["Avail Physical KB"].asInteger();
-
-#elif LL_DARWIN
-    // use host_statistics64 to get memory info
-    vm_statistics64_data_t vmstat;
-    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
-    mach_port_t host = mach_host_self();
-    vm_size_t page_size;
-    host_page_size(host, &page_size);
-    kern_return_t result = host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info_t>(&vmstat), &count);
-    if (result == KERN_SUCCESS)
-    {
-        avail_mem_kb = U64Bytes((vmstat.free_count + vmstat.inactive_count) * page_size);
-    }
-    else
-    {
-        avail_mem_kb = (U32Kilobytes)-1;
-    }
 
 #elif LL_LINUX
     // mStatsMap is derived from MEMINFO_FILE:
@@ -1008,92 +913,6 @@ LLSD LLMemoryInfo::loadStatsMap()
     stats.add("PagefileUsage KB",              pmem.PagefileUsage/div);
     stats.add("PeakPagefileUsage KB",          pmem.PeakPagefileUsage/div);
     stats.add("PrivateUsage KB",               pmem.PrivateUsage/div);
-
-#elif LL_DARWIN
-
-    const vm_size_t pagekb(vm_page_size / 1024);
-
-    //
-    // Collect the vm_stat's
-    //
-
-    {
-        vm_statistics64_data_t vmstat;
-        mach_msg_type_number_t vmstatCount = HOST_VM_INFO64_COUNT;
-
-        if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vmstat, &vmstatCount) != KERN_SUCCESS)
-    {
-            LL_WARNS("LLMemoryInfo") << "Unable to collect memory information" << LL_ENDL;
-        }
-        else
-        {
-            stats.add("Pages free KB",      pagekb * vmstat.free_count);
-            stats.add("Pages active KB",    pagekb * vmstat.active_count);
-            stats.add("Pages inactive KB",  pagekb * vmstat.inactive_count);
-            stats.add("Pages wired KB",     pagekb * vmstat.wire_count);
-
-            stats.add("Pages zero fill",        vmstat.zero_fill_count);
-            stats.add("Page reactivations",     vmstat.reactivations);
-            stats.add("Page-ins",               vmstat.pageins);
-            stats.add("Page-outs",              vmstat.pageouts);
-
-            stats.add("Faults",                 vmstat.faults);
-            stats.add("Faults copy-on-write",   vmstat.cow_faults);
-
-            stats.add("Cache lookups",          vmstat.lookups);
-            stats.add("Cache hits",             vmstat.hits);
-
-            stats.add("Page purgeable count",   vmstat.purgeable_count);
-            stats.add("Page purges",            vmstat.purges);
-
-            stats.add("Page speculative reads", vmstat.speculative_count);
-        }
-    }
-
-    //
-    // Collect the misc task info
-    //
-
-        {
-        task_events_info_data_t taskinfo;
-        unsigned taskinfoSize = sizeof(taskinfo);
-
-        if (task_info(mach_task_self(), TASK_EVENTS_INFO, (task_info_t) &taskinfo, &taskinfoSize) != KERN_SUCCESS)
-                    {
-            LL_WARNS("LLMemoryInfo") << "Unable to collect task information" << LL_ENDL;
-            }
-            else
-            {
-            stats.add("Task page-ins",                  taskinfo.pageins);
-            stats.add("Task copy-on-write faults",      taskinfo.cow_faults);
-            stats.add("Task messages sent",             taskinfo.messages_sent);
-            stats.add("Task messages received",         taskinfo.messages_received);
-            stats.add("Task mach system call count",    taskinfo.syscalls_mach);
-            stats.add("Task unix system call count",    taskinfo.syscalls_unix);
-            stats.add("Task context switch count",      taskinfo.csw);
-            }
-    }
-
-    //
-    // Collect the basic task info
-    //
-
-        {
-            mach_task_basic_info_data_t taskinfo;
-            mach_msg_type_number_t task_count = MACH_TASK_BASIC_INFO_COUNT;
-            if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t) &taskinfo, &task_count) != KERN_SUCCESS)
-            {
-                LL_WARNS("LLMemoryInfo") << "Unable to collect task information" << LL_ENDL;
-            }
-            else
-            {
-                stats.add("Basic virtual memory KB", taskinfo.virtual_size / 1024);
-                stats.add("Basic resident memory KB", taskinfo.resident_size / 1024);
-                stats.add("Basic max resident memory KB", taskinfo.resident_size_max / 1024);
-                stats.add("Basic new thread policy", taskinfo.policy);
-                stats.add("Basic suspend count", taskinfo.suspend_count);
-            }
-    }
 
 #elif LL_LINUX
     std::ifstream meminfo(MEMINFO_FILE);

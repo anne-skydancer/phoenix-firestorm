@@ -1636,14 +1636,6 @@ void LLPipeline::createLUTBuffers()
         }
 
         U32 pix_format = GL_R16F;
-#if LL_DARWIN
-        if(!gGLManager.mIsApple)
-        {
-            // Need to work around limited precision with 10.6.8 and older drivers
-            //
-            pix_format = GL_R32F;
-        }
-#endif
         LLImageGL::generateTextures(1, &mLightFunc);
         gGL.getTexUnit(0)->bindManual(LLTexUnit::TT_TEXTURE, mLightFunc);
         LLImageGL::setManualImage(LLTexUnit::getInternalType(LLTexUnit::TT_TEXTURE), 0, pix_format, lightResX, lightResY, GL_RED, GL_FLOAT, ls, false);
@@ -2429,68 +2421,10 @@ void check_references(LLSpatialGroup* group, LLFace* face)
 
 void LLPipeline::checkReferences(LLFace* face)
 {
-#if 0
-    if (sCull)
-    {
-        for (LLCullResult::sg_iterator iter = sCull->beginVisibleGroups(); iter != sCull->endVisibleGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, face);
-        }
-
-        for (LLCullResult::sg_iterator iter = sCull->beginAlphaGroups(); iter != sCull->endAlphaGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, face);
-        }
-
-        for (LLCullResult::sg_iterator iter = sCull->beginDrawableGroups(); iter != sCull->endDrawableGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, face);
-        }
-
-        for (LLCullResult::drawable_iterator iter = sCull->beginVisibleList(); iter != sCull->endVisibleList(); ++iter)
-        {
-            LLDrawable* drawable = *iter;
-            check_references(drawable, face);
-        }
-    }
-#endif
 }
 
 void LLPipeline::checkReferences(LLDrawable* drawable)
 {
-#if 0
-    if (sCull)
-    {
-        for (LLCullResult::sg_iterator iter = sCull->beginVisibleGroups(); iter != sCull->endVisibleGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, drawable);
-        }
-
-        for (LLCullResult::sg_iterator iter = sCull->beginAlphaGroups(); iter != sCull->endAlphaGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, drawable);
-        }
-
-        for (LLCullResult::sg_iterator iter = sCull->beginDrawableGroups(); iter != sCull->endDrawableGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, drawable);
-        }
-
-        for (LLCullResult::drawable_iterator iter = sCull->beginVisibleList(); iter != sCull->endVisibleList(); ++iter)
-        {
-            if (drawable == *iter)
-            {
-                LL_ERRS() << "LLDrawable deleted while actively referenced by LLPipeline." << LL_ENDL;
-            }
-        }
-    }
-#endif
 }
 
 void check_references(LLSpatialGroup* group, LLDrawInfo* draw_info)
@@ -2512,28 +2446,6 @@ void check_references(LLSpatialGroup* group, LLDrawInfo* draw_info)
 
 void LLPipeline::checkReferences(LLDrawInfo* draw_info)
 {
-#if 0
-    if (sCull)
-    {
-        for (LLCullResult::sg_iterator iter = sCull->beginVisibleGroups(); iter != sCull->endVisibleGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, draw_info);
-        }
-
-        for (LLCullResult::sg_iterator iter = sCull->beginAlphaGroups(); iter != sCull->endAlphaGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, draw_info);
-        }
-
-        for (LLCullResult::sg_iterator iter = sCull->beginDrawableGroups(); iter != sCull->endDrawableGroups(); ++iter)
-        {
-            LLSpatialGroup* group = *iter;
-            check_references(group, draw_info);
-        }
-    }
-#endif
 }
 
 void LLPipeline::checkReferences(LLSpatialGroup* group)

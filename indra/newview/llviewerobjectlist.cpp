@@ -706,12 +706,6 @@ void LLViewerObjectList::processObjectUpdate(LLMessageSystem *mesgsys,
 
         // Gah, why bother spamming the log with messages we can't do
         //  anything about?! -- TS
-#if 0
-        if (objectp->isDead())
-        {
-            LL_WARNS() << "Dead object " << objectp->mID << " in UUID map 1!" << LL_ENDL;
-        }
-#endif
 
         //bool bCached = false;
         if (compressed)
@@ -722,20 +716,6 @@ void LLViewerObjectList::processObjectUpdate(LLMessageSystem *mesgsys,
             }
             processUpdateCore(objectp, user_data, i, update_type, &compressed_dp, justCreated);
 
-#if 0
-            if (update_type != OUT_TERSE_IMPROVED) // OUT_FULL_COMPRESSED only?
-            {
-                U32 flags = 0;
-                mesgsys->getU32Fast(_PREHASH_ObjectData, _PREHASH_UpdateFlags, flags, i);
-
-                if(!(flags & FLAGS_TEMPORARY_ON_REZ))
-                {
-                    bCached = true;
-                    LLViewerRegion::eCacheUpdateResult result = objectp->mRegionp->cacheFullUpdate(objectp, compressed_dp, flags);
-                    recorder.cacheFullUpdate(result);
-                }
-            }
-#endif
         }
         else
         {
@@ -879,27 +859,6 @@ void LLViewerObjectList::updateApparentAngles(LLAgent &agent)
         mCurBin = (mCurBin + 1) % NUM_BINS;
     }
 
-#if 0
-    // Slam priorities for textures that we care about (hovered, selected, and focused)
-    // Hovered
-    // Assumes only one level deep of parenting
-    LLSelectNode* nodep = LLSelectMgr::instance().getHoverNode();
-    if (nodep)
-    {
-        objectp = nodep->getObject();
-        if (objectp)
-        {
-            objectp->boostTexturePriority();
-        }
-    }
-
-    // Focused
-    objectp = gAgentCamera.getFocusObject();
-    if (objectp)
-    {
-        objectp->boostTexturePriority();
-    }
-#endif
 
     // Selected
     struct f : public LLSelectedObjectFunctor

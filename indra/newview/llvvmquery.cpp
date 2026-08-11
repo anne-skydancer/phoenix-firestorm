@@ -47,8 +47,6 @@ namespace
     {
 #if LL_WINDOWS
         return "win64";
-#elif LL_DARWIN
-        return "mac64";
 #elif LL_LINUX
         return "lnx64";
 #else

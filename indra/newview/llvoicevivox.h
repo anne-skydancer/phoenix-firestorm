@@ -529,15 +529,6 @@ protected:
     participantStatePtr_t findParticipantByID(const LLUUID& id);
 
 
-#if 0
-    ////////////////////////////////////////
-    // voice sessions.
-    typedef std::set<sessionStatePtr_t> sessionSet;
-
-    typedef sessionSet::iterator sessionIterator;
-    sessionIterator sessionsBegin(void);
-    sessionIterator sessionsEnd(void);
-#endif
 
     sessionStatePtr_t findSession(const std::string &handle);
     sessionStatePtr_t findSessionBeingCreatedByURI(const std::string &uri);
@@ -726,9 +717,6 @@ private:
     int mLoginRetryCount;
 
     sessionMap mSessionsByHandle;               // Active sessions, indexed by session handle.  Sessions which are being initiated may not be in this map.
-#if 0
-    sessionSet mSessions;                       // All sessions, not indexed.  This is the canonical session list.
-#endif
 
     bool mBuddyListMapPopulated;
     bool mBlockRulesListReceived;
@@ -771,11 +759,6 @@ private:
 
     void sendFriendsListUpdates();
 
-#if 0
-    // start a text IM session with the specified user
-    // This will be asynchronous, the session may be established at a future time.
-    sessionStatePtr_t startUserIMSession(const LLUUID& uuid);
-#endif
 
     void enforceTether(void);
 

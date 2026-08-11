@@ -456,12 +456,6 @@ void LLVOTree::setPixelAreaAndAngle(LLAgent &agent)
         mAppAngle = 180.f;
     }
 
-#if 0
-    // mAppAngle is a bit of voodoo;
-    // use the one calculated LLViewerObject::setPixelAreaAndAngle above
-    // to avoid LOD miscalculations
-    mAppAngle = (F32) atan2( max_scale, range) * RAD_TO_DEG;
-#endif
 }
 
 void LLVOTree::updateTextures()

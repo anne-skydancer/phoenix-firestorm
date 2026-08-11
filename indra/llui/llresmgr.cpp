@@ -238,9 +238,6 @@ void LLResMgr::getIntegerString( std::string& output, S32 input ) const
 #if LL_WINDOWS
 const std::string LLLocale::USER_LOCALE("English_United States.1252");// = LLStringUtil::null;
 const std::string LLLocale::SYSTEM_LOCALE("English_United States.1252");
-#elif LL_DARWIN
-const std::string LLLocale::USER_LOCALE("en_US.iso8859-1");// = LLStringUtil::null;
-const std::string LLLocale::SYSTEM_LOCALE("en_US.iso8859-1");
 #else // LL_LINUX likes this
 const std::string LLLocale::USER_LOCALE("en_US.utf8");
 const std::string LLLocale::SYSTEM_LOCALE("C");

@@ -1404,11 +1404,7 @@ void LLPanelPeople::onAvatarListDoubleClicked(LLUICtrl* ctrl)
     //}
 // [/RLVa:KB]
 
-#if 0 // SJB: Useful for testing, but not currently functional or to spec
-    LLAvatarActions::showProfile(clicked_id);
-#else // spec says open IM window
     LLAvatarActions::startIM(clicked_id);
-#endif
 }
 
 

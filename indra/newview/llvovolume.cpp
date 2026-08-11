@@ -5746,10 +5746,6 @@ void LLVolumeGeometryManager::registerFace(LLSpatialGroup* group, LLFace* facep,
         info->mVertexBuffer == facep->getVertexBuffer() &&
         info->mEnd == facep->getGeomIndex()-1 &&
         (LLPipeline::sTextureBindTest || draw_vec[idx]->mTexture == tex || batchable) &&
-#if LL_DARWIN
-        info->mEnd - draw_vec[idx]->mStart + facep->getGeomCount() <= (U32) gGLManager.mGLMaxVertexRange &&
-        info->mCount + facep->getIndicesCount() <= (U32) gGLManager.mGLMaxIndexRange &&
-#endif
         info->mMaterialID == mat_id &&
         info->mFullbright == fullbright &&
         info->mBump == bump &&
@@ -5973,9 +5969,6 @@ void LLVolumeGeometryManager::rebuildGeom(LLSpatialGroup* group)
     //Determine if we've received skininfo that contains an
     //alternate bind matrix - if it does then apply the translational component
     //to the joints of the avatar.
-#if 0
-    bool pelvisGotSet = false;
-#endif
 
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_VOLUME("rebuildGeom - face list");

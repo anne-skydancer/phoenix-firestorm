@@ -281,12 +281,6 @@ const char* getBuildPlatformString()
     #endif // _WIN64
 #elif LL_SDL
             return "Linux64";
-#elif LL_DARWIN
-        #if ( defined(__amd64__) || defined(__x86_64__) )
-            return "Darwin64";
-        #else
-            return "Darwin";
-        #endif
 #else
             return "Unknown";
 #endif

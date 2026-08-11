@@ -749,35 +749,6 @@ MediaPluginGStreamer010::load()
                        this);
     llgst_object_unref (bus);
 
-#if 0 // not quite stable/correct yet
-    // get a visualizer element (bonus feature!)
-    char* vis_name = getenv("LL_GST_VIS_NAME");
-    if (!vis_name ||
-        (vis_name && std::string(vis_name)!="none"))
-    {
-        if (vis_name)
-        {
-            mVisualizer = llgst_element_factory_make (vis_name, "vis");
-        }
-        if (!mVisualizer)
-        {
-            mVisualizer = llgst_element_factory_make ("libvisual_jess", "vis");
-            if (!mVisualizer)
-            {
-                mVisualizer = llgst_element_factory_make ("goom", "vis");
-                if (!mVisualizer)
-                {
-                    mVisualizer = llgst_element_factory_make ("libvisual_lv_scope", "vis");
-                    if (!mVisualizer)
-                    {
-                        // That's okay, we don't NEED this.
-                    }
-                }
-            }
-        }
-    }
-#endif
-
     if (NULL == getenv("LL_GSTREAMER_EXTERNAL")) {
         // instantiate a custom video sink
         mVideoSink =

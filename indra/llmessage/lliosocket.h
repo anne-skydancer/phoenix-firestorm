@@ -345,42 +345,5 @@ protected:
     F32 mResponseTimeout;
 };
 
-#if 0
-/**
- * @class LLIODataSocket
- * @brief BRIEF_DESC
- *
- * THOROUGH_DESCRIPTION
- */
-class LLIODataSocket : public LLIOSocket
-{
-public:
-    /**
-     * @brief Construct a datagram socket.
-     *
-     * If you pass in LLIOSocket::PORT_EPHEMERAL as the suggested
-     * port, The socket will not be in a 'listen' mode, but can still
-     * read data sent back to it's port. When suggested_port is not
-     * ephemeral or invalid and bind fails, the port discovery
-     * algorithm will search through a limited set of ports to
-     * try to find an open port. If that process fails, getPort() will
-     * return LLIOSocket::PORT_INVALID
-     * @param suggested_port The port you would like to bind. Use
-     * LLIOSocket::PORT_EPHEMERAL for an unspecified port.
-     * @param start_discovery_port The start range for
-     * @param pool The pool to use for allocation.
-     */
-    LLIODataSocket(
-        U16 suggested_port,
-        U16 start_discovery_port,
-        apr_pool_t* pool);
-    virtual ~LLIODataSocket();
-
-protected:
-
-private:
-    apr_socket_t* mSocket;
-};
-#endif
 
 #endif // LL_LLIOSOCKET_H

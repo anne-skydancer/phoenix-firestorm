@@ -975,23 +975,6 @@ LLSD LLModel::writeModel(
                         }
                     }
 
-#if 0 // keep this code for now in case we want to support transporting tangents with mesh assets
-                    if (face.mTangents)
-                    { //normals
-                        F32* tangent = face.mTangents[j].getF32ptr();
-
-                        for (U32 k = 0; k < 4; ++k)
-                        { //for each component
-                            //convert to 16-bit normalized
-                            U16 val = (U16)((tangent[k] + 1.f) * 0.5f * 65535);
-                            U8* buff = (U8*)&val;
-
-                            //write to binary buffer
-                            tangents[tan_idx++] = buff[0];
-                            tangents[tan_idx++] = buff[1];
-                        }
-                    }
-#endif
 
                     //texcoord
                     if (face.mTexCoords)
@@ -1031,12 +1014,6 @@ LLSD LLModel::writeModel(
                     mdl[model_names[idx]][i]["Normal"] = normals;
                 }
 
-#if 0 // keep this code for now in case we decide to transport tangents with mesh assets
-                if (face.mTangents)
-                {
-                    mdl[model_names[idx]][i]["Tangent"] = tangents;
-                }
-#endif
 
                 if (face.mTexCoords)
                 {

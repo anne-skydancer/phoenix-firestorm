@@ -33,7 +33,7 @@
 
 // the check for this error case must be split into multiple parts
 // because some versions of VS complain about '__SSE2__'
-#if ( ( LL_DARWIN || LL_LINUX ) )
+#if LL_LINUX
     #if !(__SSE2__) && !(__arm64__) && !(__aarch64__)
         #error SSE2 not enabled. LLVector4a and related class will not compile.
     #endif

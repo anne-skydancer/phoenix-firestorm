@@ -121,11 +121,7 @@ TestImageProvider gTestImageProvider;
 void init_llui()
 {
     // Font lookup needs directory support
-#if LL_DARWIN
-    const char* newview_path = "../../../../newview";
-#else
     const char* newview_path = "../../../newview";
-#endif
     gDirUtilp->initAppDirs("SecondLife", newview_path);
     gDirUtilp->setSkinFolder("default", "en");
 

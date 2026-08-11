@@ -583,26 +583,6 @@ void LLPluginProcessParent::idle(void)
                     {
                         if(mDebug)
                         {
-#if LL_DARWIN
-                            // If we're set to debug, start up a gdb instance in a new terminal window and have it attach to the plugin process and continue.
-
-                            // The command we're constructing would look like this on the command line:
-                            // osascript -e 'tell application "Terminal"' -e 'set win to do script "gdb -pid 12345"' -e 'do script "continue" in win' -e 'end tell'
-
-                            LLProcess::Params params;
-                            params.executable = "/usr/bin/osascript";
-                            params.args.add("-e");
-                            params.args.add("tell application \"Terminal\"");
-                            params.args.add("-e");
-                            params.args.add(STRINGIZE("set win to do script \"lldb -p "
-                                                      << mProcess->getProcessID() << "\""));
-                            params.args.add("-e");
-                            params.args.add("do script \"continue\" in win");
-                            params.args.add("-e");
-                            params.args.add("end tell");
-                            mDebugger = LLProcess::create(params);
-
-#endif
                         }
 
                         // This will allow us to time out if the process never starts.

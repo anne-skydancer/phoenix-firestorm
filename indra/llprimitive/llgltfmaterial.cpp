@@ -69,16 +69,7 @@ LLGLTFMaterial::LLGLTFMaterial()
     for (U32 i = 0; i < GLTF_TEXTURE_INFO_COUNT; ++i)
     {
         mTextureTransform[i].mScale.set(1.f, 1.f);
-#if 0
-        mTextureTransform[i].mOffset.clear();
-        mTextureTransform[i].mRotation = 0.f;
-#endif
     }
-#if 0
-    mLocalTexDataDigest = 0;
-    mAlphaMode = ALPHA_MODE_OPAQUE;    // This is 0
-    mOverrideDoubleSided = mOverrideAlphaMode = false;
-#endif
 }
 
 void LLGLTFMaterial::TextureTransform::getPacked(Pack& packed) const

@@ -11,14 +11,6 @@ set(SLPlugin_SOURCE_FILES
     slplugin.cpp
     )
 
-if (DARWIN)
-  list(APPEND SLPlugin_SOURCE_FILES
-    slplugin-objc.mm
-  )
-  list(APPEND SLPlugin_HEADER_FILES
-    slplugin-objc.h
-  )
-endif (DARWIN)
 
 if (SLPlugin_HEADER_FILES)
   list(APPEND SLPlugin_SOURCE_FILES ${SLPlugin_HEADER_FILES})

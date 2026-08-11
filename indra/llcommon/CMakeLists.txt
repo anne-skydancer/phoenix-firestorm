@@ -260,10 +260,6 @@ set(llcommon_HEADER_FILES
     StackWalker.h
     )
     
-if (DARWIN)
-  list(APPEND llcommon_HEADER_FILES llsys_objc.h)
-  list(APPEND llcommon_SOURCE_FILES llsys_objc.mm)
-endif (DARWIN)
 
 # <FS:ND> Add all nd* files. memory pool, intrinsics, ...
 SET( llcommon_ND_SOURCE_FILES

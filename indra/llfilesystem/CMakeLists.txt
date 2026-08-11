@@ -23,12 +23,6 @@ set(llfilesystem_HEADER_FILES
     llfilesystem.h
     )
 
-if (DARWIN)
-  LIST(APPEND llfilesystem_SOURCE_FILES lldir_utils_objc.mm)
-  LIST(APPEND llfilesystem_SOURCE_FILES lldir_utils_objc.h)
-  LIST(APPEND llfilesystem_SOURCE_FILES lldir_mac.cpp)
-  LIST(APPEND llfilesystem_HEADER_FILES lldir_mac.h)
-endif (DARWIN)
 
 if (LINUX)
   LIST(APPEND llfilesystem_SOURCE_FILES lldir_linux.cpp)

@@ -102,29 +102,6 @@ if (LINUX)
 
 endif (LINUX)
 
-if (DARWIN)
-  list(APPEND llwindow_SOURCE_FILES
-    llkeyboardmacosx.cpp
-    llwindowmacosx.cpp
-    llwindowmacosx-objc.mm
-    llopenglview-objc.mm
-    )
-  list(APPEND llwindow_HEADER_FILES
-    llkeyboardmacosx.h
-    llwindowmacosx.h
-    llwindowmacosx-objc.h
-    llopenglview-objc.h
-    llappdelegate-objc.h
-    )
-
-  # We use a bunch of deprecated system APIs.
-  set_source_files_properties(
-      llkeyboardmacosx.cpp
-      llwindowmacosx.cpp
-      PROPERTIES
-      COMPILE_FLAGS "-fpascal-strings"
-      )
-endif (DARWIN)
 
 
 if (WINDOWS)
@@ -190,7 +167,4 @@ endif (llwindow_HEADER_FILES)
   target_link_libraries (llwindow ${llwindow_LINK_LIBRARIES})
   target_include_directories(llwindow INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
-if (DARWIN)
-  target_link_libraries(llwindow ${CARBON_LIBRARY})
-endif (DARWIN)
 

@@ -7992,7 +7992,7 @@ void LLPipeline::copyScreenSpaceReflections(LLRenderTarget* src, LLRenderTarget*
 // per-pixel singly-linked list whose head lives in an R32UI image. compositeAlphaOIT() walks
 // and depth-sorts each pixel's list and composites it over screen.
 //
-// Vulkanstorm: this is a direct-GL port (no RHI) of the fs-vulkan-v2 PPLL feature, gated on
+// Vulkanstorm: PPLL feature from fs-vulkan-v2, routed through the gRHI seam (R11 storage ops), gated on
 // GL 4.4+ (SSBO + image load/store + atomic counters + glClearTexImage). On older HW
 // sRenderAlphaOITSupported is false, the head image is never allocated, and every entry point
 // here is a no-op -- lldrawpoolalpha then runs the legacy sorted-alpha path.
@@ -8103,7 +8103,7 @@ void LLPipeline::compositeAlphaOIT()
     // debug: read back node-pool usage to tune RenderAlphaOITNodesPerPixel (gated -- the
     // readback forces a GPU sync, so it stays off unless explicitly enabled).
     static LLCachedControl<bool> oit_stats(gSavedSettings, "RenderAlphaOITStats", false);
-    if (oit_stats && mAlphaOITCounter)
+    if (oit_stats && gRHI->buffer_read && mAlphaOITCounter)
     {
         U32 used = 0;
         gRHI->buffer_read(mAlphaOITCounter, 0, sizeof(U32), &used);

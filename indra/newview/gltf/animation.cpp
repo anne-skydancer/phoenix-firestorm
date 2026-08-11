@@ -28,6 +28,7 @@
 
 #include "asset.h"
 #include "buffer_util.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J7> route UBO management through gRHI
 #include "../llskinningutil.h"
 
 using namespace LL::GLTF;
@@ -395,7 +396,7 @@ Skin::~Skin()
 {
     if (mUBO)
     {
-        glDeleteBuffers(1, &mUBO);
+        if (gRHI) gRHI->buffer_del(mUBO); else glDeleteBuffers(1, &mUBO);
     }
 }
 
@@ -408,7 +409,7 @@ void Skin::uploadMatrixPalette(Asset& asset)
 
     if (mUBO == 0)
     {
-        glGenBuffers(1, &mUBO);
+        if (gRHI) mUBO = gRHI->buffer_gen(); else glGenBuffers(1, &mUBO);
     }
 
     size_t joint_count = llmin<size_t>(max_joints, mJoints.size());
@@ -452,9 +453,9 @@ void Skin::uploadMatrixPalette(Asset& asset)
         mp[idx + 11] = m[14];
     }
 
-    glBindBuffer(GL_UNIFORM_BUFFER, mUBO);
-    glBufferData(GL_UNIFORM_BUFFER, glmp.size() * sizeof(F32), glmp.data(), GL_STREAM_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    if (gRHI) gRHI->buffer_bind(RHI_BUFTGT_UNIFORM, mUBO); else glBindBuffer(GL_UNIFORM_BUFFER, mUBO);
+    if (gRHI) gRHI->buffer_data(RHI_BUFTGT_UNIFORM, glmp.size() * sizeof(F32), glmp.data(), RHI_BUFHINT_STREAM); else glBufferData(GL_UNIFORM_BUFFER, glmp.size() * sizeof(F32), glmp.data(), GL_STREAM_DRAW);
+    if (gRHI) gRHI->buffer_bind(RHI_BUFTGT_UNIFORM, 0); else glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
 bool Skin::prep(Asset& asset)

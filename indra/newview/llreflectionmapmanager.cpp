@@ -1271,14 +1271,14 @@ void LLReflectionMapManager::updateUniforms()
     //copy mProbeData into uniform buffer object
     if (mUBO == 0)
     {
-        glGenBuffers(1, &mUBO);
+        if (gRHI) mUBO = gRHI->buffer_gen(); else glGenBuffers(1, &mUBO);
     }
 
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("rmmsu - update buffer");
-        glBindBuffer(GL_UNIFORM_BUFFER, mUBO);
-        glBufferData(GL_UNIFORM_BUFFER, sizeof(ReflectionProbeData), &mProbeData, GL_STREAM_DRAW);
-        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        if (gRHI) gRHI->buffer_bind(RHI_BUFTGT_UNIFORM, mUBO); else glBindBuffer(GL_UNIFORM_BUFFER, mUBO);
+        if (gRHI) gRHI->buffer_data(RHI_BUFTGT_UNIFORM, sizeof(ReflectionProbeData), &mProbeData, RHI_BUFHINT_STREAM); else glBufferData(GL_UNIFORM_BUFFER, sizeof(ReflectionProbeData), &mProbeData, GL_STREAM_DRAW);
+        if (gRHI) gRHI->buffer_bind(RHI_BUFTGT_UNIFORM, 0); else glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
 
 }
@@ -1294,7 +1294,7 @@ void LLReflectionMapManager::setUniforms()
     {
         updateUniforms();
     }
-    glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_REFLECTION_PROBES, mUBO);
+    if (gRHI) gRHI->bind_uniform_block(LLGLSLShader::UB_REFLECTION_PROBES, mUBO); else glBindBufferBase(GL_UNIFORM_BUFFER, LLGLSLShader::UB_REFLECTION_PROBES, mUBO);
 }
 
 
@@ -1524,7 +1524,7 @@ void LLReflectionMapManager::cleanup()
     mDefaultProbe = nullptr;
     mUpdatingProbe = nullptr;
 
-    glDeleteBuffers(1, &mUBO);
+    if (gRHI) gRHI->buffer_del(mUBO); else glDeleteBuffers(1, &mUBO);
     mUBO = 0;
 
     // note: also called on teleport (not just shutdown), so make sure we're in a good "starting" state

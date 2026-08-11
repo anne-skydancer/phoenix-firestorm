@@ -248,6 +248,27 @@ void LLHeroProbeManager::renderProbes()
         return;
     }
 
+    // <FSVulkan hero-probe prewarm> One-shot: force one full hero-probe render of the
+    // default probe on the first eligible frame. update() (called just before this in
+    // display()) has already allocated the probe RTs / mip-chain and mProbes[0], so we
+    // reuse the exact updateProbeFace()/generateRadiance() path verbatim -- warming every
+    // hero pipeline state-exactly and moving the Zink compile stall off the first-mirror
+    // approach onto scene-load. Retries next frame if the default probe isn't ready yet.
+    if (!mPipelinesPrewarmed && !mProbes.empty() && mProbes[0].notNull())
+    {
+        mPipelinesPrewarmed = true;
+        bool prewarm_radiance_pass = gPipeline.mReflectionMapManager.isRadiancePass();
+        gPipeline.mReflectionMapManager.mRadiancePass = true;
+        mRenderingMirror = true;
+        for (U32 i = 0; i < 6; ++i)
+        {
+            updateProbeFace(mProbes[0], i, false, 0.01f);
+        }
+        generateRadiance(mProbes[0]);
+        mRenderingMirror = false;
+        gPipeline.mReflectionMapManager.mRadiancePass = prewarm_radiance_pass;
+    }
+
     static LLCachedControl<S32> sDetail(gSavedSettings, "RenderHeroReflectionProbeDetail", -1);
     static LLCachedControl<S32> sLevel(gSavedSettings, "RenderHeroReflectionProbeLevel", 3);
     static LLCachedControl<S32> sUpdateRate(gSavedSettings, "RenderHeroProbeUpdateRate", 0);

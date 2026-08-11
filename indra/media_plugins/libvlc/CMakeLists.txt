@@ -37,19 +37,6 @@ if (WINDOWS)
     )
 endif (WINDOWS)
 
-if (DARWIN)
-  # Don't prepend 'lib' to the executable name, and don't embed a full path in the library's install name
-  set_target_properties(
-    media_plugin_libvlc
-    PROPERTIES
-    PREFIX ""
-    BUILD_WITH_INSTALL_RPATH 1
-    INSTALL_RPATH "@executable_path/../Frameworks"
-    LINK_FLAGS "-exported_symbols_list ${CMAKE_CURRENT_SOURCE_DIR}/../base/media_plugin_base.exp"
-  )
-
-endif (DARWIN)
-
 if( LINUX )
   set(CMAKE_SHARED_LINKER_FLAGS  "-Wl,--build-id -Wl,-rpath,'$ORIGIN:$ORIGIN/../../lib'")
 endif()

@@ -197,18 +197,6 @@
         <string>gntp-growl</string>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>5362f98bf0b0c5b12acacd6b7b1e427e</string>
-              <key>url</key>
-              <uri>https://3p.firestormviewer.org/gntp_growl-1.0-darwin64-252631716.tar.bz2</uri>
-            </map>
-            <key>name</key>
-            <string>darwin</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -273,38 +261,12 @@
             <key>name</key>
             <string>linux64</string>
           </map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>91b24b83d3f8461286f783f28fcd9a66</string>
-              <key>url</key>
-              <uri>https://3p.firestormviewer.org/discord_rpc-3.4.0-darwin64-252621453.tar.bz2</uri>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
         </map>
       </map>
       <key>apr_suite</key>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>3f8e58fe74e144b771858e89a5514bf354964c76</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-apr_suite/releases/download/v1.7.5-r2/apr_suite-1.7.5-18696779749-darwin64-18696779749.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -351,20 +313,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>61cc299413a32350175cf7139f64388d3d096ec7</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-boost/releases/download/v1.90.0-c7a9feb/boost-1.90-darwin64-20977261894.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -411,20 +359,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>9bcafdd7e1df6b92096fa850627d4f3437630d4a</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-bugsplat/releases/download/v1.2.6-a475cbb/bugsplat-1.2.6-19430122611-darwin64-19430122611.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>windows64</key>
           <map>
             <key>archive</key>
@@ -457,20 +391,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>9710f82a237b95aaafbbcf708b89f6015b80d85f</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-colladadom/releases/download/v2.3-r11/colladadom-2.3.0-r11-darwin64-20980076767.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -515,20 +435,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>d5fb3832a338bbe4891b823c64fdb4806706568e</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-cubemap_to_eqr_js/releases/download/v1.1.0-d7afe27/cubemaptoequirectangular-1.1.0-darwin64-d7afe27.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -573,20 +479,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>5eab8167cec442e8c156bb653012d7544cca6037</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-curl/releases/download/v7.54.1-r4/curl-7.54.1-20982000504-darwin64-20982000504.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -663,20 +555,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>2c81fa7aa03b427088ab54ce3b71088a0003126b</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/dullahan/releases/download/v1.26.0-CEF_139.0.40/dullahan-1.26.0.202510161627_139.0.40_g465474a_chromium-139.0.7258.139-darwin64-18568015445.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -757,20 +635,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>e0ba69946f2203c03faf89c1f6d5bbc48d88d2a9</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-expat/releases/download/v2.6.4-r1/expat-2.6.4-r1-darwin64-11943227858.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -817,20 +681,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>e474e018a7922d771eee789acf8d7182</string>
-              <key>hash_algorithm</key>
-              <string>md5</string>
-              <key>url</key>
-              <string>file:///opt/firestorm/fmodstudio-2.03.12-darwin64-260671926.tar.bz2</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -875,20 +725,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>550a90bca35bdbbd615afb1a1c02383cb3b6edbe</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-freetype/releases/download/v2.13.3-r4/freetype-2.13.3-r4-darwin64-20935810762.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1041,22 +877,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>creds</key>
-              <string>github</string>
-              <key>hash</key>
-              <string>ae2c2a215b1bc2e3f37a67e301926dc405902d1a</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://api.github.com/repos/secondlife/3p-havok-source/releases/assets/136778143</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1103,20 +923,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>b05374300cdd40c381614f2ee4497de340eda991</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-jpeg_encoder_js/releases/download/v1.0-790015a/jpegencoderbasic-1.0-darwin64-790015a.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1189,20 +995,6 @@
             <key>name</key>
             <string>linux64</string>
           </map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>79e78cbaaec9a99c0ae4a5cdd4a98535c8fa3c6d</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-libjpeg-turbo/releases/download/v3.0.4-r1/libjpeg_turbo-3.0.4-r1-darwin64-11968659895.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
         </map>
         <key>license</key>
         <string>libjpeg-turbo</string>
@@ -1223,18 +1015,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>68b1eae7b0f0b1c689f867ccc0045816</string>
-              <key>url</key>
-              <string>file:///opt/firestorm/kdu-8.6.1-darwin64-260220143.tar.bz2</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1277,20 +1057,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>91acd05f450162b07ca2f68094778c483d28128d</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-libhunspell/releases/download/v1.7.2-r2/libhunspell-1.7.2.11968900321-darwin64-11968900321.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1337,20 +1103,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>d1638886671b31935ea7e3c824e015ea1a45b12e</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-libndofdev/releases/download/v0.1.a0b7d99/libndofdev-0.1.11968678219-darwin64-11968678219.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>windows64</key>
           <map>
             <key>archive</key>
@@ -1383,20 +1135,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>6fa10d5f44601dda6efc3eda1a9dab22525e7a9a</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-libpng/releases/download/v1.6.53-eea12b7/libpng-1.6.44-dev1.geea12b7-darwin64-20934739343.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1473,20 +1211,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>c1ad7ff9ec91049c93d2dcd832f81a00f8f4b4b9</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-libxml2/releases/download/v2.13.9-d53cd6f/libxml2-2.13.9-d53cd6f-darwin64-20936141417.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1626,18 +1350,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>9520266bd701bddeaa1982c40f11220c</string>
-              <key>url</key>
-              <string>file:///opt/firestorm/llphysicsextensions_tpv-1.0.12401597145-darwin64-12401597145.tar.bz2</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1736,20 +1448,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>3692af717636da9c2b1e0f13eb084ce022b67f6c</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-meshoptimizer/releases/download/v1.0.1-9d6a006/meshoptimizer-1.0.1-9d6a006-darwin64-20867041007.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1798,20 +1496,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>65edf85c36a10001e32bdee582bec4732137208b</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-mikktspace/releases/download/v2-e967e1b/mikktspace-1-darwin64-8756084692.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1860,20 +1544,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>85179317015c5c91986000d69c9f61a01af7617f</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-minizip-ng/releases/download/v4.0.7-r4/minizip_ng-4.0.7-r4-darwin64-20933148061.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -1922,18 +1592,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>32ead724319c2ea6f65fc5be0e3157cc</string>
-              <key>url</key>
-              <string>https://automated-builds-secondlife-com.s3.amazonaws.com/ct2/115452/994130/nanosvg-2022.09.27-darwin64-580364.tar.bz2</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux</key>
           <map>
             <key>archive</key>
@@ -1978,20 +1636,6 @@
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>f45ea5a42d6a419f9b605dd3f976fbcb3850d736</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-nghttp2/releases/download/v1.64.0-r2/nghttp2-1.64.0-r1-darwin64-13184359419.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -2073,20 +1717,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>68657c5c161c3fe8ff64eac3787172fcb06da972</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-ogg_vorbis/releases/download/v1.3.5-1.3.7-r2/ogg_vorbis-1.3.5-1.3.7.11968798109-darwin64-11968798109.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -2167,20 +1797,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>a3cc405d48a48a474d05b3de3d28da2005d80037</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-openal-soft/releases/download/v1.24.2-r1/openal-1.24.2-r1-darwin64-13245988487.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -2227,20 +1843,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>94a72c6ddbfb23796ce913c55bc47c128542a582</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-openjpeg/releases/download/v2.5.3-r1/openjpeg-2.5.3.15590356935-darwin64-15590356935.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -2287,20 +1889,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>e08f640fb423f878c288426c836189b30b0c8ad0</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-openssl/releases/download/v1.1.1w-r4/openssl-1.1.1w-r4-darwin64-20981673556.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -2375,20 +1963,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
             <key>name</key>
             <string>linux64</string>
           </map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>a9bfabec63a987bd34bcfdc295b928bd0696e1d7</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-openxr/releases/download/v1.1.40-r1/openxr-1.1.40-r1-darwin64-10710818432.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
         </map>
         <key>license</key>
         <string>Apache 2.0</string>
@@ -2441,20 +2015,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>1e70b06fe6eb9796097010871b32d8e95167e373</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://automated-builds-secondlife-com.s3.amazonaws.com/gh/secondlife/3p-slvoice/slvoice-4.10.0000.32327.5fc3fe7c.5942f08-darwin64-5942f08.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -2601,20 +2161,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>0c3d01b7e9e39c23f0f40c56a1a04d1fba08ead0</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-tracy/releases/download/v0.11.1-r1/tracy-v0.11.1.11706699176-darwin64-11706699176.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>windows64</key>
           <map>
             <key>archive</key>
@@ -2763,20 +2309,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>8a04e6b3c6ff7f645219955a1389035565eb10d8</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/viewer-manager/releases/download/v3.0-f14b5ec-D591/viewer_manager-3.0-f14b5ec-darwin64-f14b5ec.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -2827,20 +2359,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>6d72afd5cc21446c65899615909b1f09f155585d</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-vlc-bin/releases/download/v3.0.21.296d9f4/vlc_bin-3.0.21.11968962952-darwin64-11968962952.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>windows64</key>
           <map>
             <key>archive</key>
@@ -2905,20 +2423,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>7338377a9c6913bc8768d446fe627b8176bc89d4</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-webrtc-build/releases/download/m137.7151.04.23/webrtc-m137.7151.04.23.22004231636-darwin64-22004231636.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -3003,20 +2507,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
       <map>
         <key>platforms</key>
         <map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>4906257288c61b14d2e16116fc3139af35d3374f</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife/3p-zlib-ng/releases/download/v2.2.5-0d88d03/zlib_ng-2.2.5-dev0.g0d88d03.d20260112-darwin64-20930307098.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
           <key>linux64</key>
           <map>
             <key>archive</key>
@@ -3121,22 +2611,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
             <key>name</key>
             <string>windows64</string>
           </map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>creds</key>
-              <string>github</string>
-              <key>hash</key>
-              <string>dc21df8b051c425163acf3eff8f06e32f407c9e0</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://api.github.com/repos/secondlife/3p-discord-sdk/releases/assets/279333706</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
-          </map>
         </map>
         <key>license</key>
         <string>discord_sdk</string>
@@ -3208,20 +2682,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
             </map>
             <key>name</key>
             <string>windows64</string>
-          </map>
-          <key>darwin64</key>
-          <map>
-            <key>archive</key>
-            <map>
-              <key>hash</key>
-              <string>05563a79bdeb83d66a72ac1e97587dc2a8f64511</string>
-              <key>hash_algorithm</key>
-              <string>sha1</string>
-              <key>url</key>
-              <string>https://github.com/secondlife-3p/3p-velopack/releases/download/v0.0.1535/velopack-40232ef.23500976684-darwin64-23500976684.tar.zst</string>
-            </map>
-            <key>name</key>
-            <string>darwin64</string>
           </map>
         </map>
         <key>license</key>
@@ -3515,234 +2975,6 @@ Copyright (c) 2012, 2014, 2015, 2016 nghttp2 contributors</string>
           </map>
           <key>name</key>
           <string>common</string>
-        </map>
-        <key>darwin64</key>
-        <map>
-          <key>configurations</key>
-          <map>
-            <key>RelWithDebInfo</key>
-            <map>
-              <key>configure</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>-G</string>
-                  <string>Xcode</string>
-                </array>
-                <key>arguments</key>
-                <array>
-                  <string>../indra</string>
-                </array>
-              </map>
-              <key>build</key>
-              <map>
-                <key>command</key>
-                <string>cmake</string>
-                <key>options</key>
-                <array>
-                  <string>--build</string>
-                  <string>.</string>
-                  <string>--config</string>
-                  <string>RelWithDebInfo</string>
-                  <string>--parallel</string>
-                  <string>$AUTOBUILD_CPU_COUNT</string>
-                </array>
-              </map>
-              <!-- FS:Ansariel: This will cause packages being installed twice
-              <key>default</key>
-              <string>True</string>
-              -->
-              <key>name</key>
-              <string>RelWithDebInfo</string>
-            </map>
-            <key>RelWithDebInfoOS</key>
-            <map>
-              <key>configure</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>-G</string>
-                  <string>Xcode</string>
-                </array>
-              </map>
-              <key>build</key>
-              <map>
-                <key>command</key>
-                <string>cmake</string>
-                <key>options</key>
-                <array>
-                  <string>--build</string>
-                  <string>.</string>
-                  <string>--config</string>
-                  <string>RelWithDebInfo</string>
-                  <string>--parallel</string>
-                  <string>$AUTOBUILD_CPU_COUNT</string>
-                </array>
-              </map>
-              <key>name</key>
-              <string>RelWithDebInfoOS</string>
-            </map>
-            <key>Release</key>
-            <map>
-              <key>configure</key>
-              <map>
-                <key>arguments</key>
-                <array>
-                  <string>../indra</string>
-                </array>
-                <key>options</key>
-                <array>
-                  <string>-G</string>
-                  <string>Xcode</string>
-                </array>
-                <key>arguments</key>
-                <array>
-                  <string>../indra</string>
-                </array>
-              </map>
-              <key>build</key>
-              <map>
-                <key>command</key>
-                <string>cmake</string>
-                <key>options</key>
-                <array>
-                  <string>--build</string>
-                  <string>.</string>
-                  <string>--config</string>
-                  <string>Release</string>
-                  <string>--parallel</string>
-                  <string>$AUTOBUILD_CPU_COUNT</string>
-                </array>
-              </map>
-              <key>name</key>
-              <string>Release</string>
-            </map>
-            <key>ReleaseOS</key>
-            <map>
-              <key>configure</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>-G</string>
-                  <string>Xcode</string>
-                </array>
-              </map>
-              <key>build</key>
-              <map>
-                <key>command</key>
-                <string>cmake</string>
-                <key>options</key>
-                <array>
-                  <string>--build</string>
-                  <string>.</string>
-                  <string>--config</string>
-                  <string>Release</string>
-                  <string>--parallel</string>
-                  <string>$AUTOBUILD_CPU_COUNT</string>
-                </array>
-              </map>
-              <key>name</key>
-              <string>ReleaseOS</string>
-            </map>
-            <key>RelWithDebInfoFS</key>
-            <map>
-              <key>build</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>--package</string>
-                  <string>--platform darwin</string>
-                  <string>--fmodstudio</string>
-                  <string>--kdu</string>
-                </array>
-              </map>
-              <key>configure</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>--platform darwin</string>
-                  <string>--package</string>
-                  <string>--fmodstudio</string>
-                  <string>--kdu</string>
-                </array>
-              </map>
-              <!-- FS:Ansariel: This will cause packages being installed twice
-              <key>default</key>
-              <string>True</string>
-              -->
-              <key>name</key>
-              <string>RelWithDebInfoFS</string>
-            </map>
-            <key>RelWithDebInfoFS_open</key>
-            <map>
-              <key>build</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>--package</string>
-                  <string>--platform darwin</string>
-                </array>
-              </map>
-              <key>configure</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>--platform darwin</string>
-                  <string>--package</string>
-                </array>
-              </map>
-              <key>name</key>
-              <string>RelWithDebInfoFS_open</string>
-            </map>
-            <key>ReleaseFS</key>
-            <map>
-              <key>build</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>--platform darwin</string>
-                  <string>--fmodstudio</string>
-                  <string>--kdu</string>
-                </array>
-              </map>
-              <key>configure</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>--platform darwin</string>
-                  <string>--kdu</string>
-                  <string>--fmodstudio</string>
-                </array>
-              </map>
-              <key>default</key>
-              <string>True</string>
-              <key>name</key>
-              <string>ReleaseFS</string>
-            </map>
-             <key>ReleaseFS_open</key>
-            <map>
-              <key>build</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>--platform darwin</string>
-                </array>
-              </map>
-              <key>configure</key>
-              <map>
-                <key>options</key>
-                <array>
-                  <string>--platform darwin</string>
-                </array>
-              </map>
-              <key>name</key>
-              <string>ReleaseFS_open</string>
-            </map>
-          </map>
-          <key>build_directory</key>
-          <string>build-darwin-universal</string>
-          <key>name</key>
-          <string>darwin64</string>
         </map>
         <key>linux64</key>
         <map>

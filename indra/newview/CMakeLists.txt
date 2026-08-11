@@ -78,9 +78,6 @@ if (HAVOK)
    endif()
    if( TARGET llphysicsextensions )
       target_link_libraries(llphysicsextensions llrender )
-      if (DARWIN)
-        target_compile_options( llphysicsextensions  PRIVATE -Wno-unused-local-typedef)
-      endif (DARWIN)
    endif()
 endif ()
 
@@ -2469,37 +2466,6 @@ if (WINDOWS)
         #${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/event_host.tar.xz)
 
     endif (PACKAGE)
-elseif (DARWIN)
-    set_target_properties(${VIEWER_BINARY_NAME}
-        PROPERTIES
-        RESOURCE Firestorm.xib
-        LINK_FLAGS_RELEASE "${LINK_FLAGS_RELEASE} -Xlinker -dead_strip"
-        )
-    if(HAVOK)
-      set_target_properties(${VIEWER_BINARY_NAME}
-          PROPERTIES
-          # arch specific flags for universal builds: https://stackoverflow.com/a/77942065
-          XCODE_ATTRIBUTE_OTHER_CFLAGS[arch=x86_64]  "$(inherited) -DLLPHYSICSEXTENSIONS_USE_FULL -DLL_HAVOK=1"
-          XCODE_ATTRIBUTE_OTHER_CFLAGS[arch=arm64]   "$(inherited) -DLLPHYSICSEXTENSIONS_USE_STUB"
-          # only generate the .MAP file for llphysicsextensions_tpv on x86_64
-          XCODE_ATTRIBUTE_OTHER_LDFLAGS[arch=x86_64] "$(inherited) -L${CMAKE_CURRENT_BINARY_DIR}/llphysicsextensions/$<IF:$<BOOL:${LL_GENERATOR_IS_MULTI_CONFIG}>,$<CONFIG>,${CMAKE_CFG_INTDIR}>/ -lllphysicsextensions  -Xlinker -map -Xlinker ${CMAKE_CURRENT_BINARY_DIR}/${VIEWER_BINARY_NAME}.MAP"
-          XCODE_ATTRIBUTE_OTHER_LDFLAGS[arch=arm64]  "$(inherited) -L${CMAKE_BINARY_DIR}/llphysicsextensionsos/$<IF:$<BOOL:${LL_GENERATOR_IS_MULTI_CONFIG}>,$<CONFIG>,${CMAKE_CFG_INTDIR}>/ -lllphysicsextensionsos"
-          )
-      add_dependencies(${VIEWER_BINARY_NAME} llphysicsextensionsos)
-    elseif(HAVOK_TPV)
-      set_target_properties(${VIEWER_BINARY_NAME}
-          PROPERTIES
-          # arch specific flags for universal builds: https://stackoverflow.com/a/77942065
-          XCODE_ATTRIBUTE_OTHER_CFLAGS[arch=x86_64]  "$(inherited) -DLLPHYSICSEXTENSIONS_USE_FULL -DLL_HAVOK=1"
-          XCODE_ATTRIBUTE_OTHER_CFLAGS[arch=arm64]   "$(inherited) -DLLPHYSICSEXTENSIONS_USE_STUB"
-          # only generate the .MAP file for llphysicsextensions_tpv on x86_64
-          XCODE_ATTRIBUTE_OTHER_LDFLAGS[arch=x86_64] "$(inherited) -L${ARCH_PREBUILT_DIRS}/ -lllphysicsextensions_tpv"
-          XCODE_ATTRIBUTE_OTHER_LDFLAGS[arch=arm64]  "$(inherited) -L${CMAKE_BINARY_DIR}/llphysicsextensionsos/$<IF:$<BOOL:${LL_GENERATOR_IS_MULTI_CONFIG}>,$<CONFIG>,${CMAKE_CFG_INTDIR}>/ -lllphysicsextensionsos"
-          )
-      add_dependencies(${VIEWER_BINARY_NAME} llphysicsextensionsos)
-    else()
-      target_link_libraries(${VIEWER_BINARY_NAME} llphysicsextensionsos)
-    endif()
 else (WINDOWS)
         # Linux
     set_target_properties(${VIEWER_BINARY_NAME}
@@ -2723,131 +2689,6 @@ if (LINUX)
   endif (PACKAGE)
 endif (LINUX)
 
-if (DARWIN)
-    # <FS:Ansariel> Moved from Windows section
-    set(VIEWER_MACOSX_PHASE "d")
-    string(TOLOWER ${VIEWER_CHANNEL} channel_lower)
-    if(channel_lower MATCHES "release")
-        set(VIEWER_MACOSX_PHASE "f")
-    elseif(channel_lower MATCHES "beta")
-        set(VIEWER_MACOSX_PHASE "b")
-    elseif(channel_lower MATCHES "project")
-        set(VIEWER_MACOSX_PHASE "a")
-    endif()
-    # </FS:Ansariel>
-
-  # These all get set with PROPERTIES. It's not that the property names are
-  # magically known to CMake -- it's that these names are referenced in the
-  # Info-SecondLife.plist file in the configure_file() directive below.
-  #set(product "${VIEWER_CHANNEL}")
-  set(product "Vulkanstorm")
-  set(MACOSX_EXECUTABLE_NAME "Vulkanstorm")
-  set(MACOSX_BUNDLE_INFO_STRING "Firestorm Viewer")
-  set(MACOSX_BUNDLE_ICON_FILE "firestorm_icon.icns")
-  set(MACOSX_BUNDLE_GUI_IDENTIFIER "org.firestormviewer.firestorm")
-  set(MACOSX_BUNDLE_LONG_VERSION_STRING "${VIEWER_CHANNEL} ${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
-  set(MACOSX_BUNDLE_BUNDLE_NAME "Vulkanstorm")
-  set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
-  set(MACOSX_BUNDLE_BUNDLE_VERSION "${VIEWER_SHORT_VERSION}${VIEWER_MACOSX_PHASE}${VIEWER_REVISION}")
-  set(MACOSX_BUNDLE_COPYRIGHT "Copyright 2010-2026 The Phoenix Firestorm Project, Inc.")
-  set(MACOSX_BUNDLE_NSMAIN_NIB_FILE "Firestorm.nib")
-  set(MACOSX_BUNDLE_NSPRINCIPAL_CLASS "LLApplication")
-
-  # https://blog.kitware.com/upcoming-in-cmake-2-8-12-osx-rpath-support/
-  set(CMAKE_MACOSX_RPATH 1)
-
-  set_target_properties(
-    ${VIEWER_BINARY_NAME}
-    PROPERTIES
-    OUTPUT_NAME "${product}"
-    # From Contents/MacOS/SecondLife, look in Contents/Frameworks
-    BUILD_WITH_INSTALL_RPATH 1
-    INSTALL_RPATH "@executable_path/../Frameworks"
-    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info-Firestorm.plist"
-    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${MACOSX_BUNDLE_GUI_IDENTIFIER}"
-    )
-
-  set(VIEWER_APP_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/$<IF:$<BOOL:${LL_GENERATOR_IS_MULTI_CONFIG}>,$<CONFIG>,>/${product}.app")
-  set(VIEWER_APP_EXE "${VIEWER_APP_BUNDLE}/Contents/MacOS/${product}")
-  set(VIEWER_APP_DSYM "${VIEWER_APP_EXE}.dSYM")
-  set(VIEWER_APP_XCARCHIVE "${VIEWER_APP_BUNDLE}/../${product}.xcarchive.zip")
-
-  configure_file(
-     # <FS:CR> Use Firestorm plist
-     #"${CMAKE_CURRENT_SOURCE_DIR}/Info-SecondLife.plist"
-     "${CMAKE_CURRENT_SOURCE_DIR}/Info-Firestorm.plist"
-     "${VIEWER_APP_BUNDLE}/Contents/Info.plist"
-    )
-
-  add_custom_command(
-    TARGET ${VIEWER_BINARY_NAME} POST_BUILD
-    COMMAND ${PYTHON_EXECUTABLE}
-    ARGS
-      ${CMAKE_CURRENT_SOURCE_DIR}/viewer_manifest.py
-      --actions=copy
-      --arch=${ARCH}
-      --artwork=${ARTWORK_DIR}
-      "--bugsplat=${BUGSPLAT_DB}"
-      "--discord=${USE_DISCORD}"
-      "--fmodstudio=${USE_FMODSTUDIO}"
-      "--openal=${USE_OPENAL}"
-      "--usegrok=${USE_GROK}"
-      "--mesazink=${USE_MESAZINK}"
-      "--tracy=${USE_TRACY}"
-      "--avx2=${USE_AVX2_OPTIMIZATION}"      
-      --build=${CMAKE_CURRENT_BINARY_DIR}
-      --buildtype=$<CONFIG>
-      --bundleid=${MACOSX_BUNDLE_GUI_IDENTIFIER}
-      "--channel=${VIEWER_CHANNEL}"
-      --configuration=${CMAKE_CFG_INTDIR}
-      --dest=${VIEWER_APP_BUNDLE}
-      --grid=${GRID}
-      --source=${CMAKE_CURRENT_SOURCE_DIR}
-      --versionfile=${CMAKE_CURRENT_BINARY_DIR}/viewer_version.txt
-      --viewer_flavor=${ND_VIEWER_FLAVOR}
-    )
-
-  add_dependencies(${VIEWER_BINARY_NAME} SLPlugin media_plugin_libvlc media_plugin_cef)
-
-  if (ENABLE_SIGNING)
-      set(SIGNING_SETTING "--signature=${SIGNING_IDENTITY}")
-  else (ENABLE_SIGNING)
-      set(SIGNING_SETTING "")
-  endif (ENABLE_SIGNING)
-
-  if (PACKAGE)
-      add_custom_target(llpackage ALL DEPENDS ${VIEWER_BINARY_NAME})
-
-      add_custom_command(
-        TARGET llpackage POST_BUILD
-        COMMAND ${PYTHON_EXECUTABLE}
-        ARGS
-          ${CMAKE_CURRENT_SOURCE_DIR}/viewer_manifest.py
-          --arch=${ARCH}
-          --artwork=${ARTWORK_DIR}
-          "--bugsplat=${BUGSPLAT_DB}"
-          --bundleid=${MACOSX_BUNDLE_GUI_IDENTIFIER}
-          "--discord=${USE_DISCORD}"
-          "--fmodstudio=${USE_FMODSTUDIO}"
-          "--openal=${USE_OPENAL}"
-          "--usegrok=${USE_GROK}"
-          "--mesazink=${USE_MESAZINK}"
-          "--tracy=${USE_TRACY}"
-          "--avx2=${USE_AVX2_OPTIMIZATION}"          
-          --build=${CMAKE_CURRENT_BINARY_DIR}
-          --buildtype=${CMAKE_BUILD_TYPE}
-          "--channel=${VIEWER_CHANNEL}"
-          --configuration=${CMAKE_CFG_INTDIR}
-          --dest=${VIEWER_APP_BUNDLE}
-          --grid=${GRID}
-          --source=${CMAKE_CURRENT_SOURCE_DIR}
-          --touch=${CMAKE_CURRENT_BINARY_DIR}/$<IF:$<BOOL:${LL_GENERATOR_IS_MULTI_CONFIG}>,$<CONFIG>,>/.${product}.bat
-          --versionfile=${CMAKE_CURRENT_BINARY_DIR}/viewer_version.txt
-          --viewer_flavor=${ND_VIEWER_FLAVOR}
-          ${SIGNING_SETTING}
-      )
-  endif (PACKAGE)
-endif (DARWIN)
 
 if (INSTALL)
   include(${CMAKE_CURRENT_SOURCE_DIR}/ViewerInstall.cmake)
@@ -2877,67 +2718,11 @@ if (PACKAGE AND (RELEASE_CRASH_REPORTING OR NON_RELEASE_CRASH_REPORTING) AND VIE
       # add_dependencies(generate_symbols ${VIEWER_BINARY_NAME} llwebrtc)
 
     endif (WINDOWS)
-    if (DARWIN)
-      # Have to run dsymutil first, then pack up the resulting .dSYM directory
-      add_custom_command(OUTPUT "${VIEWER_APP_DSYM}"
-        COMMAND "dsymutil"
-        ARGS
-          ${VIEWER_APP_EXE}
-        COMMENT "Generating ${VIEWER_APP_DSYM}"
-        )
-      add_custom_target(dsym_generate DEPENDS "${VIEWER_APP_DSYM}")
-      add_dependencies(dsym_generate ${VIEWER_BINARY_NAME})
-      add_custom_command(OUTPUT "${VIEWER_SYMBOL_FILE}"
-        # See above comments about "tar ...j"
-        COMMAND "tar"
-        ARGS
-          "cjf"
-          "${VIEWER_SYMBOL_FILE}"
-          "-C"
-          "${VIEWER_APP_DSYM}/.."
-          "${product}.dSYM"
-        DEPENDS "${VIEWER_APP_DSYM}"
-        COMMENT "Packing dSYM into ${VIEWER_SYMBOL_FILE}"
-        )
-      add_custom_target(dsym_tarball DEPENDS "${VIEWER_SYMBOL_FILE}")
-      add_dependencies(dsym_tarball dsym_generate)
-      add_custom_command(OUTPUT "${VIEWER_APP_XCARCHIVE}"
-        COMMAND "zip"
-        ARGS
-          "-r"
-          "${VIEWER_APP_XCARCHIVE}"
-          "."
-        WORKING_DIRECTORY "${VIEWER_APP_DSYM}/.."
-        DEPENDS "${VIEWER_APP_DSYM}"
-        COMMENT "Generating xcarchive.zip for upload to BugSplat"
-        )
-      add_custom_target(dsym_xcarchive DEPENDS "${VIEWER_APP_XCARCHIVE}")
-      add_dependencies(dsym_xcarchive dsym_generate)
-      # Have to create a stamp file, and depend on it, to force CMake to run
-      # the cleanup step.
-      add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/dsym.stamp"
-        COMMAND rm -rf "${VIEWER_APP_DSYM}"
-        COMMAND touch "${CMAKE_CURRENT_BINARY_DIR}/dsym.stamp"
-        DEPENDS "${VIEWER_SYMBOL_FILE}" "${VIEWER_APP_XCARCHIVE}"
-        COMMENT "Cleaning up dSYM"
-        )
-      add_custom_target(generate_symbols DEPENDS
-        "${VIEWER_APP_DSYM}"
-        "${VIEWER_SYMBOL_FILE}"
-        "${VIEWER_APP_XCARCHIVE}"
-        "${CMAKE_CURRENT_BINARY_DIR}/dsym.stamp"
-        )
-      add_dependencies(generate_symbols dsym_tarball dsym_xcarchive)
-    endif (DARWIN)
     if (LINUX)
       # TBD
     endif (LINUX)
   endif (USE_BUGSPLAT)
 
-  if (DARWIN) #Linux/Windows generates symbols via viewer_manifest.py/fs_viewer_manifest.py
-    # for both Bugsplat and Breakpad
-    add_dependencies(llpackage generate_symbols)
-  endif()
 endif ()
 
 if (LL_TESTS)

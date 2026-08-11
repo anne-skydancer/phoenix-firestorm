@@ -37,14 +37,6 @@ if (LINUX)
   list(APPEND media_plugin_cef_SOURCE_FILES ${LINUX_VOLUME_CATCHER})
   set(CMAKE_SHARED_LINKER_FLAGS  "-Wl,--build-id -Wl,-rpath,'$ORIGIN:$ORIGIN/../../lib'")
   list(APPEND media_plugin_cef_LINK_LIBRARIES llwindow ${MEDIA_PLUGIN_BASE_LIBRARIES})
-elseif (DARWIN)
-  list(APPEND media_plugin_cef_SOURCE_FILES mac_volume_catcher_null.cpp)
-  find_library(CORESERVICES_LIBRARY CoreServices)
-  find_library(AUDIOUNIT_LIBRARY AudioUnit)
-  set( media_plugin_cef_LINK_LIBRARIES
-       ${CORESERVICES_LIBRARY}     # for Component Manager calls
-       ${AUDIOUNIT_LIBRARY}        # for AudioUnit calls
-       )
 elseif (WINDOWS)
   list(APPEND media_plugin_cef_SOURCE_FILES windows_volume_catcher.cpp)
 endif (LINUX)
@@ -73,16 +65,3 @@ if (WINDOWS)
     LINK_FLAGS "/MANIFEST:NO /NODEFAULTLIB:LIBCMT /IGNORE:4099"
     )
 endif (WINDOWS)
-
-if (DARWIN)
-  # Don't prepend 'lib' to the executable name, and don't embed a full path in the library's install name
-  set_target_properties(
-    media_plugin_cef
-    PROPERTIES
-    PREFIX ""
-    BUILD_WITH_INSTALL_RPATH 1
-    INSTALL_RPATH "@executable_path/../Frameworks"
-    LINK_FLAGS "-exported_symbols_list ${CMAKE_CURRENT_SOURCE_DIR}/../base/media_plugin_base.exp"
-  )
-
-endif (DARWIN)

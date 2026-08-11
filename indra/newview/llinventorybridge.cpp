@@ -48,7 +48,6 @@
 #include "llfriendcard.h"
 #include "llgesturemgr.h"
 #include "llgiveinventory.h"
-#include "llfloaterimcontainer.h"
 #include "llimview.h"
 #include "llclipboard.h"
 #include "llinventorydefines.h"

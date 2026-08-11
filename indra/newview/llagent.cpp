@@ -47,7 +47,6 @@
 #include "lldonotdisturbnotificationstorage.h"
 #include "llfirstuse.h"
 #include "llfloatercamera.h"
-#include "llfloaterimcontainer.h"
 #include "llfloaterperms.h"
 #include "llfloaterpreference.h"
 #include "llfloaterreg.h"

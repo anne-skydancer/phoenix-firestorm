@@ -37,7 +37,6 @@
 #include "llmenugl.h"
 #include "lluictrlfactory.h"
 #include "llagentdata.h"
-#include "llfloaterimsession.h"
 #include "llviewertexture.h"
 #include "llavatarappearancedefines.h"
 

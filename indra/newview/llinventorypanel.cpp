@@ -38,7 +38,6 @@
 #include "llfloatersidepanelcontainer.h"
 #include "llfolderview.h"
 #include "llfolderviewitem.h"
-#include "llfloaterimcontainer.h"
 #include "llimview.h"
 #include "llinspecttexture.h"
 #include "llinventorybridge.h"

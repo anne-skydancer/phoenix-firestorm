@@ -70,7 +70,6 @@
 #include "llfloatertos.h"
 #include "lltrans.h"
 #include "llglheaders.h"
-#include "llpanelloginlistener.h"
 
 #include "fsdata.h"
 

@@ -28,9 +28,7 @@
 #include "llfloaterchatmentionpicker.h"
 
 #include "llavatarlist.h"
-#include "llfloaterimcontainer.h"
 #include "llchatmentionhelper.h"
-#include "llparticipantlist.h"
 
 #include "fschatparticipants.h" // <FS:Ansariel> [FS communication UI]
 

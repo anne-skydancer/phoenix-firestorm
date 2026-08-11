@@ -43,7 +43,6 @@
 #include "lltrans.h"
 #include "lltranslate.h"
 #include "lluictrlfactory.h"
-#include "llfloaterimsessiontab.h"
 #include "llagent.h"
 #include "llagentui.h"
 #include "llappviewer.h"

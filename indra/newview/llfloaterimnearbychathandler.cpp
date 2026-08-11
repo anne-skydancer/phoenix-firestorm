@@ -34,15 +34,12 @@
 #include "llfirstuse.h"
 #include "llfloaterscriptdebug.h"
 #include "llhints.h"
-#include "llfloaterimnearbychat.h"
 #include "llrecentpeople.h"
 
 #include "llviewercontrol.h"
 
 #include "llfloaterreg.h"//for LLFloaterReg::getTypedInstance
 #include "llviewerwindow.h"//for screen channel position
-#include "llfloaterimnearbychat.h"
-#include "llfloaterimcontainer.h"
 #include "llrootview.h"
 #include "lllayoutstack.h"
 

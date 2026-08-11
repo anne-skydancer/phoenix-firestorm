@@ -28,8 +28,6 @@
 
 // libs
 #include "llavatarname.h"
-#include "llconversationview.h"
-#include "llfloaterimcontainer.h"
 #include "llfloaterreg.h"
 #include "llfloatersidepanelcontainer.h"
 #include "llmenubutton.h"
@@ -62,7 +60,6 @@
 #include "llinventoryobserver.h"
 #include "llnetmap.h"
 #include "llpanelpeoplemenus.h"
-#include "llparticipantlist.h"
 #include "llsidetraypanelcontainer.h"
 #include "llrecentpeople.h"
 #include "llviewercontrol.h"        // for gSavedSettings

@@ -27,7 +27,6 @@
 #define LLCONVERSATIONLOG_H_
 
 #include "llcallingcard.h"
-#include "llfloaterimsession.h"
 #include "llimview.h"
 
 class LLConversationLogObserver;

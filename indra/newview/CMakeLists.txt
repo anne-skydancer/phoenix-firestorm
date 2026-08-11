@@ -252,8 +252,6 @@ set(viewer_SOURCE_FILES
     llbuycurrencyhtml.cpp
     llcallingcard.cpp
     llchannelmanager.cpp
-    llchatbar.cpp
-    llchathistory.cpp
     llchatitemscontainerctrl.cpp
     llchatmsgbox.cpp
     llchiclet.cpp
@@ -271,8 +269,6 @@ set(viewer_SOURCE_FILES
     llconversationlog.cpp
     llconversationloglist.cpp
     llconversationloglistitem.cpp
-    llconversationmodel.cpp
-    llconversationview.cpp
     llcurrencyuimanager.cpp
     llcylinder.cpp
     lldateutil.cpp
@@ -323,7 +319,6 @@ set(viewer_SOURCE_FILES
     llfloaterauction.cpp
     llfloaterautoreplacesettings.cpp
     llfloateravatarpicker.cpp
-    llfloateravatarrendersettings.cpp
     llfloateravatartextures.cpp
     llfloaterbanduration.cpp
     llfloaterbeacons.cpp
@@ -360,7 +355,6 @@ set(viewer_SOURCE_FILES
     llfloaterexperiences.cpp
     llfloaterfixedenvironment.cpp
     llfloaterfonttest.cpp
-    llfloaterforgetuser.cpp
     llfloatergesture.cpp
     llfloatergltfasseteditor.cpp
     llfloatergodtools.cpp
@@ -375,9 +369,6 @@ set(viewer_SOURCE_FILES
     llfloaterhowto.cpp
     llfloaterhud.cpp
     llfloaterimagepreview.cpp
-    llfloaterimsessiontab.cpp
-    llfloaterimsession.cpp
-    llfloaterimcontainer.cpp
     llfloaterinspect.cpp
     llfloaterinventorysettings.cpp
     llfloaterinventorythumbnailshelper.cpp
@@ -547,9 +538,7 @@ set(viewer_SOURCE_FILES
     llnameeditor.cpp
     llnamelistctrl.cpp
     llnavigationbar.cpp
-    llfloaterimnearbychat.cpp
     llfloaterimnearbychathandler.cpp
-    llfloaterimnearbychatlistener.cpp
     llnearbyvoicemoderation.cpp
     llnetmap.cpp
     llnotificationalerthandler.cpp
@@ -609,8 +598,6 @@ set(viewer_SOURCE_FILES
     llpanellandmarkinfo.cpp
     llpanellandmarks.cpp
     llpanellandmedia.cpp
-    llpanellogin.cpp
-    llpanelloginlistener.cpp
     llpanelmaininventory.cpp
     llpanelmarketplaceinbox.cpp
     llpanelmarketplaceinboxinventory.cpp
@@ -651,7 +638,6 @@ set(viewer_SOURCE_FILES
     llpanelvolumepulldown.cpp
     llpanelwearing.cpp
     llparcelselection.cpp
-    llparticipantlist.cpp
     llpatchvertexarray.cpp
     llpathfindingcharacter.cpp
     llpathfindingcharacterlist.cpp
@@ -1116,8 +1102,6 @@ set(viewer_HEADER_FILES
     llcallingcard.h
     llcapabilityprovider.h
     llchannelmanager.h
-    llchatbar.h
-    llchathistory.h
     llchatitemscontainerctrl.h
     llchatmsgbox.h
     llchiclet.h
@@ -1135,8 +1119,6 @@ set(viewer_HEADER_FILES
     llconversationlog.h
     llconversationloglist.h
     llconversationloglistitem.h
-    llconversationmodel.h
-    llconversationview.h
     llcurrencyuimanager.h
     llcylinder.h
     lldateutil.h
@@ -1187,7 +1169,6 @@ set(viewer_HEADER_FILES
     llfloaterauction.h
     llfloaterautoreplacesettings.h
     llfloateravatarpicker.h
-    llfloateravatarrendersettings.h
     llfloateravatartextures.h
     llfloaterbanduration.h
     llfloaterbeacons.h
@@ -1224,7 +1205,6 @@ set(viewer_HEADER_FILES
     llfloaterexperiences.h
     llfloaterfixedenvironment.h
     llfloaterfonttest.h
-    llfloaterforgetuser.h
     llfloatergesture.h
     llfloatergltfasseteditor.h
     llfloatergodtools.h
@@ -1239,12 +1219,7 @@ set(viewer_HEADER_FILES
     llfloaterhowto.h
     llfloaterhud.h
     llfloaterimagepreview.h
-    llfloaterimnearbychat.h
     llfloaterimnearbychathandler.h
-    llfloaterimnearbychatlistener.h
-    llfloaterimsessiontab.h
-    llfloaterimsession.h
-    llfloaterimcontainer.h
     llfloaterinspect.h
     llfloaterinventorysettings.h
     llfloaterinventorythumbnailshelper.h
@@ -1466,8 +1441,6 @@ set(viewer_HEADER_FILES
     llpanellandmarkinfo.h
     llpanellandmarks.h
     llpanellandmedia.h
-    llpanellogin.h
-    llpanelloginlistener.h
     llpanelmaininventory.h
     llpanelmarketplaceinbox.h
     llpanelmarketplaceinboxinventory.h
@@ -1503,7 +1476,6 @@ set(viewer_HEADER_FILES
     llpanelvolumepulldown.h
     llpanelwearing.h
     llparcelselection.h
-    llparticipantlist.h
     llpatchvertexarray.h
     llpathfindingcharacter.h
     llpathfindingcharacterlist.h

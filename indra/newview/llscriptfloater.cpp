@@ -42,7 +42,6 @@
 #include "lltrans.h"
 #include "llviewerobjectlist.h"
 #include "llviewerwindow.h"
-#include "llfloaterimsession.h"
 
 #include "llwindow.h"   // <FS:CR> flashIcon()
 #include "lltoolbarview.h"      // <FS:Zi> script dialogs position

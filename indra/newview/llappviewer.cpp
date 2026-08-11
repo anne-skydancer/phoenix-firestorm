@@ -45,7 +45,6 @@
 #include "llagentui.h"
 #include "llagentwearables.h"
 #include "lldirpicker.h"
-#include "llfloaterimcontainer.h"
 #include "llimprocessing.h"
 #include "llwindow.h"
 #include "llviewerstats.h"

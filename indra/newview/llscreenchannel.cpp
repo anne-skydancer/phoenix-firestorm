@@ -39,7 +39,6 @@
 #include "llagent.h"
 #include "lldockablefloater.h"
 #include "llsyswellwindow.h"
-#include "llfloaterimsession.h"
 #include "llscriptfloater.h"
 #include "llrootview.h"
 

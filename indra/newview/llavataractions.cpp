@@ -55,7 +55,6 @@
 #include "llinventorybridge.h"
 #include "llinventorymodel.h"   // for gInventory.findCategoryUUIDForType
 #include "llinventorypanel.h"
-#include "llfloaterimcontainer.h"
 #include "llimview.h"           // for gIMMgr
 #include "llmutelist.h"
 #include "llnotificationsutil.h"    // for LLNotificationsUtil

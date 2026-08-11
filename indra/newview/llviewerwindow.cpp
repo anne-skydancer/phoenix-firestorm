@@ -6883,7 +6883,7 @@ void LLViewerWindow::setup2DViewport(S32 x_offset, S32 y_offset)
     gGLViewport[1] = mWindowRectRaw.mBottom + y_offset;
     gGLViewport[2] = mWindowRectRaw.getWidth();
     gGLViewport[3] = mWindowRectRaw.getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    gGL.setViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
 }
 
 
@@ -6901,7 +6901,7 @@ void LLViewerWindow::setup3DViewport(S32 x_offset, S32 y_offset)
     gGLViewport[1] = mWorldViewRectRaw.mBottom + y_offset;
     gGLViewport[2] = mWorldViewRectRaw.getWidth();
     gGLViewport[3] = mWorldViewRectRaw.getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    gGL.setViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
 }
 
 void LLViewerWindow::revealIntroPanel()

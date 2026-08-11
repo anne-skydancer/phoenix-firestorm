@@ -8292,7 +8292,7 @@ void LLPipeline::applyFXAA(LLRenderTarget* src, LLRenderTarget* dst)
             gGLViewport[2] = gViewerWindow->getWorldViewRectRaw().getWidth();
             gGLViewport[3] = gViewerWindow->getWorldViewRectRaw().getHeight();
 
-            glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+            gGL.setViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
 
             F32 scale_x = (F32)width / mFXAAMap.getWidth();
             F32 scale_y = (F32)height / mFXAAMap.getHeight();
@@ -8954,7 +8954,7 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst)
 
             { // perform DoF sampling at half-res (preserve alpha channel)
                 src->bindTarget();
-                glViewport(0, 0, dof_width, dof_height);
+                if (gRHI) gRHI->set_viewport(0, 0, dof_width, dof_height); else glViewport(0, 0, dof_width, dof_height);
 
                 gGL.setColorMask(true, false);
 
@@ -8980,7 +8980,7 @@ void LLPipeline::renderDoF(LLRenderTarget* src, LLRenderTarget* dst)
             { // combine result based on alpha
 
                 dst->bindTarget();
-                glViewport(0, 0, dst->getWidth(), dst->getHeight());
+                if (gRHI) gRHI->set_viewport(0, 0, dst->getWidth(), dst->getHeight()); else glViewport(0, 0, dst->getWidth(), dst->getHeight());
 
                 gDeferredDoFCombineProgram.bind();
                 gDeferredDoFCombineProgram.bindTexture(LLShaderMgr::DEFERRED_DIFFUSE, src, LLTexUnit::TFO_POINT);
@@ -9071,7 +9071,7 @@ void LLPipeline::renderFinalize()
     gGLViewport[1] = gViewerWindow->getWorldViewRectRaw().mBottom;
     gGLViewport[2] = gViewerWindow->getWorldViewRectRaw().getWidth();
     gGLViewport[3] = gViewerWindow->getWorldViewRectRaw().getHeight();
-    glViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
+    gGL.setViewport(gGLViewport[0], gGLViewport[1], gGLViewport[2], gGLViewport[3]);
 
     if((RenderDepthOfFieldInEditMode || !LLToolMgr::getInstance()->inBuildMode()) &&
         RenderDepthOfField &&

@@ -35,6 +35,7 @@
 
 // newview includes
 #include "llrender.h"
+#include "rhi/rhi.h"   // <FSVulkan P2 J7> route offscreen viewport through gRHI
 #include "llsurface.h"
 #include "llsurfacepatch.h"
 #include "llviewercamera.h"
@@ -94,7 +95,7 @@ bool LLTerrainPaintMap::bakeHeightNoiseIntoPBRPaintMapRGB(const LLViewerRegion& 
     camera.lookAt(camera_origin, region_center, LLVector3::y_axis);
     camera.setAspect(F32(scratch_target.getWidth()) / F32(scratch_target.getHeight()));
     const LLRect texture_rect(0, scratch_target.getHeight(), scratch_target.getWidth(), 0);
-    glViewport(texture_rect.mLeft, texture_rect.mBottom, texture_rect.getWidth(), texture_rect.getHeight());
+    if (gRHI) gRHI->set_viewport(texture_rect.mLeft, texture_rect.mBottom, texture_rect.getWidth(), texture_rect.getHeight()); else glViewport(texture_rect.mLeft, texture_rect.mBottom, texture_rect.getWidth(), texture_rect.getHeight());
     // Manually get modelview matrix from camera orientation.
     glm::mat4 modelview(glm::make_mat4((GLfloat *) OGL_TO_CFR_ROTATION));
     GLfloat ogl_matrix[16];

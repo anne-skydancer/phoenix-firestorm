@@ -961,7 +961,7 @@ void LLReflectionMapManager::updateProbeFace(LLReflectionMap* probe, U32 face)
                 if (i != mMipChain.size() - 1)
                 {
                     res /= 2;
-                    glViewport(0, 0, res, res);
+                    if (gRHI) gRHI->set_viewport(0, 0, res, res); else glViewport(0, 0, res, res);
                 }
             }
 
@@ -992,7 +992,7 @@ void LLReflectionMapManager::updateProbeFace(LLReflectionMap* probe, U32 face)
             {
                 int i = start_mip;
                 LL_PROFILE_GPU_ZONE("probe irradiance gen");
-                glViewport(0, 0, mMipChain[i].getWidth(), mMipChain[i].getHeight());
+                if (gRHI) gRHI->set_viewport(0, 0, mMipChain[i].getWidth(), mMipChain[i].getHeight()); else glViewport(0, 0, mMipChain[i].getWidth(), mMipChain[i].getHeight());
                 for (int cf = 0; cf < 6; ++cf)
                 { // for each cube face
                     LLCoordFrame frame;

@@ -146,5 +146,10 @@ private:
 
     // Part of a hacky workaround to fix #3331.
     bool mInitialized = false;
+
+    // <FSVulkan hero-probe prewarm> One-shot: on the first eligible in-world frame,
+    // force a full hero-probe render of the default probe so Zink compiles the mirror
+    // pipelines during scene-load instead of stalling on first mirror approach.
+    bool mPipelinesPrewarmed = false;
 };
 

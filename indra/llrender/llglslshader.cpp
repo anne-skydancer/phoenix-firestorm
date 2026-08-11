@@ -33,6 +33,7 @@
 #include "llrender.h"
 #include "llvertexbuffer.h"
 #include "llrendertarget.h"
+#include "rhi/rhi.h"
 
 #include "hbxxh.h"
 #include "llsdserialize.h"
@@ -50,6 +51,46 @@ using std::vector;
 using std::pair;
 using std::make_pair;
 using std::string;
+
+// ---- LLGLSLShader -> RHI routing (chokepoint 4: R5 use + R6 uniforms). gRHI when
+//      bootstrapped; raw-GL fallback is transition-only. ----
+namespace
+{
+    inline void shader_use(RhiShader prog) { if (gRHI) gRHI->shader_bind(prog); else glUseProgram(prog); }
+    inline GLint shader_uni_loc(RhiShader prog, const char* name)
+    {
+        return gRHI ? gRHI->shader_uniform_id(prog, name) : glGetUniformLocation(prog, name);
+    }
+    inline void shader_vattrib4(U32 index, const GLfloat* v)
+    {
+        if (gRHI) gRHI->set_vertex_attrib4f(index, v); else glVertexAttrib4fv(index, v);
+    }
+    void shader_uniform(RhiShader prog, GLint loc, RhiUniformType type, U32 count, const void* data, int transpose = 0)
+    {
+        if (gRHI) { gRHI->set_uniform(prog, loc, type, count, data, transpose); return; }
+        const GLfloat* f = (const GLfloat*)data; const GLint* i = (const GLint*)data; const GLuint* u = (const GLuint*)data;
+        GLboolean t = transpose ? GL_TRUE : GL_FALSE;
+        switch (type)
+        {
+            case RHI_UNIFORM_F32:    glUniform1fv(loc, count, f); break;
+            case RHI_UNIFORM_VEC2:   glUniform2fv(loc, count, f); break;
+            case RHI_UNIFORM_VEC3:   glUniform3fv(loc, count, f); break;
+            case RHI_UNIFORM_VEC4:   glUniform4fv(loc, count, f); break;
+            case RHI_UNIFORM_I32:    glUniform1iv(loc, count, i); break;
+            case RHI_UNIFORM_IVEC2:  glUniform2iv(loc, count, i); break;
+            case RHI_UNIFORM_IVEC3:  glUniform3iv(loc, count, i); break;
+            case RHI_UNIFORM_IVEC4:  glUniform4iv(loc, count, i); break;
+            case RHI_UNIFORM_U32:    glUniform1uiv(loc, count, u); break;
+            case RHI_UNIFORM_UVEC2:  glUniform2uiv(loc, count, u); break;
+            case RHI_UNIFORM_UVEC3:  glUniform3uiv(loc, count, u); break;
+            case RHI_UNIFORM_UVEC4:  glUniform4uiv(loc, count, u); break;
+            case RHI_UNIFORM_MAT2:   glUniformMatrix2fv(loc, count, t, f); break;
+            case RHI_UNIFORM_MAT3:   glUniformMatrix3fv(loc, count, t, f); break;
+            case RHI_UNIFORM_MAT4:   glUniformMatrix4fv(loc, count, t, f); break;
+            case RHI_UNIFORM_MAT3X4: glUniformMatrix3x4fv(loc, count, t, f); break;
+        }
+    }
+}
 
 GLuint LLGLSLShader::sCurBoundShader = 0;
 LLGLSLShader* LLGLSLShader::sCurBoundShaderPtr = NULL;
@@ -251,17 +292,17 @@ void LLGLSLShader::placeProfileQuery(bool for_runtime)
     {
         if (mTimerQuery == 0)
         {
-            glGenQueries(1, &mSamplesQuery);
-            glGenQueries(1, &mTimerQuery);
-            glGenQueries(1, &mPrimitivesQuery);
+            mSamplesQuery = gRHI->query_create();
+            mTimerQuery = gRHI->query_create();
+            mPrimitivesQuery = gRHI->query_create();
         }
 
-        glBeginQuery(GL_TIME_ELAPSED, mTimerQuery);
+        gRHI->query_begin(RHI_QUERY_TIME_ELAPSED, mTimerQuery);
 
         if (!for_runtime)
         {
-            glBeginQuery(GL_SAMPLES_PASSED, mSamplesQuery);
-            glBeginQuery(GL_PRIMITIVES_GENERATED, mPrimitivesQuery);
+            gRHI->query_begin(RHI_QUERY_SAMPLES, mSamplesQuery);
+            gRHI->query_begin(RHI_QUERY_PRIMITIVES, mPrimitivesQuery);
         }
     }
 }
@@ -272,38 +313,35 @@ bool LLGLSLShader::readProfileQuery(bool for_runtime, bool force_read)
     {
         if (!mProfilePending)
         {
-            glEndQuery(GL_TIME_ELAPSED);
+            gRHI->query_end(RHI_QUERY_TIME_ELAPSED);
             if (!for_runtime)
             {
-                glEndQuery(GL_SAMPLES_PASSED);
-                glEndQuery(GL_PRIMITIVES_GENERATED);
+                gRHI->query_end(RHI_QUERY_SAMPLES);
+                gRHI->query_end(RHI_QUERY_PRIMITIVES);
             }
             mProfilePending = for_runtime;
         }
 
         if (mProfilePending && for_runtime && !force_read)
         {
-            GLuint64 result = 0;
-            glGetQueryObjectui64v(mTimerQuery, GL_QUERY_RESULT_AVAILABLE, &result);
-
-            if (result != GL_TRUE)
+            if (!gRHI->query_available(mTimerQuery))
             {
                 return false;
             }
         }
 
         GLuint64 time_elapsed = 0;
-        glGetQueryObjectui64v(mTimerQuery, GL_QUERY_RESULT, &time_elapsed);
+        gRHI->query_result(mTimerQuery, &time_elapsed);
         mTimeElapsed += time_elapsed;
         mProfilePending = false;
 
         if (!for_runtime)
         {
             GLuint64 samples_passed = 0;
-            glGetQueryObjectui64v(mSamplesQuery, GL_QUERY_RESULT, &samples_passed);
+            gRHI->query_result(mSamplesQuery, &samples_passed);
 
             GLuint64 primitives_generated = 0;
-            glGetQueryObjectui64v(mPrimitivesQuery, GL_QUERY_RESULT, &primitives_generated);
+            gRHI->query_result(mPrimitivesQuery, &primitives_generated);
             sTotalTimeElapsed += time_elapsed;
 
             sTotalSamplesDrawn += samples_passed;
@@ -388,13 +426,13 @@ void LLGLSLShader::unloadInternal()
 
     if (mTimerQuery)
     {
-        glDeleteQueries(1, &mTimerQuery);
+        gRHI->query_destroy(mTimerQuery);
         mTimerQuery = 0;
     }
 
     if (mSamplesQuery)
     {
-        glDeleteQueries(1, &mSamplesQuery);
+        gRHI->query_destroy(mSamplesQuery);
         mSamplesQuery = 0;
     }
 
@@ -1061,7 +1099,7 @@ void LLGLSLShader::bind()
             sCurBoundShaderPtr->readProfileQuery();
         }
         LLVertexBuffer::unbind();
-        glUseProgram(mProgramObject);
+        shader_use(mProgramObject);
         sCurBoundShader = mProgramObject;
         sCurBoundShaderPtr = this;
         placeProfileQuery();
@@ -1109,7 +1147,7 @@ void LLGLSLShader::unbind(void)
         sCurBoundShaderPtr->readProfileQuery();
     }
 
-    glUseProgram(0);
+    shader_use(0);
     sCurBoundShader = 0;
     sCurBoundShaderPtr = NULL;
 }
@@ -1306,7 +1344,7 @@ void LLGLSLShader::uniform1i(U32 index, GLint x)
             const auto& iter = mValue.find(mUniform[index]);
             if (iter == mValue.end() || iter->second.mV[0] != x)
             {
-                glUniform1i(mUniform[index], x);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_I32, 1, &x);
                 mValue[mUniform[index]] = LLVector4((F32)x, 0.f, 0.f, 0.f);
             }
         }
@@ -1332,7 +1370,7 @@ void LLGLSLShader::uniform1f(U32 index, GLfloat x)
             const auto& iter = mValue.find(mUniform[index]);
             if (iter == mValue.end() || iter->second.mV[0] != x)
             {
-                glUniform1f(mUniform[index], x);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_F32, 1, &x);
                 mValue[mUniform[index]] = LLVector4(x, 0.f, 0.f, 0.f);
             }
         }
@@ -1346,7 +1384,7 @@ void LLGLSLShader::fastUniform1f(U32 index, GLfloat x)
     llassert(mProgramObject);
     llassert(mUniform.size() <= index);
     llassert(mUniform[index] >= 0);
-    glUniform1f(mUniform[index], x);
+    shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_F32, 1, &x);
 }
 
 void LLGLSLShader::uniform2f(U32 index, GLfloat x, GLfloat y)
@@ -1369,7 +1407,7 @@ void LLGLSLShader::uniform2f(U32 index, GLfloat x, GLfloat y)
             LLVector4 vec(x, y, 0.f, 0.f);
             if (iter == mValue.end() || shouldChange(iter->second, vec))
             {
-                glUniform2f(mUniform[index], x, y);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_VEC2, 1, vec.mV);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1396,7 +1434,7 @@ void LLGLSLShader::uniform3f(U32 index, GLfloat x, GLfloat y, GLfloat z)
             LLVector4 vec(x, y, z, 0.f);
             if (iter == mValue.end() || shouldChange(iter->second, vec))
             {
-                glUniform3f(mUniform[index], x, y, z);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_VEC3, 1, vec.mV);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1423,7 +1461,7 @@ void LLGLSLShader::uniform4f(U32 index, GLfloat x, GLfloat y, GLfloat z, GLfloat
             LLVector4 vec(x, y, z, w);
             if (iter == mValue.end() || shouldChange(iter->second, vec))
             {
-                glUniform4f(mUniform[index], x, y, z, w);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_VEC4, 1, vec.mV);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1450,7 +1488,7 @@ void LLGLSLShader::uniform1iv(U32 index, U32 count, const GLint* v)
             LLVector4 vec((F32)v[0], 0.f, 0.f, 0.f);
             if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
             {
-                glUniform1iv(mUniform[index], count, v);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_I32, count, v);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1477,7 +1515,7 @@ void LLGLSLShader::uniform4iv(U32 index, U32 count, const GLint* v)
             LLVector4 vec((F32)v[0], (F32)v[1], (F32)v[2], (F32)v[3]);
             if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
             {
-                glUniform4iv(mUniform[index], count, v); // <FS:Beq/>  Apparent copy/paste error.
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_IVEC4, count, v); // <FS:Beq/>  Apparent copy/paste error.
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1505,7 +1543,7 @@ void LLGLSLShader::uniform1fv(U32 index, U32 count, const GLfloat* v)
             LLVector4 vec(v[0], 0.f, 0.f, 0.f);
             if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
             {
-                glUniform1fv(mUniform[index], count, v);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_F32, count, v);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1532,7 +1570,7 @@ void LLGLSLShader::uniform2fv(U32 index, U32 count, const GLfloat* v)
             LLVector4 vec(v[0], v[1], 0.f, 0.f);
             if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
             {
-                glUniform2fv(mUniform[index], count, v);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_VEC2, count, v);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1559,7 +1597,7 @@ void LLGLSLShader::uniform3fv(U32 index, U32 count, const GLfloat* v)
             LLVector4 vec(v[0], v[1], v[2], 0.f);
             if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
             {
-                glUniform3fv(mUniform[index], count, v);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_VEC3, count, v);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1587,7 +1625,7 @@ void LLGLSLShader::uniform4fv(U32 index, U32 count, const GLfloat* v)
             if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
             {
                 LL_PROFILE_ZONE_SCOPED_CATEGORY_SHADER;
-                glUniform4fv(mUniform[index], count, v);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_VEC4, count, v);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1615,7 +1653,7 @@ void LLGLSLShader::uniform4uiv(U32 index, U32 count, const GLuint* v)
             if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
             {
                 LL_PROFILE_ZONE_SCOPED_CATEGORY_SHADER;
-                glUniform4uiv(mUniform[index], count, v);
+                shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_UVEC4, count, v);
                 mValue[mUniform[index]] = vec;
             }
         }
@@ -1638,7 +1676,7 @@ void LLGLSLShader::uniformMatrix2fv(U32 index, U32 count, GLboolean transpose, c
 
         if (mUniform[index] >= 0)
         {
-            glUniformMatrix2fv(mUniform[index], count, transpose, v);
+            shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_MAT2, count, v, transpose);
         }
     }
 }
@@ -1659,7 +1697,7 @@ void LLGLSLShader::uniformMatrix3fv(U32 index, U32 count, GLboolean transpose, c
 
         if (mUniform[index] >= 0)
         {
-            glUniformMatrix3fv(mUniform[index], count, transpose, v);
+            shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_MAT3, count, v, transpose);
         }
     }
 }
@@ -1680,7 +1718,7 @@ void LLGLSLShader::uniformMatrix3x4fv(U32 index, U32 count, GLboolean transpose,
 
         if (mUniform[index] >= 0)
         {
-            glUniformMatrix3x4fv(mUniform[index], count, transpose, v);
+            shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_MAT3X4, count, v, transpose);
         }
     }
 }
@@ -1701,7 +1739,7 @@ void LLGLSLShader::uniformMatrix4fv(U32 index, U32 count, GLboolean transpose, c
 
         if (mUniform[index] >= 0)
         {
-            glUniformMatrix4fv(mUniform[index], count, transpose, v);
+            shader_uniform(mProgramObject, mUniform[index], RHI_UNIFORM_MAT4, count, v, transpose);
         }
     }
 }
@@ -1719,7 +1757,7 @@ GLint LLGLSLShader::getUniformLocation(const LLStaticHashedString& uniform)
             if (gDebugGL)
             {
                 stop_glerror();
-                if (iter->second != glGetUniformLocation(mProgramObject, uniform.String().c_str()))
+                if (iter->second != shader_uni_loc(mProgramObject, uniform.String().c_str()))
                 {
                     LL_ERRS() << "Uniform does not match." << LL_ENDL;
                 }
@@ -1775,7 +1813,7 @@ void LLGLSLShader::uniform1i(const LLStaticHashedString& uniform, GLint v)
         LLVector4 vec((F32)v, 0.f, 0.f, 0.f);
         if (iter == mValue.end() || shouldChange(iter->second, vec))
         {
-            glUniform1i(location, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_I32, 1, &v);
             mValue[location] = vec;
         }
     }
@@ -1793,7 +1831,7 @@ void LLGLSLShader::uniform1iv(const LLStaticHashedString& uniform, U32 count, co
         if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
         {
             LL_PROFILE_ZONE_SCOPED_CATEGORY_SHADER;
-            glUniform1iv(location, count, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_I32, count, v);
             mValue[location] = vec;
         }
     }
@@ -1811,7 +1849,7 @@ void LLGLSLShader::uniform4iv(const LLStaticHashedString& uniform, U32 count, co
         if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
         {
             LL_PROFILE_ZONE_SCOPED_CATEGORY_SHADER;
-            glUniform4iv(location, count, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_IVEC4, count, v);
             mValue[location] = vec;
         }
     }
@@ -1828,7 +1866,8 @@ void LLGLSLShader::uniform2i(const LLStaticHashedString& uniform, GLint i, GLint
         LLVector4 vec((F32)i, (F32)j, 0.f, 0.f);
         if (iter == mValue.end() || shouldChange(iter->second, vec))
         {
-            glUniform2i(location, i, j);
+            const GLint ij[2] = { i, j };
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_IVEC2, 1, ij);
             mValue[location] = vec;
         }
     }
@@ -1846,7 +1885,7 @@ void LLGLSLShader::uniform1f(const LLStaticHashedString& uniform, GLfloat v)
         LLVector4 vec(v, 0.f, 0.f, 0.f);
         if (iter == mValue.end() || shouldChange(iter->second, vec))
         {
-            glUniform1f(location, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_F32, 1, &v);
             mValue[location] = vec;
         }
     }
@@ -1863,7 +1902,7 @@ void LLGLSLShader::uniform2f(const LLStaticHashedString& uniform, GLfloat x, GLf
         LLVector4 vec(x, y, 0.f, 0.f);
         if (iter == mValue.end() || shouldChange(iter->second, vec))
         {
-            glUniform2f(location, x, y);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_VEC2, 1, vec.mV);
             mValue[location] = vec;
         }
     }
@@ -1881,7 +1920,7 @@ void LLGLSLShader::uniform3f(const LLStaticHashedString& uniform, GLfloat x, GLf
         LLVector4 vec(x, y, z, 0.f);
         if (iter == mValue.end() || shouldChange(iter->second, vec))
         {
-            glUniform3f(location, x, y, z);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_VEC3, 1, vec.mV);
             mValue[location] = vec;
         }
     }
@@ -1898,7 +1937,7 @@ void LLGLSLShader::uniform4f(const LLStaticHashedString& uniform, GLfloat x, GLf
         LLVector4 vec(x, y, z, w);
         if (iter == mValue.end() || shouldChange(iter->second, vec))
         {
-            glUniform4f(location, x, y, z, w);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_VEC4, 1, vec.mV);
             mValue[location] = vec;
         }
     }
@@ -1915,7 +1954,7 @@ void LLGLSLShader::uniform1fv(const LLStaticHashedString& uniform, U32 count, co
         LLVector4 vec(v[0], 0.f, 0.f, 0.f);
         if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
         {
-            glUniform1fv(location, count, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_F32, count, v);
             mValue[location] = vec;
         }
     }
@@ -1932,7 +1971,7 @@ void LLGLSLShader::uniform2fv(const LLStaticHashedString& uniform, U32 count, co
         LLVector4 vec(v[0], v[1], 0.f, 0.f);
         if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
         {
-            glUniform2fv(location, count, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_VEC2, count, v);
             mValue[location] = vec;
         }
     }
@@ -1949,7 +1988,7 @@ void LLGLSLShader::uniform3fv(const LLStaticHashedString& uniform, U32 count, co
         LLVector4 vec(v[0], v[1], v[2], 0.f);
         if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
         {
-            glUniform3fv(location, count, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_VEC3, count, v);
             mValue[location] = vec;
         }
     }
@@ -1967,7 +2006,7 @@ void LLGLSLShader::uniform4fv(const LLStaticHashedString& uniform, U32 count, co
         if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
         {
             LL_PROFILE_ZONE_SCOPED_CATEGORY_SHADER;
-            glUniform4fv(location, count, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_VEC4, count, v);
             mValue[location] = vec;
         }
     }
@@ -1985,7 +2024,7 @@ void LLGLSLShader::uniform4uiv(const LLStaticHashedString& uniform, U32 count, c
         if (iter == mValue.end() || shouldChange(iter->second, vec) || count != 1)
         {
             LL_PROFILE_ZONE_SCOPED_CATEGORY_SHADER;
-            glUniform4uiv(location, count, v);
+            shader_uniform(mProgramObject, location, RHI_UNIFORM_UVEC4, count, v);
             mValue[location] = vec;
         }
     }
@@ -1999,7 +2038,7 @@ void LLGLSLShader::uniformMatrix4fv(const LLStaticHashedString& uniform, U32 cou
     if (location >= 0)
     {
         stop_glerror();
-        glUniformMatrix4fv(location, count, transpose, v);
+        shader_uniform(mProgramObject, location, RHI_UNIFORM_MAT4, count, v, transpose);
         stop_glerror();
     }
 }
@@ -2009,7 +2048,8 @@ void LLGLSLShader::vertexAttrib4f(U32 index, GLfloat x, GLfloat y, GLfloat z, GL
 {
     if (mAttribute[index] > 0)
     {
-        glVertexAttrib4f(mAttribute[index], x, y, z, w);
+        const GLfloat av[4] = { x, y, z, w };
+        shader_vattrib4(mAttribute[index], av);
     }
 }
 
@@ -2017,7 +2057,7 @@ void LLGLSLShader::vertexAttrib4fv(U32 index, GLfloat* v)
 {
     if (mAttribute[index] > 0)
     {
-        glVertexAttrib4fv(mAttribute[index], v);
+        shader_vattrib4(mAttribute[index], v);
     }
 }
 

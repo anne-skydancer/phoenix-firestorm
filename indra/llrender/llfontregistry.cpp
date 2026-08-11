@@ -44,8 +44,6 @@ using std::map;
 bool font_desc_init_from_xml(LLXMLNodePtr node, LLFontDescriptor& desc);
 bool init_from_xml(LLFontRegistry* registry, LLXMLNodePtr node);
 
-const std::string MACOSX_FONT_PATH_LIBRARY = "/Library/Fonts/";
-const std::string MACOSX_FONT_SUPPLEMENTAL = "Supplemental/";
 
 
 

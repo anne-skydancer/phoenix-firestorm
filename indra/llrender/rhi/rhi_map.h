@@ -58,35 +58,6 @@ inline RhiPolygonMode rhi_polygon_mode_from_gl(GLenum mode)
     }
 }
 
-// glStencilOp action
-inline RhiStencilOp rhi_stencil_op_from_gl(GLenum op)
-{
-    switch (op)
-    {
-        case GL_KEEP:      return RHI_SO_KEEP;
-        case GL_ZERO:      return RHI_SO_ZERO;
-        case GL_REPLACE:   return RHI_SO_REPLACE;
-        case GL_INCR:      return RHI_SO_INCR;
-        case GL_DECR:      return RHI_SO_DECR;
-        case GL_INVERT:    return RHI_SO_INVERT;
-        case GL_INCR_WRAP: return RHI_SO_INCR_WRAP;
-        case GL_DECR_WRAP: return RHI_SO_DECR_WRAP;
-        default:           return RHI_SO_KEEP;
-    }
-}
-
-// glBindBuffer / glBufferData / glBufferSubData target (R2 · J3)
-inline RhiBufferTarget rhi_buftgt_from_gl(GLenum t)
-{
-    switch (t)
-    {
-        case GL_ARRAY_BUFFER:         return RHI_BUFTGT_VERTEX;
-        case GL_ELEMENT_ARRAY_BUFFER: return RHI_BUFTGT_INDEX;
-        case GL_UNIFORM_BUFFER:       return RHI_BUFTGT_UNIFORM;
-        default:                      return RHI_BUFTGT_VERTEX;
-    }
-}
-
 // glBufferData usage hint (R2 · J3)
 inline RhiBufferHint rhi_bufhint_from_gl(GLenum usage)
 {
@@ -96,17 +67,6 @@ inline RhiBufferHint rhi_bufhint_from_gl(GLenum usage)
         case GL_DYNAMIC_DRAW: return RHI_BUFHINT_DYNAMIC;
         case GL_STREAM_DRAW:  return RHI_BUFHINT_STREAM;
         default:              return RHI_BUFHINT_STATIC;
-    }
-}
-
-// index element type (R7 · J3) -- glDrawRangeElements type / mIndicesType
-inline RhiIndexType rhi_idxtype_from_gl(GLenum t)
-{
-    switch (t)
-    {
-        case GL_UNSIGNED_SHORT: return RHI_IDX_U16;
-        case GL_UNSIGNED_INT:   return RHI_IDX_U32;
-        default:                return RHI_IDX_U16;
     }
 }
 

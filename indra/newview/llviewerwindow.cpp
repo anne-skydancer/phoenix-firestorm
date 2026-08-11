@@ -861,7 +861,7 @@ public:
             S32 x_raw = (S32)llround(coord.mX * gViewerWindow->getWindowWidthRaw() / (F32) gViewerWindow->getWindowWidthScaled());
             S32 y_raw = (S32)llround(coord.mY * gViewerWindow->getWindowHeightRaw() / (F32) gViewerWindow->getWindowHeightScaled());
 
-            glReadPixels(x_raw, y_raw, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
+            if (gRHI) gRHI->read_pixels(x_raw, y_raw, 1, 1, RHI_FMT_RGBA8, color); else glReadPixels(x_raw, y_raw, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, color);
             addText(xpos, ypos, llformat("Pixel <%1d, %1d> R:%1d G:%1d B:%1d A:%1d", x_raw, y_raw, color[0], color[1], color[2], color[3]));
             ypos += y_inc;
         }
@@ -6370,23 +6370,37 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
                     {
                         if (type == LLSnapshotModel::SNAPSHOT_TYPE_COLOR)
                         {
-                            glReadPixels(
+                            if (gRHI)
+                            {
+                                gRHI->read_pixels(subimage_x_offset, out_y + subimage_y_offset, read_width, 1, RHI_FMT_RGB8, raw->getData() + output_buffer_offset);
+                            }
+                            else
+                            {
+                                glReadPixels(
                                      subimage_x_offset, out_y + subimage_y_offset,
                                      read_width, 1,
                                      GL_RGB, GL_UNSIGNED_BYTE,
                                      raw->getData() + output_buffer_offset
                                      );
+                            }
                         }
                         // <FS:Ansariel> FIRE-15667: 24bit depth maps
                         else if (type == LLSnapshotModel::SNAPSHOT_TYPE_DEPTH24)
                         {
                             LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GLfloat)); // need to store floating point values
-                            glReadPixels(
+                            if (gRHI)
+                            {
+                                gRHI->read_pixels(subimage_x_offset, out_y + subimage_y_offset, read_width, 1, RHI_FMT_DEPTH32F, depth_line_buffer->getData());
+                            }
+                            else
+                            {
+                                glReadPixels(
                                          subimage_x_offset, out_y + subimage_y_offset,
                                          read_width, 1,
                                          GL_DEPTH_COMPONENT, GL_FLOAT,
                                          depth_line_buffer->getData()// current output pixel is beginning of buffer...
                                          );
+                            }
 
                             for (S32 i = 0; i < (S32)read_width; i++)
                             {
@@ -6415,12 +6429,19 @@ bool LLViewerWindow::rawSnapshot(LLImageRaw *raw, S32 image_width, S32 image_hei
                             //LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GL_FLOAT)); // need to store floating point values
                             LLPointer<LLImageRaw> depth_line_buffer = new LLImageRaw(read_width, 1, sizeof(GLfloat)); // need to store floating point values
                             // </FS>
-                            glReadPixels(
+                            if (gRHI)
+                            {
+                                gRHI->read_pixels(subimage_x_offset, out_y + subimage_y_offset, read_width, 1, RHI_FMT_DEPTH32F, depth_line_buffer->getData());
+                            }
+                            else
+                            {
+                                glReadPixels(
                                          subimage_x_offset, out_y + subimage_y_offset,
                                          read_width, 1,
                                          GL_DEPTH_COMPONENT, GL_FLOAT,
                                          depth_line_buffer->getData()// current output pixel is beginning of buffer...
                                          );
+                            }
 
                             for (S32 i = 0; i < (S32)read_width; i++)
                             {
@@ -6583,13 +6604,20 @@ bool LLViewerWindow::simpleSnapshot(LLImageRaw* raw, S32 image_width, S32 image_
 
     LLImageDataSharedLock lock(raw);
 
-    glReadPixels(
-        0, 0,
-        image_width,
-        image_height,
-        GL_RGB, GL_UNSIGNED_BYTE,
-        raw->getData()
-    );
+    if (gRHI)
+    {
+        gRHI->read_pixels(0, 0, image_width, image_height, RHI_FMT_RGB8, raw->getData());
+    }
+    else
+    {
+        glReadPixels(
+            0, 0,
+            image_width,
+            image_height,
+            GL_RGB, GL_UNSIGNED_BYTE,
+            raw->getData()
+        );
+    }
     stop_glerror();
 
     gDisplaySwapBuffers = false;

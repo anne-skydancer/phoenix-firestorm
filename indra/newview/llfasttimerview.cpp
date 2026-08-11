@@ -28,6 +28,7 @@
 
 #include "llfasttimerview.h"
 
+#include "rhi/rhi.h"   // <FSVulkan P2 J7> route glReadPixels through gRHI
 #include "llviewerwindow.h"
 #include "llrect.h"
 #include "llcombobox.h"
@@ -475,7 +476,7 @@ void saveChart(const std::string& label, const char* suffix, LLImageRaw* scratch
         LLImageDataSharedLock lock(scratch);
 
         //read result back into raw image
-        glReadPixels(0, 0, 1024, 512, GL_RGB, GL_UNSIGNED_BYTE, scratch->getData());
+        if (gRHI) gRHI->read_pixels(0, 0, 1024, 512, RHI_FMT_RGB8, scratch->getData()); else glReadPixels(0, 0, 1024, 512, GL_RGB, GL_UNSIGNED_BYTE, scratch->getData());
 
         //write results to disk
         LLPointer<LLImagePNG> result = new LLImagePNG();

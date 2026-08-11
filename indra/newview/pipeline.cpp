@@ -7564,7 +7564,7 @@ void apply_cube_face_rotation(U32 face)
 void validate_framebuffer_object()
 {
     GLenum status;
-    status = glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);
+    if (gRHI) status = gRHI->target_get_status(); else status = glCheckFramebufferStatus(GL_FRAMEBUFFER_EXT);
     switch(status)
     {
         case GL_FRAMEBUFFER_COMPLETE:
@@ -12110,7 +12110,7 @@ void LLPipeline::generateImpostor(LLVOAvatar* avatar, bool preview_avatar, bool 
         if (LLPipeline::sRenderDeferred)
         {
             GLuint buff = GL_COLOR_ATTACHMENT0;
-            glDrawBuffers(1, &buff);
+            if (gRHI) gRHI->draw_buffers(1); else glDrawBuffers(1, &buff);
         }
 
         LLGLDisable blend(GL_BLEND);

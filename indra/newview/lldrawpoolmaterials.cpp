@@ -165,22 +165,22 @@ void LLDrawPoolMaterials::renderDeferred(S32 pass)
 
     if (intensity > -1)
     {
-        glUniform1f(intensity, lastIntensity);
+        mShader->uniform1f(LLShaderMgr::ENVIRONMENT_INTENSITY, lastIntensity);
     }
 
     if (brightness > -1)
     {
-        glUniform1f(brightness, lastFullbright);
+        mShader->uniform1f(LLShaderMgr::EMISSIVE_BRIGHTNESS, lastFullbright);
     }
 
     if (minAlpha > -1)
     {
-        glUniform1f(minAlpha, lastMinimumAlpha);
+        mShader->uniform1f(LLShaderMgr::MINIMUM_ALPHA, lastMinimumAlpha);
     }
 
     if (specular > -1)
     {
-        glUniform4fv(specular, 1, lastSpecular.mV);
+        mShader->uniform4fv(LLShaderMgr::SPECULAR_COLOR, 1, lastSpecular.mV);
     }
 
     const LLVOAvatar* lastAvatar = nullptr;
@@ -197,26 +197,26 @@ void LLDrawPoolMaterials::renderDeferred(S32 pass)
         if (specular > -1 && params.mSpecColor != lastSpecular)
         {
             lastSpecular = params.mSpecColor;
-            glUniform4fv(specular, 1, lastSpecular.mV);
+            mShader->uniform4fv(LLShaderMgr::SPECULAR_COLOR, 1, lastSpecular.mV);
         }
 
         if (intensity != -1 && lastIntensity != params.mEnvIntensity)
         {
             lastIntensity = params.mEnvIntensity;
-            glUniform1f(intensity, lastIntensity);
+            mShader->uniform1f(LLShaderMgr::ENVIRONMENT_INTENSITY, lastIntensity);
         }
 
         if (minAlpha > -1 && lastMinimumAlpha != params.mAlphaMaskCutoff)
         {
             lastMinimumAlpha = params.mAlphaMaskCutoff;
-            glUniform1f(minAlpha, lastMinimumAlpha);
+            mShader->uniform1f(LLShaderMgr::MINIMUM_ALPHA, lastMinimumAlpha);
         }
 
         F32 fullbright = params.mFullbright ? 1.f : 0.f;
         if (brightness > -1 && lastFullbright != fullbright)
         {
             lastFullbright = fullbright;
-            glUniform1f(brightness, lastFullbright);
+            mShader->uniform1f(LLShaderMgr::EMISSIVE_BRIGHTNESS, lastFullbright);
         }
 
         if (normChannel > -1 && params.mNormalMap != lastNormalMap)

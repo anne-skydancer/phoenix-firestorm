@@ -28,6 +28,7 @@
 
 #include "llviewertexlayer.h"
 
+#include "rhi/rhi.h"   // <FSVulkan P2 J7> route glReadPixels through gRHI
 #include "llagent.h"
 #include "llimagej2c.h"
 #include "llnotificationsutil.h"
@@ -623,7 +624,7 @@ void LLViewerTexLayerSetBuffer::doUpload(LLRenderTarget* bound_target)
 
     // Get the COLOR information from our texture
     U8* baked_color_data = new U8[ mFullWidth * mFullHeight * 4 ];
-    glReadPixels(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight, GL_RGBA, GL_UNSIGNED_BYTE, baked_color_data );
+    if (gRHI) gRHI->read_pixels(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight, RHI_FMT_RGBA8, baked_color_data); else glReadPixels(mOrigin.mX, mOrigin.mY, mFullWidth, mFullHeight, GL_RGBA, GL_UNSIGNED_BYTE, baked_color_data );
     stop_glerror();
 
     // Get the MASK information from our texture

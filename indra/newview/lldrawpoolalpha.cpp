@@ -42,6 +42,8 @@
 #include "llviewertexturelist.h"    // For debugging
 #include "llviewerobjectlist.h" // For debugging
 #include "llviewerwindow.h"
+#include "llviewerdisplay.h"
+#include "llappviewer.h"
 #include "pipeline.h"
 #include "llviewershadermgr.h"
 #include "llviewerregion.h"
@@ -199,14 +201,155 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     // already being setup for rendering
     LLGLSLShader::unbind();
 
-    if (!LLPipeline::sRenderingHUDs)
-    {
-        // first pass, render rigged objects only and render to depth buffer
-        forwardRender(true);
-    }
+    static LLCachedControl<U32> alpha_method(gSavedSettings, "RenderAlphaSortMethod", 0);
+    const bool oit_view_eligible =
+        getType() == LLDrawPool::POOL_ALPHA_POST_WATER &&
+        gPipeline.mRT == &gPipeline.mMainRT &&
+        !LLPipeline::sRenderingHUDs &&
+        !LLPipeline::sImpostorRender &&
+        !LLPipeline::sReflectionRender &&
+        !gCubeSnapshot;
 
-    // second pass, regular forward alpha rendering
-    forwardRender();
+    bool ppll_resources = true;
+    if (alpha_method == 1 && oit_view_eligible)
+    {
+        gPipeline.allocateAlphaOITBuffers(
+            gPipeline.mRT->screen.getWidth(), gPipeline.mRT->screen.getHeight());
+        ppll_resources = LLPipeline::sRenderAlphaOITSupported;
+    }
+    bool depth_resources = true;
+    if (alpha_method == 2 && oit_view_eligible)
+    {
+        depth_resources = gPipeline.allocateAlphaDepthPeelBuffers(
+            gPipeline.mRT->screen.getWidth(), gPipeline.mRT->screen.getHeight());
+    }
+    // OIT is deliberately limited to the main post-water view. Mirrors/hero probes,
+    // cube snapshots, HUDs, impostors and pre-water alpha retain the stock path.
+    bool use_ppll = alpha_method == 1
+                 && oit_view_eligible
+                 && ppll_resources
+                 && LLPipeline::sRenderAlphaOITSupported;
+    bool use_depth_peel = alpha_method == 2
+                       && depth_resources
+                       && oit_view_eligible
+                       && gSavedSettings.getBOOL("RenderAlphaDepthPeelAvailable");
+
+    // Depth peeling replays the complete alpha draw list twice per exact layer.
+    // Region arrival is also the worst possible moment to multiply that work because
+    // geometry and drawable rebuild queues are at their peak.  Break the feedback loop
+    // after a teleport or a long frame and allow those queues to drain on the stock path.
+    static LLFrameTimer depth_peel_recovery_timer;
+    static bool depth_peel_recovering = false;
+    const bool transient_load = gTeleportDisplay || gFrameIntervalSeconds.value() > 0.100f;
+    if (transient_load)
+    {
+        depth_peel_recovery_timer.reset();
+        depth_peel_recovering = true;
+    }
+    else if (depth_peel_recovering && depth_peel_recovery_timer.getElapsedTimeF32() >= 2.f)
+    {
+        depth_peel_recovering = false;
+    }
+    use_depth_peel = use_depth_peel && !depth_peel_recovering;
+
+    if (use_ppll)
+    {
+        drawGLTFScene();
+        if (gPipeline.beginAlphaOITCapture())
+        {
+            setOITMode(1);
+            forwardRender(true, ALPHA_OIT_CAPTURE);
+            forwardRender(false, ALPHA_OIT_CAPTURE);
+            setOITMode(0);
+            gPipeline.endAlphaOITCapture();
+            gPipeline.compositeAlphaOIT();
+
+            // Particles and unsupported blend equations always remain on the stock
+            // residual path. Fullbright source-over alpha was captured with lit alpha.
+            forwardRender(true, ALPHA_OIT_RESIDUAL);
+            forwardRender(false, ALPHA_OIT_RESIDUAL);
+        }
+        else
+        {
+            if (!LLPipeline::sRenderingHUDs)
+            {
+                forwardRender(true);
+            }
+            forwardRender();
+        }
+    }
+    else if (use_depth_peel)
+    {
+        drawGLTFScene();
+        static LLCachedControl<U32> peel_layers(gSavedSettings, "RenderAlphaDepthPeelLayers", 8);
+        static LLCachedControl<U32> peel_budget_ms(gSavedSettings, "RenderAlphaDepthPeelTimeBudgetMS", 4);
+        const U32 layer_count = llclamp((U32)peel_layers, 1u, 32u);
+        const F32 time_budget = (F32)llclamp((U32)peel_budget_ms, 1u, 50u) * 0.001f;
+        bool valid = true;
+        U32 completed_layers = 0;
+        LLTimer peel_timer;
+
+        for (U32 layer = 0; layer < layer_count; ++layer)
+        {
+            if (!gPipeline.beginAlphaDepthPeelSelection(layer))
+            {
+                valid = false;
+                break;
+            }
+
+            setOITMode(2, gPipeline.getAlphaDepthPeelPrevious(layer), layer == 0);
+            forwardRender(true, ALPHA_DEPTH_PEEL_SELECT);
+            forwardRender(false, ALPHA_DEPTH_PEEL_SELECT);
+            gPipeline.endAlphaDepthPeelSelection();
+
+            setOITMode(3, gPipeline.getAlphaDepthPeelSelected(layer));
+            forwardRender(true, ALPHA_DEPTH_PEEL_REPLAY);
+            forwardRender(false, ALPHA_DEPTH_PEEL_REPLAY);
+            completed_layers = layer + 1;
+
+            // This is a CPU submission budget, not a GPU timestamp.  It nevertheless
+            // prevents a busy region from multiplying an expensive traversal by every
+            // configured layer in one frame.  The remaining fragments use the tail pass.
+            if (peel_timer.getElapsedTimeF32() >= time_budget)
+            {
+                break;
+            }
+        }
+        setOITMode(0);
+
+        if (valid && completed_layers > 0)
+        {
+            // Layers are selected farthest-to-nearest.  Render everything nearer than
+            // the last exact layer once with the legacy source-over ordering.  Without
+            // this pass, ordinary alpha beyond the configured peel count disappears
+            // (windows, foliage, decals, appliers and other stacked alpha cards).
+            setOITMode(4, gPipeline.getAlphaDepthPeelSelected(completed_layers - 1));
+            forwardRender(true, ALPHA_DEPTH_PEEL_TAIL);
+            forwardRender(false, ALPHA_DEPTH_PEEL_TAIL);
+            setOITMode(0);
+
+            // Particles and custom blend equations remain entirely legacy.
+            // Standard fullbright alpha was peeled together with lit alpha.
+            forwardRender(true, ALPHA_OIT_RESIDUAL);
+            forwardRender(false, ALPHA_OIT_RESIDUAL);
+        }
+        else
+        {
+            forwardRender(true);
+            forwardRender();
+        }
+    }
+    else
+    {
+        if (!LLPipeline::sRenderingHUDs)
+        {
+            // first pass, render rigged objects only and render to depth buffer
+            forwardRender(true);
+        }
+
+        // second pass, regular forward alpha rendering
+        forwardRender();
+    }
 
     // final pass, render to depth for depth of field effects
     if (!LLPipeline::sImpostorRender && LLPipeline::RenderDepthOfField && !gCubeSnapshot && !LLPipeline::sRenderingHUDs && getType() == LLDrawPool::POOL_ALPHA_POST_WATER)
@@ -229,21 +372,24 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     }
 }
 
-void LLDrawPoolAlpha::forwardRender(bool rigged)
+void LLDrawPoolAlpha::forwardRender(bool rigged, EAlphaOITPhase oit_phase)
 {
     gPipeline.enableLightsDynamic();
 
     LLGLSPipelineAlpha gls_pipeline_alpha;
 
-    //enable writing to alpha for emissive effects
-    gGL.setColorMask(true, true);
+    // Capture shaders append and discard, so the framebuffer remains untouched.
+    if (oit_phase != ALPHA_OIT_CAPTURE)
+    {
+        gGL.setColorMask(true, true);
+    }
 
-    bool write_depth = rigged ||
+    bool write_depth = (oit_phase == ALPHA_OIT_NONE || oit_phase == ALPHA_OIT_RESIDUAL) && (rigged ||
         LLDrawPoolWater::sSkipScreenCopy
         // we want depth written so that rendered alpha will
         // contribute to the alpha mask used for impostors
         || LLPipeline::sImpostorRenderAlphaDepthPass
-        || getType() == LLDrawPoolAlpha::POOL_ALPHA_PRE_WATER; // needed for accurate water fog
+        || getType() == LLDrawPoolAlpha::POOL_ALPHA_PRE_WATER); // needed for accurate water fog
 
 
     LLGLDepthTest depth(GL_TRUE, write_depth ? GL_TRUE : GL_FALSE);
@@ -254,7 +400,7 @@ void LLDrawPoolAlpha::forwardRender(bool rigged)
     mAlphaDFactor = LLRender::BF_ONE_MINUS_SOURCE_ALPHA;       // }
     gGL.blendFunc(mColorSFactor, mColorDFactor, mAlphaSFactor, mAlphaDFactor);
 
-    if (rigged && mType == LLDrawPool::POOL_ALPHA_POST_WATER)
+    if (oit_phase == ALPHA_OIT_NONE && rigged && mType == LLDrawPool::POOL_ALPHA_POST_WATER)
     { // draw GLTF scene to depth buffer before rigged alpha
         LL::GLTFSceneManager::instance().render(false, false);
         LL::GLTFSceneManager::instance().render(false, true);
@@ -264,17 +410,87 @@ void LLDrawPoolAlpha::forwardRender(bool rigged)
 
     // If the face is more than 90% transparent, then don't update the Depth buffer for Dof
     // We don't want the nearly invisible objects to cause of DoF effects
-    renderAlpha(getVertexDataMask() | LLVertexBuffer::MAP_TEXTURE_INDEX | LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD1 | LLVertexBuffer::MAP_TEXCOORD2, false, rigged);
+    renderAlpha(getVertexDataMask() | LLVertexBuffer::MAP_TEXTURE_INDEX | LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD1 | LLVertexBuffer::MAP_TEXCOORD2, false, rigged, oit_phase);
 
-    gGL.setColorMask(true, false);
+    if (oit_phase != ALPHA_OIT_CAPTURE)
+    {
+        gGL.setColorMask(true, false);
+    }
 
-    if (!rigged && getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER)
+    if (!rigged &&
+        (oit_phase == ALPHA_OIT_NONE || oit_phase == ALPHA_OIT_RESIDUAL) &&
+        getType() == LLDrawPoolAlpha::POOL_ALPHA_POST_WATER)
     { //render "highlight alpha" on final non-rigged pass
         // NOTE -- hacky call here protected by !rigged instead of alongside "forwardRender"
         // so renderDebugAlpha is executed while gls_pipeline_alpha and depth GL state
         // variables above are still in scope
         renderDebugAlpha();
     }
+}
+
+void LLDrawPoolAlpha::drawGLTFScene()
+{
+    if (getType() != LLDrawPool::POOL_ALPHA_POST_WATER)
+    {
+        return;
+    }
+
+    LL::GLTFSceneManager::instance().render(false, false);
+    LL::GLTFSceneManager::instance().render(false, true);
+    LL::GLTFSceneManager::instance().render(false, false, true);
+    LL::GLTFSceneManager::instance().render(false, true, true);
+}
+
+void LLDrawPoolAlpha::setOITMode(S32 mode, LLRenderTarget* peel_depth, bool first_peel)
+{
+    static const LLStaticHashedString sOITMode("oit_mode");
+    static const LLStaticHashedString sOITNodeCap("oit_node_cap");
+    static const LLStaticHashedString sPeelFirst("alpha_peel_first");
+    const S32 node_cap = (S32)llmin<U32>(gPipeline.getAlphaOITNodeCap(), 0x7fffffffu);
+    mAlphaPeelDepth = (mode == 2 || mode == 3 || mode == 4) ? peel_depth : nullptr;
+
+    auto apply = [&](LLGLSLShader* shader)
+    {
+        if (!shader)
+        {
+            return;
+        }
+        shader->bind();
+        shader->uniform1i(sOITMode, mode);
+        shader->uniform1i(sOITNodeCap, node_cap);
+        shader->uniform1i(sPeelFirst, first_peel ? 1 : 0);
+        if (mAlphaPeelDepth)
+        {
+            shader->bindTexture(LLShaderMgr::ALPHA_PEEL_DEPTH, mAlphaPeelDepth,
+                                false, LLTexUnit::TFO_POINT);
+        }
+        if (shader->mRiggedVariant && shader->mRiggedVariant != shader)
+        {
+            shader->mRiggedVariant->bind();
+            shader->mRiggedVariant->uniform1i(sOITMode, mode);
+            shader->mRiggedVariant->uniform1i(sOITNodeCap, node_cap);
+            shader->mRiggedVariant->uniform1i(sPeelFirst, first_peel ? 1 : 0);
+            if (mAlphaPeelDepth)
+            {
+                shader->mRiggedVariant->bindTexture(LLShaderMgr::ALPHA_PEEL_DEPTH, mAlphaPeelDepth,
+                                                    false, LLTexUnit::TFO_POINT);
+            }
+        }
+    };
+
+    apply(simple_shader);
+    apply(fullbright_shader);
+    apply(pbr_shader);
+
+    LLGLSLShader* material_shader = gDeferredMaterialProgram;
+    for (S32 i = 0; i < LLMaterial::SHADER_COUNT * 2; ++i)
+    {
+        if ((i & 0x3) == 1)
+        {
+            apply(&material_shader[i]);
+        }
+    }
+    LLGLSLShader::unbind();
 }
 
 void LLDrawPoolAlpha::renderDebugAlpha()
@@ -580,7 +796,7 @@ void LLDrawPoolAlpha::renderRiggedPbrEmissives(std::vector<LLDrawInfo*>& emissiv
     }
 }
 
-void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
+void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged, EAlphaOITPhase oit_phase)
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL;
     bool initialized_lighting = false;
@@ -660,6 +876,17 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
             bool is_particle_or_hud_particle = group->getSpatialPartition()->mPartitionType == LLViewerRegion::PARTITION_PARTICLE
                                                       || group->getSpatialPartition()->mPartitionType == LLViewerRegion::PARTITION_HUD_PARTICLE;
 
+            // Particle partitions are always rendered by the stock alpha path. They must
+            // never consume PPLL nodes, even when their batches happen to be fullbright.
+            if ((oit_phase == ALPHA_OIT_CAPTURE ||
+                 oit_phase == ALPHA_DEPTH_PEEL_SELECT ||
+                 oit_phase == ALPHA_DEPTH_PEEL_REPLAY ||
+                 oit_phase == ALPHA_DEPTH_PEEL_TAIL) &&
+                is_particle_or_hud_particle)
+            {
+                continue;
+            }
+
             // <FS:LO> Dont suspend partical processing while particles are hidden, just skip over drawing them
             if(!(gPipeline.sRenderParticles) && (
                                                  group->getSpatialPartition()->mPartitionType == LLViewerRegion::PARTITION_PARTICLE ||
@@ -679,6 +906,44 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                 LLDrawInfo& params = **k;
                 if ((bool)params.mAvatar != rigged)
                 {
+                    continue;
+                }
+
+                const bool custom_blend =
+                    params.mBlendFuncSrc != LLRender::BF_SOURCE_ALPHA ||
+                    params.mBlendFuncDst != LLRender::BF_ONE_MINUS_SOURCE_ALPHA;
+                const bool residual_draw = is_particle_or_hud_particle || custom_blend;
+
+                if (oit_phase == ALPHA_OIT_CAPTURE && residual_draw)
+                {
+                    continue;
+                }
+
+                if ((oit_phase == ALPHA_DEPTH_PEEL_SELECT ||
+                     oit_phase == ALPHA_DEPTH_PEEL_REPLAY ||
+                     oit_phase == ALPHA_DEPTH_PEEL_TAIL) && residual_draw)
+                {
+                    continue;
+                }
+
+                if (oit_phase == ALPHA_OIT_RESIDUAL && !residual_draw)
+                {
+                    // Standard source-over fullbright and lit alpha were both captured.
+                    // Preserve their independent additive glow contribution here without
+                    // repeating material setup or RGB blending.
+                    if (!depth_only &&
+                        getType() != LLDrawPool::POOL_ALPHA_PRE_WATER &&
+                        params.mVertexBuffer->hasDataType(LLVertexBuffer::TYPE_EMISSIVE))
+                    {
+                        if (params.mAvatar)
+                        {
+                            (params.mGLTFMaterial.isNull() ? rigged_emissives : pbr_rigged_emissives).push_back(&params);
+                        }
+                        else
+                        {
+                            (params.mGLTFMaterial.isNull() ? emissives : pbr_emissives).push_back(&params);
+                        }
+                    }
                     continue;
                 }
 
@@ -703,6 +968,11 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                     if (current_shader != target_shader)
                     {
                         gPipeline.bindDeferredShaderFast(*target_shader);
+                        if (mAlphaPeelDepth)
+                        {
+                            target_shader->bindTexture(LLShaderMgr::ALPHA_PEEL_DEPTH,
+                                                       mAlphaPeelDepth, false, LLTexUnit::TFO_POINT);
+                        }
                     }
 
                     params.mGLTFMaterial->bind(params.mTexture);
@@ -760,6 +1030,15 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                     {// If we need shaders, and we're not ALREADY using the proper shader, then bind it
                     // (this way we won't rebind shaders unnecessarily).
                         gPipeline.bindDeferredShaderFast(*target_shader);
+
+                        // Texture units are global state. A different alpha shader may have
+                        // used this unit since setOITMode(), so restore the selected-depth
+                        // sampler on every shader transition before issuing card geometry.
+                        if (mAlphaPeelDepth)
+                        {
+                            target_shader->bindTexture(LLShaderMgr::ALPHA_PEEL_DEPTH,
+                                                       mAlphaPeelDepth, false, LLTexUnit::TFO_POINT);
+                        }
 
                         if (params.mFullbright)
                         { // make sure the bind the exposure map for fullbright shaders so they can cancel out exposure
@@ -821,7 +1100,8 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
                 }
 
                 // If this alpha mesh has glow, then draw it a second time to add the destination-alpha (=glow).  Interleaving these state-changing calls is expensive, but glow must be drawn Z-sorted with alpha.
-                if (getType() != LLDrawPool::POOL_ALPHA_PRE_WATER &&
+                if ((oit_phase == ALPHA_OIT_NONE || oit_phase == ALPHA_OIT_RESIDUAL) &&
+                    getType() != LLDrawPool::POOL_ALPHA_PRE_WATER &&
                     params.mVertexBuffer->hasDataType(LLVertexBuffer::TYPE_EMISSIVE))
                 {
                     if (params.mAvatar != nullptr)
@@ -858,7 +1138,8 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged)
             }
 
             // render emissive faces into alpha channel for bloom effects
-            if (!depth_only)
+            if (!depth_only &&
+                (oit_phase == ALPHA_OIT_NONE || oit_phase == ALPHA_OIT_RESIDUAL))
             {
                 gPipeline.enableLightsDynamic();
 

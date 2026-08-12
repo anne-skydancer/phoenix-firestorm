@@ -359,6 +359,8 @@ public:
         SNAPSHOT_BORDER_THICKNESS,          // "border_thickness"
         SNAPSHOT_FRAME_RECT,                // "frame_rect"
         // </FS:Beq>
+
+        ALPHA_PEEL_DEPTH,                   // "alpha_peel_depth"
         END_RESERVED_UNIFORMS
     } eGLSLReservedUniforms;
     // clang-format on

@@ -23,9 +23,65 @@
  * $/LicenseInfo$
  */
 
+#extension GL_ARB_shader_storage_buffer_object : enable
+#extension GL_ARB_shader_image_load_store : enable
+#extension GL_ARB_shader_atomic_counters : enable
+
 /*[EXTRA_CODE_HERE]*/
 
 out vec4 frag_color;
+
+#if defined(IS_ALPHA) && (defined(ALPHA_OIT) || defined(ALPHA_DEPTH_PEEL))
+uniform int oit_mode;
+#endif
+
+#if defined(IS_ALPHA) && defined(ALPHA_OIT)
+// ---- alpha OIT (per-pixel linked list) capture ----
+    // no early_fragment_tests: occlusion is rejected in the resolve (alphaOITResolveF) by depth compare;
+layout(binding = 0, r32ui) uniform coherent uimage2D oit_head;
+layout(std430, binding = 0) buffer OITNodePool { uint oit_nodes[]; };
+layout(binding = 0, offset = 0) uniform atomic_uint oit_counter;
+uniform int oit_node_cap;   // node pool capacity; overflow falls through to legacy blending
+bool oit_append(vec4 c, float z)
+{
+    uint idx = atomicCounterIncrement(oit_counter);
+    if (idx >= uint(oit_node_cap)) return false;
+    uint prev = imageAtomicExchange(oit_head, ivec2(gl_FragCoord.xy), idx);
+    uint base = idx * 4u;
+    oit_nodes[base + 0u] = packHalf2x16(max(c.rg, vec2(0.0)));
+    oit_nodes[base + 1u] = packHalf2x16(vec2(max(c.b, 0.0), clamp(c.a, 0.0, 1.0)));
+    oit_nodes[base + 2u] = floatBitsToUint(z);
+    oit_nodes[base + 3u] = prev;
+    return true;
+}
+#endif
+
+#if defined(IS_ALPHA) && defined(ALPHA_DEPTH_PEEL)
+uniform sampler2D alpha_peel_depth;
+uniform int alpha_peel_first;
+void alpha_depth_peel(inout vec4 c, float z)
+{
+    if (oit_mode == 2)
+    {
+        if (alpha_peel_first == 0)
+        {
+            float selected = texelFetch(alpha_peel_depth, ivec2(gl_FragCoord.xy), 0).r;
+            if (z >= selected) discard;
+        }
+        c = vec4(z);
+    }
+    else if (oit_mode == 3)
+    {
+        float selected = texelFetch(alpha_peel_depth, ivec2(gl_FragCoord.xy), 0).r;
+        if (z != selected) discard;
+    }
+    else if (oit_mode == 4)
+    {
+        float selected = texelFetch(alpha_peel_depth, ivec2(gl_FragCoord.xy), 0).r;
+        if (z >= selected) discard;
+    }
+}
+#endif
 
 #if !defined(HAS_DIFFUSE_LOOKUP)
 uniform sampler2D diffuseMap;
@@ -95,6 +151,18 @@ void main()
 
 #endif
 
-    frag_color = max(color, vec4(0));
+#if defined(IS_ALPHA) && defined(ALPHA_OIT)
+    vec4 oit_out = max(color, vec4(0));
+    if (oit_mode == 1 && oit_append(oit_out, gl_FragCoord.z)) { discard; }
+#ifdef ALPHA_DEPTH_PEEL
+    alpha_depth_peel(oit_out, gl_FragCoord.z);
+#endif
+    frag_color = oit_out;
+#else
+    vec4 oit_out = max(color, vec4(0));
+#if defined(IS_ALPHA) && defined(ALPHA_DEPTH_PEEL)
+    alpha_depth_peel(oit_out, gl_FragCoord.z);
+#endif
+    frag_color = oit_out;
+#endif
 }
-

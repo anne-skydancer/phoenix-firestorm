@@ -2340,6 +2340,8 @@ if (WINDOWS)
       ${CMAKE_CURRENT_SOURCE_DIR}/licenses-win32.txt
       ${CMAKE_CURRENT_SOURCE_DIR}/featuretable.txt
       ${viewer_APPSETTINGS_FILES}
+      ${viewer_SHADER_FILES}
+      ${viewer_XUI_FILES}
       ${ARCH_PREBUILT_DIRS_RELEASE}/growl.dll
       SLPlugin
       media_plugin_cef

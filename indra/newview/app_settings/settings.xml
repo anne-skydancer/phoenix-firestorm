@@ -11827,6 +11827,114 @@ Change of this parameter will affect the layout of buttons in notification toast
     <integer>0</integer>
   </map>
 
+  <key>RenderAlphaSortMethod</key>
+  <map>
+    <key>Comment</key>
+    <string>Main-view post-water alpha method: 0 legacy sorted, 1 PPLL, 2 bounded depth peeling. Unsupported methods fall back to legacy.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>0</integer>
+  </map>
+
+  <key>RenderAlphaOITNodesPerPixel</key>
+  <map>
+    <key>Comment</key>
+    <string>Average PPLL node budget per main-view pixel. Actual allocation is also bounded by the memory budget and driver SSBO limit.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>8</integer>
+  </map>
+
+  <key>RenderAlphaOITMemoryMB</key>
+  <map>
+    <key>Comment</key>
+    <string>Maximum memory budget in MiB for the PPLL node pool, excluding its per-pixel head image.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>512</integer>
+  </map>
+
+  <key>RenderAlphaOITMaxPixelLayers</key>
+  <map>
+    <key>Comment</key>
+    <string>Hard maximum PPLL fragments captured and traversed at one pixel. Clamped to 4..32 to bound shader execution time.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>24</integer>
+  </map>
+
+  <key>RenderAlphaDepthPeelLayers</key>
+  <map>
+    <key>Comment</key>
+    <string>Maximum distinct transparent depth layers replayed by bounded depth peeling. Cost is approximately two alpha traversals per layer.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>8</integer>
+  </map>
+
+  <key>RenderAlphaDepthPeelTimeBudgetMS</key>
+  <map>
+    <key>Comment</key>
+    <string>Maximum CPU submission time spent adding exact depth-peel layers in one frame. Remaining transparent fragments fall back to the legacy sorted tail.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>U32</string>
+    <key>Value</key>
+    <integer>4</integer>
+  </map>
+
+  <key>RenderAlphaPPLLAvailable</key>
+  <map>
+    <key>Comment</key>
+    <string>Runtime capability flag used by preferences; PPLL is available only on Windows/Linux with required GL support and valid resources.</string>
+    <key>Persist</key>
+    <integer>0</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
+    <integer>0</integer>
+  </map>
+
+  <key>RenderAlphaDepthPeelAvailable</key>
+  <map>
+    <key>Comment</key>
+    <string>Runtime capability flag used by preferences for the OpenGL 4.1 depth-peeling path.</string>
+    <key>Persist</key>
+    <integer>0</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
+    <integer>0</integer>
+  </map>
+
+  <key>RenderAlphaOITStats</key>
+  <map>
+    <key>Comment</key>
+    <string>Debug: read back and log alpha OIT node-pool usage each frame (peak/percent). Adds a GPU sync; leave off except when tuning RenderAlphaOITNodesPerPixel.</string>
+    <key>Persist</key>
+    <integer>1</integer>
+    <key>Type</key>
+    <string>Boolean</string>
+    <key>Value</key>
+    <integer>0</integer>
+  </map>
+
   <key>RenderDepthOfField</key>
   <map>
     <key>Comment</key>

@@ -51,6 +51,17 @@ public:
     };
     virtual U32 getVertexDataMask() { return VERTEX_DATA_MASK; }
 
+    // Alpha OIT sub-pass. OIT is restricted to the main-view post-water pool.
+    enum EAlphaOITPhase
+    {
+        ALPHA_OIT_NONE = 0,
+        ALPHA_OIT_CAPTURE,
+        ALPHA_OIT_RESIDUAL,
+        ALPHA_DEPTH_PEEL_SELECT,
+        ALPHA_DEPTH_PEEL_REPLAY,
+        ALPHA_DEPTH_PEEL_TAIL
+    };
+
     LLDrawPoolAlpha(U32 type);
     /*virtual*/ ~LLDrawPoolAlpha();
 
@@ -58,20 +69,26 @@ public:
     /*virtual*/ void renderPostDeferred(S32 pass);
     /*virtual*/ S32  getNumPasses() { return 1; }
 
-    void forwardRender(bool write_depth = false);
+    void forwardRender(bool rigged = false, EAlphaOITPhase oit_phase = ALPHA_OIT_NONE);
     /*virtual*/ void prerender();
 
     void renderDebugAlpha();
 
+    void drawGLTFScene();
+
     void renderGroupAlpha(LLSpatialGroup* group, U32 type, U32 mask, bool texture = true);
-    void renderAlpha(U32 mask, bool depth_only = false, bool rigged = false);
+    void renderAlpha(U32 mask, bool depth_only = false, bool rigged = false,
+                     EAlphaOITPhase oit_phase = ALPHA_OIT_NONE);
     void renderAlphaHighlight();
+
+    void setOITMode(S32 mode, LLRenderTarget* peel_depth = nullptr, bool first_peel = false);
 
     static bool sShowDebugAlpha;
     static bool sShowDebugAlphaRigged;
 
 private:
     LLGLSLShader* target_shader;
+    LLRenderTarget* mAlphaPeelDepth = nullptr;
 
     // setup by beginFooPass, [0] is static variant, [1] is rigged variant
     LLGLSLShader* simple_shader = nullptr;

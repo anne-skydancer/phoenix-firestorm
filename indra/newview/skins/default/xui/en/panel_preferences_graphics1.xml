@@ -1274,7 +1274,7 @@ If you do not understand the distinction then leave this control alone."
      left="1"
      right="-1"
      follows="all"
-     label="Rendering"
+     label="Rendering I"
      name="Rendering" >
       <!-- world pauser -->
       <text
@@ -1776,6 +1776,194 @@ If you do not understand the distinction then leave this control alone."
          top_pad="5"
          width="330"/>
         <!-- End of Tone Mapping Settings-->
+    </panel>
+
+<!--Alpha Rendering-->
+    <panel
+     top_pad="5"
+     bottom="-1"
+     left="1"
+     right="-1"
+     follows="all"
+     label="Rendering II"
+     name="Rendering II">
+      <text
+       follows="left|top"
+       height="18"
+       layout="topleft"
+       left="15"
+       top="15"
+       width="480"
+       font="SansSerifBold"
+       name="AlphaSortHeading">
+        Alpha sorting method
+      </text>
+      <text
+       follows="left|top"
+       height="34"
+       layout="topleft"
+       left="15"
+       top_pad="4"
+       width="485"
+       word_wrap="true"
+       name="AlphaSortDescription">
+        Applies only to the main post-water world view. Unsupported methods safely use legacy sorting without changing your saved choice. Particles, mirrors and hero probes, cube snapshots, HUDs, impostors, and pre-water alpha retain legacy sorting.
+      </text>
+      <radio_group
+       control_name="RenderAlphaSortMethod"
+       draw_border="true"
+       follows="left|top"
+       height="76"
+       layout="topleft"
+       left="15"
+       top_pad="8"
+       width="485"
+       name="AlphaSortMethod">
+        <radio_item
+         height="20"
+         label="Legacy sorted alpha"
+         layout="topleft"
+         left="8"
+         top="5"
+         value="0"
+         name="Legacy"/>
+        <radio_item
+         height="20"
+         label="PPLL (Windows/Linux, OpenGL 4.4+)"
+         layout="topleft"
+         left_delta="0"
+         top_pad="2"
+         value="1"
+         name="PPLL"/>
+        <radio_item
+         height="20"
+         label="Depth Peeling (Windows/Linux/macOS, OpenGL 4.1+)"
+         layout="topleft"
+         left_delta="0"
+         top_pad="2"
+         value="2"
+         name="DepthPeeling"/>
+        <radio_group.commit_callback function="Pref.RenderOptionUpdate"/>
+      </radio_group>
+
+      <text
+       follows="left|top"
+       height="18"
+       layout="topleft"
+       left="15"
+       top_pad="14"
+       width="480"
+       font="SansSerifBold"
+       name="PPLLHeading">
+        PPLL parameters
+      </text>
+      <spinner
+       control_name="RenderAlphaOITMemoryMB"
+       decimal_digits="0"
+       follows="left|top"
+       height="20"
+       increment="16"
+       label="Node memory budget (MiB):"
+       label_width="220"
+       layout="topleft"
+       left="25"
+       min_val="32"
+       max_val="2048"
+       top_pad="5"
+       width="330"
+       name="PPLLMemory"/>
+      <spinner
+       control_name="RenderAlphaOITNodesPerPixel"
+       decimal_digits="0"
+       follows="left|top"
+       height="20"
+       increment="1"
+       label="Average nodes per pixel:"
+       label_width="220"
+       layout="topleft"
+       left="25"
+       min_val="1"
+       max_val="32"
+       top_pad="4"
+       width="330"
+       name="PPLLNodes"/>
+      <spinner
+       control_name="RenderAlphaOITMaxPixelLayers"
+       decimal_digits="0"
+       follows="left|top"
+       height="20"
+       increment="1"
+       label="Maximum layers at one pixel:"
+       label_width="220"
+       layout="topleft"
+       left="25"
+       min_val="4"
+       max_val="32"
+       top_pad="4"
+       width="330"
+       name="PPLLMaxLayers"/>
+      <check_box
+       control_name="RenderAlphaOITStats"
+       height="18"
+       label="Log PPLL allocation statistics (debug; may synchronize GPU)"
+       layout="topleft"
+       left="25"
+       top_pad="5"
+       width="440"
+       name="PPLLStats"/>
+
+      <text
+       follows="left|top"
+       height="18"
+       layout="topleft"
+       left="15"
+       top_pad="14"
+       width="480"
+       font="SansSerifBold"
+       name="DepthPeelHeading">
+        Depth Peeling parameters
+      </text>
+      <spinner
+       control_name="RenderAlphaDepthPeelLayers"
+       decimal_digits="0"
+       follows="left|top"
+       height="20"
+       increment="1"
+       label="Maximum peeled layers:"
+       label_width="220"
+       layout="topleft"
+       left="25"
+       min_val="1"
+       max_val="32"
+       top_pad="5"
+       width="330"
+       name="DepthPeelLayers"/>
+      <spinner
+       control_name="RenderAlphaDepthPeelTimeBudgetMS"
+       decimal_digits="0"
+       follows="left|top"
+       height="20"
+       increment="1"
+       label="Per-frame time budget (ms):"
+       label_width="220"
+       layout="topleft"
+       left="25"
+       min_val="1"
+       max_val="50"
+       top_pad="5"
+       width="330"
+       name="DepthPeelTimeBudget"/>
+      <text
+       follows="left|top"
+       height="58"
+       layout="topleft"
+       left="25"
+       top_pad="8"
+       width="460"
+       word_wrap="true"
+       name="DepthPeelCost">
+        Depth peeling replays transparent geometry twice per exact layer. The time budget stops adding exact layers when a frame is busy; remaining layers use legacy sorting instead of disappearing. Teleports and long frames temporarily use the legacy path.
+      </text>
     </panel>
 
 <!--Depth of Field-->

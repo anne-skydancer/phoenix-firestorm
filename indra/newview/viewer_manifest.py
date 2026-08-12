@@ -93,15 +93,24 @@ class ViewerManifest(LLManifest,FSViewerManifest):
             self.path("xui")
         # </FS:Ansariel>
 
+        # The executable produced by an ordinary IDE/build-tree build runs from
+        # the configuration directory.  Keep its runtime configuration, shaders,
+        # and XUI in sync with the source tree even when we are not producing an
+        # installer package.  Previously these paths were packaging-only, which
+        # left stale settings and preference panels beside firestorm-bin.exe.
+        with self.prefix(src_dst="app_settings"):
+            self.exclude("logcontrol.xml")
+            self.exclude("logcontrol-dev.xml")
+            self.path("*.ini")
+            self.path("*.xml")
+            self.path("shaders")
+
+        with self.prefix(src_dst="skins"):
+            self.path("*/xui/*/*.xml")
+            self.path("*/xui/*/widgets/*.xml")
+
         if self.is_packaging_viewer():
             with self.prefix(src_dst="app_settings"):
-                self.exclude("logcontrol.xml")
-                self.exclude("logcontrol-dev.xml")
-                self.path("*.ini")
-                self.path("*.xml")
-
-                # include the entire shaders directory recursively
-                self.path("shaders")
                 # include the extracted list of contributors
                 contributions_path = os.path.join(self.args['source'], "..", "..", "doc", "contributions.txt")
                 contributor_names = self.extract_names(contributions_path)
@@ -211,8 +220,6 @@ class ViewerManifest(LLManifest,FSViewerManifest):
                             self.path("*.jpg") # <FS:Ansariel> Needed for Firestorm
                             self.path("*.png")
                             self.path("textures.xml")
-                    self.path("*/xui/*/*.xml")
-                    self.path("*/xui/*/widgets/*.xml")
                     self.path("*/themes/*/colors.xml")
                     with self.prefix(src_dst="*/themes/*/textures"):
                         self.path("*/*.tga")

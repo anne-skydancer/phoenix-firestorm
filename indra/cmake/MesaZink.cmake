@@ -10,4 +10,3 @@ endif ()
 if (USE_MESAZINK)
     use_prebuilt_binary(mesazink)
 endif ()
-

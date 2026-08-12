@@ -128,7 +128,7 @@ public:
         MESH_OPTIMIZER_AUTO, // automatically selects method based on model or face
         MESH_OPTIMIZER_PRECISE, // combines faces into a single model, simplifies, then splits back into faces
         MESH_OPTIMIZER_SLOPPY, // uses sloppy method, works per face
-        GENERATE, // Use GLOD <FS:Beq/> Improved LOD generation
+        GENERATE, // Generate LODs with meshoptimizer
         USE_LOD_ABOVE,
     } eLoDMode;
 

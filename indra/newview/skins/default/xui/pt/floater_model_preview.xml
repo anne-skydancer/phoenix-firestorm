@@ -422,7 +422,6 @@
 				</text>
 				<check_box label="Ativar pesos automaticamente" tool_tip="Ativa automaticamente os pesos para meshes com informações de rigging" name="mesh_preview_auto_weights"/>
 				<check_box label="Pré-visualizar pesos automaticamente" tool_tip="Mostra automaticamente os pesos na pré-visualização para meshes com informações de rigging" name="mesh_preview_auto_show_weights"/>
-				<check_box label="Usar LODs 'confiáveis' por padrão" tool_tip="Usa por padrão o método 'Confiável' (GLOD)" name="mesh_upload_default_to_reliable"/>
 				<text name="lod_suffix_label">
 					Sufixos de LOD:
 				</text>

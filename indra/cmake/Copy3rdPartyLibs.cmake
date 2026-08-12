@@ -197,7 +197,6 @@ elseif(DARWIN)
        )
     set(release_src_dir "${ARCH_PREBUILT_DIRS_RELEASE}")
     set(release_files
-        libGLOD.dylib # <FS:Beq> restore GLOD
         libndofdev.dylib
         libgrowl.dylib
         libgrowl++.dylib
@@ -256,9 +255,7 @@ elseif(LINUX)
         libapr-1.so.0
        )
     else (NOT USESYSTEMLIBS)
-      set(release_files
-        libGLOD.so
-       )
+      set(release_files)
     endif (NOT USESYSTEMLIBS)
 
      if( USE_AUTOBUILD_3P )

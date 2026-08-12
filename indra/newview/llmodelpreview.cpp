@@ -3296,7 +3296,7 @@ void LLModelPreview::updateLodControls(S32 lod)
     }
     else // auto generate, the default case for all LoDs except High
     {
-        // <FS:Beq> FIRE-32267 - Allow GLOD to be default
+        // <FS:Beq> FIRE-32267 - Allow generated LODs to be the default
         // fmp->mLODMode[lod] = MESH_OPTIMIZER_AUTO;
         if( lod_mode == GENERATE )
         {
@@ -3331,7 +3331,7 @@ void LLModelPreview::updateLodControls(S32 lod)
 
         mFMP->getChild<LLComboBox>("lod_mode_" + lod_name[lod])->selectNthItem(mRequestedLoDMode[lod]);
 
-        if (mRequestedLoDMode[lod] == 0 || mRequestedLoDMode[lod] == GENERATE) // <FS:Beq/> FIRE-32267 - Allow GLOD to be default
+        if (mRequestedLoDMode[lod] == 0 || mRequestedLoDMode[lod] == GENERATE) // <FS:Beq/> FIRE-32267 - Allow generated LODs to be the default
         {
             limit->setVisible(true);
             threshold->setVisible(false);
@@ -4805,4 +4805,3 @@ void LLModelPreview::onLODMeshOptimizerParamCommit(S32 requested_lod, bool enfor
         mDirty = true;
     }
 }
-

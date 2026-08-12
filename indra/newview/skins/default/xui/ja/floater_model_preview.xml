@@ -459,7 +459,6 @@
 				</text>
 				<check_box label="ウェイトを自動的に有効化する" tool_tip="リギング情報を持つメッシュのウェイトを自動的に設定します。" name="mesh_preview_auto_weights"/>
 				<check_box label="ウェイトの自動プレビュー" tool_tip="リギング情報を持つメッシュのプレビューでウェイトを自動的に表示します。" name="mesh_preview_auto_show_weights"/>
-				<check_box label="デフォルトで「信頼性の高い」ＬｏＤを使用" tool_tip="デフォルトで「信頼性の高い」方法（ＧＬｏＤ）を使用します。" name="mesh_upload_default_to_reliable"/>
 				<text name="lod_suffix_label">
 					ＬｏＤサフィックス：
 				</text>

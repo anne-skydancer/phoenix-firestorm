@@ -432,7 +432,6 @@
 					模型上傳行為設定：
 				</text>
 				<check_box label="自動啟用權重" tool_tip="自動為包含綁定資訊的網格啟用權重" name="mesh_preview_auto_weights" />
-				<check_box label="預設使用'可靠'的細節層次" tool_tip="預設使用'可靠'的方法（GLOD）" name="mesh_upload_default_to_reliable" />
 				<check_box label="自動預覽權重" tool_tip="自動在預覽中顯示包含綁定資訊的網格的權重" name="mesh_preview_auto_show_weights" />
 				<text name="lod_suffix_label">
 					細節層次後綴：

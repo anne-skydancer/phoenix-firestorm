@@ -52,6 +52,10 @@
 #include "llaudioengine_openal.h"
 #endif
 
+#ifdef LL_SOLOUD
+#include "llaudioengine_soloud.h"
+#endif
+
 #include "llavatarnamecache.h"
 #include "llexperiencecache.h"
 #include "lllandmark.h"
@@ -1108,6 +1112,13 @@ bool idle_startup()
 #endif // !LL_WINDOWS
             {
                 gAudiop = (LLAudioEngine *) new LLAudioEngine_FMODSTUDIO(gSavedSettings.getBOOL("FMODProfilerEnable"), gSavedSettings.getU32("FMODResampleMethod"));
+            }
+#endif
+
+#ifdef LL_SOLOUD
+            if (!gAudiop)
+            {
+                gAudiop = (LLAudioEngine *) new LLAudioEngine_SoLoud();
             }
 #endif
 

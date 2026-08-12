@@ -1298,10 +1298,23 @@ void setting_setup_signal_listener(LLControlGroup& group, const std::string& set
     });
 }
 
+static void handleRenderGLBackendChanged()
+{
+    LLNotificationsUtil::add("GraphicsBackendChanged", LLSD(), LLSD(),
+        [](const LLSD& notification, const LLSD& response)
+        {
+            if (LLNotificationsUtil::getSelectedOption(notification, response) == 0)
+            {
+                LLAppViewer::instance()->requestQuit();
+            }
+        });
+}
+
 void settings_setup_listeners()
 {
     LL_PROFILE_ZONE_SCOPED;
     setting_setup_signal_listener(gSavedSettings, "FirstPersonAvatarVisible", handleRenderAvatarMouselookChanged);
+    setting_setup_signal_listener(gSavedSettings, "RenderGLBackend", handleRenderGLBackendChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderFarClip", handleRenderFarClipChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderTerrainScale", handleTerrainScaleChanged);
     setting_setup_signal_listener(gSavedSettings, "RenderTerrainPBRScale", handlePBRTerrainScaleChanged);
@@ -1629,4 +1642,3 @@ void test_cached_control()
 //There's no LLSD comparsion for LLCC yet. TEST_LLCC(LLSD, test_llsd);
 }
 #endif // TEST_CACHED_CONTROL
-

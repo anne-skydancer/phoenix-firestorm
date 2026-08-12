@@ -696,6 +696,11 @@ class Windows_x86_64_Manifest(ViewerManifest):
                 self.path("OpenAL32.dll")
                 self.path("alut.dll")
 
+            if self.args['mesazink'].lower() == 'on':
+                with self.prefix(dst="mesa"):
+                    self.path("libgallium_wgl.dll")
+                    self.path("opengl32.dll")
+
             # For textures
             self.path_optional("openjp2.dll")
 
@@ -2513,6 +2518,7 @@ if __name__ == "__main__":
         dict(name='discord', description="""Indication discord social sdk libraries are needed""", default='OFF'),
         dict(name='fmodstudio', description="""Indication if fmod studio libraries are needed""", default='OFF'),
         dict(name='openal', description="""Indication openal libraries are needed""", default='OFF'),
+        dict(name='mesazink', description="""Indication the Mesa Zink runtime is bundled""", default='OFF'),
         dict(name='tracy', description="""Indication tracy profiler is enabled""", default='OFF'),
         dict(name='velopack', description="""Use Velopack installer instead of NSIS""", default='OFF'),
         dict(name='avx2', description="""Indication avx2 instruction set is enabled""", default='OFF'),

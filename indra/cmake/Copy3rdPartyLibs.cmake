@@ -11,6 +11,7 @@ if (USE_DISCORD)
 endif ()
 include(OPENAL)
 include(FMODSTUDIO)
+include(MesaZink)
 
 # When we copy our dependent libraries, we almost always want to copy them to
 # both the Release and the RelWithDebInfo staging directories. This has
@@ -94,6 +95,14 @@ if(WINDOWS)
 
     if (TARGET ll::openal)
         list(APPEND release_files openal32.dll alut.dll)
+    endif ()
+
+    if (USE_MESAZINK AND ADDRESS_SIZE EQUAL 64)
+        to_staging_dirs(
+            "${ARCH_PREBUILT_DIRS_RELEASE}/../../bin/release"
+            third_party_targets
+            libgallium_wgl.dll opengl32.dll
+            )
     endif ()
 
     #*******************************

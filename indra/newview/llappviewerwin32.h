@@ -47,6 +47,7 @@ public:
     bool reportCustomToBugsplat(const std::string& description) override;
 
 protected:
+    void selectGLBackend() override;
     bool initWindow() override; // Override to initialize the viewer's window.
     void initLoggingAndGetLastDuration() override; // Override to clean stack_trace info.
     void initConsole() override; // Initialize OS level debugging console.

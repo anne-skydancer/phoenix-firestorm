@@ -1752,6 +1752,38 @@
         <key>name</key>
         <string>mesa</string>
       </map>
+      <key>mesazink</key>
+      <map>
+        <key>platforms</key>
+        <map>
+          <key>windows64</key>
+          <map>
+            <key>archive</key>
+            <map>
+              <key>hash</key>
+              <string>9a98ddcff474616c28a75ce866bb671dd09265f1</string>
+              <key>hash_algorithm</key>
+              <string>sha1</string>
+              <key>url</key>
+              <string>file:///C:/vulkanstorm/mesazink/mesazink-26.3.0-devel-git-5a5f893842-windows64.tar.bz2</string>
+            </map>
+            <key>name</key>
+            <string>windows64</string>
+          </map>
+        </map>
+        <key>license</key>
+        <string>mesazink</string>
+        <key>license_file</key>
+        <string>LICENSES/mesazink.txt</string>
+        <key>copyright</key>
+        <string>Copyright (C) 1999-2007 Brian Paul. All Rights Reserved.</string>
+        <key>version</key>
+        <string>26.3.0-devel-git.5a5f893842</string>
+        <key>name</key>
+        <string>mesazink</string>
+        <key>description</key>
+        <string>Mesa Zink Gallium driver for Vulkan emission</string>
+      </map>
       <key>meshoptimizer</key>
       <map>
         <key>platforms</key>

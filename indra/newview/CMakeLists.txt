@@ -2350,12 +2350,18 @@ if (WINDOWS)
       )
 
     # <FS:Ansariel> Only copy OpenJPEG dll if needed
-    if (NOT USE_KDU)
+    if (NOT USE_KDU AND NOT USE_GROK)
         list(APPEND COPY_INPUT_DEPENDENCIES
             ${SHARED_LIB_STAGING_DIR}/openjp2.dll
             )
-    endif (NOT USE_KDU)
+    endif ()
     # </FS:Ansariel>
+
+    if (USE_GROK)
+        list(APPEND COPY_INPUT_DEPENDENCIES
+            ${SHARED_LIB_STAGING_DIR}/grokj2k.dll
+            )
+    endif ()
 
     if (ADDRESS_SIZE EQUAL 64)
        list(APPEND COPY_INPUT_DEPENDENCIES
@@ -2409,6 +2415,7 @@ if (WINDOWS)
         "--fmodstudio=${USE_FMODSTUDIO}"
         "--openal=${USE_OPENAL}"
         "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
         "--tracy=${USE_TRACY}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"
         --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2452,6 +2459,7 @@ if (WINDOWS)
             "--fmodstudio=${USE_FMODSTUDIO}"
             "--openal=${USE_OPENAL}"
             "--mesazink=${USE_MESAZINK}"
+            "--usegrok=${USE_GROK}"
             "--tracy=${USE_TRACY}"
             "--avx2=${USE_AVX2_OPTIMIZATION}"
             --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2521,6 +2529,7 @@ if (WINDOWS)
               "--fmodstudio=${USE_FMODSTUDIO}"
               "--openal=${USE_OPENAL}"
               "--mesazink=${USE_MESAZINK}"
+              "--usegrok=${USE_GROK}"
               "--tracy=${USE_TRACY}"
               "--velopack=${USE_VELOPACK}"
               "--avx2=${USE_AVX2_OPTIMIZATION}"
@@ -2744,6 +2753,7 @@ if (LINUX)
         "--fmodstudio=${USE_FMODSTUDIO}"
         "--openal=${USE_OPENAL}"
         "--mesazink=${USE_MESAZINK}"
+        "--usegrok=${USE_GROK}"
         "--tracy=${USE_TRACY}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"        
         --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2774,6 +2784,7 @@ if (LINUX)
       "--fmodstudio=${USE_FMODSTUDIO}"
       "--openal=${USE_OPENAL}"
       "--mesazink=${USE_MESAZINK}"
+      "--usegrok=${USE_GROK}"
       "--tracy=${USE_TRACY}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
       --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2870,6 +2881,7 @@ if (DARWIN)
       "--fmodstudio=${USE_FMODSTUDIO}"
       "--openal=${USE_OPENAL}"
       "--mesazink=${USE_MESAZINK}"
+      "--usegrok=${USE_GROK}"
       "--tracy=${USE_TRACY}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
       --build=${CMAKE_CURRENT_BINARY_DIR}
@@ -2908,6 +2920,7 @@ if (DARWIN)
           "--fmodstudio=${USE_FMODSTUDIO}"
           "--openal=${USE_OPENAL}"
           "--mesazink=${USE_MESAZINK}"
+          "--usegrok=${USE_GROK}"
           "--tracy=${USE_TRACY}"
           "--avx2=${USE_AVX2_OPTIMIZATION}"          
           --build=${CMAKE_CURRENT_BINARY_DIR}

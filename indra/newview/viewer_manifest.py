@@ -701,8 +701,12 @@ class Windows_x86_64_Manifest(ViewerManifest):
                     self.path("libgallium_wgl.dll")
                     self.path("opengl32.dll")
 
-            # For textures
-            self.path_optional("openjp2.dll")
+            if self.args['usegrok'].lower() == 'on':
+                self.path("grokj2k.dll")
+            else:
+                # OpenJPEG fallback (Kakadu builds historically tolerate this
+                # optional lookup when no OpenJPEG runtime was staged).
+                self.path_optional("openjp2.dll")
 
             # These need to be installed as a SxS assembly, currently a 'private' assembly.
             # See http://msdn.microsoft.com/en-us/library/ms235291(VS.80).aspx
@@ -2515,6 +2519,7 @@ if __name__ == "__main__":
         dict(name='fmodstudio', description="""Indication if fmod studio libraries are needed""", default='OFF'),
         dict(name='openal', description="""Indication openal libraries are needed""", default='OFF'),
         dict(name='mesazink', description="""Indication the Mesa Zink runtime is bundled""", default='OFF'),
+        dict(name='usegrok', description="""Indication the Grok J2C runtime is bundled""", default='OFF'),
         dict(name='tracy', description="""Indication tracy profiler is enabled""", default='OFF'),
         dict(name='velopack', description="""Use Velopack installer instead of NSIS""", default='OFF'),
         dict(name='avx2', description="""Indication avx2 instruction set is enabled""", default='OFF'),

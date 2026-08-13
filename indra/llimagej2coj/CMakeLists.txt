@@ -3,7 +3,7 @@
 project(llimagej2coj)
 
 # <FS:ND> when using KDU, why compile the OpenJPEG library?
-if (NOT USE_KDU)
+if (NOT USE_KDU AND NOT USE_GROK)
 
 include(00-Common)
 include(LLCommon)

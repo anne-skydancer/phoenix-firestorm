@@ -34,6 +34,7 @@ WANTS_PACKAGE=$FALSE
 WANTS_VELOPACK=$FALSE
 WANTS_VERSION=$FALSE
 WANTS_KDU=$FALSE
+WANTS_GROK=$TRUE
 WANTS_FMODSTUDIO=$FALSE
 WANTS_OPENAL=$FALSE
 WANTS_SOLOUD=$FALSE
@@ -75,6 +76,8 @@ showUsage()
     echo "  --chan  [Release|Beta|Private]   : Private is the default, sets channel"
     echo "  --btype [Release|RelWithDebInfo] : Release is default, whether to use symbols"
     echo "  --kdu                    : Build with KDU"
+    echo "  --grok                   : Build with Grok J2C (requires GROK_ROOT)"
+    echo "  --no-grok                : Build with OpenJPEG instead of Grok"
     echo "  --soloud                 : Build with the SoLoud audio engine backend"
     echo "  --package                : Build installer"
     echo "  --velopack               : Build with velopack (Overrides --package)"
@@ -105,7 +108,7 @@ getArgs()
 # $* = the options passed in from main
 {
     if [ $# -gt 0 ]; then
-      while getoptex "clean build config version package velopack no-package fmodstudio openal soloud ninja vscode compiler-cache jobs: platform: kdu opensim no-opensim singlegrid: havok avx avx2 tracy lto crashreporting testbuild: help chan: btype:" "$@" ; do
+      while getoptex "clean build config version package velopack no-package fmodstudio openal soloud ninja vscode compiler-cache jobs: platform: kdu grok no-grok opensim no-opensim singlegrid: havok avx avx2 tracy lto crashreporting testbuild: help chan: btype:" "$@" ; do
 
           #ensure options are valid
           if [  -z "$OPTOPT"  ] ; then
@@ -123,6 +126,8 @@ getArgs()
                           fi
                           ;;
           kdu)            WANTS_KDU=$TRUE;;
+          grok)           WANTS_GROK=$TRUE;;
+          no-grok)        WANTS_GROK=$FALSE;;
           soloud)         WANTS_SOLOUD=$TRUE;;
           fmodstudio)     WANTS_FMODSTUDIO=$TRUE;;
           openal)         WANTS_OPENAL=$TRUE;;
@@ -320,6 +325,7 @@ fi
 echo -e "configure_firestorm.sh" > "$LOG"
 echo -e "       PLATFORM: $TARGET_PLATFORM"                                    | tee -a "$LOG"
 echo -e "            KDU: `b2a $WANTS_KDU`"                                    | tee -a "$LOG"
+echo -e "           GROK: `b2a $WANTS_GROK`"                                   | tee -a "$LOG"
 echo -e "     FMODSTUDIO: `b2a $WANTS_FMODSTUDIO`"                             | tee -a "$LOG"
 echo -e "         OPENAL: `b2a $WANTS_OPENAL`"                                 | tee -a "$LOG"
 echo -e "         SOLOUD: `b2a $WANTS_SOLOUD`"                                 | tee -a "$LOG"
@@ -465,6 +471,13 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
         KDU="-DUSE_KDU:BOOL=ON"
     else
         KDU="-DUSE_KDU:BOOL=OFF"
+    fi
+    if [ $WANTS_KDU -eq $TRUE ] ; then
+        GROK="-DUSE_GROK:BOOL=OFF"
+    elif [ $WANTS_GROK -eq $TRUE ] ; then
+        GROK="-DUSE_GROK:BOOL=ON"
+    else
+        GROK="-DUSE_GROK:BOOL=OFF"
     fi
     if [ $WANTS_SOLOUD -eq $TRUE ] ; then
         SOLOUD="-DUSE_SOLOUD:BOOL=ON"
@@ -615,7 +628,7 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
         fi
     fi
 
-    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $SOLOUD $KDU $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
+    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $SOLOUD $KDU $GROK $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
           $UNATTENDED -DLL_TESTS:BOOL=OFF -DADDRESS_SIZE:STRING=$AUTOBUILD_ADDRSIZE -DCMAKE_BUILD_TYPE:STRING=$BTYPE $CACHE_OPT \
           $CRASH_REPORTING -DVIEWER_SYMBOL_FILE:STRING="${VIEWER_SYMBOL_FILE:-}" $LL_ARGS_PASSTHRU ${VSCODE_FLAGS:-} | tee "$LOG"
     configure_status=${PIPESTATUS[0]}

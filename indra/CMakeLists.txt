@@ -141,6 +141,7 @@ add_subdirectory(${LIBS_OPEN_PREFIX}llcorehttp)
 add_subdirectory(${LIBS_OPEN_PREFIX}llimage)
 add_subdirectory(${LIBS_OPEN_PREFIX}llkdu)
 add_subdirectory(${LIBS_OPEN_PREFIX}llimagej2coj)
+add_subdirectory(${LIBS_OPEN_PREFIX}llimagej2cgrok)
 add_subdirectory(${LIBS_OPEN_PREFIX}llinventory)
 add_subdirectory(${LIBS_OPEN_PREFIX}llmath)
 add_subdirectory(${LIBS_OPEN_PREFIX}llmeshoptimizer)
@@ -230,4 +231,3 @@ if (LL_TESTS)
   # individual apps can add themselves as dependencies
   add_subdirectory(${INTEGRATION_TESTS_PREFIX}integration_tests)
 endif (LL_TESTS)
-

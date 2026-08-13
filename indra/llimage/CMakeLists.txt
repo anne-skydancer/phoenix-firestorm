@@ -7,6 +7,7 @@ include(LLCommon)
 include(LLImage)
 include(JPEG)
 include(LLKDU)
+include(Grok)
 include(ZLIBNG)
 include(LLAddBuildTest)
 include(bugsplat)
@@ -51,6 +52,8 @@ target_include_directories( llimage  INTERFACE   ${CMAKE_CURRENT_SOURCE_DIR})
 # Sort by high-level to low-level
 if (USE_KDU)
     target_link_libraries(llimage llkdu)
+elseif (USE_GROK)
+    target_link_libraries(llimage llimagej2cgrok)
 else (USE_KDU)
     target_link_libraries(llimage llimagej2coj)
 endif (USE_KDU)
@@ -70,6 +73,5 @@ if (LL_TESTS)
     )
   LL_ADD_PROJECT_UNIT_TESTS(llimage "${llimage_TEST_SOURCE_FILES}")
 endif (LL_TESTS)
-
 
 

@@ -4092,7 +4092,30 @@ LLSD LLAppViewer::getViewerInfo() const
     // Moved hack adjustment to Windows memory size into llsys.cpp
     info["OS_VERSION"] = LLOSInfo::instance().getOSString();
     info["GRAPHICS_CARD_VENDOR"] = ll_safe_string((const char*)(glGetString(GL_VENDOR)));
-    info["GRAPHICS_CARD"] = ll_safe_string((const char*)(glGetString(GL_RENDERER)));
+    std::string graphics_card = ll_safe_string((const char*)(glGetString(GL_RENDERER)));
+#if LL_WINDOWS
+    // Mesa's maintenance7 layered driver ID is zero with the AMD Windows ICD,
+    // even though the backend selector has already isolated and verified that
+    // vendor ICD. Keep the raw GL renderer string untouched for renderer logic
+    // and present a readable description only in user-facing system info.
+    const std::string zink_prefix = "zink Vulkan ";
+    const std::string unknown_suffix = " (Driver Unknown))";
+    const size_t device_open = graphics_card.find('(', zink_prefix.size());
+    if (graphics_card.rfind(zink_prefix, 0) == 0 &&
+        device_open != std::string::npos &&
+        graphics_card.size() > unknown_suffix.size() &&
+        graphics_card.compare(graphics_card.size() - unknown_suffix.size(),
+                              unknown_suffix.size(), unknown_suffix) == 0)
+    {
+        const std::string version = graphics_card.substr(
+            zink_prefix.size(), device_open - zink_prefix.size());
+        const std::string device = graphics_card.substr(
+            device_open + 1,
+            graphics_card.size() - device_open - 1 - unknown_suffix.size());
+        graphics_card = "Mesa zink Vulkan " + version + " (" + device + " - Vendor ICD)";
+    }
+#endif
+    info["GRAPHICS_CARD"] = graphics_card;
     info["GRAPHICS_CARD_MEMORY"] = LLSD::Integer(gGLManager.mVRAM);
     info["GRAPHICS_CARD_MEMORY_DETECTED"] = gGLManager.mVRAMDetected; // <FS:Beq/> allow detected hardware to be overridden.
 

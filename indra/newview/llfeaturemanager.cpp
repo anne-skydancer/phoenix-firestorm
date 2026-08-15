@@ -553,6 +553,32 @@ void LLFeatureManager::cleanupFeatureTables()
     mMaskList.clear();
 }
 
+std::string LLFeatureManager::getRenderBackend() const
+{
+    std::string gpu_string = mGPUString;
+    LLStringUtil::toUpper(gpu_string);
+    return gpu_string.find("ZINK") != std::string::npos ? "zink" : "native";
+}
+
+bool LLFeatureManager::isRenderBackendChange(const std::string& previous_backend,
+                                             const std::string& previous_gpu) const
+{
+    std::string backend = previous_backend;
+    LLStringUtil::toLower(backend);
+
+    // Migrate installations which predate LastRenderGLBackend. The previous
+    // raw GL string is enough to distinguish the bundled Zink renderer from
+    // a native ICD without treating that renderer change as new hardware.
+    if (backend.empty() && !previous_gpu.empty())
+    {
+        std::string gpu_string = previous_gpu;
+        LLStringUtil::toUpper(gpu_string);
+        backend = gpu_string.find("ZINK") != std::string::npos ? "zink" : "native";
+    }
+
+    return !backend.empty() && backend != getRenderBackend();
+}
+
 void LLFeatureManager::initSingleton()
 {
     // load the tables

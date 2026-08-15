@@ -6929,6 +6929,19 @@
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>LastRenderGLBackend</key>
+    <map>
+      <key>Comment</key>
+      <string>[DO NOT MODIFY] previously observed OpenGL backend; prevents a Native/Zink switch from being mistaken for a GPU replacement</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string></string>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>LastFeatureVersion</key>
     <map>
       <key>Comment</key>

@@ -2136,12 +2136,26 @@ LLViewerWindow::LLViewerWindow(const Params& p)
     }
     // <FS:Ansariel> Exodus vignette
 
-    if (LLFeatureManager::getInstance()->isSafe()
-        || (gSavedSettings.getS32("LastFeatureVersion") != LLFeatureManager::getInstance()->getVersion())
-        || (gSavedSettings.getString("LastGPUString") != LLFeatureManager::getInstance()->getGPUString())
+    LLFeatureManager* feature_manager = LLFeatureManager::getInstance();
+    const std::string previous_gpu = gSavedSettings.getString("LastGPUString");
+    const bool backend_changed = feature_manager->isRenderBackendChange(
+        gSavedSettings.getString("LastRenderGLBackend"), previous_gpu);
+    const bool gpu_changed = previous_gpu != feature_manager->getGPUString();
+
+    if (backend_changed)
+    {
+        LL_INFOS("RenderInit") << "Graphics backend changed to "
+                               << feature_manager->getRenderBackend()
+                               << "; preserving the user's graphics settings."
+                               << LL_ENDL;
+    }
+
+    if (feature_manager->isSafe()
+        || (gSavedSettings.getS32("LastFeatureVersion") != feature_manager->getVersion())
+        || (gpu_changed && !backend_changed)
         || (gSavedSettings.getBOOL("ProbeHardwareOnStartup")))
     {
-        LLFeatureManager::getInstance()->applyRecommendedSettings();
+        feature_manager->applyRecommendedSettings();
         gSavedSettings.setBOOL("ProbeHardwareOnStartup", false);
     }
 

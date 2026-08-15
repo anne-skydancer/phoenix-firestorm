@@ -18,3 +18,11 @@ repos:
       - id: mixed-line-ending
       - id: trailing-whitespace
         files: \.(cpp|c|m|mm|h|inl|py|glsl|cmake|yaml|sh)$
+  - repo: local
+    hooks:
+      - id: render-api-boundary
+        name: prevent renderer API coupling growth
+        entry: python scripts/code_tools/check_render_api_boundary.py --check
+        language: system
+        pass_filenames: false
+        files: ^indra/(llappearance|llrender|llui|llwindow|newview)/.*\.(c|cc|cpp|h|hpp|inl|m|mm)$

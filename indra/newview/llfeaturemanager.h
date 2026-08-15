@@ -112,8 +112,11 @@ public:
     EGPUClass getGPUClass()             { return mGPUClass; }
     std::string& getGPUString()         { return mGPUString; }
     std::string getRenderBackend() const;
+    std::string getRenderGPUIdentity() const;
     bool isRenderBackendChange(const std::string& previous_backend,
                                const std::string& previous_gpu) const;
+    bool isSameRenderGPU(const std::string& previous_identity,
+                         const std::string& previous_gpu) const;
 
     // get the measured GPU memory bandwidth in GB/sec
     // may return 0 of benchmark has not been run or failed to run

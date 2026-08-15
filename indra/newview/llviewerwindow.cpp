@@ -2140,19 +2140,21 @@ LLViewerWindow::LLViewerWindow(const Params& p)
     const std::string previous_gpu = gSavedSettings.getString("LastGPUString");
     const bool backend_changed = feature_manager->isRenderBackendChange(
         gSavedSettings.getString("LastRenderGLBackend"), previous_gpu);
-    const bool gpu_changed = previous_gpu != feature_manager->getGPUString();
+    const bool same_gpu = feature_manager->isSameRenderGPU(
+        gSavedSettings.getString("LastRenderGPUIdentity"), previous_gpu);
+    const bool gpu_changed = !previous_gpu.empty() && !same_gpu;
 
-    if (backend_changed)
+    if (backend_changed && same_gpu)
     {
         LL_INFOS("RenderInit") << "Graphics backend changed to "
                                << feature_manager->getRenderBackend()
-                               << "; preserving the user's graphics settings."
+                               << " on the same GPU; preserving the user's graphics settings."
                                << LL_ENDL;
     }
 
     if (feature_manager->isSafe()
         || (gSavedSettings.getS32("LastFeatureVersion") != feature_manager->getVersion())
-        || (gpu_changed && !backend_changed)
+        || gpu_changed
         || (gSavedSettings.getBOOL("ProbeHardwareOnStartup")))
     {
         feature_manager->applyRecommendedSettings();

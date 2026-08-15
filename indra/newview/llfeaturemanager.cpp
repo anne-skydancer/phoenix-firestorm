@@ -553,11 +553,54 @@ void LLFeatureManager::cleanupFeatureTables()
     mMaskList.clear();
 }
 
+namespace
+{
+std::string canonicalizeRenderGPUIdentity(std::string renderer)
+{
+    LLStringUtil::toUpper(renderer);
+    LLStringUtil::trim(renderer);
+
+    // Zink wraps the physical-device name in its renderer string, for example:
+    // zink Vulkan 1.4(AMD Radeon RX 9070 XT (Driver Unknown)).  Extract the
+    // device name so Native GL and Zink resolve to the same adapter identity.
+    const std::string zink_marker = "ZINK VULKAN ";
+    const size_t zink = renderer.find(zink_marker);
+    if (zink != std::string::npos)
+    {
+        const size_t device_open = renderer.find('(', zink + zink_marker.size());
+        const size_t device_close = renderer.rfind(')');
+        if (device_open != std::string::npos &&
+            device_close != std::string::npos &&
+            device_close > device_open)
+        {
+            renderer = renderer.substr(device_open + 1, device_close - device_open - 1);
+            for (const std::string suffix : { " (DRIVER UNKNOWN)", " - VENDOR ICD" })
+            {
+                if (renderer.size() >= suffix.size() &&
+                    renderer.compare(renderer.size() - suffix.size(), suffix.size(), suffix) == 0)
+                {
+                    renderer.erase(renderer.size() - suffix.size());
+                    break;
+                }
+            }
+            LLStringUtil::trim(renderer);
+        }
+    }
+
+    return renderer;
+}
+}
+
 std::string LLFeatureManager::getRenderBackend() const
 {
     std::string gpu_string = mGPUString;
     LLStringUtil::toUpper(gpu_string);
     return gpu_string.find("ZINK") != std::string::npos ? "zink" : "native";
+}
+
+std::string LLFeatureManager::getRenderGPUIdentity() const
+{
+    return canonicalizeRenderGPUIdentity(gGLManager.mGLRenderer);
 }
 
 bool LLFeatureManager::isRenderBackendChange(const std::string& previous_backend,
@@ -577,6 +620,34 @@ bool LLFeatureManager::isRenderBackendChange(const std::string& previous_backend
     }
 
     return !backend.empty() && backend != getRenderBackend();
+}
+
+bool LLFeatureManager::isSameRenderGPU(const std::string& previous_identity,
+                                       const std::string& previous_gpu) const
+{
+    const std::string current_identity = getRenderGPUIdentity();
+    if (current_identity.empty())
+    {
+        return false;
+    }
+
+    std::string old_identity = canonicalizeRenderGPUIdentity(previous_identity);
+    if (!old_identity.empty())
+    {
+        return old_identity == current_identity;
+    }
+
+    // Migrate LastGPUString from builds predating LastRenderGPUIdentity. Native
+    // GL stores vendor + renderer, while Zink embeds the device in its renderer.
+    old_identity = canonicalizeRenderGPUIdentity(previous_gpu);
+    if (old_identity == current_identity)
+    {
+        return true;
+    }
+
+    std::string old_raw = previous_gpu;
+    LLStringUtil::toUpper(old_raw);
+    return !old_raw.empty() && old_raw.find(current_identity) != std::string::npos;
 }
 
 void LLFeatureManager::initSingleton()

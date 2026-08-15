@@ -6942,6 +6942,19 @@
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>LastRenderGPUIdentity</key>
+    <map>
+      <key>Comment</key>
+      <string>[DO NOT MODIFY] canonical physical GPU identity independent of rendering backend; used to detect a real adapter change</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string></string>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>LastFeatureVersion</key>
     <map>
       <key>Comment</key>

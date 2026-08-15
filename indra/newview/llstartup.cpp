@@ -786,8 +786,8 @@ bool idle_startup()
         //
         std::string lastGPU = gSavedSettings.getString("LastGPUString");
         std::string thisGPU = LLFeatureManager::getInstance()->getGPUString();
-        const bool render_backend_changed = LLFeatureManager::getInstance()->isRenderBackendChange(
-            gSavedSettings.getString("LastRenderGLBackend"), lastGPU);
+        const bool same_render_gpu = LLFeatureManager::getInstance()->isSameRenderGPU(
+            gSavedSettings.getString("LastRenderGPUIdentity"), lastGPU);
 
         GrowlManager::initiateManager(); // <FS> Growl support
 
@@ -815,7 +815,7 @@ bool idle_startup()
         {
             LLNotificationsUtil::add("DisplaySetToRecommendedFeatureChange");
         }
-        else if (!render_backend_changed && !lastGPU.empty() && (lastGPU != thisGPU))
+        else if (!lastGPU.empty() && !same_render_gpu)
         {
             LLSD subs;
             subs["LAST_GPU"] = lastGPU;
@@ -839,6 +839,8 @@ bool idle_startup()
         gSavedSettings.setString("LastGPUString", thisGPU);
         gSavedSettings.setString("LastRenderGLBackend",
                                  LLFeatureManager::getInstance()->getRenderBackend());
+        gSavedSettings.setString("LastRenderGPUIdentity",
+                                 LLFeatureManager::getInstance()->getRenderGPUIdentity());
 
         std::string xml_file = LLUI::locateSkin("xui_version.xml");
         LLXMLNodePtr root;

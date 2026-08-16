@@ -18,6 +18,8 @@ supported peer and recovery path.
   API-boundary ratchet.
 - [R1 lifecycle checkpoint](r1-lifecycle-checkpoint.md) records the gated
   native-Vulkan presentation slice and its validation evidence.
+- [R2 resource checkpoint](r2-resource-checkpoint.md) records the neutral
+  resource/transfer contract, validation model, and native-peer entry gate.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

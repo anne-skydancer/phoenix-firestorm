@@ -90,6 +90,32 @@ void SemanticTrace::appendAttachment(const AttachmentDesc& attachment)
     appendClearValue(attachment.clear);
 }
 
+void SemanticTrace::appendImageSubresourceRange(const ImageSubresourceRange& subresources)
+{
+    appendEnum(subresources.aspect);
+    appendU16(subresources.baseMipLevel);
+    appendU16(subresources.mipLevelCount);
+    appendU16(subresources.baseArrayLayer);
+    appendU16(subresources.arrayLayerCount);
+}
+
+void SemanticTrace::appendBufferImageCopyRegion(const BufferImageCopyRegion& region)
+{
+    appendU64(region.bufferOffset);
+    appendU32(region.bufferRowLength);
+    appendU32(region.bufferImageHeight);
+    appendEnum(region.imageSubresource.aspect);
+    appendU16(region.imageSubresource.mipLevel);
+    appendU16(region.imageSubresource.baseArrayLayer);
+    appendU16(region.imageSubresource.arrayLayerCount);
+    appendI32(region.imageOffset.x);
+    appendI32(region.imageOffset.y);
+    appendI32(region.imageOffset.z);
+    appendU32(region.imageExtent.width);
+    appendU32(region.imageExtent.height);
+    appendU32(region.imageExtent.depth);
+}
+
 void SemanticTrace::beginFrame()
 {
     appendOpcode(TraceOpcode::BeginFrame);
@@ -98,6 +124,80 @@ void SemanticTrace::beginFrame()
 void SemanticTrace::endFrame()
 {
     appendOpcode(TraceOpcode::EndFrame);
+}
+
+void SemanticTrace::copyBuffer(
+    BufferHandle source,
+    BufferHandle destination,
+    std::span<const BufferCopyRegion> regions)
+{
+    appendOpcode(TraceOpcode::CopyBuffer);
+    appendHandle(source);
+    appendHandle(destination);
+    appendU32(static_cast<std::uint32_t>(regions.size()));
+    for (const BufferCopyRegion& region : regions)
+    {
+        appendU64(region.sourceOffset);
+        appendU64(region.destinationOffset);
+        appendU64(region.size);
+    }
+}
+
+void SemanticTrace::copyBufferToImage(
+    BufferHandle source,
+    ImageHandle destination,
+    std::span<const BufferImageCopyRegion> regions)
+{
+    appendOpcode(TraceOpcode::CopyBufferToImage);
+    appendHandle(source);
+    appendHandle(destination);
+    appendU32(static_cast<std::uint32_t>(regions.size()));
+    for (const BufferImageCopyRegion& region : regions)
+    {
+        appendBufferImageCopyRegion(region);
+    }
+}
+
+void SemanticTrace::copyImageToBuffer(
+    ImageHandle source,
+    BufferHandle destination,
+    std::span<const BufferImageCopyRegion> regions)
+{
+    appendOpcode(TraceOpcode::CopyImageToBuffer);
+    appendHandle(source);
+    appendHandle(destination);
+    appendU32(static_cast<std::uint32_t>(regions.size()));
+    for (const BufferImageCopyRegion& region : regions)
+    {
+        appendBufferImageCopyRegion(region);
+    }
+}
+
+void SemanticTrace::generateMipmaps(
+    ImageHandle image,
+    const ImageSubresourceRange& subresources)
+{
+    appendOpcode(TraceOpcode::GenerateMipmaps);
+    appendHandle(image);
+    appendImageSubresourceRange(subresources);
+}
+
+void SemanticTrace::resetQueryPool(
+    QueryPoolHandle pool,
+    std::uint32_t first,
+    std::uint32_t count)
+{
+    appendOpcode(TraceOpcode::ResetQueryPool);
+    appendHandle(pool);
+    appendU32(first);
+    appendU32(count);
+}
+
+void SemanticTrace::writeTimestamp(QueryPoolHandle pool, std::uint32_t query)
+{
+    appendOpcode(TraceOpcode::WriteTimestamp);
+    appendHandle(pool);
+    appendU32(query);
 }
 
 void SemanticTrace::beginRendering(const RenderingInfo& info)

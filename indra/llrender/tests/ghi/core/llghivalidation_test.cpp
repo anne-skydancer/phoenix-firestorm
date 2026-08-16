@@ -16,8 +16,12 @@
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghirendererinfo.h"
 
+#include <array>
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace tut
 {
@@ -244,6 +248,247 @@ void LLGHIValidationObject::test<6>()
                   snapshot.identity.dedicatedVideoMemoryBytes);
     ensure("semantic baseline capability", snapshot.capabilities.baselineGraphicsPipeline);
     ensure("semantic advanced capability", snapshot.capabilities.advancedGraphicsPipeline);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<7>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("validation device", created.status.ok() && device);
+
+    Status status = Status::success();
+    BufferHandle upload = device->createBuffer(
+        {64, ResourceUsage::TransferSource, MemoryClass::Upload}, status);
+    ensure("upload buffer", status.ok() && upload);
+    BufferHandle local = device->createBuffer(
+        {64, ResourceUsage::TransferSource | ResourceUsage::TransferDestination,
+         MemoryClass::DeviceLocal}, status);
+    ensure("device-local buffer", status.ok() && local);
+    BufferHandle readback = device->createBuffer(
+        {64, ResourceUsage::TransferDestination, MemoryClass::Readback}, status);
+    ensure("readback buffer", status.ok() && readback);
+
+    std::array<std::byte, 16> source{};
+    for (std::size_t i = 0; i < source.size(); ++i)
+    {
+        source[i] = static_cast<std::byte>(i * 7);
+    }
+    ensure("write upload buffer", device->writeBuffer(upload, 8, source).ok());
+    ensure("device-local host write rejected",
+           device->writeBuffer(local, 0, source).code() == StatusCode::InvalidArgument);
+
+    CommandContext& commands = device->commandContext();
+    ensure("begin transfer frame", commands.beginFrame().ok());
+    const std::array<BufferCopyRegion, 1> upload_copy{{{8, 4, source.size()}}};
+    ensure("upload copy", commands.copyBuffer(upload, local, upload_copy).ok());
+    const std::array<BufferCopyRegion, 1> readback_copy{{{4, 12, source.size()}}};
+    ensure("readback copy", commands.copyBuffer(local, readback, readback_copy).ok());
+    std::array<std::byte, 16> premature{};
+    ensure("active-frame readback rejected",
+           device->readBuffer(readback, 12, premature).code() == StatusCode::InvalidState);
+    ensure("end transfer frame", commands.endFrame().ok());
+
+    std::array<std::byte, 16> result{};
+    ensure("readback", device->readBuffer(readback, 12, result).ok());
+    ensure("buffer round trip is exact", result == source);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<8>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("validation device", created.status.ok() && device);
+    Status status = Status::success();
+
+    BufferHandle upload = device->createBuffer(
+        {64, ResourceUsage::TransferSource, MemoryClass::Upload}, status);
+    BufferHandle readback = device->createBuffer(
+        {16, ResourceUsage::TransferDestination, MemoryClass::Readback}, status);
+    ImageHandle image = device->createImage(
+        {{4, 4, 1}, Format::RGBA8UNorm,
+         ResourceUsage::TransferSource | ResourceUsage::TransferDestination |
+             ResourceUsage::Sampled,
+         3, 1, 1},
+        status);
+    ensure("mipped image", status.ok() && upload && readback && image);
+    ImageViewHandle view = device->createImageView(
+        {image, Format::RGBA8UNorm, {ImageAspect::Color, 0, 3, 0, 1}}, status);
+    ensure("full image view", status.ok() && view);
+    ensure("image cannot die before its view",
+           device->destroy(image).code() == StatusCode::InvalidState);
+
+    std::array<std::byte, 64> pixels{};
+    for (std::size_t texel = 0; texel < 16; ++texel)
+    {
+        pixels[texel * 4 + 0] = std::byte{10};
+        pixels[texel * 4 + 1] = std::byte{20};
+        pixels[texel * 4 + 2] = std::byte{30};
+        pixels[texel * 4 + 3] = std::byte{40};
+    }
+    ensure("write image upload", device->writeBuffer(upload, 0, pixels).ok());
+
+    BufferImageCopyRegion base;
+    base.imageSubresource = {ImageAspect::Color, 0, 0, 1};
+    base.imageExtent = {4, 4, 1};
+    BufferImageCopyRegion last_mip;
+    last_mip.imageSubresource = {ImageAspect::Color, 2, 0, 1};
+    last_mip.imageExtent = {1, 1, 1};
+    CommandContext& commands = device->commandContext();
+    ensure("begin image frame", commands.beginFrame().ok());
+    ensure("upload image", commands.copyBufferToImage(upload, image, {&base, 1}).ok());
+    ensure("generate mipmaps",
+           commands.generateMipmaps(image, {ImageAspect::Color, 0, 3, 0, 1}).ok());
+    ensure("read final mip",
+           commands.copyImageToBuffer(image, readback, {&last_mip, 1}).ok());
+    ensure("end image frame", commands.endFrame().ok());
+
+    std::array<std::byte, 4> result{};
+    ensure("mip readback", device->readBuffer(readback, 0, result).ok());
+    ensure("mip generation preserves constant color",
+           result == std::array<std::byte, 4>{
+               std::byte{10}, std::byte{20}, std::byte{30}, std::byte{40}});
+    ensure("destroy image view", device->destroy(view).ok());
+    ensure("destroy image after view", device->destroy(image).ok());
+}
+
+template<> template<>
+void LLGHIValidationObject::test<9>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("validation device", created.status.ok() && device);
+    Status status = Status::success();
+    QueryPoolHandle pool = device->createQueryPool({QueryType::Timestamp, 2}, status);
+    ensure("timestamp pool", status.ok() && pool);
+
+    std::array<std::uint64_t, 2> results{};
+    ensure("unwritten query is not ready",
+           device->getQueryResults(pool, 0, results).code() == StatusCode::NotReady);
+    CommandContext& commands = device->commandContext();
+    ensure("begin query frame", commands.beginFrame().ok());
+    ensure("reset queries", commands.resetQueryPool(pool, 0, 2).ok());
+    ensure("first timestamp", commands.writeTimestamp(pool, 0).ok());
+    ensure("second timestamp", commands.writeTimestamp(pool, 1).ok());
+    ensure("timestamp reuse requires reset",
+           commands.writeTimestamp(pool, 1).code() == StatusCode::InvalidState);
+    ensure("end query frame", commands.endFrame().ok());
+    ensure("query results", device->getQueryResults(pool, 0, results).ok());
+    ensure("timestamps are monotonic", results[0] < results[1]);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<10>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("validation device", created.status.ok() && device);
+    Status status = Status::success();
+    BufferHandle buffer = device->createBuffer(
+        {32, ResourceUsage::Vertex, MemoryClass::DeviceLocal}, status);
+    ensure("buffer", status.ok() && buffer);
+    ensure("destroy queues retirement", device->destroy(buffer).ok());
+    ensure("destroy invalidates handle immediately", !device->isLive(buffer));
+    ensure_equals("one pending retirement", device->pendingRetirementCount(), std::size_t{1});
+
+    CommandContext& commands = device->commandContext();
+    ensure("begin first retirement frame", commands.beginFrame().ok());
+    ensure("end first retirement frame", commands.endFrame().ok());
+    ensure_equals("retirement respects in-flight window",
+                  device->pendingRetirementCount(), std::size_t{1});
+    ensure("begin second retirement frame", commands.beginFrame().ok());
+    ensure("end second retirement frame", commands.endFrame().ok());
+    ensure_equals("retirement collected", device->pendingRetirementCount(), std::size_t{0});
+}
+
+template<> template<>
+void LLGHIValidationObject::test<11>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("validation device", created.status.ok() && device);
+    Status status = Status::success();
+    BufferHandle indices = device->createBuffer(
+        {24, ResourceUsage::Index, MemoryClass::DeviceLocal}, status);
+    ImageHandle color = device->createImage(
+        {{32, 32, 1}, Format::RGBA8UNorm, ResourceUsage::ColorAttachment, 1, 1, 1},
+        status);
+    ShaderPackageHandle shader = device->createShaderPackage({}, status);
+    PipelineDesc pipeline_desc;
+    pipeline_desc.shader = shader;
+    pipeline_desc.colorFormats = {Format::RGBA8UNorm};
+    pipeline_desc.blendStates = {BlendState{}};
+    PipelineHandle pipeline = device->createPipeline(pipeline_desc, status);
+    ensure("index fixture resources", status.ok() && indices && color && shader && pipeline);
+
+    RenderingInfo pass;
+    pass.width = 32;
+    pass.height = 32;
+    pass.colors.push_back({color, Format::RGBA8UNorm, LoadOp::Clear, StoreOp::Store, {}});
+    CommandContext& commands = device->commandContext();
+    ensure("begin index frame", commands.beginFrame().ok());
+    ensure("begin index pass", commands.beginRendering(pass).ok());
+    ensure("bind index pipeline", commands.bindPipeline(pipeline).ok());
+    ensure("bind 16-bit indices", commands.bindIndexBuffer(indices, 0, IndexType::UInt16).ok());
+    ensure("16-bit draw", commands.drawIndexed({12, 1, 0, 0, 0}).ok());
+    ensure("bind 32-bit indices", commands.bindIndexBuffer(indices, 0, IndexType::UInt32).ok());
+    ensure("32-bit draw", commands.drawIndexed({6, 1, 0, 0, 0}).ok());
+    ensure("32-bit overrun rejected",
+           commands.drawIndexed({7, 1, 0, 0, 0}).code() == StatusCode::InvalidArgument);
+    ensure("end index pass", commands.endRendering().ok());
+    ensure("end index frame", commands.endFrame().ok());
+}
+
+template<> template<>
+void LLGHIValidationObject::test<12>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("validation device", created.status.ok() && device);
+    const std::array<std::pair<Format, ImageAspect>, 8> formats{{
+        {Format::R8UNorm, ImageAspect::Color},
+        {Format::RGBA8UNorm, ImageAspect::Color},
+        {Format::BGRA8SRGB, ImageAspect::Color},
+        {Format::RGBA16Float, ImageAspect::Color},
+        {Format::R32UInt, ImageAspect::Color},
+        {Format::Depth16UNorm, ImageAspect::Depth},
+        {Format::Depth24Stencil8, ImageAspect::DepthStencil},
+        {Format::Depth32Float, ImageAspect::Depth},
+    }};
+
+    for (const auto& [format, aspect] : formats)
+    {
+        Status status = Status::success();
+        ImageHandle image = device->createImage(
+            {{8, 8, 1}, format, ResourceUsage::Sampled, 1, 1, 1}, status);
+        ensure("representative image format", status.ok() && image);
+        ImageViewHandle view = device->createImageView(
+            {image, format, {aspect, 0, 1, 0, 1}}, status);
+        ensure("representative image view", status.ok() && view);
+        ensure("destroy representative view", device->destroy(view).ok());
+        ensure("destroy representative image", device->destroy(image).ok());
+    }
+
+    Status status = Status::success();
+    ImageHandle color = device->createImage(
+        {{8, 8, 1}, Format::RGBA8UNorm, ResourceUsage::Sampled, 1, 1, 1}, status);
+    ImageViewHandle invalid = device->createImageView(
+        {color, Format::RGBA8UNorm, {ImageAspect::Depth, 0, 1, 0, 1}}, status);
+    ensure("incompatible image aspect rejected",
+           !invalid && status.code() == StatusCode::InvalidArgument);
 }
 
 } // namespace tut

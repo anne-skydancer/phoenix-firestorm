@@ -30,6 +30,7 @@ enum class Backend : std::uint8_t
 enum class StatusCode : std::uint8_t
 {
     Ok,
+    NotReady,
     InvalidArgument,
     InvalidState,
     InvalidHandle,
@@ -106,6 +107,7 @@ private:
 
 struct BufferTag;
 struct ImageTag;
+struct ImageViewTag;
 struct SamplerTag;
 struct ShaderPackageTag;
 struct PipelineTag;
@@ -113,6 +115,7 @@ struct QueryPoolTag;
 
 using BufferHandle = Handle<BufferTag>;
 using ImageHandle = Handle<ImageTag>;
+using ImageViewHandle = Handle<ImageViewTag>;
 using SamplerHandle = Handle<SamplerTag>;
 using ShaderPackageHandle = Handle<ShaderPackageTag>;
 using PipelineHandle = Handle<PipelineTag>;
@@ -193,6 +196,7 @@ struct RendererCapabilities
     std::uint32_t maxSamples = 1;
     std::uint64_t maxBufferSize = 0;
     bool timestampQueries = false;
+    double timestampPeriodNanoseconds = 0.0;
     bool occlusionQueries = false;
     bool descriptorIndexing = false;
     bool storageImageAtomics = false;

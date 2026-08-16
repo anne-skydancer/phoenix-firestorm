@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,12 @@ enum class TraceOpcode : std::uint8_t
     BindIndexBuffer,
     Draw,
     DrawIndexed,
+    CopyBuffer,
+    CopyBufferToImage,
+    CopyImageToBuffer,
+    GenerateMipmaps,
+    ResetQueryPool,
+    WriteTimestamp,
 };
 
 class SemanticTrace
@@ -41,6 +48,21 @@ public:
 
     void beginFrame();
     void endFrame();
+    void copyBuffer(
+        BufferHandle source,
+        BufferHandle destination,
+        std::span<const BufferCopyRegion> regions);
+    void copyBufferToImage(
+        BufferHandle source,
+        ImageHandle destination,
+        std::span<const BufferImageCopyRegion> regions);
+    void copyImageToBuffer(
+        ImageHandle source,
+        BufferHandle destination,
+        std::span<const BufferImageCopyRegion> regions);
+    void generateMipmaps(ImageHandle image, const ImageSubresourceRange& subresources);
+    void resetQueryPool(QueryPoolHandle pool, std::uint32_t first, std::uint32_t count);
+    void writeTimestamp(QueryPoolHandle pool, std::uint32_t query);
     void beginRendering(const RenderingInfo& info);
     void endRendering();
     void bindPipeline(PipelineHandle pipeline);
@@ -79,6 +101,8 @@ private:
     void appendFloat(float value);
     void appendClearValue(const ClearValue& value);
     void appendAttachment(const AttachmentDesc& attachment);
+    void appendImageSubresourceRange(const ImageSubresourceRange& subresources);
+    void appendBufferImageCopyRegion(const BufferImageCopyRegion& region);
 
     std::vector<std::uint8_t> mBytes;
 };

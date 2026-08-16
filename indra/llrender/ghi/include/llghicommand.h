@@ -14,6 +14,7 @@
 #include "llghidescriptors.h"
 
 #include <cstdint>
+#include <span>
 
 namespace LL::GHI
 {
@@ -25,6 +26,27 @@ public:
 
     virtual Status beginFrame() = 0;
     virtual Status endFrame() = 0;
+
+    virtual Status copyBuffer(
+        BufferHandle source,
+        BufferHandle destination,
+        std::span<const BufferCopyRegion> regions) = 0;
+    virtual Status copyBufferToImage(
+        BufferHandle source,
+        ImageHandle destination,
+        std::span<const BufferImageCopyRegion> regions) = 0;
+    virtual Status copyImageToBuffer(
+        ImageHandle source,
+        BufferHandle destination,
+        std::span<const BufferImageCopyRegion> regions) = 0;
+    virtual Status generateMipmaps(
+        ImageHandle image,
+        const ImageSubresourceRange& subresources) = 0;
+    virtual Status resetQueryPool(
+        QueryPoolHandle pool,
+        std::uint32_t firstQuery,
+        std::uint32_t queryCount) = 0;
+    virtual Status writeTimestamp(QueryPoolHandle pool, std::uint32_t query) = 0;
 
     virtual Status beginRendering(const RenderingInfo& info) = 0;
     virtual Status endRendering() = 0;

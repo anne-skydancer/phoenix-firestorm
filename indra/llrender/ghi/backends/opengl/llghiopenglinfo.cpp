@@ -349,6 +349,7 @@ RendererSnapshot queryOpenGLRendererSnapshot()
         std::max(gGLManager.mMaxSamples, 1));
     device_caps.maxBufferSize = 0; // OpenGL exposes target-specific limits only.
     device_caps.timestampQueries = gGLManager.mGLVersion >= 3.3f;
+    device_caps.timestampPeriodNanoseconds = device_caps.timestampQueries ? 1.0 : 0.0;
     device_caps.occlusionQueries = gGLManager.mGLVersion >= 1.5f;
     device_caps.descriptorIndexing = false;
     device_caps.storageImageAtomics = gGLManager.mGLVersion >= 4.2f;

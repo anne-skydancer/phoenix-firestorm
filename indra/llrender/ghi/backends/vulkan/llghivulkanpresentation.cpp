@@ -687,6 +687,7 @@ void VulkanPresentationSurface::captureSnapshot()
     capabilities.maxBufferSize = std::max<std::uint64_t>(
         limits.maxStorageBufferRange, limits.maxUniformBufferRange);
     capabilities.timestampQueries = limits.timestampComputeAndGraphics != 0;
+    capabilities.timestampPeriodNanoseconds = limits.timestampPeriod;
     capabilities.occlusionQueries = true;
     capabilities.descriptorIndexing = features12.descriptorIndexing != 0;
     capabilities.storageImageAtomics = features.features.fragmentStoresAndAtomics != 0;

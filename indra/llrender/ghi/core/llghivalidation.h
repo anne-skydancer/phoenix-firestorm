@@ -16,7 +16,9 @@
 #include "ghi/include/llghidevice.h"
 
 #include <cstdint>
+#include <cstddef>
 #include <unordered_map>
+#include <vector>
 
 namespace LL::GHI
 {
@@ -30,6 +32,26 @@ public:
 
     Status beginFrame() override;
     Status endFrame() override;
+    Status copyBuffer(
+        BufferHandle source,
+        BufferHandle destination,
+        std::span<const BufferCopyRegion> regions) override;
+    Status copyBufferToImage(
+        BufferHandle source,
+        ImageHandle destination,
+        std::span<const BufferImageCopyRegion> regions) override;
+    Status copyImageToBuffer(
+        ImageHandle source,
+        BufferHandle destination,
+        std::span<const BufferImageCopyRegion> regions) override;
+    Status generateMipmaps(
+        ImageHandle image,
+        const ImageSubresourceRange& subresources) override;
+    Status resetQueryPool(
+        QueryPoolHandle pool,
+        std::uint32_t firstQuery,
+        std::uint32_t queryCount) override;
+    Status writeTimestamp(QueryPoolHandle pool, std::uint32_t query) override;
     Status beginRendering(const RenderingInfo& info) override;
     Status endRendering() override;
     Status bindPipeline(PipelineHandle pipeline) override;
@@ -49,12 +71,15 @@ public:
 
 private:
     Status requireRendering(const char* operation) const;
+    Status requireTransfer(const char* operation) const;
 
     ValidationDevice& mDevice;
     SemanticTrace mTrace;
     RenderingInfo mRenderingInfo;
     PipelineHandle mPipeline;
     BufferHandle mIndexBuffer;
+    std::uint64_t mIndexOffset = 0;
+    IndexType mIndexType = IndexType::UInt16;
     bool mFrameActive = false;
     bool mRendering = false;
 };
@@ -70,7 +95,9 @@ public:
 
     BufferHandle createBuffer(const BufferDesc& desc, Status& status) override;
     ImageHandle createImage(const ImageDesc& desc, Status& status) override;
+    ImageViewHandle createImageView(const ImageViewDesc& desc, Status& status) override;
     SamplerHandle createSampler(const SamplerDesc& desc, Status& status) override;
+    QueryPoolHandle createQueryPool(const QueryPoolDesc& desc, Status& status) override;
     ShaderPackageHandle createShaderPackage(
         const ShaderPackageDesc& desc,
         Status& status) override;
@@ -78,16 +105,55 @@ public:
 
     Status destroy(BufferHandle handle) override;
     Status destroy(ImageHandle handle) override;
+    Status destroy(ImageViewHandle handle) override;
     Status destroy(SamplerHandle handle) override;
+    Status destroy(QueryPoolHandle handle) override;
     Status destroy(ShaderPackageHandle handle) override;
     Status destroy(PipelineHandle handle) override;
+    Status writeBuffer(
+        BufferHandle handle,
+        std::uint64_t offset,
+        std::span<const std::byte> data) override;
+    Status readBuffer(
+        BufferHandle handle,
+        std::uint64_t offset,
+        std::span<std::byte> data) override;
+    Status getQueryResults(
+        QueryPoolHandle pool,
+        std::uint32_t firstQuery,
+        std::span<std::uint64_t> results,
+        QueryReadMode mode = QueryReadMode::AvailableOnly) override;
+    Status waitIdle() override;
 
     bool isLive(BufferHandle handle) const { return mBuffers.isLive(handle); }
     bool isLive(ImageHandle handle) const { return mImages.isLive(handle); }
+    bool isLive(ImageViewHandle handle) const { return mImageViews.isLive(handle); }
+    bool isLive(QueryPoolHandle handle) const { return mQueryPools.isLive(handle); }
     bool isLive(PipelineHandle handle) const { return mPipelines.isLive(handle); }
     bool bufferSupports(BufferHandle handle, ResourceUsage usage) const;
     bool imageMatches(ImageHandle handle, Format format, ResourceUsage usage) const;
     bool pipelineMatches(PipelineHandle handle, const RenderingInfo& rendering) const;
+    std::uint64_t bufferSize(BufferHandle handle) const;
+
+    Status executeCopyBuffer(
+        BufferHandle source,
+        BufferHandle destination,
+        std::span<const BufferCopyRegion> regions);
+    Status executeCopyBufferToImage(
+        BufferHandle source,
+        ImageHandle destination,
+        std::span<const BufferImageCopyRegion> regions);
+    Status executeCopyImageToBuffer(
+        ImageHandle source,
+        BufferHandle destination,
+        std::span<const BufferImageCopyRegion> regions);
+    Status executeGenerateMipmaps(
+        ImageHandle image,
+        const ImageSubresourceRange& subresources);
+    Status resetQueries(QueryPoolHandle pool, std::uint32_t first, std::uint32_t count);
+    Status recordTimestamp(QueryPoolHandle pool, std::uint32_t query);
+    void completeFrame();
+    std::size_t pendingRetirementCount() const { return mRetirements.size(); }
 
     const SemanticTrace& semanticTrace() const { return mCommands.trace(); }
 
@@ -100,16 +166,42 @@ private:
     }
 
     Status canMutateResources() const;
+    void retire();
+
+    struct QueryRecord
+    {
+        QueryPoolDesc desc;
+        std::vector<std::uint64_t> values;
+        std::vector<bool> available;
+        std::vector<bool> pending;
+    };
+
+    struct Retirement
+    {
+        std::uint64_t releaseAfterFrame = 0;
+    };
 
     RendererCapabilities mCapabilities;
     HandlePool<BufferTag> mBuffers;
     HandlePool<ImageTag> mImages;
+    HandlePool<ImageViewTag> mImageViews;
     HandlePool<SamplerTag> mSamplers;
+    HandlePool<QueryPoolTag> mQueryPools;
     HandlePool<ShaderPackageTag> mShaders;
     HandlePool<PipelineTag> mPipelines;
     std::unordered_map<std::uint64_t, BufferDesc> mBufferDescs;
     std::unordered_map<std::uint64_t, ImageDesc> mImageDescs;
+    std::unordered_map<std::uint64_t, ImageViewDesc> mImageViewDescs;
+    std::unordered_map<std::uint64_t, QueryRecord> mQueryRecords;
     std::unordered_map<std::uint64_t, PipelineDesc> mPipelineDescs;
+    std::unordered_map<std::uint64_t, std::vector<std::byte>> mBufferData;
+    std::unordered_map<std::uint64_t, std::uint64_t> mBufferReadyFrame;
+    std::unordered_map<std::uint64_t,
+        std::unordered_map<std::uint32_t, std::vector<std::byte>>> mImageData;
+    std::vector<Retirement> mRetirements;
+    std::uint64_t mSubmittedFrames = 0;
+    std::uint64_t mTimestampCounter = 0;
+    std::uint32_t mFramesInFlight = 1;
     ValidationCommandContext mCommands;
 };
 

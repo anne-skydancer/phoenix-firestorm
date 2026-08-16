@@ -51,6 +51,34 @@ struct ImageDesc
     friend bool operator==(const ImageDesc&, const ImageDesc&) = default;
 };
 
+enum class ImageAspect : std::uint8_t
+{
+    Color,
+    Depth,
+    Stencil,
+    DepthStencil,
+};
+
+struct ImageSubresourceRange
+{
+    ImageAspect aspect = ImageAspect::Color;
+    std::uint16_t baseMipLevel = 0;
+    std::uint16_t mipLevelCount = 1;
+    std::uint16_t baseArrayLayer = 0;
+    std::uint16_t arrayLayerCount = 1;
+
+    friend bool operator==(const ImageSubresourceRange&, const ImageSubresourceRange&) = default;
+};
+
+struct ImageViewDesc
+{
+    ImageHandle image;
+    Format format = Format::Undefined;
+    ImageSubresourceRange subresources;
+
+    friend bool operator==(const ImageViewDesc&, const ImageViewDesc&) = default;
+};
+
 enum class Filter : std::uint8_t
 {
     Nearest,
@@ -76,6 +104,66 @@ struct SamplerDesc
     float maxAnisotropy = 1.f;
 
     friend bool operator==(const SamplerDesc&, const SamplerDesc&) = default;
+};
+
+struct BufferCopyRegion
+{
+    std::uint64_t sourceOffset = 0;
+    std::uint64_t destinationOffset = 0;
+    std::uint64_t size = 0;
+
+    friend bool operator==(const BufferCopyRegion&, const BufferCopyRegion&) = default;
+};
+
+struct Offset3D
+{
+    std::int32_t x = 0;
+    std::int32_t y = 0;
+    std::int32_t z = 0;
+
+    friend bool operator==(const Offset3D&, const Offset3D&) = default;
+};
+
+struct ImageSubresourceLayers
+{
+    ImageAspect aspect = ImageAspect::Color;
+    std::uint16_t mipLevel = 0;
+    std::uint16_t baseArrayLayer = 0;
+    std::uint16_t arrayLayerCount = 1;
+
+    friend bool operator==(const ImageSubresourceLayers&, const ImageSubresourceLayers&) = default;
+};
+
+struct BufferImageCopyRegion
+{
+    std::uint64_t bufferOffset = 0;
+    // Zero selects tightly packed rows/slices.
+    std::uint32_t bufferRowLength = 0;
+    std::uint32_t bufferImageHeight = 0;
+    ImageSubresourceLayers imageSubresource;
+    Offset3D imageOffset;
+    Extent3D imageExtent;
+
+    friend bool operator==(const BufferImageCopyRegion&, const BufferImageCopyRegion&) = default;
+};
+
+enum class QueryType : std::uint8_t
+{
+    Timestamp,
+};
+
+struct QueryPoolDesc
+{
+    QueryType type = QueryType::Timestamp;
+    std::uint32_t count = 0;
+
+    friend bool operator==(const QueryPoolDesc&, const QueryPoolDesc&) = default;
+};
+
+enum class QueryReadMode : std::uint8_t
+{
+    AvailableOnly,
+    Wait,
 };
 
 struct ShaderPackageDesc

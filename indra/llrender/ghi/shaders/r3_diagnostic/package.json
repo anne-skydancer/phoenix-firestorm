@@ -1,0 +1,52 @@
+{
+  "name": "r3_diagnostic",
+  "schema_version": 2,
+  "toolchain": {
+    "glslang_version": "11:16.2.0",
+    "spirv_tools_version": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
+    "vulkan_target": "vulkan1.3",
+    "optimization": "spirv-opt -O"
+  },
+  "dependencies": [
+    "vulkan/ghi_vulkan_clip.glsl"
+  ],
+  "expected": {
+    "bindings": [
+      {
+        "group": 0,
+        "binding": 0,
+        "type": "uniform_buffer",
+        "name": "FrameData",
+        "stages": ["vertex"]
+      },
+      {
+        "group": 2,
+        "binding": 0,
+        "type": "combined_image_sampler",
+        "name": "colorTexture",
+        "stages": ["fragment"]
+      }
+    ],
+    "vertex_inputs": [
+      {"location": 0, "format": "float32x3"},
+      {"location": 1, "format": "float32x2"}
+    ],
+    "push_constant_bytes": 0
+  },
+  "stages": [
+    {
+      "stage": "vertex",
+      "entry_point": "main",
+      "opengl_41": "opengl41/diagnostic.vert.glsl",
+      "opengl_46": "opengl46/diagnostic.vert.glsl",
+      "vulkan": "vulkan/diagnostic.vert.glsl"
+    },
+    {
+      "stage": "fragment",
+      "entry_point": "main",
+      "opengl_41": "opengl41/diagnostic.frag.glsl",
+      "opengl_46": "opengl46/diagnostic.frag.glsl",
+      "vulkan": "vulkan/diagnostic.frag.glsl"
+    }
+  ]
+}

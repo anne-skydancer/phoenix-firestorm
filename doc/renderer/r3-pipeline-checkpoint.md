@@ -13,9 +13,13 @@ OpenGL and Vulkan GHI peers.
 - Vulkan-specific GLSL is the production source language for the Vulkan peer.
 - A pinned offline glslang toolchain produces packaged SPIR-V. Normal viewer
   execution does not compile or translate Vulkan GLSL.
-- Packaged OpenGL-dialect GLSL remains the OpenGL peer artifact.
+- Packaged OpenGL 4.6 GLSL is the primary Windows/Linux OpenGL artifact.
+- Packaged OpenGL 4.1 GLSL is the macOS artifact and an explicit compatibility
+  fallback for supported older Windows/Linux devices; it is not the universal
+  OpenGL feature ceiling.
 - The runtime shader-package contract is source-language independent: stage
-  artifacts, entry points, reflection manifest, and stable semantic identity.
+  artifacts keyed by target profile, entry points, reflection manifest, and
+  stable semantic identity.
 - Slang is the contingency frontend only if adapting Vulkan GLSL proves
   objectively infeasible. The GHI, binding manifest, pipeline descriptors, and
   cache format must not depend on which frontend produced the SPIR-V.
@@ -50,15 +54,37 @@ remains `Unsupported` in all peers until R3c adds complete validation and the
 shared fixture. This prevents either native implementation from becoming the
 de facto contract.
 
+## R3b offline shader package
+
+- `scripts/renderer/pack_ghi_shader.py` is the only compiler path. The viewer
+  does not load glslang, SPIRV-Tools, or SPIRV-Reflect at runtime.
+- The packer requires the manifest-pinned glslang and SPIRV-Tools versions,
+  compiles Vulkan GLSL for Vulkan 1.3, validates before and after the pinned
+  `spirv-opt -O` recipe, and reflects the optimized module.
+- Reflected stage interfaces, descriptor groups/bindings/types/names, vertex
+  inputs, and entry points are checked against the reviewed source manifest.
+- Every stage packages OpenGL 4.1 GLSL, OpenGL 4.6 GLSL, and Vulkan 1.3 SPIR-V
+  as distinct target-profile artifacts. Runtime profile choice does not alter
+  the package's semantic identity.
+- Canonical JSON serialization makes `.llghisp` output byte deterministic.
+  Each artifact has a SHA-256 hash; semantic and toolchain SHA-256 identities
+  are separate so either source changes or compiler upgrades invalidate the
+  appropriate cache boundary.
+- The build target `llrender_ghi_shaders` generates the package in the build
+  tree. Its focused test builds twice for byte equality and proves a deliberate
+  reflection/manifest mismatch is rejected.
+- The runtime decoder accepts only schema v2, verifies every artifact SHA-256,
+  checks SPIR-V size and magic, rejects duplicate stages/targets/bindings/input
+  locations, and returns only backend-neutral `ShaderPackageDesc` data. It has
+  no compiler or reflection dependency.
+
 ## Remaining slices
 
-1. R3b: pinned shader packager, SPIR-V validation, reflection, deterministic
-   artifacts, and cache keys.
-2. R3c: complete validation semantics and one shared offscreen indexed fixture.
-3. R3d: OpenGL shader, binding, pipeline, and draw implementation.
-4. R3e: Vulkan shader modules, descriptors, dynamic rendering, pipeline, and
+1. R3c: complete validation semantics and one shared offscreen indexed fixture.
+2. R3d: OpenGL shader, binding, pipeline, and draw implementation.
+3. R3e: Vulkan shader modules, descriptors, dynamic rendering, pipeline, and
    draw implementation under the Khronos validation layer.
-5. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
+4. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
    checks, cold/warm cache evidence, full Release build, and boundary ratchet.
 
 ## R3 exit gate

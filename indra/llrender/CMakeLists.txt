@@ -39,6 +39,7 @@ set(llrender_SOURCE_FILES
     ghi/core/llghidevice.cpp
     ghi/core/llghipresentation.cpp
     ghi/core/llghirendererinfo.cpp
+    ghi/core/llghishaderpackage.cpp
     ghi/core/llghitrace.cpp
     ghi/core/llghivalidation.cpp
     )
@@ -85,6 +86,7 @@ set(llrender_HEADER_FILES
     ghi/core/llghihandlepool.h
     ghi/core/llghidevicebackend.h
     ghi/core/llghipresentationbackend.h
+    ghi/core/llghishaderpackage.h
     ghi/core/llghitrace.h
     ghi/core/llghivalidation.h
     )
@@ -100,7 +102,63 @@ if (USE_VULKAN_GHI)
   if (NOT WINDOWS)
     message(FATAL_ERROR "The R1 Vulkan GHI presentation backend currently supports Windows only")
   endif ()
+  include(Python)
   find_package(Vulkan 1.3 REQUIRED)
+
+  set(GHI_SHADER_TOOL_HINT "$ENV{VULKAN_SDK}/Bin")
+  find_program(GHI_GLSLANG_VALIDATOR NAMES glslangValidator HINTS "${GHI_SHADER_TOOL_HINT}" REQUIRED)
+  find_program(GHI_SPIRV_VAL NAMES spirv-val HINTS "${GHI_SHADER_TOOL_HINT}" REQUIRED)
+  find_program(GHI_SPIRV_OPT NAMES spirv-opt HINTS "${GHI_SHADER_TOOL_HINT}" REQUIRED)
+  find_program(GHI_SPIRV_REFLECT NAMES spirv-reflect HINTS "${GHI_SHADER_TOOL_HINT}" REQUIRED)
+
+  set(GHI_R3_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r3_diagnostic")
+  set(GHI_R3_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r3_diagnostic.llghisp")
+  set(GHI_R3_SHADER_SOURCES
+      "${GHI_R3_SHADER_ROOT}/package.json"
+      "${GHI_R3_SHADER_ROOT}/opengl41/diagnostic.vert.glsl"
+      "${GHI_R3_SHADER_ROOT}/opengl41/diagnostic.frag.glsl"
+      "${GHI_R3_SHADER_ROOT}/opengl46/diagnostic.vert.glsl"
+      "${GHI_R3_SHADER_ROOT}/opengl46/diagnostic.frag.glsl"
+      "${GHI_R3_SHADER_ROOT}/vulkan/diagnostic.vert.glsl"
+      "${GHI_R3_SHADER_ROOT}/vulkan/diagnostic.frag.glsl"
+      "${GHI_R3_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
+      )
+  add_custom_command(
+      OUTPUT "${GHI_R3_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_R3_SHADER_ROOT}/package.json"
+              --output "${GHI_R3_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_R3_SHADER_SOURCES}
+      COMMENT "Building deterministic R3 GHI shader package"
+      VERBATIM
+      )
+  add_custom_target(llrender_ghi_shaders DEPENDS "${GHI_R3_SHADER_PACKAGE}")
+  if (LL_TESTS)
+    add_custom_target(
+        llrender_ghi_shader_packager_test
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_R3_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        DEPENDS
+                llrender_ghi_shaders
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+        COMMENT "Testing deterministic GHI shader packaging and reflection rejection"
+        VERBATIM
+        )
+  endif ()
+
   list(APPEND llrender_SOURCE_FILES
       ghi/backends/vulkan/llghivulkandevice.cpp
       ghi/backends/vulkan/llghivulkanpresentation.cpp
@@ -130,6 +188,9 @@ if (BUILD_HEADLESS)
 endif (BUILD_HEADLESS)
 
 add_library (llrender ${llrender_SOURCE_FILES})
+if (USE_VULKAN_GHI)
+  add_dependencies(llrender llrender_ghi_shaders)
+endif ()
 target_include_directories(llrender
         PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -216,6 +277,7 @@ endif ()
 if (LL_TESTS)
   add_executable(llrender_ghi_contract_test
       ghi/core/llghidevice.cpp
+      ghi/core/llghishaderpackage.cpp
       ghi/core/llghitrace.cpp
       ghi/core/llghirendererinfo.cpp
       ghi/core/llghivalidation.cpp
@@ -234,6 +296,12 @@ if (LL_TESTS)
       LL_TEST=llghivalidation
       LL_TEST_llghivalidation
       )
+  if (USE_VULKAN_GHI)
+    target_compile_definitions(llrender_ghi_contract_test PRIVATE
+        LL_GHI_R3_SHADER_PACKAGE="${GHI_R3_SHADER_PACKAGE}"
+        )
+    add_dependencies(llrender_ghi_contract_test llrender_ghi_shader_packager_test)
+  endif ()
   target_link_libraries(llrender_ghi_contract_test
       llcommon
       llmath

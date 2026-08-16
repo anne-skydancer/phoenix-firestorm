@@ -183,7 +183,7 @@ enum class VertexFormat : std::uint8_t
 
 struct ShaderPackageDesc
 {
-    static constexpr std::uint32_t CURRENT_SCHEMA_VERSION = 1;
+    static constexpr std::uint32_t CURRENT_SCHEMA_VERSION = 2;
 
     std::uint32_t schemaVersion = CURRENT_SCHEMA_VERSION;
     // Stable content/permutation identity produced by the shader packager.
@@ -199,17 +199,30 @@ struct ShaderPackageDesc
         Compute,
     };
 
+    enum class TargetProfile : std::uint8_t
+    {
+        OpenGL41,
+        OpenGL46,
+        VulkanSpirV13,
+    };
+
+    struct CodeArtifact
+    {
+        TargetProfile target = TargetProfile::OpenGL41;
+        // Exactly one payload kind is populated for a target: GLSL source for
+        // OpenGL profiles or 32-bit SPIR-V words for Vulkan.
+        std::string source;
+        std::vector<std::uint32_t> spirv;
+        std::array<std::uint8_t, 32> artifactHash{};
+
+        friend bool operator==(const CodeArtifact&, const CodeArtifact&) = default;
+    };
+
     struct StageArtifact
     {
         Stage stage = Stage::Vertex;
         std::string entryPoint = "main";
-        // The OpenGL peer consumes packaged OpenGL-dialect GLSL. The Vulkan
-        // peer consumes offline-compiled SPIR-V and never compiles GLSL in the
-        // normal runtime path.
-        std::string openGLSource;
-        std::vector<std::uint32_t> vulkanSpirv;
-        std::array<std::uint8_t, 32> openGLArtifactHash{};
-        std::array<std::uint8_t, 32> vulkanArtifactHash{};
+        std::vector<CodeArtifact> artifacts;
 
         friend bool operator==(const StageArtifact&, const StageArtifact&) = default;
     };
@@ -240,6 +253,9 @@ struct ShaderPackageDesc
         StageVisibility visibility = StageVisibility::None;
         std::uint16_t arrayCount = 1;
         bool dynamicOffset = false;
+        // Stable source-level symbol used by the OpenGL peers. Vulkan binding
+        // identity remains the numeric group/binding pair.
+        std::string name;
 
         friend bool operator==(const Binding&, const Binding&) = default;
     };

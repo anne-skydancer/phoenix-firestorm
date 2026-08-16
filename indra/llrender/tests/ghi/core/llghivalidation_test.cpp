@@ -13,12 +13,15 @@
 #include "lltut.h"
 
 #include "ghi/core/llghihandlepool.h"
+#include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghirendererinfo.h"
 #include "tests/ghi/llghiresourcefixture.h"
 
 #include <array>
 #include <cstddef>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
@@ -523,17 +526,28 @@ void LLGHIValidationObject::test<14>()
 
     ShaderPackageDesc package;
     package.semanticHash[0] = 0x52;
-    package.stages = {
-        {ShaderPackageDesc::Stage::Vertex, "main", "vertex", {0x07230203u}},
-        {ShaderPackageDesc::Stage::Fragment, "main", "fragment", {0x07230203u}},
+    ShaderPackageDesc::StageArtifact vertex;
+    vertex.stage = ShaderPackageDesc::Stage::Vertex;
+    vertex.artifacts = {
+        {ShaderPackageDesc::TargetProfile::OpenGL41, "vertex41", {}, {}},
+        {ShaderPackageDesc::TargetProfile::OpenGL46, "vertex46", {}, {}},
+        {ShaderPackageDesc::TargetProfile::VulkanSpirV13, "", {0x07230203u}, {}},
     };
+    ShaderPackageDesc::StageArtifact fragment;
+    fragment.stage = ShaderPackageDesc::Stage::Fragment;
+    fragment.artifacts = {
+        {ShaderPackageDesc::TargetProfile::OpenGL41, "fragment41", {}, {}},
+        {ShaderPackageDesc::TargetProfile::OpenGL46, "fragment46", {}, {}},
+        {ShaderPackageDesc::TargetProfile::VulkanSpirV13, "", {0x07230203u}, {}},
+    };
+    package.stages = {vertex, fragment};
     package.bindings = {
         {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
          ShaderPackageDesc::StageVisibility::Vertex |
              ShaderPackageDesc::StageVisibility::Fragment,
-         1, true},
+         1, true, "FrameData"},
         {2, 3, ShaderPackageDesc::BindingType::CombinedImageSampler,
-         ShaderPackageDesc::StageVisibility::Fragment, 1, false},
+         ShaderPackageDesc::StageVisibility::Fragment, 1, false, "colorTexture"},
     };
     package.vertexInputs = {
         {0, VertexFormat::Float32x3},
@@ -544,6 +558,8 @@ void LLGHIValidationObject::test<14>()
     ensure("equivalent shader packages compare equal", equivalent == package);
     equivalent.stages[1].entryPoint = "changed";
     ensure("shader package identity includes stage entry points", equivalent != package);
+    ensure_equals("R3 package carries three target profiles",
+                  package.stages[0].artifacts.size(), std::size_t{3});
 
     PipelineDesc pipeline;
     pipeline.vertexBuffers = {{0, 20, VertexInputRate::PerVertex}};
@@ -574,5 +590,38 @@ void LLGHIValidationObject::test<14>()
     ensure("R3 dynamic state changes semantic trace",
            first_trace.sha256() != second_trace.sha256());
 }
+
+#ifdef LL_GHI_R3_SHADER_PACKAGE
+template<> template<>
+void LLGHIValidationObject::test<15>()
+{
+    using namespace LL::GHI;
+
+    ShaderPackageDesc package;
+    Status status = loadShaderPackage(LL_GHI_R3_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    ensure_equals("offline package schema", package.schemaVersion,
+                  ShaderPackageDesc::CURRENT_SCHEMA_VERSION);
+    ensure_equals("offline package stage count", package.stages.size(), std::size_t{2});
+    ensure_equals("offline package target profile count",
+                  package.stages.front().artifacts.size(), std::size_t{3});
+    ensure_equals("offline package binding count", package.bindings.size(), std::size_t{2});
+    ensure_equals("offline package vertex input count",
+                  package.vertexInputs.size(), std::size_t{2});
+
+    std::ifstream input(LL_GHI_R3_SHADER_PACKAGE, std::ios::binary);
+    std::string corrupted((std::istreambuf_iterator<char>(input)),
+                          std::istreambuf_iterator<char>());
+    const std::string marker = "\"artifact_hash\":\"";
+    const std::size_t hash = corrupted.find(marker);
+    ensure("artifact hash present", hash != std::string::npos);
+    const std::size_t digit = hash + marker.size();
+    corrupted[digit] = corrupted[digit] == '0' ? '1' : '0';
+    ShaderPackageDesc rejected;
+    status = decodeShaderPackage(corrupted, rejected);
+    ensure("corrupt artifact rejected",
+           !status && status.code() == StatusCode::InvalidArgument);
+}
+#endif
 
 } // namespace tut

@@ -387,9 +387,10 @@ pass.
 
 Exit gate: R00 lifecycle variants pass, including explicit invalid-ICD failure,
 without world rendering. Both peer backends publish complete identity and
-capability snapshots; recommended settings require no native API access above
-the GHI boundary; About correctly and consistently identifies the selected
-backend.
+capability snapshots; renderer detection and feature masking require no native
+API state above the GHI boundary; About correctly and consistently identifies
+the selected backend. The production OpenGL throughput probe remains OpenGL-
+only and is never used to classify a Vulkan lifecycle snapshot.
 
 ### R2 — resources, upload, readback, and queries
 

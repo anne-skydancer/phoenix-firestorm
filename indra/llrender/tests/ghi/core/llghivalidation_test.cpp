@@ -212,4 +212,38 @@ void LLGHIValidationObject::test<5>()
     ensure("renderer snapshot clears on lifecycle shutdown", !activeRendererSnapshot());
 }
 
+template<> template<>
+void LLGHIValidationObject::test<6>()
+{
+    using namespace LL::GHI;
+
+    RendererSnapshot snapshot;
+    snapshot.identity.backend = Backend::Vulkan;
+    snapshot.identity.provider = RendererProvider::NativeVulkan;
+    snapshot.identity.vendor = DeviceVendor::AMD;
+    snapshot.identity.apiName = "Vulkan";
+    snapshot.identity.apiVersion = {1, 4, 349, {}};
+    snapshot.identity.rendererName = "AMD Radeon RX 9070 XT";
+    snapshot.identity.deviceName = snapshot.identity.rendererName;
+    snapshot.identity.stableDeviceId = "luid:0011223344556677";
+    snapshot.identity.vendorName = "AMD";
+    snapshot.identity.dedicatedVideoMemoryBytes = 16ull * 1024ull * 1024ull * 1024ull;
+    snapshot.capabilities.maxSampledImagesPerStage = 32;
+    snapshot.capabilities.maxVaryingVectors = 32;
+    snapshot.capabilities.baselineGraphicsPipeline = true;
+    snapshot.capabilities.advancedGraphicsPipeline = true;
+
+    const RendererSupportInfo info = makeRendererSupportInfo(snapshot);
+    ensure_equals("support API", info.api, std::string{"Vulkan"});
+    ensure_equals("support API version", info.apiVersion, std::string{"1.4.349"});
+    ensure_equals("support backend", info.backend, std::string{"Vulkan"});
+    ensure_equals("support provider", info.provider, std::string{"Native Vulkan"});
+    ensure_equals("support renderer", info.renderer, snapshot.identity.rendererName);
+    ensure_equals("support vendor", info.vendor, std::string{"AMD"});
+    ensure_equals("support memory", info.videoMemoryBytes,
+                  snapshot.identity.dedicatedVideoMemoryBytes);
+    ensure("semantic baseline capability", snapshot.capabilities.baselineGraphicsPipeline);
+    ensure("semantic advanced capability", snapshot.capabilities.advancedGraphicsPipeline);
+}
+
 } // namespace tut

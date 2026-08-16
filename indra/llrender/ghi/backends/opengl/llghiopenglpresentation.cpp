@@ -101,6 +101,17 @@ public:
         return Status::success();
     }
 
+    Status displayChanged() override
+    {
+        if (!mDC)
+        {
+            return Status::failure(StatusCode::InvalidState, "OpenGL presentation is shut down");
+        }
+        // WGL presentation remains bound to the window DC. A display mode or
+        // topology change requires no native object rebuild for this peer.
+        return Status::success();
+    }
+
     Status setSuspended(bool suspended) override
     {
         mSuspended = suspended;

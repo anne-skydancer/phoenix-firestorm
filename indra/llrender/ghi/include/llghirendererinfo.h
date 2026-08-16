@@ -80,11 +80,27 @@ struct RendererSnapshot
     friend bool operator==(const RendererSnapshot&, const RendererSnapshot&) = default;
 };
 
+// Canonical support/about fields derived from the same snapshot used by
+// feature policy and renderer-change notifications.
+struct RendererSupportInfo
+{
+    std::string api;
+    std::string apiVersion;
+    std::string backend;
+    std::string provider;
+    std::string summary;
+    std::string vendor;
+    std::string renderer;
+    std::uint64_t videoMemoryBytes = 0;
+    std::uint64_t detectedVideoMemoryBytes = 0;
+};
+
 std::string backendDisplayName(Backend backend);
 std::string providerDisplayName(RendererProvider provider);
 std::string vendorDisplayName(DeviceVendor vendor);
 std::string formatApiVersion(const ApiVersion& version);
 std::string formatRendererSummary(const RendererIdentity& identity);
+RendererSupportInfo makeRendererSupportInfo(const RendererSnapshot& snapshot);
 
 // The lifecycle owner publishes exactly one active snapshot after device
 // creation. Consumers receive copies so backend teardown cannot invalidate

@@ -353,6 +353,8 @@ RendererSnapshot queryOpenGLRendererSnapshot()
     device_caps.descriptorIndexing = false;
     device_caps.storageImageAtomics = gGLManager.mGLVersion >= 4.2f;
     device_caps.depthClamp = gGLManager.mGLVersion >= 3.2f;
+    device_caps.baselineGraphicsPipeline = gGLManager.mGLVersion >= 3.f;
+    device_caps.advancedGraphicsPipeline = gGLManager.mGLVersion >= 3.99f;
 
     return snapshot;
 }

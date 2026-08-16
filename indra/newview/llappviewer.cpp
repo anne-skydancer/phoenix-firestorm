@@ -1207,6 +1207,10 @@ bool LLAppViewer::init()
     gGLManager.mVRAMDetected = gGLManager.mVRAM;
     LL_INFOS("AppInit") << "VRAM detected: " << gGLManager.mVRAMDetected << LL_ENDL;
     overrideDetectedHardware(); 
+    // VRAM detection/override occurs after the OpenGL context publishes its
+    // first snapshot. Refresh the backend-owned snapshot before feature policy
+    // and persistence consume it.
+    LL::GHI::publishInitializedOpenGLRendererSnapshot();
     // </FS:Beq> 
 
 
@@ -4095,39 +4099,41 @@ LLSD LLAppViewer::getViewerInfo() const
     const auto renderer_snapshot = LL::GHI::activeRendererSnapshot();
     std::string graphics_card_vendor;
     std::string graphics_card;
-    S32 graphics_memory = static_cast<S32>(gGLManager.mVRAM);
-    S32 graphics_memory_detected = gGLManager.mVRAMDetected;
+    S32 graphics_memory = 0;
+    S32 graphics_memory_detected = 0;
+    LL::GHI::DeviceVendor renderer_vendor = LL::GHI::DeviceVendor::Unknown;
     if (renderer_snapshot)
     {
         const LL::GHI::RendererIdentity& identity = renderer_snapshot->identity;
-        graphics_card_vendor = identity.vendorName;
-        graphics_card = identity.rendererName.empty()
-            ? identity.deviceName
-            : identity.rendererName;
-        if (identity.dedicatedVideoMemoryBytes != 0)
+        const LL::GHI::RendererSupportInfo renderer_info =
+            LL::GHI::makeRendererSupportInfo(*renderer_snapshot);
+        renderer_vendor = identity.vendor;
+        graphics_card_vendor = renderer_info.vendor;
+        graphics_card = renderer_info.renderer;
+        if (renderer_info.videoMemoryBytes != 0)
         {
             graphics_memory = static_cast<S32>(
-                identity.dedicatedVideoMemoryBytes / (1024ull * 1024ull));
+                renderer_info.videoMemoryBytes / (1024ull * 1024ull));
         }
-        if (identity.detectedVideoMemoryBytes != 0)
+        if (renderer_info.detectedVideoMemoryBytes != 0)
         {
             graphics_memory_detected = static_cast<S32>(
-                identity.detectedVideoMemoryBytes / (1024ull * 1024ull));
+                renderer_info.detectedVideoMemoryBytes / (1024ull * 1024ull));
         }
-        info["RENDERING_API"] = identity.apiName;
-        info["RENDERING_API_VERSION"] = LL::GHI::formatApiVersion(identity.apiVersion);
-        info["RENDERING_BACKEND"] = LL::GHI::backendDisplayName(identity.backend);
-        info["RENDERING_PROVIDER"] = LL::GHI::providerDisplayName(identity.provider);
-        info["RENDERER_SUMMARY"] = LL::GHI::formatRendererSummary(identity);
+        info["RENDERING_API"] = renderer_info.api;
+        info["RENDERING_API_VERSION"] = renderer_info.apiVersion;
+        info["RENDERING_BACKEND"] = renderer_info.backend;
+        info["RENDERING_PROVIDER"] = renderer_info.provider;
+        info["RENDERER_SUMMARY"] = renderer_info.summary;
     }
     else
     {
-        graphics_card_vendor = ll_safe_string((const char*)(glGetString(GL_VENDOR)));
-        graphics_card = ll_safe_string((const char*)(glGetString(GL_RENDERER)));
-        info["RENDERING_API"] = "OpenGL";
-        info["RENDERING_API_VERSION"] = gGLManager.mGLVersionString;
-        info["RENDERING_BACKEND"] = "OpenGL";
-        info["RENDERING_PROVIDER"] = "System OpenGL";
+        graphics_card_vendor = "Unavailable";
+        graphics_card = "Renderer snapshot unavailable";
+        info["RENDERING_API"] = "Unavailable";
+        info["RENDERING_API_VERSION"] = "Unavailable";
+        info["RENDERING_BACKEND"] = "Unavailable";
+        info["RENDERING_PROVIDER"] = "Unavailable";
         info["RENDERER_SUMMARY"] = graphics_card;
     }
 #if LL_WINDOWS
@@ -4160,15 +4166,15 @@ LLSD LLAppViewer::getViewerInfo() const
 #if LL_WINDOWS
     std::string drvinfo;
 
-    if (gGLManager.mIsIntel)
+    if (renderer_vendor == LL::GHI::DeviceVendor::Intel)
     {
         drvinfo = gDXHardware.getDriverVersionWMI(LLDXHardware::GPU_INTEL);
     }
-    else if (gGLManager.mIsNVIDIA)
+    else if (renderer_vendor == LL::GHI::DeviceVendor::NVIDIA)
     {
         drvinfo = gDXHardware.getDriverVersionWMI(LLDXHardware::GPU_NVIDIA);
     }
-    else if (gGLManager.mIsAMD)
+    else if (renderer_vendor == LL::GHI::DeviceVendor::AMD)
     {
         drvinfo = gDXHardware.getDriverVersionWMI(LLDXHardware::GPU_AMD);
     }
@@ -4206,7 +4212,7 @@ LLSD LLAppViewer::getViewerInfo() const
     }
     else if (!renderer_snapshot)
     {
-        info["OPENGL_VERSION"] = ll_safe_string((const char*)(glGetString(GL_VERSION)));
+        info["OPENGL_VERSION"] = "Unavailable";
     }
     info["LIBCURL_VERSION"] = LLCore::LLHttp::getCURLVersion();
     // Settings

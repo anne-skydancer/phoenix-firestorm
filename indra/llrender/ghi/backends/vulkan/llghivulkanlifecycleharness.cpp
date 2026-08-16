@@ -177,6 +177,13 @@ int main(int argc, char** argv)
     }
     if (passed)
     {
+        SendMessageW(window, WM_DISPLAYCHANGE, 32,
+                     MAKELPARAM(client.right - client.left, client.bottom - client.top));
+        passed = creation.surface->displayChanged().ok() &&
+                 presentFrames(*creation.surface, frameCount, 0.75f);
+    }
+    if (passed)
+    {
         creation.surface->setSuspended(true);
         ShowWindow(window, SW_MINIMIZE);
         for (int i = 0; i < 12 && pumpMessages(); ++i) Sleep(10);

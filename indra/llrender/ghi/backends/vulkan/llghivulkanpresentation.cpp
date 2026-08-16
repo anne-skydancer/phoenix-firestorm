@@ -127,6 +127,7 @@ public:
     const RendererSnapshot& rendererSnapshot() const override { return mSnapshot; }
     Status presentClear(const ClearColor& color) override;
     Status resize(std::uint32_t width, std::uint32_t height) override;
+    Status displayChanged() override;
     Status setSuspended(bool suspended) override;
     Status shutdown() override;
 
@@ -690,6 +691,10 @@ void VulkanPresentationSurface::captureSnapshot()
     capabilities.descriptorIndexing = features12.descriptorIndexing != 0;
     capabilities.storageImageAtomics = features.features.fragmentStoresAndAtomics != 0;
     capabilities.depthClamp = features.features.depthClamp != 0;
+    // Device creation already enforces the Vulkan baseline required by this
+    // presentation peer. These are viewer feature tiers, not API versions.
+    capabilities.baselineGraphicsPipeline = true;
+    capabilities.advancedGraphicsPipeline = true;
 }
 
 Status VulkanPresentationSurface::initialize(const PresentationCreateInfo& info)
@@ -875,6 +880,22 @@ Status VulkanPresentationSurface::resize(std::uint32_t width, std::uint32_t heig
     mRequestedHeight = height;
     mSuspended = width == 0 || height == 0;
     mSwapchainDirty = !mSuspended;
+    return Status::success();
+}
+
+Status VulkanPresentationSurface::displayChanged()
+{
+    if (!mDevice || !mSurface)
+    {
+        return Status::failure(StatusCode::InvalidState, "Vulkan presentation is shut down");
+    }
+    // Surface capabilities, format support, and present modes may change with
+    // the desktop topology. Re-query all of them through swapchain recreation
+    // on the next present without exposing a platform event above the backend.
+    if (!mSuspended)
+    {
+        mSwapchainDirty = true;
+    }
     return Status::success();
 }
 

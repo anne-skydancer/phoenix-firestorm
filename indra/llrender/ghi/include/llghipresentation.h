@@ -53,6 +53,9 @@ public:
 
     virtual Status presentClear(const ClearColor& color) = 0;
     virtual Status resize(std::uint32_t width, std::uint32_t height) = 0;
+    // Notify the backend that the desktop display topology or mode changed.
+    // Platform event types remain outside this contract.
+    virtual Status displayChanged() = 0;
     virtual Status setSuspended(bool suspended) = 0;
     virtual Status shutdown() = 0;
 };

@@ -99,6 +99,28 @@ std::string formatRendererSummary(const RendererIdentity& identity)
     return output.str();
 }
 
+RendererSupportInfo makeRendererSupportInfo(const RendererSnapshot& snapshot)
+{
+    const RendererIdentity& identity = snapshot.identity;
+    RendererSupportInfo info;
+    info.api = identity.apiName.empty()
+        ? backendDisplayName(identity.backend)
+        : identity.apiName;
+    info.apiVersion = formatApiVersion(identity.apiVersion);
+    info.backend = backendDisplayName(identity.backend);
+    info.provider = providerDisplayName(identity.provider);
+    info.summary = formatRendererSummary(identity);
+    info.vendor = identity.vendorName.empty()
+        ? vendorDisplayName(identity.vendor)
+        : identity.vendorName;
+    info.renderer = identity.rendererName.empty()
+        ? identity.deviceName
+        : identity.rendererName;
+    info.videoMemoryBytes = identity.dedicatedVideoMemoryBytes;
+    info.detectedVideoMemoryBytes = identity.detectedVideoMemoryBytes;
+    return info;
+}
+
 void publishRendererSnapshot(RendererSnapshot snapshot)
 {
     std::lock_guard<std::mutex> lock(gSnapshotMutex);

@@ -8,6 +8,10 @@ OpenGL. OpenGL remains supported and selectable. Mesa + Zink remains a
 separately scoped transitional OpenGL implementation and is neither the native
 Vulkan backend nor the architectural reference for it.
 
+Production world/UI rendering stays on OpenGL throughout development. Mesa +
+Zink retirement is a separate post-parity decision; native OpenGL remains a
+supported peer and recovery path.
+
 - [Peer-backend architecture](peer-backend-architecture.md) defines the GHI
   seam, ownership rules, implementation increments, and acceptance gates.
 - [GL coupling baseline](gl-coupling-baseline.json) anchors the source-level

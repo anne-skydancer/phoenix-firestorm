@@ -19,6 +19,21 @@ used as the native Vulkan implementation, the GHI contract, or the Vulkan
 correctness oracle. The accepted baseline tag records Mesa + Zink as a useful
 visual reference and native OpenGL as a performance reference.
 
+### Production-rendering invariant
+
+Throughout R0-R8 development and all intermediate releases, production world
+and UI rendering remains on the OpenGL backend. Native Vulkan is available only
+through explicit developer gates until the entire parity ledger and production-
+eligibility gate pass. Completing an individual Vulkan slice, including window
+presentation, does not make that slice eligible to render a production session.
+
+Mesa + Zink remains the transitional OpenGL correctness path for supported
+systems during that period. Its retirement is a separate, post-parity release
+decision and is feasible only after native Vulkan has demonstrated complete
+world/UI parity, stability, hardware coverage, recovery behavior, and accepted
+performance. Retiring Mesa + Zink does not retire native OpenGL, which remains
+a supported peer and rollback path.
+
 ## Goals
 
 - Preserve OpenGL as a supported, selectable production backend.
@@ -232,7 +247,9 @@ new GL-shaped methods to these compatibility classes.
 Each adopted slice must execute through both the OpenGL and Vulkan GHI
 implementations. Code not yet adopted remains on the existing OpenGL path and
 keeps the Vulkan backend developer-gated. A production Vulkan selection is not
-offered until the complete required ledger is satisfied.
+offered until the complete required ledger is satisfied. Intermediate releases
+must continue to route the complete production world/UI frame through OpenGL;
+they must not assemble a hybrid production frame from completed Vulkan slices.
 
 ## Backend selection and fallback
 
@@ -253,6 +270,11 @@ must not confuse Zink with the Vulkan backend.
   OpenGL with a structured reason in the log and About information.
 - No mid-session API fallback. Device loss terminates rendering cleanly and
   offers a restart path; it does not transfer live resources between APIs.
+
+Before production eligibility, `RenderBackend=vulkan` is accepted only by
+developer lifecycle/parity harnesses. Normal viewer sessions remain OpenGL even
+in builds that contain the Vulkan backend. Mesa + Zink cannot be removed merely
+because native Vulkan can initialize or render a subset of passes.
 
 Graphics settings are keyed by physical GPU identity, not by backend. Switching
 OpenGL/Vulkan on the same GPU preserves the profile. A different GPU resets or
@@ -429,6 +451,12 @@ Exit gate: all required ledger rows are `PARITY`, R00-R14 gates pass, no native
 API boundary growth is unexplained, and Vulkan is explicitly approved for
 production selection.
 
+Passing R8 permits a separate release decision to expose Vulkan as a production
+peer; it does not automatically change defaults or remove Mesa + Zink. Mesa +
+Zink retirement requires its own release checkpoint confirming that the Vulkan
+peer covers the correctness-workaround population and that native OpenGL
+remains a tested recovery choice.
+
 ## Branch discipline
 
 - `render/ghi`: shared contracts, OpenGL peer implementation, and reviewed
@@ -453,6 +481,7 @@ the concerns isolated while preserving one authoritative codebase.
 | Pipeline compilation stalls | Teleport and region-entry freezes | Stable keys, persistent cache, asynchronous creation, cold/warm R03/R14 evidence |
 | Backend setting conflation | Zink mistaken for native Vulkan | Separate API backend and OpenGL provider settings |
 | Premature production exposure | Incomplete viewer under Vulkan | Developer gate until the full required parity ledger passes |
+| Premature Mesa + Zink retirement | Loss of the known-correct AMD workaround before Vulkan is ready | Keep it available through R8; require a separate post-parity retirement checkpoint |
 | Abstraction overhead | Failure to reach native performance | Coarse command/batch dispatch, immutable cached state, telemetry from R3 onward |
 
 ## First implementation change

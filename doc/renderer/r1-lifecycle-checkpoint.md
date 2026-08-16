@@ -8,6 +8,11 @@ replace OpenGL and it does not route viewer world or UI rendering to Vulkan.
 The production viewer continues to use its OpenGL peer while the incomplete
 Vulkan peer remains gated by `USE_VULKAN_GHI=OFF` by default.
 
+Production world/UI rendering remains OpenGL throughout all intermediate GHI
+increments. Mesa + Zink remains available as the transitional OpenGL
+correctness path; its retirement cannot be considered until complete native-
+Vulkan parity and production eligibility have been verified.
+
 ## Implemented
 
 - Platform-window creation is independent from WGL-context creation. A real

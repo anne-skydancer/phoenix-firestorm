@@ -214,6 +214,9 @@ Status ValidationCommandContext::beginFrame()
     mIndexType = IndexType::UInt16;
     mViewportSet = false;
     mScissorSet = false;
+    mActiveQueryPool = {};
+    mActiveQuery = 0;
+    mOcclusionSamples = 0;
     mFrameActive = true;
     return Status::success();
 }
@@ -320,6 +323,44 @@ Status ValidationCommandContext::writeTimestamp(
     return status;
 }
 
+Status ValidationCommandContext::beginQuery(
+    QueryPoolHandle pool,
+    std::uint32_t query)
+{
+    Status status = requireRendering("beginQuery");
+    if (!status) return status;
+    if (mActiveQueryPool)
+    {
+        return invalidState("occlusion queries may not overlap");
+    }
+    status = mDevice.beginOcclusionQuery(pool, query);
+    if (!status) return status;
+    mActiveQueryPool = pool;
+    mActiveQuery = query;
+    mOcclusionSamples = 0;
+    mTrace.beginQuery(pool, query);
+    return Status::success();
+}
+
+Status ValidationCommandContext::endQuery(
+    QueryPoolHandle pool,
+    std::uint32_t query)
+{
+    Status status = requireRendering("endQuery");
+    if (!status) return status;
+    if (!mActiveQueryPool || mActiveQueryPool != pool || mActiveQuery != query)
+    {
+        return invalidState("endQuery does not match the active occlusion query");
+    }
+    status = mDevice.endOcclusionQuery(pool, query, mOcclusionSamples);
+    if (!status) return status;
+    mTrace.endQuery(pool, query);
+    mActiveQueryPool = {};
+    mActiveQuery = 0;
+    mOcclusionSamples = 0;
+    return Status::success();
+}
+
 Status ValidationCommandContext::beginRendering(const RenderingInfo& info)
 {
     if (!mFrameActive)
@@ -400,6 +441,10 @@ Status ValidationCommandContext::endRendering()
     if (!status)
     {
         return status;
+    }
+    if (mActiveQueryPool)
+    {
+        return invalidState("endRendering called with an active occlusion query");
     }
 
     mTrace.endRendering();
@@ -563,6 +608,7 @@ Status ValidationCommandContext::draw(const DrawArguments& arguments)
     }
 
     mTrace.draw(arguments);
+    if (mActiveQueryPool) mOcclusionSamples += arguments.instanceCount;
     return Status::success();
 }
 
@@ -601,6 +647,7 @@ Status ValidationCommandContext::drawIndexed(const DrawIndexedArguments& argumen
     }
 
     mTrace.drawIndexed(arguments);
+    if (mActiveQueryPool) mOcclusionSamples += arguments.instanceCount;
     return Status::success();
 }
 
@@ -765,7 +812,8 @@ QueryPoolHandle ValidationDevice::createQueryPool(
         status = invalidArgument("query pool count must be nonzero");
         return {};
     }
-    if (!mCapabilities.timestampQueries)
+    if ((desc.type == QueryType::Timestamp && !mCapabilities.timestampQueries) ||
+        (desc.type == QueryType::Occlusion && !mCapabilities.occlusionQueries))
     {
         status = Status::failure(StatusCode::Unsupported, "query type is unsupported");
         return {};
@@ -777,6 +825,7 @@ QueryPoolHandle ValidationDevice::createQueryPool(
     record.values.resize(desc.count);
     record.available.resize(desc.count, false);
     record.pending.resize(desc.count, false);
+    record.active.resize(desc.count, false);
     mQueryRecords.emplace(key(handle), std::move(record));
     status = Status::success();
     return handle;
@@ -1796,6 +1845,12 @@ Status ValidationDevice::resetQueries(
     {
         return invalidArgument("query reset range is empty or out of bounds");
     }
+    if (std::any_of(found->second.active.begin() + first,
+                    found->second.active.begin() + first + count,
+                    [](bool active) { return active; }))
+    {
+        return invalidState("an active query may not be reset");
+    }
     for (std::uint32_t query = first; query < first + count; ++query)
     {
         found->second.available[query] = false;
@@ -1821,6 +1876,50 @@ Status ValidationDevice::recordTimestamp(QueryPoolHandle pool, std::uint32_t que
         return invalidState("timestamp query must be reset before reuse");
     }
     found->second.values[query] = ++mTimestampCounter;
+    found->second.pending[query] = true;
+    return Status::success();
+}
+
+Status ValidationDevice::beginOcclusionQuery(
+    QueryPoolHandle pool,
+    std::uint32_t query)
+{
+    auto found = mQueryRecords.find(key(pool));
+    if (!mQueryPools.isLive(pool) || found == mQueryRecords.end())
+    {
+        return invalidHandle("beginQuery received a stale or invalid query pool");
+    }
+    if (found->second.desc.type != QueryType::Occlusion ||
+        query >= found->second.desc.count)
+    {
+        return invalidArgument("occlusion query index or pool type is invalid");
+    }
+    if (found->second.active[query] || found->second.pending[query] ||
+        found->second.available[query])
+    {
+        return invalidState("occlusion query must be reset before reuse");
+    }
+    found->second.active[query] = true;
+    return Status::success();
+}
+
+Status ValidationDevice::endOcclusionQuery(
+    QueryPoolHandle pool,
+    std::uint32_t query,
+    std::uint64_t samples)
+{
+    auto found = mQueryRecords.find(key(pool));
+    if (!mQueryPools.isLive(pool) || found == mQueryRecords.end())
+    {
+        return invalidHandle("endQuery received a stale or invalid query pool");
+    }
+    if (found->second.desc.type != QueryType::Occlusion ||
+        query >= found->second.desc.count || !found->second.active[query])
+    {
+        return invalidState("endQuery does not name an active occlusion query");
+    }
+    found->second.active[query] = false;
+    found->second.values[query] = samples;
     found->second.pending[query] = true;
     return Status::success();
 }

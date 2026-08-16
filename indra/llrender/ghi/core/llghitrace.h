@@ -42,6 +42,8 @@ enum class TraceOpcode : std::uint8_t
     BindBindingSet,
     SetViewport,
     SetScissor,
+    BeginQuery,
+    EndQuery,
 };
 
 class SemanticTrace
@@ -66,6 +68,8 @@ public:
     void generateMipmaps(ImageHandle image, const ImageSubresourceRange& subresources);
     void resetQueryPool(QueryPoolHandle pool, std::uint32_t first, std::uint32_t count);
     void writeTimestamp(QueryPoolHandle pool, std::uint32_t query);
+    void beginQuery(QueryPoolHandle pool, std::uint32_t query);
+    void endQuery(QueryPoolHandle pool, std::uint32_t query);
     void beginRendering(const RenderingInfo& info);
     void endRendering();
     void bindPipeline(PipelineHandle pipeline);

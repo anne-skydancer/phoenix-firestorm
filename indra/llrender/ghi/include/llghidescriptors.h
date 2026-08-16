@@ -152,6 +152,7 @@ struct BufferImageCopyRegion
 enum class QueryType : std::uint8_t
 {
     Timestamp,
+    Occlusion,
 };
 
 struct QueryPoolDesc

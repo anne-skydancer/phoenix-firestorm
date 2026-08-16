@@ -53,6 +53,8 @@ public:
         std::uint32_t firstQuery,
         std::uint32_t queryCount) override;
     Status writeTimestamp(QueryPoolHandle pool, std::uint32_t query) override;
+    Status beginQuery(QueryPoolHandle pool, std::uint32_t query) override;
+    Status endQuery(QueryPoolHandle pool, std::uint32_t query) override;
     Status beginRendering(const RenderingInfo& info) override;
     Status endRendering() override;
     Status bindPipeline(PipelineHandle pipeline) override;
@@ -93,6 +95,9 @@ private:
     bool mRendering = false;
     bool mViewportSet = false;
     bool mScissorSet = false;
+    QueryPoolHandle mActiveQueryPool;
+    std::uint32_t mActiveQuery = 0;
+    std::uint64_t mOcclusionSamples = 0;
 };
 
 class ValidationDevice final : public Device
@@ -185,6 +190,11 @@ public:
         const ImageSubresourceRange& subresources);
     Status resetQueries(QueryPoolHandle pool, std::uint32_t first, std::uint32_t count);
     Status recordTimestamp(QueryPoolHandle pool, std::uint32_t query);
+    Status beginOcclusionQuery(QueryPoolHandle pool, std::uint32_t query);
+    Status endOcclusionQuery(
+        QueryPoolHandle pool,
+        std::uint32_t query,
+        std::uint64_t samples);
     void completeFrame();
     std::size_t pendingRetirementCount() const { return mRetirements.size(); }
 
@@ -207,6 +217,7 @@ private:
         std::vector<std::uint64_t> values;
         std::vector<bool> available;
         std::vector<bool> pending;
+        std::vector<bool> active;
     };
 
     struct Retirement

@@ -60,6 +60,8 @@ bool loadResourceEntryPoints()
     do { if (!(name)) (name) = reinterpret_cast<decltype(name)>(getOpenGLProcedure(#name)); } while (false)
     LL_GHI_LOAD_GL(glGenQueries);
     LL_GHI_LOAD_GL(glDeleteQueries);
+    LL_GHI_LOAD_GL(glBeginQuery);
+    LL_GHI_LOAD_GL(glEndQuery);
     LL_GHI_LOAD_GL(glGetQueryObjectuiv);
     LL_GHI_LOAD_GL(glBindBuffer);
     LL_GHI_LOAD_GL(glDeleteBuffers);
@@ -129,7 +131,8 @@ bool loadResourceEntryPoints()
     if (!sTexImage3D) sTexImage3D = reinterpret_cast<PFNGLTEXIMAGE3DPROC>(getOpenGLProcedure("glTexImage3D"));
     if (!sTexSubImage3D) sTexSubImage3D = reinterpret_cast<PFNGLTEXSUBIMAGE3DPROC>(getOpenGLProcedure("glTexSubImage3D"));
 #undef LL_GHI_LOAD_GL
-    return glGenQueries && glDeleteQueries && glGetQueryObjectuiv &&
+    return glGenQueries && glDeleteQueries && glBeginQuery && glEndQuery &&
+           glGetQueryObjectuiv &&
            glBindBuffer && glDeleteBuffers && glGenBuffers && glBufferData &&
            glBufferSubData && glGetBufferSubData && glGenerateMipmap &&
            glCopyBufferSubData && glFenceSync && glDeleteSync && glClientWaitSync &&
@@ -467,6 +470,8 @@ public:
     Status generateMipmaps(ImageHandle, const ImageSubresourceRange&) override;
     Status resetQueryPool(QueryPoolHandle, std::uint32_t, std::uint32_t) override;
     Status writeTimestamp(QueryPoolHandle, std::uint32_t) override;
+    Status beginQuery(QueryPoolHandle, std::uint32_t) override;
+    Status endQuery(QueryPoolHandle, std::uint32_t) override;
 
     Status beginRendering(const RenderingInfo&) override;
     Status endRendering() override;
@@ -502,6 +507,8 @@ private:
     BufferHandle mIndexBuffer;
     std::uint64_t mIndexOffset = 0;
     IndexType mIndexType = IndexType::UInt16;
+    QueryPoolHandle mActiveQueryPool;
+    std::uint32_t mActiveQuery = 0;
 };
 
 class OpenGLDevice final : public Device
@@ -555,6 +562,8 @@ public:
     Status generateMipmaps(ImageHandle, const ImageSubresourceRange&);
     Status resetQueryPool(QueryPoolHandle, std::uint32_t, std::uint32_t);
     Status writeTimestamp(QueryPoolHandle, std::uint32_t);
+    Status beginQuery(QueryPoolHandle, std::uint32_t);
+    Status endQuery(QueryPoolHandle, std::uint32_t);
     Status beginRendering(const RenderingInfo&);
     Status endRendering();
     Status bindPipeline(PipelineHandle);
@@ -640,7 +649,8 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     mCapabilities.preferredDepthStencilFormat = Format::Depth24Stencil8;
     mCapabilities.timestampQueries = glQueryCounter && glGetQueryObjectui64v;
     mCapabilities.timestampPeriodNanoseconds = mCapabilities.timestampQueries ? 1.0 : 0.0;
-    mCapabilities.occlusionQueries = true;
+    mCapabilities.occlusionQueries = glBeginQuery && glEndQuery &&
+        glGetQueryObjectuiv && glGetQueryObjectui64v;
     mCapabilities.depthClamp = true;
     mCapabilities.independentBlend = glEnablei && glDisablei &&
         glBlendFuncSeparatei && glBlendEquationSeparatei && glColorMaski;
@@ -851,7 +861,12 @@ QueryPoolHandle OpenGLDevice::createQueryPool(const QueryPoolDesc& desc, Status&
     status = canMutate();
     if (!status) return {};
     if (!desc.count) { status = invalidArgument("query pool count must be nonzero"); return {}; }
-    if (!mCapabilities.timestampQueries) { status = unsupported("timestamp queries are unavailable"); return {}; }
+    if ((desc.type == QueryType::Timestamp && !mCapabilities.timestampQueries) ||
+        (desc.type == QueryType::Occlusion && !mCapabilities.occlusionQueries))
+    {
+        status = unsupported("requested OpenGL query type is unavailable");
+        return {};
+    }
     QueryRecord record{desc, std::vector<GLuint>(desc.count), std::vector<bool>(desc.count, false)};
     glGenQueries(desc.count, record.names.data());
     if (std::any_of(record.names.begin(), record.names.end(), [](GLuint name) { return name == 0; }))
@@ -1283,6 +1298,7 @@ Status OpenGLDevice::endFrame()
 {
     if (!mCommands.frameActive()) return invalidState("no frame is active");
     if (mCommands.renderingActive()) return invalidState("endFrame requires endRendering first");
+    if (mCommands.mActiveQueryPool) return invalidState("endFrame has an active occlusion query");
     ++mSubmittedSerial;
     GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     if (!sync)
@@ -1424,9 +1440,56 @@ Status OpenGLDevice::writeTimestamp(QueryPoolHandle pool, std::uint32_t query)
 {
     auto found = mQueries.find(handleKey(pool));
     if (!mQueryPool.isLive(pool) || found == mQueries.end()) return invalidHandle("invalid query-pool handle");
-    if (query >= found->second.desc.count) return invalidArgument("timestamp query is out of bounds");
+    if (found->second.desc.type != QueryType::Timestamp ||
+        query >= found->second.desc.count)
+        return invalidArgument("timestamp query index or pool type is invalid");
+    if (found->second.written[query])
+        return invalidState("timestamp query must be reset before reuse");
     glQueryCounter(found->second.names[query], GL_TIMESTAMP);
+    if (glGetError() != GL_NO_ERROR)
+        return backendError("OpenGL timestamp query failed");
     found->second.written[query] = true;
+    return Status::success();
+}
+
+Status OpenGLDevice::beginQuery(QueryPoolHandle pool, std::uint32_t query)
+{
+    if (!mCommands.renderingActive())
+        return invalidState("beginQuery requires a rendering scope");
+    if (mCommands.mActiveQueryPool)
+        return invalidState("occlusion queries may not overlap");
+    auto found = mQueries.find(handleKey(pool));
+    if (!mQueryPool.isLive(pool) || found == mQueries.end())
+        return invalidHandle("invalid query-pool handle");
+    if (found->second.desc.type != QueryType::Occlusion ||
+        query >= found->second.desc.count)
+        return invalidArgument("occlusion query index or pool type is invalid");
+    if (found->second.written[query])
+        return invalidState("occlusion query must be reset before reuse");
+    glBeginQuery(GL_SAMPLES_PASSED, found->second.names[query]);
+    if (glGetError() != GL_NO_ERROR)
+        return backendError("OpenGL occlusion query begin failed");
+    mCommands.mActiveQueryPool = pool;
+    mCommands.mActiveQuery = query;
+    return Status::success();
+}
+
+Status OpenGLDevice::endQuery(QueryPoolHandle pool, std::uint32_t query)
+{
+    if (!mCommands.renderingActive())
+        return invalidState("endQuery requires a rendering scope");
+    if (!mCommands.mActiveQueryPool || mCommands.mActiveQueryPool != pool ||
+        mCommands.mActiveQuery != query)
+        return invalidState("endQuery does not match the active occlusion query");
+    auto found = mQueries.find(handleKey(pool));
+    if (!mQueryPool.isLive(pool) || found == mQueries.end())
+        return invalidHandle("invalid query-pool handle");
+    glEndQuery(GL_SAMPLES_PASSED);
+    if (glGetError() != GL_NO_ERROR)
+        return backendError("OpenGL occlusion query end failed");
+    found->second.written[query] = true;
+    mCommands.mActiveQueryPool = {};
+    mCommands.mActiveQuery = 0;
     return Status::success();
 }
 
@@ -1527,6 +1590,8 @@ Status OpenGLDevice::beginRendering(const RenderingInfo& info)
 Status OpenGLDevice::endRendering()
 {
     if (!mCommands.renderingActive()) return invalidState("no rendering scope is active");
+    if (mCommands.mActiveQueryPool)
+        return invalidState("endRendering has an active occlusion query");
     glBindVertexArray(0);
     glUseProgram(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1863,7 +1928,9 @@ Status OpenGLDevice::waitIdle()
 
 Status OpenGLCommandContext::requireTransfer() const
 {
-    return mFrameActive ? Status::success() : invalidState("transfer commands require an active frame");
+    if (!mFrameActive) return invalidState("transfer commands require an active frame");
+    if (mRenderingActive) return invalidState("transfer commands are not allowed inside rendering");
+    return Status::success();
 }
 
 void OpenGLCommandContext::resetDrawState()
@@ -1880,6 +1947,8 @@ void OpenGLCommandContext::resetDrawState()
     mIndexBuffer = {};
     mIndexOffset = 0;
     mIndexType = IndexType::UInt16;
+    mActiveQueryPool = {};
+    mActiveQuery = 0;
 }
 
 Status OpenGLCommandContext::beginFrame() { return mDevice.beginFrame(); }
@@ -1890,6 +1959,8 @@ Status OpenGLCommandContext::copyImageToBuffer(ImageHandle a, BufferHandle b, st
 Status OpenGLCommandContext::generateMipmaps(ImageHandle a, const ImageSubresourceRange& r) { Status s=requireTransfer(); return s ? mDevice.generateMipmaps(a,r) : s; }
 Status OpenGLCommandContext::resetQueryPool(QueryPoolHandle a, std::uint32_t b, std::uint32_t c) { Status s=requireTransfer(); return s ? mDevice.resetQueryPool(a,b,c) : s; }
 Status OpenGLCommandContext::writeTimestamp(QueryPoolHandle a, std::uint32_t b) { Status s=requireTransfer(); return s ? mDevice.writeTimestamp(a,b) : s; }
+Status OpenGLCommandContext::beginQuery(QueryPoolHandle a, std::uint32_t b) { return mDevice.beginQuery(a,b); }
+Status OpenGLCommandContext::endQuery(QueryPoolHandle a, std::uint32_t b) { return mDevice.endQuery(a,b); }
 Status OpenGLCommandContext::beginRendering(const RenderingInfo& a) { return mDevice.beginRendering(a); }
 Status OpenGLCommandContext::endRendering() { return mDevice.endRendering(); }
 Status OpenGLCommandContext::bindPipeline(PipelineHandle a) { return mDevice.bindPipeline(a); }

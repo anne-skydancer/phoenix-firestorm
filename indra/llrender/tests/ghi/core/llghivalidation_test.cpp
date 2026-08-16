@@ -953,6 +953,87 @@ void LLGHIValidationObject::test<20>()
     ensure("end four-target rendering", commands.endRendering().ok());
     ensure("end R4 MRT frame", commands.endFrame().ok());
 }
+
+template<> template<>
+void LLGHIValidationObject::test<21>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("validation device", created.status.ok() && device);
+    ensure("validation advertises occlusion queries",
+           device->capabilities().occlusionQueries);
+
+    Status status = Status::success();
+    QueryPoolHandle timestamps = device->createQueryPool(
+        {QueryType::Timestamp, 1}, status);
+    ensure("timestamp pool", status.ok() && timestamps);
+    QueryPoolHandle occlusion = device->createQueryPool(
+        {QueryType::Occlusion, 2}, status);
+    ensure("occlusion pool", status.ok() && occlusion);
+    ImageHandle color = device->createImage(
+        {{32, 32, 1}, Format::RGBA8UNorm, ResourceUsage::ColorAttachment,
+         1, 1, 1}, status);
+    ImageViewHandle colorView = device->createImageView(
+        {color, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
+    ShaderPackageHandle shader = device->createShaderPackage(
+        makeUnboundShaderPackage(), status);
+    PipelineDesc pipelineDesc;
+    pipelineDesc.shader = shader;
+    pipelineDesc.depthTest = false;
+    pipelineDesc.depthWrite = false;
+    pipelineDesc.colorFormats = {Format::RGBA8UNorm};
+    pipelineDesc.blendStates = {BlendState{}};
+    PipelineHandle pipeline = device->createPipeline(pipelineDesc, status);
+    ensure("occlusion fixture resources",
+           status.ok() && color && colorView && shader && pipeline);
+
+    RenderingInfo pass;
+    pass.semanticId = 0x5234635f4f4343ull; // "R4c_OCC"
+    pass.width = 32;
+    pass.height = 32;
+    pass.colors.push_back(
+        {colorView, Format::RGBA8UNorm, LoadOp::Clear, StoreOp::Store, {}});
+
+    CommandContext& commands = device->commandContext();
+    ensure("begin occlusion frame", commands.beginFrame().ok());
+    ensure("reset occlusion queries", commands.resetQueryPool(occlusion, 0, 2).ok());
+    ensure("occlusion query requires rendering",
+           commands.beginQuery(occlusion, 0).code() == StatusCode::InvalidState);
+    ensure("begin occlusion pass", commands.beginRendering(pass).ok());
+    ensure("timestamp pool rejected by beginQuery",
+           commands.beginQuery(timestamps, 0).code() == StatusCode::InvalidArgument);
+    ensure("begin visible query", commands.beginQuery(occlusion, 0).ok());
+    ensure("queries cannot overlap",
+           commands.beginQuery(occlusion, 1).code() == StatusCode::InvalidState);
+    ensure("active query blocks pass end",
+           commands.endRendering().code() == StatusCode::InvalidState);
+    ensure("bind occlusion pipeline", commands.bindPipeline(pipeline).ok());
+    ensure("set occlusion viewport",
+           commands.setViewport({0.f, 0.f, 32.f, 32.f, 0.f, 1.f}).ok());
+    ensure("set occlusion scissor", commands.setScissor({0, 0, 32, 32}).ok());
+    ensure("instanced query draw", commands.draw({3, 4, 0, 0}).ok());
+    ensure("wrong query cannot end",
+           commands.endQuery(occlusion, 1).code() == StatusCode::InvalidState);
+    ensure("end visible query", commands.endQuery(occlusion, 0).ok());
+    ensure("query reuse requires reset",
+           commands.beginQuery(occlusion, 0).code() == StatusCode::InvalidState);
+    ensure("begin empty query", commands.beginQuery(occlusion, 1).ok());
+    ensure("end empty query", commands.endQuery(occlusion, 1).ok());
+    ensure("end occlusion pass", commands.endRendering().ok());
+    ensure("timestamp operation rejects occlusion pool",
+           commands.writeTimestamp(occlusion, 0).code() == StatusCode::InvalidArgument);
+    std::array<std::uint64_t, 2> results{};
+    ensure("query reads rejected during frame",
+           device->getQueryResults(occlusion, 0, results).code() ==
+               StatusCode::InvalidState);
+    ensure("end occlusion frame", commands.endFrame().ok());
+    ensure("read occlusion results",
+           device->getQueryResults(occlusion, 0, results).ok());
+    ensure_equals("visible query records four instances", results[0], std::uint64_t{4});
+    ensure_equals("empty query records zero", results[1], std::uint64_t{0});
+}
 #endif
 
 } // namespace tut

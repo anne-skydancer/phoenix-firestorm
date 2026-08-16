@@ -332,6 +332,8 @@ public:
     Status generateMipmaps(ImageHandle, const ImageSubresourceRange&) override;
     Status resetQueryPool(QueryPoolHandle, std::uint32_t, std::uint32_t) override;
     Status writeTimestamp(QueryPoolHandle, std::uint32_t) override;
+    Status beginQuery(QueryPoolHandle, std::uint32_t) override;
+    Status endQuery(QueryPoolHandle, std::uint32_t) override;
     Status beginRendering(const RenderingInfo&) override;
     Status endRendering() override;
     Status bindPipeline(PipelineHandle) override;
@@ -361,6 +363,8 @@ private:
     PipelineHandle mPipeline;
     std::set<std::uint8_t> mBoundGroups;
     BufferHandle mIndexBuffer;
+    QueryPoolHandle mActiveQueryPool;
+    std::uint32_t mActiveQuery = 0;
 };
 
 class VulkanDevice final : public Device
@@ -418,6 +422,8 @@ public:
     Status generateMipmaps(ImageHandle, const ImageSubresourceRange&);
     Status resetQueryPool(QueryPoolHandle, std::uint32_t, std::uint32_t);
     Status writeTimestamp(QueryPoolHandle, std::uint32_t);
+    Status beginQuery(QueryPoolHandle, std::uint32_t);
+    Status endQuery(QueryPoolHandle, std::uint32_t);
     Status beginRendering(const RenderingInfo&);
     Status endRendering();
     Status bindPipeline(PipelineHandle);
@@ -871,9 +877,17 @@ QueryPoolHandle VulkanDevice::createQueryPool(const QueryPoolDesc& desc, Status&
 {
     status = canMutate(); if (!status) return {};
     if (!desc.count) { status = invalidArgument("query pool count must be nonzero"); return {}; }
-    if (!mCapabilities.timestampQueries) { status = unsupported("timestamp queries are unavailable"); return {}; }
+    if ((desc.type == QueryType::Timestamp && !mCapabilities.timestampQueries) ||
+        (desc.type == QueryType::Occlusion && !mCapabilities.occlusionQueries))
+    {
+        status = unsupported("requested Vulkan query type is unavailable");
+        return {};
+    }
     QueryRecord record; record.desc = desc; record.written.resize(desc.count, false);
-    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; info.queryType = VK_QUERY_TYPE_TIMESTAMP; info.queryCount = desc.count;
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = desc.type == QueryType::Timestamp
+        ? VK_QUERY_TYPE_TIMESTAMP : VK_QUERY_TYPE_OCCLUSION;
+    info.queryCount = desc.count;
     VkResult result = vkCreateQueryPool(mDevice, &info, nullptr, &record.pool);
     if (result != VK_SUCCESS) { status = vkFailure("vkCreateQueryPool", result); return {}; }
     QueryPoolHandle handle = mQueryPool.allocate(); mQueries.emplace(handleKey(handle), std::move(record));
@@ -1368,6 +1382,7 @@ Status VulkanDevice::endFrame()
 {
     if (!mCommands.frameActive()) return invalidState("no frame is active");
     if (mCommands.renderingActive()) return invalidState("endFrame requires endRendering first");
+    if (mCommands.mActiveQueryPool) return invalidState("endFrame has an active occlusion query");
     Frame& frame = mFrames[mFrameIndex];
     VkResult result = vkEndCommandBuffer(frame.commands); if (result != VK_SUCCESS) { mCommands.setFrameActive(false); return vkFailure("vkEndCommandBuffer", result); }
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &frame.commands;
@@ -1439,6 +1454,20 @@ Status VulkanDevice::copyBuffer(BufferHandle source, BufferHandle destination, s
             return invalidArgument("copyBuffer region is unaligned or out of bounds");
         copies.push_back({region.sourceOffset, region.destinationOffset, region.size});
     }
+    // A dynamic destination can still be consumed by an earlier in-flight
+    // submission on this queue. Establish a buffer-scoped dependency before
+    // rewriting it; submission order alone is not a memory dependency.
+    VkBufferMemoryBarrier reuseBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    reuseBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    reuseBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    reuseBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    reuseBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    reuseBarrier.buffer = dst->second.buffer;
+    reuseBarrier.offset = 0;
+    reuseBarrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(commands(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &reuseBarrier,
+        0, nullptr);
     vkCmdCopyBuffer(commands(), src->second.buffer, dst->second.buffer, static_cast<std::uint32_t>(copies.size()), copies.data());
     // The GHI transfer contract permits a later transfer command in the same
     // frame to consume this destination. Until explicit transfer batches are
@@ -1576,10 +1605,48 @@ Status VulkanDevice::resetQueryPool(QueryPoolHandle pool, std::uint32_t first, s
 Status VulkanDevice::writeTimestamp(QueryPoolHandle pool, std::uint32_t query)
 {
     auto found = mQueries.find(handleKey(pool)); if (!mQueryPool.isLive(pool) || found == mQueries.end()) return invalidHandle("invalid query-pool handle");
-    if (query >= found->second.desc.count) return invalidArgument("timestamp query is out of bounds");
+    if (found->second.desc.type != QueryType::Timestamp || query >= found->second.desc.count)
+        return invalidArgument("timestamp query index or pool type is invalid");
     if (found->second.written[query]) return invalidState("timestamp query must be reset before reuse");
     vkCmdWriteTimestamp(commands(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, found->second.pool, query);
     found->second.written[query] = true; return Status::success();
+}
+
+Status VulkanDevice::beginQuery(QueryPoolHandle pool, std::uint32_t query)
+{
+    if (!mCommands.renderingActive())
+        return invalidState("beginQuery requires a rendering scope");
+    if (mCommands.mActiveQueryPool)
+        return invalidState("occlusion queries may not overlap");
+    auto found = mQueries.find(handleKey(pool));
+    if (!mQueryPool.isLive(pool) || found == mQueries.end())
+        return invalidHandle("invalid query-pool handle");
+    if (found->second.desc.type != QueryType::Occlusion ||
+        query >= found->second.desc.count)
+        return invalidArgument("occlusion query index or pool type is invalid");
+    if (found->second.written[query])
+        return invalidState("occlusion query must be reset before reuse");
+    vkCmdBeginQuery(commands(), found->second.pool, query, 0);
+    mCommands.mActiveQueryPool = pool;
+    mCommands.mActiveQuery = query;
+    return Status::success();
+}
+
+Status VulkanDevice::endQuery(QueryPoolHandle pool, std::uint32_t query)
+{
+    if (!mCommands.renderingActive())
+        return invalidState("endQuery requires a rendering scope");
+    if (!mCommands.mActiveQueryPool || mCommands.mActiveQueryPool != pool ||
+        mCommands.mActiveQuery != query)
+        return invalidState("endQuery does not match the active occlusion query");
+    auto found = mQueries.find(handleKey(pool));
+    if (!mQueryPool.isLive(pool) || found == mQueries.end())
+        return invalidHandle("invalid query-pool handle");
+    vkCmdEndQuery(commands(), found->second.pool, query);
+    found->second.written[query] = true;
+    mCommands.mActiveQueryPool = {};
+    mCommands.mActiveQuery = 0;
+    return Status::success();
 }
 
 Status VulkanDevice::beginRendering(const RenderingInfo& info)
@@ -1683,6 +1750,8 @@ Status VulkanDevice::beginRendering(const RenderingInfo& info)
 Status VulkanDevice::endRendering()
 {
     if (!mCommands.renderingActive()) return invalidState("no rendering scope is active");
+    if (mCommands.mActiveQueryPool)
+        return invalidState("endRendering has an active occlusion query");
     vkCmdEndRendering(commands());
     mCommands.mRenderingActive = false;
     mCommands.resetDrawState();
@@ -1944,7 +2013,12 @@ void VulkanDevice::shutdown()
     vkDestroyInstance(mInstance, nullptr); mInstance = VK_NULL_HANDLE;
 }
 
-Status VulkanCommandContext::requireTransfer() const { return mFrameActive ? Status::success() : invalidState("transfer commands require an active frame"); }
+Status VulkanCommandContext::requireTransfer() const
+{
+    if (!mFrameActive) return invalidState("transfer commands require an active frame");
+    if (mRenderingActive) return invalidState("transfer commands are not allowed inside rendering");
+    return Status::success();
+}
 void VulkanCommandContext::resetDrawState()
 {
     mViewportSet = false;
@@ -1956,6 +2030,8 @@ void VulkanCommandContext::resetDrawState()
     mPipeline = {};
     mBoundGroups.clear();
     mIndexBuffer = {};
+    mActiveQueryPool = {};
+    mActiveQuery = 0;
 }
 Status VulkanCommandContext::beginFrame() { return mDevice.beginFrame(); }
 Status VulkanCommandContext::endFrame() { return mDevice.endFrame(); }
@@ -1965,6 +2041,8 @@ Status VulkanCommandContext::copyImageToBuffer(ImageHandle a, BufferHandle b, st
 Status VulkanCommandContext::generateMipmaps(ImageHandle a, const ImageSubresourceRange& r) { Status s=requireTransfer(); return s ? mDevice.generateMipmaps(a,r) : s; }
 Status VulkanCommandContext::resetQueryPool(QueryPoolHandle a, std::uint32_t b, std::uint32_t c) { Status s=requireTransfer(); return s ? mDevice.resetQueryPool(a,b,c) : s; }
 Status VulkanCommandContext::writeTimestamp(QueryPoolHandle a, std::uint32_t b) { Status s=requireTransfer(); return s ? mDevice.writeTimestamp(a,b) : s; }
+Status VulkanCommandContext::beginQuery(QueryPoolHandle a, std::uint32_t b) { return mDevice.beginQuery(a,b); }
+Status VulkanCommandContext::endQuery(QueryPoolHandle a, std::uint32_t b) { return mDevice.endQuery(a,b); }
 Status VulkanCommandContext::beginRendering(const RenderingInfo& a) { return mDevice.beginRendering(a); }
 Status VulkanCommandContext::endRendering() { return mDevice.endRendering(); }
 Status VulkanCommandContext::bindPipeline(PipelineHandle a) { return mDevice.bindPipeline(a); }

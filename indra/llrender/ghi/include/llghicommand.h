@@ -47,6 +47,8 @@ public:
         std::uint32_t firstQuery,
         std::uint32_t queryCount) = 0;
     virtual Status writeTimestamp(QueryPoolHandle pool, std::uint32_t query) = 0;
+    virtual Status beginQuery(QueryPoolHandle pool, std::uint32_t query) = 0;
+    virtual Status endQuery(QueryPoolHandle pool, std::uint32_t query) = 0;
 
     virtual Status beginRendering(const RenderingInfo& info) = 0;
     virtual Status endRendering() = 0;

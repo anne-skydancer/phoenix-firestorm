@@ -45,7 +45,16 @@ def main() -> int:
             return 1
 
         malformed = json.loads(test_manifest.read_text(encoding="utf-8"))
-        malformed["expected"]["bindings"][0]["binding"] = 7
+        expected = malformed["expected"]
+        if expected.get("bindings"):
+            expected["bindings"][0]["binding"] = 7
+        elif expected.get("vertex_inputs"):
+            expected["vertex_inputs"][0]["location"] = 7
+        elif expected.get("fragment_outputs"):
+            expected["fragment_outputs"][0]["location"] = 7
+        else:
+            print("manifest has no reflected interface to corrupt", file=sys.stderr)
+            return 1
         test_manifest.write_text(json.dumps(malformed), encoding="utf-8")
         negative_output = temporary_path / "must_not_build.llghisp"
         negative_command = [

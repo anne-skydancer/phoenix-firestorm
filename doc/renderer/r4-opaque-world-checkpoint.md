@@ -134,10 +134,77 @@ above the backend boundary.
 - The Vulkan-enabled Release viewer builds and links successfully. Production
   world and UI rendering remain OpenGL-only.
 
-## R4c entry and remaining R4 gate
+## R4c dynamic instancing and visibility
 
-R4b still does not route `LLPipeline` through GHI, ingest grid scene packets,
-or claim R01/R02 viewer parity. R4c must add changing and instanced geometry,
-explicit occlusion query commands, and culling/visibility fixtures. Only then
-can the applicable accepted baseline evidence be compared and R4 considered
-for closure.
+R4c adds `Occlusion` to the backend-neutral query vocabulary and adds explicit
+`beginQuery()` / `endQuery()` commands. Occlusion queries are legal only inside
+a rendering scope, may not overlap, must match at end, and must be reset before
+reuse. An active query prevents the rendering scope from ending. Results remain
+asynchronous and cannot be read during an active frame. Timestamp operations
+reject occlusion pools and occlusion operations reject timestamp pools.
+
+The new trace opcodes were appended, so every previously recorded semantic
+opcode retains its numeric identity. The validation peer records a deterministic
+visibility surrogate for contract tests; native peers return hardware sample
+counts. Capability publication now corresponds to an implemented command path
+instead of advertising an absent interface.
+
+Scene and frustum culling deliberately remain renderer policy above GHI. GHI
+owns explicit rasterizer `CullMode`, query lifetime, query commands, and result
+availability; it does not own Firestorm's scene graph or choose which objects
+to submit.
+
+The separate `r4_visibility` package has no resource bindings and reflects two
+per-vertex attributes plus two per-instance attributes. Its byte-deterministic
+package SHA-256 is
+`c6a025732db61ffa6361e6b9b9aab92649daaf0959ab3d456b40ba595da0ad63`.
+Keeping it separate preserves the R4b package and four established G-buffer
+hashes.
+
+The shared fixture executes two frames. Each frame draws three instances of a
+near quad, then submits identical far geometry behind it. The second frame
+copies changed instance offsets and colors into the same device-local instance
+buffer. This exposed and repaired a Vulkan inter-frame write-after-write hazard:
+buffer copies now establish a destination-scoped dependency before rewriting a
+buffer that an earlier submission may still consume. A broad device idle or
+global frame barrier is not used.
+
+OpenGL 4.1 cannot portably express a nonzero base instance without an extension,
+so R4c fixes `firstInstance` at zero and uses the bound instance-buffer offset
+for portable selection. A future nonzero-base-instance contract requires an
+explicit capability; it must not become a vendor branch.
+
+## R4c verification
+
+- Native OpenGL 4.6, the packaged OpenGL 4.1 fallback, and Vulkan 1.3 produce
+  bit-exact two-frame results:
+  - frame 0: `0b5cd61f5abad7022d68402f74b34ae539a2fb25fec6755a2864745d3bb150ae`;
+  - frame 1: `bec88ce09217d8c9456bdd6a656f5b53e0391efd37f17a60ab05c1df1a2df504`.
+- On the tested RX 9070 XT, both native peers report 408 samples for each
+  visible instanced draw and zero for each fully depth-occluded draw. The
+  portable acceptance rule is positive versus zero; exact nonzero sample counts
+  are diagnostic evidence, not a cross-device contract.
+- Vulkan passes with Khronos validation and synchronization validation enabled.
+  The initial dynamic-buffer hazard is gone; only the known duplicate AMD and
+  OBS loader-manifest notices remain.
+- The GHI contract suite is **21/21 pass**, including pool-type rejection,
+  rendering-scope rules, non-overlap, matching begin/end, reset-before-reuse,
+  asynchronous result access, and a four-instance semantic query.
+- R3 linear/sRGB draw hashes, all four R4b target hashes, and both native R2
+  resource fixtures remain unchanged. OpenGL 4.1 fallback results remain exact.
+- R3, R4b, and R4c packages pass byte-determinism and deliberate
+  reflection-mismatch tests. The negative packager test now supports packages
+  with no descriptor bindings by corrupting another reflected interface.
+- Renderer API-boundary ratchet: **pass**; no Vulkan calls or types leak above
+  the backend directory and no tracked coupling category grows.
+- Vulkan-enabled Release viewer build and link: **pass**, producing
+  `build-vc170-64/newview/Release/firestorm-bin.exe`. Production world and UI
+  rendering remain OpenGL-only.
+
+## Remaining R4 closure gate
+
+R4c's synthetic checkpoint is complete, but R4 is not yet a production parity
+claim. `LLPipeline` is still not routed through GHI and the fixture does not
+ingest live grid scene packets. The applicable accepted R01/R02 geometry and
+deferred-target evidence must still be compared through the integration seam
+before R4 can close.

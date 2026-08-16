@@ -426,8 +426,11 @@ references; cold and warm pipeline evidence is recorded.
   fragment outputs, and validates the real multi-target G-buffer contract.
 - R4b executes a static opaque deferred fixture through both native peers with
   independent attachment state and exact target formats.
-- R4c adds dynamic and instanced geometry plus explicit culling and occlusion
-  commands before any production scene routing is considered.
+- R4c adds dynamic and instanced geometry plus explicit occlusion-query
+  commands before any production scene routing is considered. CPU scene and
+  frustum visibility policy stays above GHI; rasterizer culling remains
+  immutable `CullMode` pipeline state rather than becoming a backend-owned
+  scene algorithm.
 
 Exit gate: relevant R01/R02 geometry and deferred targets reach parity.
 

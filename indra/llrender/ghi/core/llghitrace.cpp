@@ -200,6 +200,20 @@ void SemanticTrace::writeTimestamp(QueryPoolHandle pool, std::uint32_t query)
     appendU32(query);
 }
 
+void SemanticTrace::beginQuery(QueryPoolHandle pool, std::uint32_t query)
+{
+    appendOpcode(TraceOpcode::BeginQuery);
+    appendHandle(pool);
+    appendU32(query);
+}
+
+void SemanticTrace::endQuery(QueryPoolHandle pool, std::uint32_t query)
+{
+    appendOpcode(TraceOpcode::EndQuery);
+    appendHandle(pool);
+    appendU32(query);
+}
+
 void SemanticTrace::beginRendering(const RenderingInfo& info)
 {
     appendOpcode(TraceOpcode::BeginRendering);

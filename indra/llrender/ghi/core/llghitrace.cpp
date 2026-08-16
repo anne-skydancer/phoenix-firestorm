@@ -83,7 +83,7 @@ void SemanticTrace::appendClearValue(const ClearValue& value)
 
 void SemanticTrace::appendAttachment(const AttachmentDesc& attachment)
 {
-    appendHandle(attachment.image);
+    appendHandle(attachment.view);
     appendEnum(attachment.format);
     appendEnum(attachment.load);
     appendEnum(attachment.store);
@@ -227,6 +227,38 @@ void SemanticTrace::bindPipeline(PipelineHandle pipeline)
 {
     appendOpcode(TraceOpcode::BindPipeline);
     appendHandle(pipeline);
+}
+
+void SemanticTrace::bindBindingSet(
+    std::uint8_t group,
+    BindingSetHandle bindings,
+    std::span<const std::uint32_t> dynamicOffsets)
+{
+    appendOpcode(TraceOpcode::BindBindingSet);
+    appendU8(group);
+    appendHandle(bindings);
+    appendU32(static_cast<std::uint32_t>(dynamicOffsets.size()));
+    for (std::uint32_t offset : dynamicOffsets) appendU32(offset);
+}
+
+void SemanticTrace::setViewport(const Viewport& viewport)
+{
+    appendOpcode(TraceOpcode::SetViewport);
+    appendFloat(viewport.x);
+    appendFloat(viewport.y);
+    appendFloat(viewport.width);
+    appendFloat(viewport.height);
+    appendFloat(viewport.minDepth);
+    appendFloat(viewport.maxDepth);
+}
+
+void SemanticTrace::setScissor(const ScissorRect& scissor)
+{
+    appendOpcode(TraceOpcode::SetScissor);
+    appendI32(scissor.x);
+    appendI32(scissor.y);
+    appendU32(scissor.width);
+    appendU32(scissor.height);
 }
 
 void SemanticTrace::bindVertexBuffer(

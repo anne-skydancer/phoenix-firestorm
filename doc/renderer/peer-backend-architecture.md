@@ -219,6 +219,13 @@ OpenGL compiles the OpenGL variant. Vulkan compiles the Vulkan variant to
 SPIR-V and validates reflected bindings against a generated manifest. Raw GL
 uniform locations and implicit texture-unit allocation are not part of GHI.
 
+R3 refines this into distinct backend entry sources: packaged OpenGL-dialect
+GLSL for the OpenGL peer and Vulkan-specific GLSL compiled offline to SPIR-V
+for the Vulkan peer. Shared algorithm includes are used only where semantics
+truly match. Slang is a contingency frontend if Vulkan GLSL proves objectively
+infeasible; the runtime SPIR-V, reflection, and pipeline contracts remain
+frontend-independent.
+
 A shader/pipeline cache key includes source hashes, ordered defines,
 specialization values, vertex layout, attachment formats, device identity,
 driver identity, and backend. Pipeline creation must be asynchronous where

@@ -52,6 +52,12 @@ public:
     virtual Status endRendering() = 0;
 
     virtual Status bindPipeline(PipelineHandle pipeline) = 0;
+    virtual Status bindBindingSet(
+        std::uint8_t group,
+        BindingSetHandle bindings,
+        std::span<const std::uint32_t> dynamicOffsets = {}) = 0;
+    virtual Status setViewport(const Viewport& viewport) = 0;
+    virtual Status setScissor(const ScissorRect& scissor) = 0;
     virtual Status bindVertexBuffer(
         std::uint32_t slot,
         BufferHandle buffer,

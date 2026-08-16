@@ -46,6 +46,9 @@ public:
     virtual ShaderPackageHandle createShaderPackage(
         const ShaderPackageDesc& desc,
         Status& status) = 0;
+    virtual BindingSetHandle createBindingSet(
+        const BindingSetDesc& desc,
+        Status& status) = 0;
     virtual PipelineHandle createPipeline(const PipelineDesc& desc, Status& status) = 0;
 
     virtual Status destroy(BufferHandle handle) = 0;
@@ -54,6 +57,7 @@ public:
     virtual Status destroy(SamplerHandle handle) = 0;
     virtual Status destroy(QueryPoolHandle handle) = 0;
     virtual Status destroy(ShaderPackageHandle handle) = 0;
+    virtual Status destroy(BindingSetHandle handle) = 0;
     virtual Status destroy(PipelineHandle handle) = 0;
 
     // Host access is explicit and restricted by MemoryClass. Upload buffers

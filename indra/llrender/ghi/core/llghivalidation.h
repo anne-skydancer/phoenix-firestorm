@@ -55,6 +55,12 @@ public:
     Status beginRendering(const RenderingInfo& info) override;
     Status endRendering() override;
     Status bindPipeline(PipelineHandle pipeline) override;
+    Status bindBindingSet(
+        std::uint8_t group,
+        BindingSetHandle bindings,
+        std::span<const std::uint32_t> dynamicOffsets) override;
+    Status setViewport(const Viewport& viewport) override;
+    Status setScissor(const ScissorRect& scissor) override;
     Status bindVertexBuffer(
         std::uint32_t slot,
         BufferHandle buffer,
@@ -101,6 +107,9 @@ public:
     ShaderPackageHandle createShaderPackage(
         const ShaderPackageDesc& desc,
         Status& status) override;
+    BindingSetHandle createBindingSet(
+        const BindingSetDesc& desc,
+        Status& status) override;
     PipelineHandle createPipeline(const PipelineDesc& desc, Status& status) override;
 
     Status destroy(BufferHandle handle) override;
@@ -109,6 +118,7 @@ public:
     Status destroy(SamplerHandle handle) override;
     Status destroy(QueryPoolHandle handle) override;
     Status destroy(ShaderPackageHandle handle) override;
+    Status destroy(BindingSetHandle handle) override;
     Status destroy(PipelineHandle handle) override;
     Status writeBuffer(
         BufferHandle handle,
@@ -131,7 +141,7 @@ public:
     bool isLive(QueryPoolHandle handle) const { return mQueryPools.isLive(handle); }
     bool isLive(PipelineHandle handle) const { return mPipelines.isLive(handle); }
     bool bufferSupports(BufferHandle handle, ResourceUsage usage) const;
-    bool imageMatches(ImageHandle handle, Format format, ResourceUsage usage) const;
+    bool imageViewMatches(ImageViewHandle handle, Format format, ResourceUsage usage) const;
     bool pipelineMatches(PipelineHandle handle, const RenderingInfo& rendering) const;
     std::uint64_t bufferSize(BufferHandle handle) const;
 
@@ -193,6 +203,7 @@ private:
     std::unordered_map<std::uint64_t, ImageDesc> mImageDescs;
     std::unordered_map<std::uint64_t, ImageViewDesc> mImageViewDescs;
     std::unordered_map<std::uint64_t, QueryRecord> mQueryRecords;
+    std::unordered_map<std::uint64_t, ShaderPackageDesc> mShaderDescs;
     std::unordered_map<std::uint64_t, PipelineDesc> mPipelineDescs;
     std::unordered_map<std::uint64_t, std::vector<std::byte>> mBufferData;
     std::unordered_map<std::uint64_t, std::uint64_t> mBufferReadyFrame;

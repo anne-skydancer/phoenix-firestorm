@@ -37,6 +37,11 @@ Status invalidArgument(std::string message)
     return Status::failure(StatusCode::InvalidArgument, std::move(message));
 }
 
+Status unsupported(std::string message)
+{
+    return Status::failure(StatusCode::Unsupported, std::move(message));
+}
+
 bool rangeFits(std::uint64_t offset, std::uint64_t size, std::uint64_t total)
 {
     return offset <= total && size <= total - offset;
@@ -255,8 +260,8 @@ Status ValidationCommandContext::beginRendering(const RenderingInfo& info)
 
     for (const AttachmentDesc& attachment : info.colors)
     {
-        if (!mDevice.imageMatches(
-                attachment.image,
+        if (!mDevice.imageViewMatches(
+                attachment.view,
                 attachment.format,
                 ResourceUsage::ColorAttachment))
         {
@@ -264,8 +269,8 @@ Status ValidationCommandContext::beginRendering(const RenderingInfo& info)
         }
     }
     if (info.depthStencil &&
-        !mDevice.imageMatches(
-            info.depthStencil->image,
+        !mDevice.imageViewMatches(
+            info.depthStencil->view,
             info.depthStencil->format,
             ResourceUsage::DepthStencilAttachment))
     {
@@ -325,6 +330,42 @@ Status ValidationCommandContext::bindPipeline(PipelineHandle pipeline)
 
     mPipeline = pipeline;
     mTrace.bindPipeline(pipeline);
+    return Status::success();
+}
+
+Status ValidationCommandContext::bindBindingSet(
+    std::uint8_t,
+    BindingSetHandle,
+    std::span<const std::uint32_t>)
+{
+    Status status = requireRendering("bindBindingSet");
+    if (!status) return status;
+    return unsupported("validation binding sets begin in R3c");
+}
+
+Status ValidationCommandContext::setViewport(const Viewport& viewport)
+{
+    Status status = requireRendering("setViewport");
+    if (!status) return status;
+    if (viewport.width <= 0.f || viewport.height <= 0.f ||
+        viewport.minDepth < 0.f || viewport.maxDepth > 1.f ||
+        viewport.minDepth > viewport.maxDepth)
+    {
+        return invalidArgument("invalid viewport");
+    }
+    mTrace.setViewport(viewport);
+    return Status::success();
+}
+
+Status ValidationCommandContext::setScissor(const ScissorRect& scissor)
+{
+    Status status = requireRendering("setScissor");
+    if (!status) return status;
+    if (!scissor.width || !scissor.height)
+    {
+        return invalidArgument("invalid scissor rectangle");
+    }
+    mTrace.setScissor(scissor);
     return Status::success();
 }
 
@@ -602,7 +643,7 @@ QueryPoolHandle ValidationDevice::createQueryPool(
 }
 
 ShaderPackageHandle ValidationDevice::createShaderPackage(
-    const ShaderPackageDesc&,
+    const ShaderPackageDesc& desc,
     Status& status)
 {
     status = canMutateResources();
@@ -611,8 +652,19 @@ ShaderPackageHandle ValidationDevice::createShaderPackage(
         return {};
     }
 
+    ShaderPackageHandle handle = mShaders.allocate();
+    mShaderDescs.emplace(key(handle), desc);
     status = Status::success();
-    return mShaders.allocate();
+    return handle;
+}
+
+BindingSetHandle ValidationDevice::createBindingSet(
+    const BindingSetDesc&,
+    Status& status)
+{
+    status = canMutateResources();
+    if (status) status = unsupported("validation binding sets begin in R3c");
+    return {};
 }
 
 PipelineHandle ValidationDevice::createPipeline(const PipelineDesc& desc, Status& status)
@@ -749,8 +801,16 @@ Status ValidationDevice::destroy(ShaderPackageHandle handle)
     {
         return invalidHandle("destroy received a stale or invalid shader package handle");
     }
+    mShaderDescs.erase(key(handle));
     retire();
     return Status::success();
+}
+
+Status ValidationDevice::destroy(BindingSetHandle)
+{
+    Status status = canMutateResources();
+    if (!status) return status;
+    return unsupported("validation binding sets begin in R3c");
 }
 
 Status ValidationDevice::destroy(PipelineHandle handle)
@@ -1367,14 +1427,20 @@ bool ValidationDevice::bufferSupports(BufferHandle handle, ResourceUsage usage) 
            hasUsage(found->second.usage, usage);
 }
 
-bool ValidationDevice::imageMatches(
-    ImageHandle handle,
+bool ValidationDevice::imageViewMatches(
+    ImageViewHandle handle,
     Format format,
     ResourceUsage usage) const
 {
-    auto found = mImageDescs.find(key(handle));
-    return mImages.isLive(handle) && found != mImageDescs.end() &&
-           found->second.format == format && hasUsage(found->second.usage, usage);
+    auto view = mImageViewDescs.find(key(handle));
+    if (!mImageViews.isLive(handle) || view == mImageViewDescs.end() ||
+        view->second.format != format)
+    {
+        return false;
+    }
+    auto image = mImageDescs.find(key(view->second.image));
+    return image != mImageDescs.end() && mImages.isLive(view->second.image) &&
+           image->second.format == format && hasUsage(image->second.usage, usage);
 }
 
 bool ValidationDevice::pipelineMatches(
@@ -1394,7 +1460,9 @@ bool ValidationDevice::pipelineMatches(
         {
             return false;
         }
-        auto image = mImageDescs.find(key(rendering.colors[i].image));
+        auto view = mImageViewDescs.find(key(rendering.colors[i].view));
+        if (view == mImageViewDescs.end()) return false;
+        auto image = mImageDescs.find(key(view->second.image));
         if (image == mImageDescs.end() || image->second.samples != pipeline->second.samples)
         {
             return false;
@@ -1410,7 +1478,9 @@ bool ValidationDevice::pipelineMatches(
     }
     if (rendering.depthStencil)
     {
-        auto image = mImageDescs.find(key(rendering.depthStencil->image));
+        auto view = mImageViewDescs.find(key(rendering.depthStencil->view));
+        if (view == mImageViewDescs.end()) return false;
+        auto image = mImageDescs.find(key(view->second.image));
         if (image == mImageDescs.end() || image->second.samples != pipeline->second.samples)
         {
             return false;

@@ -253,6 +253,9 @@ public:
     Status beginRendering(const RenderingInfo&) override { return unsupported("OpenGL rendering begins in R3"); }
     Status endRendering() override { return unsupported("OpenGL rendering begins in R3"); }
     Status bindPipeline(PipelineHandle) override { return unsupported("OpenGL pipelines begin in R3"); }
+    Status bindBindingSet(std::uint8_t, BindingSetHandle, std::span<const std::uint32_t>) override { return unsupported("OpenGL binding sets begin in R3"); }
+    Status setViewport(const Viewport&) override { return unsupported("OpenGL dynamic state begins in R3"); }
+    Status setScissor(const ScissorRect&) override { return unsupported("OpenGL dynamic state begins in R3"); }
     Status bindVertexBuffer(std::uint32_t, BufferHandle, std::uint64_t) override { return unsupported("OpenGL vertex binding begins in R3"); }
     Status bindIndexBuffer(BufferHandle, std::uint64_t, IndexType) override { return unsupported("OpenGL index binding begins in R3"); }
     Status draw(const DrawArguments&) override { return unsupported("OpenGL drawing begins in R3"); }
@@ -286,6 +289,10 @@ public:
     {
         status = unsupported("OpenGL shader packages begin in R3"); return {};
     }
+    BindingSetHandle createBindingSet(const BindingSetDesc&, Status& status) override
+    {
+        status = unsupported("OpenGL binding sets begin in R3"); return {};
+    }
     PipelineHandle createPipeline(const PipelineDesc&, Status& status) override
     {
         status = unsupported("OpenGL pipelines begin in R3"); return {};
@@ -297,6 +304,7 @@ public:
     Status destroy(SamplerHandle) override;
     Status destroy(QueryPoolHandle) override;
     Status destroy(ShaderPackageHandle) override { return unsupported("OpenGL shader packages begin in R3"); }
+    Status destroy(BindingSetHandle) override { return unsupported("OpenGL binding sets begin in R3"); }
     Status destroy(PipelineHandle) override { return unsupported("OpenGL pipelines begin in R3"); }
 
     Status writeBuffer(BufferHandle, std::uint64_t, std::span<const std::byte>) override;

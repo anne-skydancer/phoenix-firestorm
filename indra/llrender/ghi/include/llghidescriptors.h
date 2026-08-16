@@ -14,8 +14,10 @@
 #include "llghitypes.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace LL::GHI
@@ -166,12 +168,162 @@ enum class QueryReadMode : std::uint8_t
     Wait,
 };
 
+enum class VertexFormat : std::uint8_t
+{
+    Float32,
+    Float32x2,
+    Float32x3,
+    Float32x4,
+    UNorm8x4,
+    SNorm8x4,
+    UInt16x2,
+    UInt16x4,
+    UInt32,
+};
+
 struct ShaderPackageDesc
 {
+    static constexpr std::uint32_t CURRENT_SCHEMA_VERSION = 1;
+
+    std::uint32_t schemaVersion = CURRENT_SCHEMA_VERSION;
     // Stable content/permutation identity produced by the shader packager.
     std::array<std::uint8_t, 32> semanticHash{};
+    // Includes the pinned frontend and optimization recipe so cached native
+    // programs/pipelines cannot survive a toolchain change accidentally.
+    std::array<std::uint8_t, 32> toolchainHash{};
+
+    enum class Stage : std::uint8_t
+    {
+        Vertex,
+        Fragment,
+        Compute,
+    };
+
+    struct StageArtifact
+    {
+        Stage stage = Stage::Vertex;
+        std::string entryPoint = "main";
+        // The OpenGL peer consumes packaged OpenGL-dialect GLSL. The Vulkan
+        // peer consumes offline-compiled SPIR-V and never compiles GLSL in the
+        // normal runtime path.
+        std::string openGLSource;
+        std::vector<std::uint32_t> vulkanSpirv;
+        std::array<std::uint8_t, 32> openGLArtifactHash{};
+        std::array<std::uint8_t, 32> vulkanArtifactHash{};
+
+        friend bool operator==(const StageArtifact&, const StageArtifact&) = default;
+    };
+
+    enum class BindingType : std::uint8_t
+    {
+        UniformBuffer,
+        StorageBuffer,
+        Sampler,
+        SampledImage,
+        CombinedImageSampler,
+        StorageImage,
+    };
+
+    enum class StageVisibility : std::uint8_t
+    {
+        None = 0,
+        Vertex = 1u << 0,
+        Fragment = 1u << 1,
+        Compute = 1u << 2,
+    };
+
+    struct Binding
+    {
+        std::uint8_t group = 0;
+        std::uint16_t binding = 0;
+        BindingType type = BindingType::UniformBuffer;
+        StageVisibility visibility = StageVisibility::None;
+        std::uint16_t arrayCount = 1;
+        bool dynamicOffset = false;
+
+        friend bool operator==(const Binding&, const Binding&) = default;
+    };
+
+    struct VertexInput
+    {
+        std::uint16_t location = 0;
+        VertexFormat format = VertexFormat::Float32;
+
+        friend bool operator==(const VertexInput&, const VertexInput&) = default;
+    };
+
+    std::vector<StageArtifact> stages;
+    std::vector<Binding> bindings;
+    std::vector<VertexInput> vertexInputs;
+    std::uint16_t pushConstantBytes = 0;
 
     friend bool operator==(const ShaderPackageDesc&, const ShaderPackageDesc&) = default;
+};
+
+constexpr ShaderPackageDesc::StageVisibility operator|(
+    ShaderPackageDesc::StageVisibility lhs,
+    ShaderPackageDesc::StageVisibility rhs)
+{
+    return static_cast<ShaderPackageDesc::StageVisibility>(
+        static_cast<std::uint8_t>(lhs) | static_cast<std::uint8_t>(rhs));
+}
+
+enum class VertexInputRate : std::uint8_t
+{
+    PerVertex,
+    PerInstance,
+};
+
+struct VertexBufferLayoutDesc
+{
+    std::uint8_t slot = 0;
+    std::uint16_t stride = 0;
+    VertexInputRate inputRate = VertexInputRate::PerVertex;
+
+    friend bool operator==(const VertexBufferLayoutDesc&, const VertexBufferLayoutDesc&) = default;
+};
+
+struct VertexAttributeDesc
+{
+    std::uint16_t location = 0;
+    std::uint8_t bufferSlot = 0;
+    VertexFormat format = VertexFormat::Float32;
+    std::uint16_t offset = 0;
+
+    friend bool operator==(const VertexAttributeDesc&, const VertexAttributeDesc&) = default;
+};
+
+struct SpecializationConstantDesc
+{
+    std::uint32_t id = 0;
+    std::array<std::byte, 8> value{};
+    std::uint8_t size = 0;
+
+    friend bool operator==(const SpecializationConstantDesc&, const SpecializationConstantDesc&) = default;
+};
+
+struct BindingResourceDesc
+{
+    std::uint16_t binding = 0;
+    std::uint16_t arrayElement = 0;
+    ShaderPackageDesc::BindingType type = ShaderPackageDesc::BindingType::UniformBuffer;
+    BufferHandle buffer;
+    std::uint64_t bufferOffset = 0;
+    // Zero means the remainder of the buffer.
+    std::uint64_t bufferRange = 0;
+    ImageViewHandle imageView;
+    SamplerHandle sampler;
+
+    friend bool operator==(const BindingResourceDesc&, const BindingResourceDesc&) = default;
+};
+
+struct BindingSetDesc
+{
+    ShaderPackageHandle shader;
+    std::uint8_t group = 0;
+    std::vector<BindingResourceDesc> resources;
+
+    friend bool operator==(const BindingSetDesc&, const BindingSetDesc&) = default;
 };
 
 enum class PrimitiveTopology : std::uint8_t
@@ -200,6 +352,31 @@ enum class CompareOp : std::uint8_t
     NotEqual,
     GreaterEqual,
     Always,
+};
+
+enum class StencilOp : std::uint8_t
+{
+    Keep,
+    Zero,
+    Replace,
+    IncrementClamp,
+    DecrementClamp,
+    Invert,
+    IncrementWrap,
+    DecrementWrap,
+};
+
+struct StencilFaceState
+{
+    StencilOp fail = StencilOp::Keep;
+    StencilOp depthFail = StencilOp::Keep;
+    StencilOp pass = StencilOp::Keep;
+    CompareOp compare = CompareOp::Always;
+    std::uint32_t compareMask = ~std::uint32_t{0};
+    std::uint32_t writeMask = ~std::uint32_t{0};
+    std::uint32_t reference = 0;
+
+    friend bool operator==(const StencilFaceState&, const StencilFaceState&) = default;
 };
 
 enum class BlendFactor : std::uint8_t
@@ -248,9 +425,16 @@ struct PipelineDesc
     bool depthTest = true;
     bool depthWrite = true;
     CompareOp depthCompare = CompareOp::GreaterEqual;
+    bool depthClamp = false;
+    bool stencilTest = false;
+    StencilFaceState frontStencil;
+    StencilFaceState backStencil;
     std::vector<Format> colorFormats;
     std::optional<Format> depthStencilFormat;
     std::vector<BlendState> blendStates;
+    std::vector<VertexBufferLayoutDesc> vertexBuffers;
+    std::vector<VertexAttributeDesc> vertexAttributes;
+    std::vector<SpecializationConstantDesc> specializationConstants;
     std::uint8_t samples = 1;
 
     friend bool operator==(const PipelineDesc&, const PipelineDesc&) = default;
@@ -280,13 +464,36 @@ struct ClearValue
 
 struct AttachmentDesc
 {
-    ImageHandle image;
+    // Rendering binds a particular view, not an ambient whole-image target.
+    ImageViewHandle view;
     Format format = Format::Undefined;
     LoadOp load = LoadOp::Load;
     StoreOp store = StoreOp::Store;
     ClearValue clear;
 
     friend bool operator==(const AttachmentDesc&, const AttachmentDesc&) = default;
+};
+
+struct Viewport
+{
+    float x = 0.f;
+    float y = 0.f;
+    float width = 0.f;
+    float height = 0.f;
+    float minDepth = 0.f;
+    float maxDepth = 1.f;
+
+    friend bool operator==(const Viewport&, const Viewport&) = default;
+};
+
+struct ScissorRect
+{
+    std::int32_t x = 0;
+    std::int32_t y = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+
+    friend bool operator==(const ScissorRect&, const ScissorRect&) = default;
 };
 
 struct RenderingInfo

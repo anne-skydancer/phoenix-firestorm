@@ -58,6 +58,9 @@ struct LLGHIValidationFixture
              1, 1, 1},
             status);
         ensure("color image creation", status.ok() && color);
+        ImageViewHandle color_view = device->createImageView(
+            {color, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
+        ensure("color view creation", status.ok() && color_view);
 
         ShaderPackageHandle shader = device->createShaderPackage({}, status);
         ensure("shader package creation", status.ok() && shader);
@@ -74,7 +77,7 @@ struct LLGHIValidationFixture
         pass.width = 1280;
         pass.height = 720;
         pass.colors.push_back(
-            {color, Format::RGBA8UNorm, LoadOp::Clear, StoreOp::Store, {}});
+            {color_view, Format::RGBA8UNorm, LoadOp::Clear, StoreOp::Store, {}});
 
         CommandContext& commands = device->commandContext();
         ensure("begin frame", commands.beginFrame().ok());
@@ -161,6 +164,9 @@ void LLGHIValidationObject::test<4>()
         {{64, 64, 1}, Format::RGBA8UNorm, ResourceUsage::ColorAttachment, 1, 1, 1},
         status);
     ensure("color image creation", status.ok() && color);
+    ImageViewHandle color_view = device->createImageView(
+        {color, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
+    ensure("color view creation", status.ok() && color_view);
     ShaderPackageHandle shader = device->createShaderPackage({}, status);
     ensure("shader package creation", status.ok() && shader);
 
@@ -175,7 +181,7 @@ void LLGHIValidationObject::test<4>()
     pass.width = 64;
     pass.height = 64;
     pass.colors.push_back(
-        {color, Format::RGBA8UNorm, LoadOp::Clear, StoreOp::Store, {}});
+        {color_view, Format::RGBA8UNorm, LoadOp::Clear, StoreOp::Store, {}});
 
     CommandContext& commands = device->commandContext();
     ensure("begin frame", commands.beginFrame().ok());
@@ -429,18 +435,20 @@ void LLGHIValidationObject::test<11>()
     ImageHandle color = device->createImage(
         {{32, 32, 1}, Format::RGBA8UNorm, ResourceUsage::ColorAttachment, 1, 1, 1},
         status);
+    ImageViewHandle color_view = device->createImageView(
+        {color, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
     ShaderPackageHandle shader = device->createShaderPackage({}, status);
     PipelineDesc pipeline_desc;
     pipeline_desc.shader = shader;
     pipeline_desc.colorFormats = {Format::RGBA8UNorm};
     pipeline_desc.blendStates = {BlendState{}};
     PipelineHandle pipeline = device->createPipeline(pipeline_desc, status);
-    ensure("index fixture resources", status.ok() && indices && color && shader && pipeline);
+    ensure("index fixture resources", status.ok() && indices && color && color_view && shader && pipeline);
 
     RenderingInfo pass;
     pass.width = 32;
     pass.height = 32;
-    pass.colors.push_back({color, Format::RGBA8UNorm, LoadOp::Clear, StoreOp::Store, {}});
+    pass.colors.push_back({color_view, Format::RGBA8UNorm, LoadOp::Clear, StoreOp::Store, {}});
     CommandContext& commands = device->commandContext();
     ensure("begin index frame", commands.beginFrame().ok());
     ensure("begin index pass", commands.beginRendering(pass).ok());
@@ -506,6 +514,65 @@ void LLGHIValidationObject::test<13>()
     const Test::ResourceFixtureResult result =
         Test::runResourceFixture(*created.device);
     ensure(result.message, result.passed);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<14>()
+{
+    using namespace LL::GHI;
+
+    ShaderPackageDesc package;
+    package.semanticHash[0] = 0x52;
+    package.stages = {
+        {ShaderPackageDesc::Stage::Vertex, "main", "vertex", {0x07230203u}},
+        {ShaderPackageDesc::Stage::Fragment, "main", "fragment", {0x07230203u}},
+    };
+    package.bindings = {
+        {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         ShaderPackageDesc::StageVisibility::Vertex |
+             ShaderPackageDesc::StageVisibility::Fragment,
+         1, true},
+        {2, 3, ShaderPackageDesc::BindingType::CombinedImageSampler,
+         ShaderPackageDesc::StageVisibility::Fragment, 1, false},
+    };
+    package.vertexInputs = {
+        {0, VertexFormat::Float32x3},
+        {1, VertexFormat::Float32x2},
+    };
+
+    ShaderPackageDesc equivalent = package;
+    ensure("equivalent shader packages compare equal", equivalent == package);
+    equivalent.stages[1].entryPoint = "changed";
+    ensure("shader package identity includes stage entry points", equivalent != package);
+
+    PipelineDesc pipeline;
+    pipeline.vertexBuffers = {{0, 20, VertexInputRate::PerVertex}};
+    pipeline.vertexAttributes = {
+        {0, 0, VertexFormat::Float32x3, 0},
+        {1, 0, VertexFormat::Float32x2, 12},
+    };
+    pipeline.specializationConstants = {{7, {}, 4}};
+    ensure_equals("R3 vertex layout count", pipeline.vertexAttributes.size(), std::size_t{2});
+
+    BindingSetDesc bindings;
+    bindings.group = 2;
+    bindings.resources.push_back(
+        {3, 0, ShaderPackageDesc::BindingType::CombinedImageSampler, {}, 0, 0, {}, {}});
+    ensure_equals("R3 binding group is explicit", bindings.group, std::uint8_t{2});
+    ensure_equals("R3 binding number is explicit", bindings.resources[0].binding,
+                  std::uint16_t{3});
+
+    SemanticTrace first_trace;
+    first_trace.setViewport({0.f, 0.f, 64.f, 64.f, 0.f, 1.f});
+    first_trace.setScissor({0, 0, 64, 64});
+    SemanticTrace second_trace;
+    second_trace.setViewport({0.f, 0.f, 64.f, 64.f, 0.f, 1.f});
+    second_trace.setScissor({0, 0, 64, 64});
+    ensure_equals("R3 dynamic state traces deterministically",
+                  first_trace.sha256(), second_trace.sha256());
+    second_trace.setScissor({0, 0, 32, 64});
+    ensure("R3 dynamic state changes semantic trace",
+           first_trace.sha256() != second_trace.sha256());
 }
 
 } // namespace tut

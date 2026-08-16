@@ -110,6 +110,7 @@ struct ImageTag;
 struct ImageViewTag;
 struct SamplerTag;
 struct ShaderPackageTag;
+struct BindingSetTag;
 struct PipelineTag;
 struct QueryPoolTag;
 
@@ -118,6 +119,7 @@ using ImageHandle = Handle<ImageTag>;
 using ImageViewHandle = Handle<ImageViewTag>;
 using SamplerHandle = Handle<SamplerTag>;
 using ShaderPackageHandle = Handle<ShaderPackageTag>;
+using BindingSetHandle = Handle<BindingSetTag>;
 using PipelineHandle = Handle<PipelineTag>;
 using QueryPoolHandle = Handle<QueryPoolTag>;
 

@@ -39,6 +39,9 @@ enum class TraceOpcode : std::uint8_t
     GenerateMipmaps,
     ResetQueryPool,
     WriteTimestamp,
+    BindBindingSet,
+    SetViewport,
+    SetScissor,
 };
 
 class SemanticTrace
@@ -66,6 +69,12 @@ public:
     void beginRendering(const RenderingInfo& info);
     void endRendering();
     void bindPipeline(PipelineHandle pipeline);
+    void bindBindingSet(
+        std::uint8_t group,
+        BindingSetHandle bindings,
+        std::span<const std::uint32_t> dynamicOffsets);
+    void setViewport(const Viewport& viewport);
+    void setScissor(const ScissorRect& scissor);
     void bindVertexBuffer(
         std::uint32_t slot,
         BufferHandle buffer,

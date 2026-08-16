@@ -14,6 +14,7 @@
 
 #include "ghi/core/llghihandlepool.h"
 #include "ghi/core/llghivalidation.h"
+#include "ghi/include/llghirendererinfo.h"
 
 #include <memory>
 #include <string>
@@ -179,6 +180,36 @@ void LLGHIValidationObject::test<4>()
         commands.bindPipeline(pipeline).code() == StatusCode::InvalidArgument);
     ensure("end rendering", commands.endRendering().ok());
     ensure("end frame", commands.endFrame().ok());
+}
+
+template<> template<>
+void LLGHIValidationObject::test<5>()
+{
+    using namespace LL::GHI;
+
+    clearRendererSnapshot();
+    RendererSnapshot snapshot;
+    snapshot.identity.backend = Backend::Vulkan;
+    snapshot.identity.provider = RendererProvider::NativeVulkan;
+    snapshot.identity.vendor = DeviceVendor::AMD;
+    snapshot.identity.apiName = "Vulkan";
+    snapshot.identity.apiVersion = {1, 4, 0, {}};
+    snapshot.identity.deviceName = "AMD Radeon RX 9070 XT";
+    snapshot.identity.stableDeviceId = "LUID:0011223344556677";
+    snapshot.identity.vendorName = "AMD";
+    ensure("complete renderer snapshot", snapshot.complete());
+
+    publishRendererSnapshot(snapshot);
+    const auto active = activeRendererSnapshot();
+    ensure("published renderer snapshot is available", active.has_value());
+    ensure("published renderer snapshot is copied", *active == snapshot);
+    ensure_equals(
+        "renderer summary is backend neutral",
+        formatRendererSummary(active->identity),
+        std::string{"Vulkan 1.4 (AMD Radeon RX 9070 XT - Native Vulkan)"});
+
+    clearRendererSnapshot();
+    ensure("renderer snapshot clears on lifecycle shutdown", !activeRendererSnapshot());
 }
 
 } // namespace tut

@@ -36,6 +36,7 @@
 
 #include "llsys.h"
 #include "llgl.h"
+#include "llghirendererinfo.h"
 
 #include "llappviewer.h"
 #include "llbufferstream.h"
@@ -593,13 +594,48 @@ std::string canonicalizeRenderGPUIdentity(std::string renderer)
 
 std::string LLFeatureManager::getRenderBackend() const
 {
+    if (const auto snapshot = LL::GHI::activeRendererSnapshot())
+    {
+        if (snapshot->identity.backend == LL::GHI::Backend::Vulkan)
+        {
+            return "vulkan";
+        }
+        if (snapshot->identity.backend == LL::GHI::Backend::Validation)
+        {
+            return "validation";
+        }
+        return snapshot->identity.provider == LL::GHI::RendererProvider::MesaZink
+            ? "zink"
+            : "native";
+    }
+
     std::string gpu_string = mGPUString;
     LLStringUtil::toUpper(gpu_string);
     return gpu_string.find("ZINK") != std::string::npos ? "zink" : "native";
 }
 
+std::string LLFeatureManager::getRenderDisplayName() const
+{
+    if (const auto snapshot = LL::GHI::activeRendererSnapshot())
+    {
+        if (!snapshot->identity.rendererName.empty())
+        {
+            return snapshot->identity.rendererName;
+        }
+        return LL::GHI::formatRendererSummary(snapshot->identity);
+    }
+    return mGPUString;
+}
+
 std::string LLFeatureManager::getRenderGPUIdentity() const
 {
+    if (const auto snapshot = LL::GHI::activeRendererSnapshot())
+    {
+        if (!snapshot->identity.stableDeviceId.empty())
+        {
+            return snapshot->identity.stableDeviceId;
+        }
+    }
     return canonicalizeRenderGPUIdentity(gGLManager.mGLRenderer);
 }
 

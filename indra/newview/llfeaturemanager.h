@@ -112,6 +112,7 @@ public:
     EGPUClass getGPUClass()             { return mGPUClass; }
     std::string& getGPUString()         { return mGPUString; }
     std::string getRenderBackend() const;
+    std::string getRenderDisplayName() const;
     std::string getRenderGPUIdentity() const;
     bool isRenderBackendChange(const std::string& previous_backend,
                                const std::string& previous_gpu) const;

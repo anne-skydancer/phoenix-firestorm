@@ -266,7 +266,7 @@ creation and before graphics policy is applied. It has two distinct parts:
 - `RendererIdentity`: rendering API and version, backend/provider, physical
   device name and stable identifier, vendor/device IDs, driver name/version,
   and memory totals/budget.
-- `DeviceCapabilities`: semantic limits and features used by viewer policy,
+- `RendererCapabilities`: semantic limits and features used by viewer policy,
   such as attachment and texture limits, sample counts, queries, storage image
   atomics, descriptor/binding capacity, and depth clamp.
 

@@ -35,6 +35,8 @@ set(llrender_SOURCE_FILES
     lluiimage.cpp
     llvertexbuffer.cpp
     llglcommonfunc.cpp
+    ghi/backends/opengl/llghiopenglinfo.cpp
+    ghi/core/llghirendererinfo.cpp
     ghi/core/llghitrace.cpp
     ghi/core/llghivalidation.cpp
     )
@@ -69,10 +71,12 @@ set(llrender_HEADER_FILES
     lluiimage.inl
     llvertexbuffer.h
     llglcommonfunc.h
+    ghi/backends/opengl/llghiopenglinfo.h
     ghi/include/llghi.h
     ghi/include/llghicommand.h
     ghi/include/llghidescriptors.h
     ghi/include/llghidevice.h
+    ghi/include/llghirendererinfo.h
     ghi/include/llghitypes.h
     ghi/core/llghihandlepool.h
     ghi/core/llghitrace.h
@@ -127,6 +131,7 @@ target_link_libraries(llrender
 if (LL_TESTS)
   add_executable(llrender_ghi_contract_test
       ghi/core/llghitrace.cpp
+      ghi/core/llghirendererinfo.cpp
       ghi/core/llghivalidation.cpp
       tests/ghi/core/llghivalidation_test.cpp
       ${CMAKE_SOURCE_DIR}/test/test.cpp

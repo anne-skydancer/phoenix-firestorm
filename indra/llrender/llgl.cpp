@@ -49,6 +49,7 @@
 
 #include "llglheaders.h"
 #include "llglslshader.h"
+#include "ghi/include/llghirendererinfo.h"
 
 #include "glm/glm.hpp"
 #include <glm/gtc/matrix_access.hpp>
@@ -1307,6 +1308,8 @@ bool LLGLManager::initGL()
 
     initGLStates();
 
+    LL::GHI::publishInitializedOpenGLRendererSnapshot();
+
     return true;
 }
 
@@ -1434,6 +1437,7 @@ void LLGLManager::shutdownGL()
         glFinish();
         stop_glerror();
         mInited = false;
+        LL::GHI::clearRendererSnapshot();
     }
 }
 
@@ -3023,5 +3027,3 @@ extern "C"
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 #endif
-
-

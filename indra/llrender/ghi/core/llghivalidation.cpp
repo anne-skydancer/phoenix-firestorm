@@ -256,6 +256,10 @@ ValidationDevice::ValidationDevice(const DeviceCreateInfo& info) :
     mCapabilities.maxColorAttachments = 8;
     mCapabilities.maxSampledImagesPerStage = 32;
     mCapabilities.maxStorageBuffersPerStage = 16;
+    mCapabilities.maxTexture2DSize = 16384;
+    mCapabilities.maxUniformBufferSize = 65536;
+    mCapabilities.maxVaryingVectors = 32;
+    mCapabilities.maxSamples = 8;
     mCapabilities.maxBufferSize = std::uint64_t{1} << 40;
     mCapabilities.timestampQueries = true;
     mCapabilities.occlusionQueries = true;

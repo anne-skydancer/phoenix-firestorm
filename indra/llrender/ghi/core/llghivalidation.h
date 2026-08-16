@@ -65,7 +65,7 @@ public:
     explicit ValidationDevice(const DeviceCreateInfo& info);
 
     Backend backend() const override { return Backend::Validation; }
-    const DeviceCapabilities& capabilities() const override { return mCapabilities; }
+    const RendererCapabilities& capabilities() const override { return mCapabilities; }
     CommandContext& commandContext() override { return mCommands; }
 
     BufferHandle createBuffer(const BufferDesc& desc, Status& status) override;
@@ -101,7 +101,7 @@ private:
 
     Status canMutateResources() const;
 
-    DeviceCapabilities mCapabilities;
+    RendererCapabilities mCapabilities;
     HandlePool<BufferTag> mBuffers;
     HandlePool<ImageTag> mImages;
     HandlePool<SamplerTag> mSamplers;

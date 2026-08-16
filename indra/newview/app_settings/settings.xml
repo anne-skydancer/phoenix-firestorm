@@ -6942,6 +6942,32 @@
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>LastRenderBackend</key>
+    <map>
+      <key>Comment</key>
+      <string>[DO NOT MODIFY] previously selected rendering backend; supersedes LastRenderGLBackend and distinguishes OpenGL providers from native Vulkan</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string></string>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
+    <key>LastRenderDisplayName</key>
+    <map>
+      <key>Comment</key>
+      <string>[DO NOT MODIFY] user-facing renderer name used consistently by hardware-change notifications and About</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>String</string>
+      <key>Value</key>
+      <string></string>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>LastRenderGPUIdentity</key>
     <map>
       <key>Comment</key>

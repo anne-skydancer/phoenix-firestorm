@@ -2138,8 +2138,13 @@ LLViewerWindow::LLViewerWindow(const Params& p)
 
     LLFeatureManager* feature_manager = LLFeatureManager::getInstance();
     const std::string previous_gpu = gSavedSettings.getString("LastGPUString");
+    std::string previous_backend = gSavedSettings.getString("LastRenderBackend");
+    if (previous_backend.empty())
+    {
+        previous_backend = gSavedSettings.getString("LastRenderGLBackend");
+    }
     const bool backend_changed = feature_manager->isRenderBackendChange(
-        gSavedSettings.getString("LastRenderGLBackend"), previous_gpu);
+        previous_backend, previous_gpu);
     const bool same_gpu = feature_manager->isSameRenderGPU(
         gSavedSettings.getString("LastRenderGPUIdentity"), previous_gpu);
     const bool gpu_changed = !previous_gpu.empty() && !same_gpu;

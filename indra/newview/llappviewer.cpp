@@ -86,6 +86,7 @@
 #include "llurldispatcher.h"
 #include "llurlhistory.h"
 #include "llrender.h"
+#include "llghirendererinfo.h"
 #include "llteleporthistory.h"
 #include "lltoast.h"
 #include "llsdutil_math.h"
@@ -4091,8 +4092,44 @@ LLSD LLAppViewer::getViewerInfo() const
     info["CONCURRENCY"] = LLSD::Integer(std::thread::hardware_concurrency());    // <FS:Beq> Add hardware concurrency to info
     // Moved hack adjustment to Windows memory size into llsys.cpp
     info["OS_VERSION"] = LLOSInfo::instance().getOSString();
-    info["GRAPHICS_CARD_VENDOR"] = ll_safe_string((const char*)(glGetString(GL_VENDOR)));
-    std::string graphics_card = ll_safe_string((const char*)(glGetString(GL_RENDERER)));
+    const auto renderer_snapshot = LL::GHI::activeRendererSnapshot();
+    std::string graphics_card_vendor;
+    std::string graphics_card;
+    S32 graphics_memory = static_cast<S32>(gGLManager.mVRAM);
+    S32 graphics_memory_detected = gGLManager.mVRAMDetected;
+    if (renderer_snapshot)
+    {
+        const LL::GHI::RendererIdentity& identity = renderer_snapshot->identity;
+        graphics_card_vendor = identity.vendorName;
+        graphics_card = identity.rendererName.empty()
+            ? identity.deviceName
+            : identity.rendererName;
+        if (identity.dedicatedVideoMemoryBytes != 0)
+        {
+            graphics_memory = static_cast<S32>(
+                identity.dedicatedVideoMemoryBytes / (1024ull * 1024ull));
+        }
+        if (identity.detectedVideoMemoryBytes != 0)
+        {
+            graphics_memory_detected = static_cast<S32>(
+                identity.detectedVideoMemoryBytes / (1024ull * 1024ull));
+        }
+        info["RENDERING_API"] = identity.apiName;
+        info["RENDERING_API_VERSION"] = LL::GHI::formatApiVersion(identity.apiVersion);
+        info["RENDERING_BACKEND"] = LL::GHI::backendDisplayName(identity.backend);
+        info["RENDERING_PROVIDER"] = LL::GHI::providerDisplayName(identity.provider);
+        info["RENDERER_SUMMARY"] = LL::GHI::formatRendererSummary(identity);
+    }
+    else
+    {
+        graphics_card_vendor = ll_safe_string((const char*)(glGetString(GL_VENDOR)));
+        graphics_card = ll_safe_string((const char*)(glGetString(GL_RENDERER)));
+        info["RENDERING_API"] = "OpenGL";
+        info["RENDERING_API_VERSION"] = gGLManager.mGLVersionString;
+        info["RENDERING_BACKEND"] = "OpenGL";
+        info["RENDERING_PROVIDER"] = "System OpenGL";
+        info["RENDERER_SUMMARY"] = graphics_card;
+    }
 #if LL_WINDOWS
     // Mesa's maintenance7 layered driver ID is zero with the AMD Windows ICD,
     // even though the backend selector has already isolated and verified that
@@ -4115,9 +4152,10 @@ LLSD LLAppViewer::getViewerInfo() const
         graphics_card = "Mesa zink Vulkan " + version + " (" + device + " - Vendor ICD)";
     }
 #endif
+    info["GRAPHICS_CARD_VENDOR"] = graphics_card_vendor;
     info["GRAPHICS_CARD"] = graphics_card;
-    info["GRAPHICS_CARD_MEMORY"] = LLSD::Integer(gGLManager.mVRAM);
-    info["GRAPHICS_CARD_MEMORY_DETECTED"] = gGLManager.mVRAMDetected; // <FS:Beq/> allow detected hardware to be overridden.
+    info["GRAPHICS_CARD_MEMORY"] = LLSD::Integer(graphics_memory);
+    info["GRAPHICS_CARD_MEMORY_DETECTED"] = graphics_memory_detected; // <FS:Beq/> allow detected hardware to be overridden.
 
 #if LL_WINDOWS
     std::string drvinfo;
@@ -4160,7 +4198,16 @@ LLSD LLAppViewer::getViewerInfo() const
 // [RLVa:KB] - Checked: 2010-04-18 (RLVa-1.2.0)
     info["RLV_VERSION"] = (rlv_handler_t::isEnabled()) ? RlvStrings::getVersionAbout() : LLTrans::getString("RLVaStatusDisabled");
 // [/RLVa:KB]
-    info["OPENGL_VERSION"] = ll_safe_string((const char*)(glGetString(GL_VERSION)));
+    if (renderer_snapshot &&
+        renderer_snapshot->identity.backend == LL::GHI::Backend::OpenGL)
+    {
+        info["OPENGL_VERSION"] =
+            LL::GHI::formatApiVersion(renderer_snapshot->identity.apiVersion);
+    }
+    else if (!renderer_snapshot)
+    {
+        info["OPENGL_VERSION"] = ll_safe_string((const char*)(glGetString(GL_VERSION)));
+    }
     info["LIBCURL_VERSION"] = LLCore::LLHttp::getCURLVersion();
     // Settings
     // <FS:Beq> gViewerWindow can be null on shutdown. Crashes if bugsplatt uses the info
@@ -4407,7 +4454,7 @@ std::string LLAppViewer::getViewerInfoString(bool default_string) const
     {
         support << "\n" << LLTrans::getString("AboutDriver", args, default_string);
     }
-    support << "\n" << LLTrans::getString("AboutOGL", args, default_string);
+    support << "\n" << LLTrans::getString("AboutRenderer", args, default_string);
     //support << "\n\n" << LLTrans::getString("AboutSettings", args, default_string); // <FS> Custom sysinfo
 #if LL_DARWIN
     support << "\n" << LLTrans::getString("AboutOSXHiDPI", args, default_string);

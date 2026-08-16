@@ -14,6 +14,7 @@
 #include "llghicommand.h"
 #include "llghidescriptors.h"
 #include "llghidevice.h"
+#include "llghirendererinfo.h"
 #include "llghitypes.h"
 
 #endif // LL_LLGHI_H

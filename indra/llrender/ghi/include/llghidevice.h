@@ -33,7 +33,7 @@ public:
     virtual ~Device() = default;
 
     virtual Backend backend() const = 0;
-    virtual const DeviceCapabilities& capabilities() const = 0;
+    virtual const RendererCapabilities& capabilities() const = 0;
     virtual CommandContext& commandContext() = 0;
 
     virtual BufferHandle createBuffer(const BufferDesc& desc, Status& status) = 0;

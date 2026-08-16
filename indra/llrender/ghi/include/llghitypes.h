@@ -181,18 +181,24 @@ enum class Format : std::uint16_t
     Depth32FloatStencil8,
 };
 
-struct DeviceCapabilities
+struct RendererCapabilities
 {
     std::uint32_t maxFramesInFlight = 1;
     std::uint32_t maxColorAttachments = 1;
     std::uint32_t maxSampledImagesPerStage = 1;
     std::uint32_t maxStorageBuffersPerStage = 0;
+    std::uint32_t maxTexture2DSize = 1;
+    std::uint32_t maxUniformBufferSize = 0;
+    std::uint32_t maxVaryingVectors = 0;
+    std::uint32_t maxSamples = 1;
     std::uint64_t maxBufferSize = 0;
     bool timestampQueries = false;
     bool occlusionQueries = false;
     bool descriptorIndexing = false;
     bool storageImageAtomics = false;
     bool depthClamp = false;
+
+    friend bool operator==(const RendererCapabilities&, const RendererCapabilities&) = default;
 };
 
 static_assert(sizeof(BufferHandle) == 8, "GHI handles must remain compact values");

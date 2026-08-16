@@ -786,6 +786,14 @@ bool idle_startup()
         //
         std::string lastGPU = gSavedSettings.getString("LastGPUString");
         std::string thisGPU = LLFeatureManager::getInstance()->getGPUString();
+        std::string last_render_display =
+            gSavedSettings.getString("LastRenderDisplayName");
+        if (last_render_display.empty())
+        {
+            last_render_display = lastGPU;
+        }
+        const std::string this_render_display =
+            LLFeatureManager::getInstance()->getRenderDisplayName();
         const bool same_render_gpu = LLFeatureManager::getInstance()->isSameRenderGPU(
             gSavedSettings.getString("LastRenderGPUIdentity"), lastGPU);
 
@@ -818,8 +826,8 @@ bool idle_startup()
         else if (!lastGPU.empty() && !same_render_gpu)
         {
             LLSD subs;
-            subs["LAST_GPU"] = lastGPU;
-            subs["THIS_GPU"] = thisGPU;
+            subs["LAST_GPU"] = last_render_display;
+            subs["THIS_GPU"] = this_render_display;
             LLNotificationsUtil::add("DisplaySetToRecommendedGPUChange", subs);
         }
         else if (!gViewerWindow->getInitAlert().empty())
@@ -839,6 +847,9 @@ bool idle_startup()
         gSavedSettings.setString("LastGPUString", thisGPU);
         gSavedSettings.setString("LastRenderGLBackend",
                                  LLFeatureManager::getInstance()->getRenderBackend());
+        gSavedSettings.setString("LastRenderBackend",
+                                 LLFeatureManager::getInstance()->getRenderBackend());
+        gSavedSettings.setString("LastRenderDisplayName", this_render_display);
         gSavedSettings.setString("LastRenderGPUIdentity",
                                  LLFeatureManager::getInstance()->getRenderGPUIdentity());
 

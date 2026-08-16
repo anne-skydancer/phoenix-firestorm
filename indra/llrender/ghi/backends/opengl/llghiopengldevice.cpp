@@ -86,7 +86,9 @@ bool loadResourceEntryPoints()
     LL_GHI_LOAD_GL(glBindSampler);
     LL_GHI_LOAD_GL(glBindVertexArray);
     LL_GHI_LOAD_GL(glBlendEquationSeparate);
+    LL_GHI_LOAD_GL(glBlendEquationSeparatei);
     LL_GHI_LOAD_GL(glBlendFuncSeparate);
+    LL_GHI_LOAD_GL(glBlendFuncSeparatei);
     LL_GHI_LOAD_GL(glCheckFramebufferStatus);
     LL_GHI_LOAD_GL(glClearBufferfi);
     LL_GHI_LOAD_GL(glClearBufferfv);
@@ -101,6 +103,8 @@ bool loadResourceEntryPoints()
     LL_GHI_LOAD_GL(glDrawArraysInstanced);
     LL_GHI_LOAD_GL(glDrawBuffers);
     LL_GHI_LOAD_GL(glDrawElementsInstancedBaseVertex);
+    LL_GHI_LOAD_GL(glDisablei);
+    LL_GHI_LOAD_GL(glEnablei);
     LL_GHI_LOAD_GL(glEnableVertexAttribArray);
     LL_GHI_LOAD_GL(glFramebufferTexture2D);
     LL_GHI_LOAD_GL(glGenFramebuffers);
@@ -134,11 +138,13 @@ bool loadResourceEntryPoints()
            sTexImage3D && sTexSubImage3D && glActiveTexture && glAttachShader &&
            glBindAttribLocation && glBindBufferRange && glBindFramebuffer &&
            glBindSampler && glBindVertexArray && glCheckFramebufferStatus &&
+           glBlendEquationSeparatei && glBlendFuncSeparatei &&
            glClearBufferfi && glClearBufferfv && glCompileShader &&
            glCreateProgram && glCreateShader && glDeleteFramebuffers &&
            glDeleteProgram && glDeleteShader && glDeleteVertexArrays &&
            glDrawArraysInstanced && glDrawElementsInstancedBaseVertex &&
-           glEnableVertexAttribArray && glFramebufferTexture2D &&
+           glDisablei && glEnablei && glEnableVertexAttribArray &&
+           glFramebufferTexture2D &&
            glGenFramebuffers && glGenVertexArrays && glGetProgramInfoLog &&
            glGetProgramiv && glGetShaderInfoLog && glGetShaderiv &&
            glGetUniformBlockIndex && glGetUniformLocation && glLinkProgram &&
@@ -204,6 +210,7 @@ GLFormat translateFormat(Format format)
     case Format::BGRA8SRGB: return {GL_SRGB8_ALPHA8, GL_BGRA, GL_UNSIGNED_BYTE, 4, ImageAspect::Color};
     case Format::RGB10A2UNorm: return {GL_RGB10_A2, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, 4, ImageAspect::Color};
     case Format::RGBA16UNorm: return {GL_RGBA16, GL_RGBA, GL_UNSIGNED_SHORT, 8, ImageAspect::Color};
+    case Format::RGB16Float: return {GL_RGB16F, GL_RGB, GL_HALF_FLOAT, 6, ImageAspect::Color};
     case Format::R16Float: return {GL_R16F, GL_RED, GL_HALF_FLOAT, 2, ImageAspect::Color};
     case Format::RG16Float: return {GL_RG16F, GL_RG, GL_HALF_FLOAT, 4, ImageAspect::Color};
     case Format::RGBA16Float: return {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, 8, ImageAspect::Color};
@@ -635,6 +642,8 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     mCapabilities.timestampPeriodNanoseconds = mCapabilities.timestampQueries ? 1.0 : 0.0;
     mCapabilities.occlusionQueries = true;
     mCapabilities.depthClamp = true;
+    mCapabilities.independentBlend = glEnablei && glDisablei &&
+        glBlendFuncSeparatei && glBlendEquationSeparatei && glColorMaski;
     mCapabilities.baselineGraphicsPipeline = true;
     int major = 0;
     int minor = 0;
@@ -1095,6 +1104,13 @@ PipelineHandle OpenGLDevice::createPipeline(const PipelineDesc& desc, Status& st
     if (desc.colorFormats.size() > mCapabilities.maxColorAttachments)
     {
         status = invalidArgument("pipeline exceeds OpenGL color attachment limits"); return {};
+    }
+    if (!mCapabilities.independentBlend && desc.blendStates.size() > 1 &&
+        !std::all_of(desc.blendStates.begin() + 1, desc.blendStates.end(),
+                     [&](const BlendState& blend) { return blend == desc.blendStates.front(); }))
+    {
+        status = unsupported("OpenGL independent color attachment state is unavailable");
+        return {};
     }
     for (Format format : desc.colorFormats)
         if (translateFormat(format).aspect != ImageAspect::Color)
@@ -1561,19 +1577,30 @@ Status OpenGLDevice::bindPipeline(PipelineHandle handle)
         applyStencil(GL_BACK, desc.backStencil);
     }
     else glDisable(GL_STENCIL_TEST);
-    const BlendState& blend = desc.blendStates.front();
-    if (blend.enabled)
+    for (std::size_t index = 0; index < desc.blendStates.size(); ++index)
     {
-        glEnable(GL_BLEND);
-        glBlendFuncSeparate(translateBlendFactor(blend.sourceColor),
+        const BlendState& blend = desc.blendStates[index];
+        const GLuint drawBuffer = static_cast<GLuint>(index);
+        if (blend.enabled)
+        {
+            glEnablei(GL_BLEND, drawBuffer);
+            glBlendFuncSeparatei(drawBuffer, translateBlendFactor(blend.sourceColor),
             translateBlendFactor(blend.destinationColor),
             translateBlendFactor(blend.sourceAlpha),
             translateBlendFactor(blend.destinationAlpha));
-        glBlendEquationSeparate(translateBlendOp(blend.colorOp), translateBlendOp(blend.alphaOp));
+            glBlendEquationSeparatei(drawBuffer, translateBlendOp(blend.colorOp),
+                                     translateBlendOp(blend.alphaOp));
+        }
+        else
+        {
+            glDisablei(GL_BLEND, drawBuffer);
+        }
+        glColorMaski(drawBuffer,
+                     (blend.colorWriteMask & 1) != 0,
+                     (blend.colorWriteMask & 2) != 0,
+                     (blend.colorWriteMask & 4) != 0,
+                     (blend.colorWriteMask & 8) != 0);
     }
-    else glDisable(GL_BLEND);
-    glColorMask((blend.colorWriteMask & 1) != 0, (blend.colorWriteMask & 2) != 0,
-                (blend.colorWriteMask & 4) != 0, (blend.colorWriteMask & 8) != 0);
     mCommands.mPipeline = handle;
     return glGetError() == GL_NO_ERROR ? Status::success() : backendError("OpenGL pipeline bind failed");
 }

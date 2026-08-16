@@ -81,12 +81,13 @@ inline ResourceFixtureResult runResourceFixture(Device& device)
     QueryPoolHandle queries = device.createQueryPool({QueryType::Timestamp, 2}, status);
     if (!status) return fail("create timestamp queries", status);
 
-    const std::array<std::pair<Format, ImageAspect>, 11> representativeFormats{{
+    const std::array<std::pair<Format, ImageAspect>, 12> representativeFormats{{
         {Format::R8UNorm, ImageAspect::Color},
         {Format::RGBA8UNorm, ImageAspect::Color},
         {Format::BGRA8SRGB, ImageAspect::Color},
         {Format::RGB10A2UNorm, ImageAspect::Color},
         {Format::RGBA16UNorm, ImageAspect::Color},
+        {Format::RGB16Float, ImageAspect::Color},
         {Format::RGBA16Float, ImageAspect::Color},
         {Format::R32UInt, ImageAspect::Color},
         {Format::Depth16UNorm, ImageAspect::Depth},
@@ -103,9 +104,11 @@ inline ResourceFixtureResult runResourceFixture(Device& device)
             ? ResourceUsage::Sampled
             : ResourceUsage::DepthStencilAttachment;
         ImageHandle representative = device.createImage(representativeDesc, status);
-        // D24S8 is optional in Vulkan. A peer must either implement it or
-        // reject it explicitly so higher layers can select D32FS8.
-        if (!status && format == Format::Depth24Stencil8 &&
+        // D24S8 and three-component float attachments are not universally
+        // available in Vulkan. A peer must reject them explicitly so policy
+        // can choose D32FS8 or RGBA16F without hidden resource substitution.
+        if (!status &&
+            (format == Format::Depth24Stencil8 || format == Format::RGB16Float) &&
             status.code() == StatusCode::Unsupported)
         {
             continue;

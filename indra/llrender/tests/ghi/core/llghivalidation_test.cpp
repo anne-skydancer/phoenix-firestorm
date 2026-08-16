@@ -501,12 +501,13 @@ void LLGHIValidationObject::test<12>()
     DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
     auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
     ensure("validation device", created.status.ok() && device);
-    const std::array<std::pair<Format, ImageAspect>, 10> formats{{
+    const std::array<std::pair<Format, ImageAspect>, 11> formats{{
         {Format::R8UNorm, ImageAspect::Color},
         {Format::RGBA8UNorm, ImageAspect::Color},
         {Format::BGRA8SRGB, ImageAspect::Color},
         {Format::RGB10A2UNorm, ImageAspect::Color},
         {Format::RGBA16UNorm, ImageAspect::Color},
+        {Format::RGB16Float, ImageAspect::Color},
         {Format::RGBA16Float, ImageAspect::Color},
         {Format::R32UInt, ImageAspect::Color},
         {Format::Depth16UNorm, ImageAspect::Depth},
@@ -875,6 +876,8 @@ void LLGHIValidationObject::test<20>()
     ensure("R4 MRT validation device", created.status.ok() && device);
     ensure("R4 fixture supports four color targets",
            device->capabilities().maxColorAttachments >= 4);
+    ensure("R4 fixture supports independent attachment state",
+           device->capabilities().independentBlend);
 
     Status status = Status::success();
     std::array<ImageHandle, 4> images;

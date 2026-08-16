@@ -143,7 +143,38 @@ if (USE_VULKAN_GHI)
       COMMENT "Building deterministic R3 GHI shader package"
       VERBATIM
       )
-  add_custom_target(llrender_ghi_shaders DEPENDS "${GHI_R3_SHADER_PACKAGE}")
+  set(GHI_R4_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r4_opaque")
+  set(GHI_R4_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r4_opaque.llghisp")
+  set(GHI_R4_SHADER_SOURCES
+      "${GHI_R4_SHADER_ROOT}/package.json"
+      "${GHI_R4_SHADER_ROOT}/opengl41/opaque.vert.glsl"
+      "${GHI_R4_SHADER_ROOT}/opengl41/opaque.frag.glsl"
+      "${GHI_R4_SHADER_ROOT}/opengl46/opaque.vert.glsl"
+      "${GHI_R4_SHADER_ROOT}/opengl46/opaque.frag.glsl"
+      "${GHI_R4_SHADER_ROOT}/vulkan/opaque.vert.glsl"
+      "${GHI_R4_SHADER_ROOT}/vulkan/opaque.frag.glsl"
+      "${GHI_R4_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
+      )
+  add_custom_command(
+      OUTPUT "${GHI_R4_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_R4_SHADER_ROOT}/package.json"
+              --output "${GHI_R4_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_R4_SHADER_SOURCES}
+      COMMENT "Building deterministic R4 opaque GHI shader package"
+      VERBATIM
+      )
+  add_custom_target(llrender_ghi_shaders DEPENDS
+      "${GHI_R3_SHADER_PACKAGE}"
+      "${GHI_R4_SHADER_PACKAGE}"
+      )
   if (LL_TESTS)
     add_custom_target(
         llrender_ghi_shader_packager_test
@@ -151,6 +182,14 @@ if (USE_VULKAN_GHI)
                 "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
                 --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
                 --manifest "${GHI_R3_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_R4_SHADER_ROOT}/package.json"
                 --glslang "${GHI_GLSLANG_VALIDATOR}"
                 --spirv-val "${GHI_SPIRV_VAL}"
                 --spirv-opt "${GHI_SPIRV_OPT}"
@@ -266,6 +305,22 @@ if (USE_VULKAN_GHI)
       Vulkan::Vulkan
       )
   add_dependencies(llrender_vulkan_draw_harness llrender_ghi_shaders)
+
+  add_executable(llrender_vulkan_opaque_harness
+      ghi/backends/vulkan/llghivulkanopaqueharness.cpp
+      )
+  target_include_directories(llrender_vulkan_opaque_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+      )
+  target_compile_definitions(llrender_vulkan_opaque_harness PRIVATE
+      LL_GHI_R4_SHADER_PACKAGE="${GHI_R4_SHADER_PACKAGE}"
+      )
+  target_link_libraries(llrender_vulkan_opaque_harness
+      llrender
+      Vulkan::Vulkan
+      )
+  add_dependencies(llrender_vulkan_opaque_harness llrender_ghi_shaders)
 endif ()
 
 if (WINDOWS)
@@ -309,6 +364,22 @@ if (WINDOWS)
         OpenGL::GL
         )
     add_dependencies(llrender_opengl_draw_harness llrender_ghi_shaders)
+
+    add_executable(llrender_opengl_opaque_harness
+        ghi/backends/opengl/llghiopenglopaqueharness.cpp
+        )
+    target_include_directories(llrender_opengl_opaque_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+        )
+    target_compile_definitions(llrender_opengl_opaque_harness PRIVATE
+        LL_GHI_R4_SHADER_PACKAGE="${GHI_R4_SHADER_PACKAGE}"
+        )
+    target_link_libraries(llrender_opengl_opaque_harness
+        llrender
+        OpenGL::GL
+        )
+    add_dependencies(llrender_opengl_opaque_harness llrender_ghi_shaders)
   endif ()
 endif ()
 

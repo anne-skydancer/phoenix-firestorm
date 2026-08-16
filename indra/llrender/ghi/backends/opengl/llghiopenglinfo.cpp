@@ -356,6 +356,8 @@ RendererSnapshot queryOpenGLRendererSnapshot()
     device_caps.depthClamp = gGLManager.mGLVersion >= 3.2f;
     device_caps.baselineGraphicsPipeline = gGLManager.mGLVersion >= 3.f;
     device_caps.advancedGraphicsPipeline = gGLManager.mGLVersion >= 3.99f;
+    device_caps.independentBlend = glEnablei && glDisablei &&
+        glBlendFuncSeparatei && glBlendEquationSeparatei && glColorMaski;
 
     return snapshot;
 }

@@ -76,6 +76,7 @@ std::uint32_t formatBytesPerTexel(Format format)
         case Format::RGBA16Float:
         case Format::RG32Float:
         case Format::Depth32FloatStencil8: return 8;
+        case Format::RGB16Float: return 6;
         case Format::RGBA32Float: return 16;
         case Format::Undefined: break;
     }
@@ -128,6 +129,7 @@ std::optional<ShaderValueType> colorShaderValueType(Format format)
         case Format::RG8UNorm:
         case Format::RG16Float:
         case Format::RG32Float: return ShaderValueType::Float2;
+        case Format::RGB16Float: return ShaderValueType::Float3;
         case Format::RGBA8UNorm:
         case Format::RGBA8SRGB:
         case Format::BGRA8UNorm:
@@ -624,6 +626,7 @@ ValidationDevice::ValidationDevice(const DeviceCreateInfo& info) :
     mCapabilities.descriptorIndexing = true;
     mCapabilities.storageImageAtomics = true;
     mCapabilities.depthClamp = true;
+    mCapabilities.independentBlend = true;
 }
 
 Status ValidationDevice::canMutateResources() const
@@ -981,6 +984,13 @@ PipelineHandle ValidationDevice::createPipeline(const PipelineDesc& desc, Status
         (desc.depthClamp && !mCapabilities.depthClamp))
     {
         status = invalidArgument("pipeline formats, samples, or depth-clamp state are unsupported");
+        return {};
+    }
+    if (!mCapabilities.independentBlend && desc.blendStates.size() > 1 &&
+        !std::all_of(desc.blendStates.begin() + 1, desc.blendStates.end(),
+                     [&](const BlendState& blend) { return blend == desc.blendStates.front(); }))
+    {
+        status = unsupported("independent color attachment state is unavailable");
         return {};
     }
     std::set<std::uint8_t> slots;

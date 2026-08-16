@@ -104,6 +104,7 @@ VulkanFormat translateFormat(Format format)
     case Format::BGRA8SRGB: return {VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, 4, true};
     case Format::RGB10A2UNorm: return {VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_IMAGE_ASPECT_COLOR_BIT, 4, true};
     case Format::RGBA16UNorm: return {VK_FORMAT_R16G16B16A16_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 8, true};
+    case Format::RGB16Float: return {VK_FORMAT_R16G16B16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, 6, true};
     case Format::R16Float: return {VK_FORMAT_R16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, 2, true};
     case Format::RG16Float: return {VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, 4, true};
     case Format::RGBA16Float: return {VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, 8, true};
@@ -631,6 +632,7 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     VkPhysicalDeviceFeatures enabledFeatures{};
     enabledFeatures.samplerAnisotropy = availableFeatures.samplerAnisotropy;
     enabledFeatures.depthClamp = availableFeatures.depthClamp;
+    enabledFeatures.independentBlend = availableFeatures.independentBlend;
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     VkPhysicalDeviceVulkan13Features enabled13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     enabled13.dynamicRendering = VK_TRUE;
@@ -704,6 +706,7 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     mCapabilities.timestampPeriodNanoseconds = properties.limits.timestampPeriod;
     mCapabilities.occlusionQueries = true;
     mCapabilities.depthClamp = enabledFeatures.depthClamp == VK_TRUE;
+    mCapabilities.independentBlend = enabledFeatures.independentBlend == VK_TRUE;
     mCapabilities.baselineGraphicsPipeline = true;
     mCapabilities.advancedGraphicsPipeline = false;
     mSamplerAnisotropy = enabledFeatures.samplerAnisotropy == VK_TRUE;
@@ -1085,6 +1088,10 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc, Status& st
     { status = invalidArgument("invalid Vulkan graphics pipeline descriptor"); return {}; }
     if (desc.depthClamp && !mCapabilities.depthClamp)
     { status = unsupported("Vulkan depth clamp is unavailable"); return {}; }
+    if (!mCapabilities.independentBlend && desc.blendStates.size() > 1 &&
+        !std::all_of(desc.blendStates.begin() + 1, desc.blendStates.end(),
+                     [&](const BlendState& blend) { return blend == desc.blendStates.front(); }))
+    { status = unsupported("Vulkan independent color attachment state is unavailable"); return {}; }
 
     std::vector<VkSpecializationMapEntry> specializationEntries;
     std::vector<std::byte> specializationData;

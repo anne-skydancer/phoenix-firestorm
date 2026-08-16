@@ -188,6 +188,7 @@ enum class Format : std::uint16_t
     // entries: Format participates in the semantic trace contract.
     RGB10A2UNorm,
     RGBA16UNorm,
+    RGB16Float,
 };
 
 struct RendererCapabilities
@@ -212,6 +213,7 @@ struct RendererCapabilities
     bool descriptorIndexing = false;
     bool storageImageAtomics = false;
     bool depthClamp = false;
+    bool independentBlend = false;
 
     // Semantic viewer feature levels. Backends derive these from their own
     // native requirements so policy consumers never compare unrelated API

@@ -78,13 +78,40 @@ de facto contract.
   locations, and returns only backend-neutral `ShaderPackageDesc` data. It has
   no compiler or reflection dependency.
 
+## R3c executable draw contract
+
+- The validation peer now owns the complete shader-package, binding-set,
+  graphics-pipeline, and indexed-draw validity rules. Native peers must match
+  these results; they may not weaken the contract independently.
+- Binding sets are checked against reflected group, binding, type, array, and
+  stage data. Buffer usage/range, image usage, sampler presence, dynamic-offset
+  count/alignment/range, stale handles, complete group population, and resource
+  lifetimes are explicit.
+- Pipeline creation checks graphics stages, reflected vertex inputs, buffer
+  layouts and strides, attachment classes, blend count/masks, sample count,
+  specialization constants, depth/stencil declarations, and depth-clamp
+  capability.
+- Draws require a compatible pipeline, all reflected binding groups, every
+  declared vertex-buffer slot, an index buffer for indexed draws, and explicit
+  positive viewport/scissor rectangles contained by the rendering extent.
+  Attachments must cover that extent.
+- Devices publish uniform/storage offset alignment and one capability-selected
+  exact depth/stencil format. The policy prefers D24S8 when supported and uses
+  D32FS8 otherwise. Resource creation never silently substitutes either format,
+  and no vendor-specific renderer path is introduced.
+- `llghidrawfixture.h` defines the single workload R3d and R3e must execute: a
+  64x64 offscreen reverse-Z textured indexed quad with explicit vertex/index/
+  uniform/texture uploads, reflected groups 0 and 2, color plus depth/stencil
+  attachments, viewport, scissor, and deterministic teardown.
+- The validation fixture semantic SHA-256 is
+  `c160ddad9c093695bd701120a7d96edb38cc0a945979c2dffa1ea666324ae925`.
+
 ## Remaining slices
 
-1. R3c: complete validation semantics and one shared offscreen indexed fixture.
-2. R3d: OpenGL shader, binding, pipeline, and draw implementation.
-3. R3e: Vulkan shader modules, descriptors, dynamic rendering, pipeline, and
+1. R3d: OpenGL shader, binding, pipeline, and draw implementation.
+2. R3e: Vulkan shader modules, descriptors, dynamic rendering, pipeline, and
    draw implementation under the Khronos validation layer.
-4. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
+3. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
    checks, cold/warm cache evidence, full Release build, and boundary ratchet.
 
 ## R3 exit gate

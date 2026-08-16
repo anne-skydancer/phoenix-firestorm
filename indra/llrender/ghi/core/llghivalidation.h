@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace LL::GHI
@@ -84,10 +85,14 @@ private:
     RenderingInfo mRenderingInfo;
     PipelineHandle mPipeline;
     BufferHandle mIndexBuffer;
+    std::unordered_map<std::uint8_t, BindingSetHandle> mBindingSets;
+    std::unordered_set<std::uint32_t> mVertexBufferSlots;
     std::uint64_t mIndexOffset = 0;
     IndexType mIndexType = IndexType::UInt16;
     bool mFrameActive = false;
     bool mRendering = false;
+    bool mViewportSet = false;
+    bool mScissorSet = false;
 };
 
 class ValidationDevice final : public Device
@@ -138,11 +143,25 @@ public:
     bool isLive(BufferHandle handle) const { return mBuffers.isLive(handle); }
     bool isLive(ImageHandle handle) const { return mImages.isLive(handle); }
     bool isLive(ImageViewHandle handle) const { return mImageViews.isLive(handle); }
+    bool isLive(SamplerHandle handle) const { return mSamplers.isLive(handle); }
+    bool isLive(BindingSetHandle handle) const { return mBindingSets.isLive(handle); }
     bool isLive(QueryPoolHandle handle) const { return mQueryPools.isLive(handle); }
     bool isLive(PipelineHandle handle) const { return mPipelines.isLive(handle); }
     bool bufferSupports(BufferHandle handle, ResourceUsage usage) const;
     bool imageViewMatches(ImageViewHandle handle, Format format, ResourceUsage usage) const;
+    bool imageViewCovers(ImageViewHandle handle, std::uint32_t width, std::uint32_t height) const;
     bool pipelineMatches(PipelineHandle handle, const RenderingInfo& rendering) const;
+    Status validateBindingSetForPipeline(
+        PipelineHandle pipeline,
+        std::uint8_t group,
+        BindingSetHandle bindings,
+        std::span<const std::uint32_t> dynamicOffsets) const;
+    Status validateDrawState(
+        PipelineHandle pipeline,
+        const std::unordered_map<std::uint8_t, BindingSetHandle>& bindingSets,
+        const std::unordered_set<std::uint32_t>& vertexBufferSlots,
+        bool viewportSet,
+        bool scissorSet) const;
     std::uint64_t bufferSize(BufferHandle handle) const;
 
     Status executeCopyBuffer(
@@ -198,12 +217,14 @@ private:
     HandlePool<SamplerTag> mSamplers;
     HandlePool<QueryPoolTag> mQueryPools;
     HandlePool<ShaderPackageTag> mShaders;
+    HandlePool<BindingSetTag> mBindingSets;
     HandlePool<PipelineTag> mPipelines;
     std::unordered_map<std::uint64_t, BufferDesc> mBufferDescs;
     std::unordered_map<std::uint64_t, ImageDesc> mImageDescs;
     std::unordered_map<std::uint64_t, ImageViewDesc> mImageViewDescs;
     std::unordered_map<std::uint64_t, QueryRecord> mQueryRecords;
     std::unordered_map<std::uint64_t, ShaderPackageDesc> mShaderDescs;
+    std::unordered_map<std::uint64_t, BindingSetDesc> mBindingSetDescs;
     std::unordered_map<std::uint64_t, PipelineDesc> mPipelineDescs;
     std::unordered_map<std::uint64_t, std::vector<std::byte>> mBufferData;
     std::unordered_map<std::uint64_t, std::uint64_t> mBufferReadyFrame;

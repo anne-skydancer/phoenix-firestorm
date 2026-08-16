@@ -374,6 +374,9 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     mCapabilities.maxSamples = std::max(1, value);
     mCapabilities.maxFramesInFlight = info.framesInFlight;
     mCapabilities.maxBufferSize = static_cast<std::uint64_t>(std::numeric_limits<GLsizeiptr>::max());
+    glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &value);
+    mCapabilities.uniformBufferOffsetAlignment = std::max(1, value);
+    mCapabilities.preferredDepthStencilFormat = Format::Depth24Stencil8;
     mCapabilities.timestampQueries = glQueryCounter && glGetQueryObjectui64v;
     mCapabilities.timestampPeriodNanoseconds = mCapabilities.timestampQueries ? 1.0 : 0.0;
     mCapabilities.occlusionQueries = true;
@@ -383,6 +386,11 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     int minor = 0;
     const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     if (version) std::sscanf(version, "%d.%d", &major, &minor);
+    if (major > 4 || (major == 4 && minor >= 3))
+    {
+        glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, &value);
+        mCapabilities.storageBufferOffsetAlignment = std::max(1, value);
+    }
     mCapabilities.advancedGraphicsPipeline = major > 4 || (major == 4 && minor >= 6);
 }
 

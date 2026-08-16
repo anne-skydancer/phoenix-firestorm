@@ -14,6 +14,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -47,6 +48,12 @@ bool rangeFits(std::uint64_t offset, std::uint64_t size, std::uint64_t total)
     return offset <= total && size <= total - offset;
 }
 
+bool hasAnyUsage(ResourceUsage value, ResourceUsage mask)
+{
+    using Value = std::underlying_type_t<ResourceUsage>;
+    return (static_cast<Value>(value) & static_cast<Value>(mask)) != 0;
+}
+
 std::uint32_t formatBytesPerTexel(Format format)
 {
     switch (format)
@@ -73,6 +80,23 @@ std::uint32_t formatBytesPerTexel(Format format)
     return 0;
 }
 
+std::uint32_t vertexFormatBytes(VertexFormat format)
+{
+    switch (format)
+    {
+        case VertexFormat::Float32:
+        case VertexFormat::UNorm8x4:
+        case VertexFormat::SNorm8x4:
+        case VertexFormat::UInt16x2:
+        case VertexFormat::UInt32: return 4;
+        case VertexFormat::Float32x2:
+        case VertexFormat::UInt16x4: return 8;
+        case VertexFormat::Float32x3: return 12;
+        case VertexFormat::Float32x4: return 16;
+    }
+    return 0;
+}
+
 bool isColorFormat(Format format)
 {
     return format != Format::Undefined &&
@@ -80,6 +104,12 @@ bool isColorFormat(Format format)
            format != Format::Depth24Stencil8 &&
            format != Format::Depth32Float &&
            format != Format::Depth32FloatStencil8;
+}
+
+bool hasStencil(Format format)
+{
+    return format == Format::Depth24Stencil8 ||
+           format == Format::Depth32FloatStencil8;
 }
 
 bool aspectMatchesFormat(ImageAspect aspect, Format format)
@@ -127,8 +157,12 @@ Status ValidationCommandContext::beginFrame()
     mTrace.beginFrame();
     mPipeline = {};
     mIndexBuffer = {};
+    mBindingSets.clear();
+    mVertexBufferSlots.clear();
     mIndexOffset = 0;
     mIndexType = IndexType::UInt16;
+    mViewportSet = false;
+    mScissorSet = false;
     mFrameActive = true;
     return Status::success();
 }
@@ -263,16 +297,18 @@ Status ValidationCommandContext::beginRendering(const RenderingInfo& info)
         if (!mDevice.imageViewMatches(
                 attachment.view,
                 attachment.format,
-                ResourceUsage::ColorAttachment))
+                ResourceUsage::ColorAttachment) ||
+            !mDevice.imageViewCovers(attachment.view, info.width, info.height))
         {
             return invalidHandle("invalid or incompatible color attachment");
         }
     }
     if (info.depthStencil &&
-        !mDevice.imageViewMatches(
-            info.depthStencil->view,
-            info.depthStencil->format,
-            ResourceUsage::DepthStencilAttachment))
+        (!mDevice.imageViewMatches(
+             info.depthStencil->view,
+             info.depthStencil->format,
+             ResourceUsage::DepthStencilAttachment) ||
+         !mDevice.imageViewCovers(info.depthStencil->view, info.width, info.height)))
     {
         return invalidHandle("invalid or incompatible depth/stencil attachment");
     }
@@ -281,8 +317,12 @@ Status ValidationCommandContext::beginRendering(const RenderingInfo& info)
     mRenderingInfo = info;
     mPipeline = {};
     mIndexBuffer = {};
+    mBindingSets.clear();
+    mVertexBufferSlots.clear();
     mIndexOffset = 0;
     mIndexType = IndexType::UInt16;
+    mViewportSet = false;
+    mScissorSet = false;
     mRendering = true;
     return Status::success();
 }
@@ -329,30 +369,41 @@ Status ValidationCommandContext::bindPipeline(PipelineHandle pipeline)
     }
 
     mPipeline = pipeline;
+    mBindingSets.clear();
     mTrace.bindPipeline(pipeline);
     return Status::success();
 }
 
 Status ValidationCommandContext::bindBindingSet(
-    std::uint8_t,
-    BindingSetHandle,
-    std::span<const std::uint32_t>)
+    std::uint8_t group,
+    BindingSetHandle bindings,
+    std::span<const std::uint32_t> dynamicOffsets)
 {
     Status status = requireRendering("bindBindingSet");
     if (!status) return status;
-    return unsupported("validation binding sets begin in R3c");
+    if (!mPipeline) return invalidState("bindBindingSet requires a bound pipeline");
+    status = mDevice.validateBindingSetForPipeline(
+        mPipeline, group, bindings, dynamicOffsets);
+    if (!status) return status;
+    mBindingSets[group] = bindings;
+    mTrace.bindBindingSet(group, bindings, dynamicOffsets);
+    return Status::success();
 }
 
 Status ValidationCommandContext::setViewport(const Viewport& viewport)
 {
     Status status = requireRendering("setViewport");
     if (!status) return status;
-    if (viewport.width <= 0.f || viewport.height <= 0.f ||
+    if (viewport.x < 0.f || viewport.y < 0.f ||
+        viewport.width <= 0.f || viewport.height <= 0.f ||
+        viewport.x + viewport.width > static_cast<float>(mRenderingInfo.width) ||
+        viewport.y + viewport.height > static_cast<float>(mRenderingInfo.height) ||
         viewport.minDepth < 0.f || viewport.maxDepth > 1.f ||
         viewport.minDepth > viewport.maxDepth)
     {
         return invalidArgument("invalid viewport");
     }
+    mViewportSet = true;
     mTrace.setViewport(viewport);
     return Status::success();
 }
@@ -361,10 +412,13 @@ Status ValidationCommandContext::setScissor(const ScissorRect& scissor)
 {
     Status status = requireRendering("setScissor");
     if (!status) return status;
-    if (!scissor.width || !scissor.height)
+    if (scissor.x < 0 || scissor.y < 0 || !scissor.width || !scissor.height ||
+        static_cast<std::uint64_t>(scissor.x) + scissor.width > mRenderingInfo.width ||
+        static_cast<std::uint64_t>(scissor.y) + scissor.height > mRenderingInfo.height)
     {
         return invalidArgument("invalid scissor rectangle");
     }
+    mScissorSet = true;
     mTrace.setScissor(scissor);
     return Status::success();
 }
@@ -388,6 +442,7 @@ Status ValidationCommandContext::bindVertexBuffer(
         return invalidArgument("vertex buffer offset is outside the buffer");
     }
 
+    mVertexBufferSlots.insert(slot);
     mTrace.bindVertexBuffer(slot, buffer, offset);
     return Status::success();
 }
@@ -430,6 +485,9 @@ Status ValidationCommandContext::draw(const DrawArguments& arguments)
     {
         return invalidState("draw requires a bound pipeline");
     }
+    status = mDevice.validateDrawState(
+        mPipeline, mBindingSets, mVertexBufferSlots, mViewportSet, mScissorSet);
+    if (!status) return status;
     if (arguments.vertexCount == 0 || arguments.instanceCount == 0)
     {
         return Status::failure(
@@ -456,6 +514,9 @@ Status ValidationCommandContext::drawIndexed(const DrawIndexedArguments& argumen
     {
         return invalidState("drawIndexed requires a bound index buffer");
     }
+    status = mDevice.validateDrawState(
+        mPipeline, mBindingSets, mVertexBufferSlots, mViewportSet, mScissorSet);
+    if (!status) return status;
     if (arguments.indexCount == 0 || arguments.instanceCount == 0)
     {
         return Status::failure(
@@ -489,6 +550,9 @@ ValidationDevice::ValidationDevice(const DeviceCreateInfo& info) :
     mCapabilities.maxVaryingVectors = 32;
     mCapabilities.maxSamples = 8;
     mCapabilities.maxBufferSize = std::uint64_t{1} << 40;
+    mCapabilities.uniformBufferOffsetAlignment = 256;
+    mCapabilities.storageBufferOffsetAlignment = 256;
+    mCapabilities.preferredDepthStencilFormat = Format::Depth24Stencil8;
     mCapabilities.timestampQueries = true;
     mCapabilities.timestampPeriodNanoseconds = 1.0;
     mCapabilities.occlusionQueries = true;
@@ -513,8 +577,11 @@ BufferHandle ValidationDevice::createBuffer(const BufferDesc& desc, Status& stat
     {
         return {};
     }
+    constexpr ResourceUsage imageOnly = ResourceUsage::Sampled |
+        ResourceUsage::ColorAttachment | ResourceUsage::DepthStencilAttachment |
+        ResourceUsage::Present;
     if (desc.size == 0 || desc.usage == ResourceUsage::None ||
-        desc.size > mCapabilities.maxBufferSize)
+        desc.size > mCapabilities.maxBufferSize || hasAnyUsage(desc.usage, imageOnly))
     {
         status = Status::failure(
             StatusCode::InvalidArgument,
@@ -551,7 +618,12 @@ ImageHandle ValidationDevice::createImage(const ImageDesc& desc, Status& status)
         desc.extent.height > mCapabilities.maxTexture2DSize ||
         desc.mipLevels > max_mips || desc.samples > mCapabilities.maxSamples ||
         (desc.samples & (desc.samples - 1)) != 0 ||
-        (desc.samples > 1 && desc.mipLevels != 1))
+        (desc.samples > 1 && desc.mipLevels != 1) ||
+        hasAnyUsage(desc.usage, ResourceUsage::Vertex | ResourceUsage::Index | ResourceUsage::Uniform) ||
+        (isColorFormat(desc.format) && hasUsage(desc.usage, ResourceUsage::DepthStencilAttachment)) ||
+        (!isColorFormat(desc.format) &&
+         hasAnyUsage(desc.usage, ResourceUsage::ColorAttachment | ResourceUsage::Storage |
+                                 ResourceUsage::Present)))
     {
         status = Status::failure(StatusCode::InvalidArgument, "invalid image descriptor");
         return {};
@@ -652,6 +724,59 @@ ShaderPackageHandle ValidationDevice::createShaderPackage(
         return {};
     }
 
+    const bool semanticHashPresent = std::any_of(
+        desc.semanticHash.begin(), desc.semanticHash.end(), [](std::uint8_t value) { return value != 0; });
+    const bool toolchainHashPresent = std::any_of(
+        desc.toolchainHash.begin(), desc.toolchainHash.end(), [](std::uint8_t value) { return value != 0; });
+    if (desc.schemaVersion != ShaderPackageDesc::CURRENT_SCHEMA_VERSION ||
+        !semanticHashPresent || !toolchainHashPresent || desc.stages.empty())
+    {
+        status = invalidArgument("invalid shader package identity or stage list");
+        return {};
+    }
+    std::set<ShaderPackageDesc::Stage> stages;
+    for (const auto& stage : desc.stages)
+    {
+        if (stage.entryPoint.empty() || stage.artifacts.empty() ||
+            !stages.insert(stage.stage).second)
+        {
+            status = invalidArgument("invalid or duplicate shader stage");
+            return {};
+        }
+        std::set<ShaderPackageDesc::TargetProfile> targets;
+        for (const auto& artifact : stage.artifacts)
+        {
+            const bool vulkan = artifact.target == ShaderPackageDesc::TargetProfile::VulkanSpirV13;
+            if (!targets.insert(artifact.target).second ||
+                (vulkan && (artifact.spirv.empty() || !artifact.source.empty())) ||
+                (!vulkan && (artifact.source.empty() || !artifact.spirv.empty())))
+            {
+                status = invalidArgument("invalid or duplicate shader target artifact");
+                return {};
+            }
+        }
+    }
+    std::set<std::pair<std::uint8_t, std::uint16_t>> bindings;
+    for (const auto& binding : desc.bindings)
+    {
+        if (binding.arrayCount == 0 || binding.name.empty() ||
+            binding.visibility == ShaderPackageDesc::StageVisibility::None ||
+            !bindings.emplace(binding.group, binding.binding).second)
+        {
+            status = invalidArgument("invalid or duplicate reflected binding");
+            return {};
+        }
+    }
+    std::set<std::uint16_t> locations;
+    for (const auto& input : desc.vertexInputs)
+    {
+        if (!locations.insert(input.location).second)
+        {
+            status = invalidArgument("duplicate reflected vertex input location");
+            return {};
+        }
+    }
+
     ShaderPackageHandle handle = mShaders.allocate();
     mShaderDescs.emplace(key(handle), desc);
     status = Status::success();
@@ -659,12 +784,92 @@ ShaderPackageHandle ValidationDevice::createShaderPackage(
 }
 
 BindingSetHandle ValidationDevice::createBindingSet(
-    const BindingSetDesc&,
+    const BindingSetDesc& desc,
     Status& status)
 {
     status = canMutateResources();
-    if (status) status = unsupported("validation binding sets begin in R3c");
-    return {};
+    if (!status) return {};
+    const auto shader = mShaderDescs.find(key(desc.shader));
+    if (!mShaders.isLive(desc.shader) || shader == mShaderDescs.end())
+    {
+        status = invalidHandle("binding set references a stale or invalid shader package");
+        return {};
+    }
+
+    std::set<std::pair<std::uint16_t, std::uint16_t>> resources;
+    for (const BindingResourceDesc& resource : desc.resources)
+    {
+        if (!resources.emplace(resource.binding, resource.arrayElement).second)
+        {
+            status = invalidArgument("binding set contains a duplicate resource element");
+            return {};
+        }
+        const auto reflected = std::find_if(shader->second.bindings.begin(), shader->second.bindings.end(),
+            [&](const ShaderPackageDesc::Binding& binding)
+            {
+                return binding.group == desc.group && binding.binding == resource.binding;
+            });
+        if (reflected == shader->second.bindings.end() ||
+            reflected->type != resource.type || resource.arrayElement >= reflected->arrayCount)
+        {
+            status = invalidArgument("binding resource does not match the reflected interface");
+            return {};
+        }
+        if (resource.type == ShaderPackageDesc::BindingType::UniformBuffer ||
+            resource.type == ShaderPackageDesc::BindingType::StorageBuffer)
+        {
+            const ResourceUsage usage = resource.type == ShaderPackageDesc::BindingType::UniformBuffer
+                ? ResourceUsage::Uniform : ResourceUsage::Storage;
+            const std::uint64_t size = bufferSize(resource.buffer);
+            const std::uint64_t range = resource.bufferRange ? resource.bufferRange :
+                (resource.bufferOffset <= size ? size - resource.bufferOffset : 0);
+            if (!bufferSupports(resource.buffer, usage) || range == 0 ||
+                !rangeFits(resource.bufferOffset, range, size) ||
+                (resource.type == ShaderPackageDesc::BindingType::UniformBuffer &&
+                 range > mCapabilities.maxUniformBufferSize))
+            {
+                status = invalidHandle("binding buffer is invalid, incompatible, or out of range");
+                return {};
+            }
+        }
+        else
+        {
+            const bool needsImage = resource.type == ShaderPackageDesc::BindingType::SampledImage ||
+                resource.type == ShaderPackageDesc::BindingType::CombinedImageSampler ||
+                resource.type == ShaderPackageDesc::BindingType::StorageImage;
+            const bool needsSampler = resource.type == ShaderPackageDesc::BindingType::Sampler ||
+                resource.type == ShaderPackageDesc::BindingType::CombinedImageSampler;
+            const ResourceUsage usage = resource.type == ShaderPackageDesc::BindingType::StorageImage
+                ? ResourceUsage::Storage : ResourceUsage::Sampled;
+            if ((needsImage && !imageViewMatches(resource.imageView, Format::Undefined, usage)) ||
+                (needsSampler && !mSamplers.isLive(resource.sampler)))
+            {
+                status = invalidHandle("binding image view or sampler is invalid or incompatible");
+                return {};
+            }
+        }
+    }
+    for (const auto& binding : shader->second.bindings)
+    {
+        if (binding.group != desc.group) continue;
+        for (std::uint16_t element = 0; element < binding.arrayCount; ++element)
+        {
+            if (!resources.contains({binding.binding, element}))
+            {
+                status = invalidArgument("binding set does not completely populate its reflected group");
+                return {};
+            }
+        }
+    }
+    if (desc.resources.empty())
+    {
+        status = invalidArgument("binding set group is absent from the reflected interface");
+        return {};
+    }
+    BindingSetHandle handle = mBindingSets.allocate();
+    mBindingSetDescs.emplace(key(handle), desc);
+    status = Status::success();
+    return handle;
 }
 
 PipelineHandle ValidationDevice::createPipeline(const PipelineDesc& desc, Status& status)
@@ -693,6 +898,78 @@ PipelineHandle ValidationDevice::createPipeline(const PipelineDesc& desc, Status
             "graphics pipeline must declare at least one attachment format");
         return {};
     }
+    if (desc.colorFormats.size() > mCapabilities.maxColorAttachments ||
+        desc.samples > mCapabilities.maxSamples || (desc.samples & (desc.samples - 1)) != 0 ||
+        std::any_of(desc.colorFormats.begin(), desc.colorFormats.end(),
+                    [](Format format) { return !isColorFormat(format); }) ||
+        (desc.depthStencilFormat &&
+         (*desc.depthStencilFormat == Format::Undefined || isColorFormat(*desc.depthStencilFormat))) ||
+        (desc.depthClamp && !mCapabilities.depthClamp))
+    {
+        status = invalidArgument("pipeline formats, samples, or depth-clamp state are unsupported");
+        return {};
+    }
+    std::set<std::uint8_t> slots;
+    for (const auto& layout : desc.vertexBuffers)
+    {
+        if (layout.stride == 0 || !slots.insert(layout.slot).second)
+        {
+            status = invalidArgument("invalid or duplicate vertex buffer layout");
+            return {};
+        }
+    }
+    const ShaderPackageDesc& shader = mShaderDescs.at(key(desc.shader));
+    const bool hasVertexStage = std::any_of(shader.stages.begin(), shader.stages.end(),
+        [](const ShaderPackageDesc::StageArtifact& stage)
+        {
+            return stage.stage == ShaderPackageDesc::Stage::Vertex;
+        });
+    const bool hasFragmentStage = std::any_of(shader.stages.begin(), shader.stages.end(),
+        [](const ShaderPackageDesc::StageArtifact& stage)
+        {
+            return stage.stage == ShaderPackageDesc::Stage::Fragment;
+        });
+    if (!hasVertexStage || !hasFragmentStage ||
+        ((desc.depthTest || desc.depthWrite || desc.stencilTest) && !desc.depthStencilFormat) ||
+        (desc.depthWrite && !desc.depthTest) ||
+        (desc.stencilTest &&
+         (!desc.depthStencilFormat || !hasStencil(*desc.depthStencilFormat))) ||
+        std::any_of(desc.blendStates.begin(), desc.blendStates.end(),
+                    [](const BlendState& blend) { return (blend.colorWriteMask & 0xf0u) != 0; }))
+    {
+        status = invalidArgument("graphics pipeline has incomplete stages or attachment state");
+        return {};
+    }
+    std::set<std::uint16_t> attributes;
+    for (const auto& attribute : desc.vertexAttributes)
+    {
+        const auto layout = std::find_if(desc.vertexBuffers.begin(), desc.vertexBuffers.end(),
+            [&](const VertexBufferLayoutDesc& value) { return value.slot == attribute.bufferSlot; });
+        const auto reflected = std::find_if(shader.vertexInputs.begin(), shader.vertexInputs.end(),
+            [&](const ShaderPackageDesc::VertexInput& value) { return value.location == attribute.location; });
+        if (layout == desc.vertexBuffers.end() || reflected == shader.vertexInputs.end() ||
+            reflected->format != attribute.format || !attributes.insert(attribute.location).second ||
+            attribute.offset + vertexFormatBytes(attribute.format) > layout->stride)
+        {
+            status = invalidArgument("pipeline vertex layout differs from reflected shader inputs");
+            return {};
+        }
+    }
+    if (attributes.size() != shader.vertexInputs.size())
+    {
+        status = invalidArgument("pipeline does not provide every reflected vertex input");
+        return {};
+    }
+    std::set<std::uint32_t> constants;
+    for (const auto& constant : desc.specializationConstants)
+    {
+        if ((constant.size != 1 && constant.size != 2 && constant.size != 4 && constant.size != 8) ||
+            !constants.insert(constant.id).second)
+        {
+            status = invalidArgument("invalid or duplicate specialization constant");
+            return {};
+        }
+    }
 
     PipelineHandle handle = mPipelines.allocate();
     mPipelineDescs.emplace(key(handle), desc);
@@ -706,6 +983,14 @@ Status ValidationDevice::destroy(BufferHandle handle)
     if (!status)
     {
         return status;
+    }
+    if (!mBuffers.isLive(handle))
+        return invalidHandle("destroy received a stale or invalid buffer handle");
+    for (const auto& [unused, set] : mBindingSetDescs)
+    {
+        if (std::any_of(set.resources.begin(), set.resources.end(),
+                        [&](const BindingResourceDesc& resource) { return resource.buffer == handle; }))
+            return invalidState("buffer must outlive binding sets that reference it");
     }
     if (!mBuffers.release(handle))
     {
@@ -746,6 +1031,14 @@ Status ValidationDevice::destroy(ImageViewHandle handle)
 {
     Status status = canMutateResources();
     if (!status) return status;
+    if (!mImageViews.isLive(handle))
+        return invalidHandle("destroy received a stale or invalid image view handle");
+    for (const auto& [unused, set] : mBindingSetDescs)
+    {
+        if (std::any_of(set.resources.begin(), set.resources.end(),
+                        [&](const BindingResourceDesc& resource) { return resource.imageView == handle; }))
+            return invalidState("image view must outlive binding sets that reference it");
+    }
     if (!mImageViews.release(handle))
     {
         return invalidHandle("destroy received a stale or invalid image view handle");
@@ -761,6 +1054,14 @@ Status ValidationDevice::destroy(SamplerHandle handle)
     if (!status)
     {
         return status;
+    }
+    if (!mSamplers.isLive(handle))
+        return invalidHandle("destroy received a stale or invalid sampler handle");
+    for (const auto& [unused, set] : mBindingSetDescs)
+    {
+        if (std::any_of(set.resources.begin(), set.resources.end(),
+                        [&](const BindingResourceDesc& resource) { return resource.sampler == handle; }))
+            return invalidState("sampler must outlive binding sets that reference it");
     }
     if (!mSamplers.release(handle))
     {
@@ -797,6 +1098,11 @@ Status ValidationDevice::destroy(ShaderPackageHandle handle)
             return invalidState("shader package must outlive its pipelines");
         }
     }
+    for (const auto& [unused, set] : mBindingSetDescs)
+    {
+        if (set.shader == handle)
+            return invalidState("shader package must outlive its binding sets");
+    }
     if (!mShaders.release(handle))
     {
         return invalidHandle("destroy received a stale or invalid shader package handle");
@@ -806,11 +1112,15 @@ Status ValidationDevice::destroy(ShaderPackageHandle handle)
     return Status::success();
 }
 
-Status ValidationDevice::destroy(BindingSetHandle)
+Status ValidationDevice::destroy(BindingSetHandle handle)
 {
     Status status = canMutateResources();
     if (!status) return status;
-    return unsupported("validation binding sets begin in R3c");
+    if (!mBindingSets.release(handle))
+        return invalidHandle("destroy received a stale or invalid binding set handle");
+    mBindingSetDescs.erase(key(handle));
+    retire();
+    return Status::success();
 }
 
 Status ValidationDevice::destroy(PipelineHandle handle)
@@ -1434,13 +1744,108 @@ bool ValidationDevice::imageViewMatches(
 {
     auto view = mImageViewDescs.find(key(handle));
     if (!mImageViews.isLive(handle) || view == mImageViewDescs.end() ||
-        view->second.format != format)
+        (format != Format::Undefined && view->second.format != format))
     {
         return false;
     }
     auto image = mImageDescs.find(key(view->second.image));
     return image != mImageDescs.end() && mImages.isLive(view->second.image) &&
-           image->second.format == format && hasUsage(image->second.usage, usage);
+           (format == Format::Undefined || image->second.format == format) &&
+           hasUsage(image->second.usage, usage);
+}
+
+bool ValidationDevice::imageViewCovers(
+    ImageViewHandle handle,
+    std::uint32_t width,
+    std::uint32_t height) const
+{
+    const auto view = mImageViewDescs.find(key(handle));
+    if (!mImageViews.isLive(handle) || view == mImageViewDescs.end()) return false;
+    const auto image = mImageDescs.find(key(view->second.image));
+    if (image == mImageDescs.end() || !mImages.isLive(view->second.image)) return false;
+    const Extent3D extent = mipExtent(image->second, view->second.subresources.baseMipLevel);
+    return width <= extent.width && height <= extent.height;
+}
+
+Status ValidationDevice::validateBindingSetForPipeline(
+    PipelineHandle pipelineHandle,
+    std::uint8_t group,
+    BindingSetHandle bindingHandle,
+    std::span<const std::uint32_t> dynamicOffsets) const
+{
+    const auto pipeline = mPipelineDescs.find(key(pipelineHandle));
+    const auto set = mBindingSetDescs.find(key(bindingHandle));
+    if (!mPipelines.isLive(pipelineHandle) || pipeline == mPipelineDescs.end() ||
+        !mBindingSets.isLive(bindingHandle) || set == mBindingSetDescs.end())
+        return invalidHandle("binding set or pipeline is stale or invalid");
+    if (set->second.group != group || set->second.shader != pipeline->second.shader)
+        return invalidArgument("binding set group or shader is incompatible with the pipeline");
+
+    const ShaderPackageDesc& shader = mShaderDescs.at(key(pipeline->second.shader));
+    std::size_t offsetIndex = 0;
+    for (const auto& reflected : shader.bindings)
+    {
+        if (reflected.group != group || !reflected.dynamicOffset) continue;
+        const std::uint64_t alignment = reflected.type == ShaderPackageDesc::BindingType::UniformBuffer
+            ? mCapabilities.uniformBufferOffsetAlignment
+            : mCapabilities.storageBufferOffsetAlignment;
+        for (std::uint16_t element = 0; element < reflected.arrayCount; ++element)
+        {
+            if (offsetIndex >= dynamicOffsets.size())
+                return invalidArgument("binding set has too few dynamic offsets");
+            const auto resource = std::find_if(set->second.resources.begin(), set->second.resources.end(),
+                [&](const BindingResourceDesc& value)
+                {
+                    return value.binding == reflected.binding && value.arrayElement == element;
+                });
+            if (resource == set->second.resources.end())
+                return invalidState("binding set lost a reflected resource element");
+            const std::uint64_t dynamic = dynamicOffsets[offsetIndex++];
+            const std::uint64_t size = bufferSize(resource->buffer);
+            const std::uint64_t base = resource->bufferOffset + dynamic;
+            const std::uint64_t range = resource->bufferRange ? resource->bufferRange :
+                (base <= size ? size - base : 0);
+            if ((alignment > 1 && dynamic % alignment != 0) ||
+                base < resource->bufferOffset || !rangeFits(base, range, size))
+                return invalidArgument("dynamic buffer offset is misaligned or out of range");
+        }
+    }
+    if (offsetIndex != dynamicOffsets.size())
+        return invalidArgument("binding set has too many dynamic offsets");
+    return Status::success();
+}
+
+Status ValidationDevice::validateDrawState(
+    PipelineHandle pipelineHandle,
+    const std::unordered_map<std::uint8_t, BindingSetHandle>& bindingSets,
+    const std::unordered_set<std::uint32_t>& vertexBufferSlots,
+    bool viewportSet,
+    bool scissorSet) const
+{
+    const auto pipeline = mPipelineDescs.find(key(pipelineHandle));
+    if (!mPipelines.isLive(pipelineHandle) || pipeline == mPipelineDescs.end())
+        return invalidHandle("draw references a stale or invalid pipeline");
+    if (!viewportSet || !scissorSet)
+        return invalidState("draw requires explicit viewport and scissor state");
+    for (const auto& layout : pipeline->second.vertexBuffers)
+    {
+        if (!vertexBufferSlots.contains(layout.slot))
+            return invalidState("draw is missing a required vertex buffer slot");
+    }
+    const ShaderPackageDesc& shader = mShaderDescs.at(key(pipeline->second.shader));
+    std::set<std::uint8_t> groups;
+    for (const auto& binding : shader.bindings) groups.insert(binding.group);
+    for (std::uint8_t group : groups)
+    {
+        const auto bound = bindingSets.find(group);
+        if (bound == bindingSets.end())
+            return invalidState("draw is missing a required binding group");
+        const auto set = mBindingSetDescs.find(key(bound->second));
+        if (!mBindingSets.isLive(bound->second) || set == mBindingSetDescs.end() ||
+            set->second.shader != pipeline->second.shader || set->second.group != group)
+            return invalidHandle("draw has a stale or incompatible binding set");
+    }
+    return Status::success();
 }
 
 bool ValidationDevice::pipelineMatches(

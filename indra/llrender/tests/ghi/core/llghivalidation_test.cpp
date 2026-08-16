@@ -16,6 +16,7 @@
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghirendererinfo.h"
+#include "tests/ghi/llghidrawfixture.h"
 #include "tests/ghi/llghiresourcefixture.h"
 
 #include <array>
@@ -32,6 +33,21 @@ namespace tut
 
 struct LLGHIValidationFixture
 {
+    static LL::GHI::ShaderPackageDesc makeUnboundShaderPackage()
+    {
+        using namespace LL::GHI;
+        ShaderPackageDesc package;
+        package.semanticHash[0] = 1;
+        package.toolchainHash[0] = 1;
+        package.stages = {
+            {ShaderPackageDesc::Stage::Vertex, "main", {{
+                ShaderPackageDesc::TargetProfile::OpenGL41, "void main(){}", {}, {}}}},
+            {ShaderPackageDesc::Stage::Fragment, "main", {{
+                ShaderPackageDesc::TargetProfile::OpenGL41, "void main(){}", {}, {}}}},
+        };
+        return package;
+    }
+
     static std::string recordTrace(std::uint32_t index_count)
     {
         using namespace LL::GHI;
@@ -65,11 +81,13 @@ struct LLGHIValidationFixture
             {color, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
         ensure("color view creation", status.ok() && color_view);
 
-        ShaderPackageHandle shader = device->createShaderPackage({}, status);
+        ShaderPackageHandle shader = device->createShaderPackage(makeUnboundShaderPackage(), status);
         ensure("shader package creation", status.ok() && shader);
 
         PipelineDesc pipeline_desc;
         pipeline_desc.shader = shader;
+        pipeline_desc.depthTest = false;
+        pipeline_desc.depthWrite = false;
         pipeline_desc.colorFormats = {Format::RGBA8UNorm};
         pipeline_desc.blendStates = {BlendState{}};
         PipelineHandle pipeline = device->createPipeline(pipeline_desc, status);
@@ -86,6 +104,8 @@ struct LLGHIValidationFixture
         ensure("begin frame", commands.beginFrame().ok());
         ensure("begin rendering", commands.beginRendering(pass).ok());
         ensure("bind pipeline", commands.bindPipeline(pipeline).ok());
+        ensure("set viewport", commands.setViewport({0.f, 0.f, 1280.f, 720.f, 0.f, 1.f}).ok());
+        ensure("set scissor", commands.setScissor({0, 0, 1280, 720}).ok());
         ensure("bind vertex buffer", commands.bindVertexBuffer(0, vertices, 0).ok());
         ensure("bind index buffer", commands.bindIndexBuffer(indices, 0, IndexType::UInt16).ok());
         ensure("draw indexed", commands.drawIndexed({index_count, 1, 0, 0, 0}).ok());
@@ -147,7 +167,7 @@ void LLGHIValidationObject::test<3>()
     ensure_equals(
         "R0 semantic trace matches its recorded contract hash",
         first,
-        std::string{"005b073be88be2293cf4c5a5ae9c21d40c34eb195c16e5c0aec9f4335cc370bb"});
+        std::string{"9be9019fbebb2c829325f6dbc51eb3c3dd9d786ea1133518720d07026beefd2a"});
     ensure_equals("equivalent command streams hash identically", first, second);
     ensure("semantic command changes alter the hash", first != changed);
 }
@@ -170,11 +190,13 @@ void LLGHIValidationObject::test<4>()
     ImageViewHandle color_view = device->createImageView(
         {color, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
     ensure("color view creation", status.ok() && color_view);
-    ShaderPackageHandle shader = device->createShaderPackage({}, status);
+    ShaderPackageHandle shader = device->createShaderPackage(makeUnboundShaderPackage(), status);
     ensure("shader package creation", status.ok() && shader);
 
     PipelineDesc incompatible;
     incompatible.shader = shader;
+    incompatible.depthTest = false;
+    incompatible.depthWrite = false;
     incompatible.colorFormats = {Format::BGRA8UNorm};
     incompatible.blendStates = {BlendState{}};
     PipelineHandle pipeline = device->createPipeline(incompatible, status);
@@ -440,9 +462,11 @@ void LLGHIValidationObject::test<11>()
         status);
     ImageViewHandle color_view = device->createImageView(
         {color, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
-    ShaderPackageHandle shader = device->createShaderPackage({}, status);
+    ShaderPackageHandle shader = device->createShaderPackage(makeUnboundShaderPackage(), status);
     PipelineDesc pipeline_desc;
     pipeline_desc.shader = shader;
+    pipeline_desc.depthTest = false;
+    pipeline_desc.depthWrite = false;
     pipeline_desc.colorFormats = {Format::RGBA8UNorm};
     pipeline_desc.blendStates = {BlendState{}};
     PipelineHandle pipeline = device->createPipeline(pipeline_desc, status);
@@ -456,6 +480,8 @@ void LLGHIValidationObject::test<11>()
     ensure("begin index frame", commands.beginFrame().ok());
     ensure("begin index pass", commands.beginRendering(pass).ok());
     ensure("bind index pipeline", commands.bindPipeline(pipeline).ok());
+    ensure("set index viewport", commands.setViewport({0.f, 0.f, 32.f, 32.f, 0.f, 1.f}).ok());
+    ensure("set index scissor", commands.setScissor({0, 0, 32, 32}).ok());
     ensure("bind 16-bit indices", commands.bindIndexBuffer(indices, 0, IndexType::UInt16).ok());
     ensure("16-bit draw", commands.drawIndexed({12, 1, 0, 0, 0}).ok());
     ensure("bind 32-bit indices", commands.bindIndexBuffer(indices, 0, IndexType::UInt32).ok());
@@ -621,6 +647,103 @@ void LLGHIValidationObject::test<15>()
     status = decodeShaderPackage(corrupted, rejected);
     ensure("corrupt artifact rejected",
            !status && status.code() == StatusCode::InvalidArgument);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<16>()
+{
+    using namespace LL::GHI;
+
+    ShaderPackageDesc package;
+    Status status = loadShaderPackage(LL_GHI_R3_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* validation = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R3 fixture validation device", created.status.ok() && validation);
+    const Test::DrawFixtureResult result = Test::runDrawFixture(*validation, package);
+    ensure(result.message, result.passed);
+    ensure("R3 capability-selected depth/stencil format",
+           result.depthStencilFormat == Format::Depth24Stencil8);
+    ensure_equals("R3 indexed fixture semantic hash",
+                  validation->semanticTrace().sha256(),
+                  std::string{"c160ddad9c093695bd701120a7d96edb38cc0a945979c2dffa1ea666324ae925"});
+}
+
+template<> template<>
+void LLGHIValidationObject::test<17>()
+{
+    using namespace LL::GHI;
+
+    ShaderPackageDesc package;
+    Status status = loadShaderPackage(LL_GHI_R3_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    package.bindings.front().dynamicOffset = true;
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R3 negative validation device", created.status.ok() && device);
+    ShaderPackageHandle shader = device->createShaderPackage(package, status);
+    ensure("create reflected package", status.ok() && shader);
+
+    BufferHandle wrongUsage = device->createBuffer(
+        {64, ResourceUsage::Vertex, MemoryClass::DeviceLocal}, status);
+    BindingSetDesc wrongSet;
+    wrongSet.shader = shader;
+    wrongSet.group = 0;
+    wrongSet.resources.push_back(
+        {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         wrongUsage, 0, 64, {}, {}});
+    BindingSetHandle rejected = device->createBindingSet(wrongSet, status);
+    ensure("uniform binding rejects wrong buffer usage",
+           !rejected && status.code() == StatusCode::InvalidHandle);
+
+    BufferHandle uniform = device->createBuffer(
+        {64, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
+    ensure("create uniform buffer", status.ok() && uniform);
+    wrongSet.resources.front().buffer = uniform;
+    BindingSetHandle frameSet = device->createBindingSet(wrongSet, status);
+    ensure("create complete frame binding set", status.ok() && frameSet);
+    ensure("binding resource lifetime enforced",
+           device->destroy(uniform).code() == StatusCode::InvalidState);
+
+    PipelineDesc missingInputs;
+    missingInputs.shader = shader;
+    missingInputs.colorFormats = {Format::RGBA8UNorm};
+    missingInputs.blendStates = {BlendState{}};
+    PipelineHandle rejectedPipeline = device->createPipeline(missingInputs, status);
+    ensure("pipeline rejects missing reflected vertex inputs",
+           !rejectedPipeline && status.code() == StatusCode::InvalidArgument);
+
+    PipelineDesc pipelineDesc;
+    pipelineDesc.shader = shader;
+    pipelineDesc.depthTest = false;
+    pipelineDesc.depthWrite = false;
+    pipelineDesc.colorFormats = {Format::RGBA8UNorm};
+    pipelineDesc.blendStates = {BlendState{}};
+    pipelineDesc.vertexBuffers = {{0, 20, VertexInputRate::PerVertex}};
+    pipelineDesc.vertexAttributes = {
+        {0, 0, VertexFormat::Float32x3, 0},
+        {1, 0, VertexFormat::Float32x2, 12},
+    };
+    PipelineHandle pipeline = device->createPipeline(pipelineDesc, status);
+    ensure("create pipeline for dynamic binding validation", status.ok() && pipeline);
+    const std::array<std::uint32_t, 1> alignedOffset{{0}};
+    const std::array<std::uint32_t, 1> misalignedOffset{{1}};
+    ensure("aligned dynamic offset accepted",
+           device->validateBindingSetForPipeline(
+               pipeline, 0, frameSet, alignedOffset).ok());
+    ensure("missing dynamic offset rejected",
+           device->validateBindingSetForPipeline(
+               pipeline, 0, frameSet, {}).code() == StatusCode::InvalidArgument);
+    ensure("misaligned dynamic offset rejected",
+           device->validateBindingSetForPipeline(
+               pipeline, 0, frameSet, misalignedOffset).code() == StatusCode::InvalidArgument);
+
+    ensure("destroy dynamic-validation pipeline", device->destroy(pipeline).ok());
+    ensure("destroy frame binding set", device->destroy(frameSet).ok());
+    ensure("destroy uniform after binding set", device->destroy(uniform).ok());
+    ensure("destroy wrong-usage buffer", device->destroy(wrongUsage).ok());
+    ensure("destroy reflected package", device->destroy(shader).ok());
+    ensure("wait for R3 negative retirements", device->waitIdle().ok());
 }
 #endif
 

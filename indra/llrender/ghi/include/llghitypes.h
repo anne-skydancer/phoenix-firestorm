@@ -197,6 +197,11 @@ struct RendererCapabilities
     std::uint32_t maxVaryingVectors = 0;
     std::uint32_t maxSamples = 1;
     std::uint64_t maxBufferSize = 0;
+    std::uint64_t uniformBufferOffsetAlignment = 1;
+    std::uint64_t storageBufferOffsetAlignment = 1;
+    // Selected from queried capabilities. Exact-format resource creation
+    // remains strict and never substitutes this format implicitly.
+    Format preferredDepthStencilFormat = Format::Undefined;
     bool timestampQueries = false;
     double timestampPeriodNanoseconds = 0.0;
     bool occlusionQueries = false;

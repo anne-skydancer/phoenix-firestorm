@@ -385,6 +385,24 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
                               (properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) ? 4 :
                               (properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_2_BIT) ? 2 : 1;
     mCapabilities.maxBufferSize = std::numeric_limits<VkDeviceSize>::max();
+    mCapabilities.uniformBufferOffsetAlignment = properties.limits.minUniformBufferOffsetAlignment;
+    mCapabilities.storageBufferOffsetAlignment = properties.limits.minStorageBufferOffsetAlignment;
+    for (Format candidate : {Format::Depth24Stencil8, Format::Depth32FloatStencil8})
+    {
+        const VulkanFormat translated = translateFormat(candidate);
+        VkImageFormatProperties formatProperties{};
+        if (vkGetPhysicalDeviceImageFormatProperties(
+                mPhysicalDevice, translated.format, VK_IMAGE_TYPE_2D,
+                VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                0, &formatProperties) == VK_SUCCESS &&
+            (formatProperties.sampleCounts & VK_SAMPLE_COUNT_1_BIT))
+        {
+            mCapabilities.preferredDepthStencilFormat = candidate;
+            break;
+        }
+    }
+    if (mCapabilities.preferredDepthStencilFormat == Format::Undefined)
+        return unsupported("Vulkan device has no supported R3 depth/stencil attachment format");
     std::uint32_t familyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(mPhysicalDevice, &familyCount, nullptr);
     std::vector<VkQueueFamilyProperties> families(familyCount);

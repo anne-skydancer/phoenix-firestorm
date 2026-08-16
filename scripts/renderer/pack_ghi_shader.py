@@ -20,7 +20,7 @@ import tempfile
 from typing import Any
 
 
-PACKER_RECIPE = "ghi-shader-package-v2;glslang-vulkan1.3;spirv-opt-O;reflect-v1"
+PACKER_RECIPE = "ghi-shader-package-v3;glslang-vulkan1.3;spirv-opt-O;reflect-v1"
 STAGE_SUFFIX = {"vertex": "vert", "fragment": "frag", "compute": "comp"}
 STAGE_REFLECT = {"vertex": "VS", "fragment": "PS", "compute": "CS"}
 DESCRIPTOR_TYPES = {
@@ -31,11 +31,19 @@ DESCRIPTOR_TYPES = {
     "VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER": "combined_image_sampler",
     "VK_DESCRIPTOR_TYPE_STORAGE_IMAGE": "storage_image",
 }
-VERTEX_FORMATS = {
-    "float": "float32",
-    "float2": "float32x2",
-    "float3": "float32x3",
-    "float4": "float32x4",
+SHADER_VALUE_TYPES = {
+    "float": "float",
+    "float2": "float2",
+    "float3": "float3",
+    "float4": "float4",
+    "uint": "uint",
+    "uint2": "uint2",
+    "uint3": "uint3",
+    "uint4": "uint4",
+    "int": "sint",
+    "int2": "sint2",
+    "int3": "sint3",
+    "int4": "sint4",
 }
 
 
@@ -141,7 +149,7 @@ def reflect_module(reflector: pathlib.Path, spirv: pathlib.Path, stage: str) -> 
 
     push_heading = re.search(r"^  Push constant blocks:\s*(\d+)\s*$", text, re.MULTILINE)
     if push_heading and int(push_heading.group(1)):
-        fail("push-constant reflection is not yet supported by package schema v2")
+        fail("push-constant reflection is not yet supported by package schema v3")
     return {
         "entry_point": entry.group(1),
         "inputs": variables("Input variables"),
@@ -198,8 +206,8 @@ def main() -> int:
     manifest_path = args.manifest.resolve()
     root = manifest_path.parent
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 2:
-        fail("only GHI shader package schema version 2 is supported")
+    if manifest.get("schema_version") != 3:
+        fail("only GHI shader package schema version 3 is supported")
     tools = manifest["toolchain"]
     glslang_version = require_tool_version(args.glslang, tools["glslang_version"], glslang=True)
     val_version = require_tool_version(args.spirv_val, tools["spirv_tools_version"])
@@ -280,9 +288,15 @@ def main() -> int:
     bindings = merge_bindings(reflected_modules)
     vertex_inputs = []
     for item in modules_by_stage.get("vertex", {}).get("inputs", []):
-        if item["type"] not in VERTEX_FORMATS:
+        if item["type"] not in SHADER_VALUE_TYPES:
             fail(f"unsupported reflected vertex type: {item['type']}")
-        vertex_inputs.append({"location": item["location"], "format": VERTEX_FORMATS[item["type"]]})
+        vertex_inputs.append({"location": item["location"], "type": SHADER_VALUE_TYPES[item["type"]]})
+
+    fragment_outputs = []
+    for item in modules_by_stage.get("fragment", {}).get("outputs", []):
+        if item["type"] not in SHADER_VALUE_TYPES:
+            fail(f"unsupported reflected fragment output type: {item['type']}")
+        fragment_outputs.append({"location": item["location"], "type": SHADER_VALUE_TYPES[item["type"]]})
 
     expected = manifest["expected"]
     expected_bindings = sorted((normalized_expected_binding(item) for item in expected["bindings"]),
@@ -291,6 +305,8 @@ def main() -> int:
         fail(f"reflected bindings differ from manifest\nexpected: {expected_bindings}\nactual:   {bindings}")
     if vertex_inputs != expected["vertex_inputs"]:
         fail(f"reflected vertex inputs differ from manifest: {vertex_inputs}")
+    if fragment_outputs != expected["fragment_outputs"]:
+        fail(f"reflected fragment outputs differ from manifest: {fragment_outputs}")
 
     semantic_identity = {
         "schema_version": manifest["schema_version"],
@@ -302,7 +318,7 @@ def main() -> int:
         "expected": expected,
     }
     package = {
-        "schema_version": 2,
+        "schema_version": 3,
         "name": manifest["name"],
         "semantic_hash": sha256(canonical_json(semantic_identity)),
         "toolchain_hash": toolchain_hash,
@@ -310,6 +326,7 @@ def main() -> int:
         "stages": stage_packages,
         "bindings": bindings,
         "vertex_inputs": vertex_inputs,
+        "fragment_outputs": fragment_outputs,
         "push_constant_bytes": expected["push_constant_bytes"],
     }
     output_bytes = canonical_json(package)

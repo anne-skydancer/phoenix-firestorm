@@ -102,6 +102,8 @@ VulkanFormat translateFormat(Format format)
     case Format::RGBA8SRGB: return {VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, 4, true};
     case Format::BGRA8UNorm: return {VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 4, true};
     case Format::BGRA8SRGB: return {VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, 4, true};
+    case Format::RGB10A2UNorm: return {VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_IMAGE_ASPECT_COLOR_BIT, 4, true};
+    case Format::RGBA16UNorm: return {VK_FORMAT_R16G16B16A16_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 8, true};
     case Format::R16Float: return {VK_FORMAT_R16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, 2, true};
     case Format::RG16Float: return {VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, 4, true};
     case Format::RGBA16Float: return {VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, 8, true};
@@ -286,6 +288,7 @@ VkFormat translateVertexFormat(VertexFormat format)
     case VertexFormat::UInt16x2: return VK_FORMAT_R16G16_UINT;
     case VertexFormat::UInt16x4: return VK_FORMAT_R16G16B16A16_UINT;
     case VertexFormat::UInt32: return VK_FORMAT_R32_UINT;
+    case VertexFormat::UInt32x4: return VK_FORMAT_R32G32B32A32_UINT;
     }
     return VK_FORMAT_UNDEFINED;
 }

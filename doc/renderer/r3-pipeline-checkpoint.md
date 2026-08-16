@@ -3,6 +3,11 @@
 Date: 2026-08-16  
 Branch: `render/ghi-r3-pipelines`
 
+Compatibility note: R4a supersedes the R3 shader package's schema v2 with
+schema v3. Schema v3 separates shader value types from vertex storage formats
+and reflects fragment outputs. The R3 evidence below records the state at the
+R3 close; current R4 builds deliberately accept schema v3 only.
+
 R3 establishes the first complete backend-neutral graphics draw without
 routing production viewer world or UI rendering away from OpenGL. The same
 offscreen indexed diagnostic workload must execute through the independent

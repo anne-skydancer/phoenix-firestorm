@@ -174,13 +174,21 @@ ShaderPackageDesc::BindingType decodeBindingType(std::string_view value)
     throw std::runtime_error("unknown shader binding type");
 }
 
-VertexFormat decodeVertexFormat(std::string_view value)
+ShaderValueType decodeShaderValueType(std::string_view value)
 {
-    if (value == "float32") return VertexFormat::Float32;
-    if (value == "float32x2") return VertexFormat::Float32x2;
-    if (value == "float32x3") return VertexFormat::Float32x3;
-    if (value == "float32x4") return VertexFormat::Float32x4;
-    throw std::runtime_error("unknown reflected vertex format");
+    if (value == "float") return ShaderValueType::Float;
+    if (value == "float2") return ShaderValueType::Float2;
+    if (value == "float3") return ShaderValueType::Float3;
+    if (value == "float4") return ShaderValueType::Float4;
+    if (value == "uint") return ShaderValueType::UInt;
+    if (value == "uint2") return ShaderValueType::UInt2;
+    if (value == "uint3") return ShaderValueType::UInt3;
+    if (value == "uint4") return ShaderValueType::UInt4;
+    if (value == "sint") return ShaderValueType::SInt;
+    if (value == "sint2") return ShaderValueType::SInt2;
+    if (value == "sint3") return ShaderValueType::SInt3;
+    if (value == "sint4") return ShaderValueType::SInt4;
+    throw std::runtime_error("unknown reflected shader value type");
 }
 
 ShaderPackageDesc::StageVisibility decodeVisibility(const boost::json::array& stages)
@@ -308,7 +316,21 @@ Status decodeShaderPackage(std::string_view encoded, ShaderPackageDesc& package)
                 throw std::runtime_error("shader package contains a duplicate vertex input location");
             decoded.vertexInputs.push_back({
                 location,
-                decodeVertexFormat(stringAt(inputObject, "format")),
+                decodeShaderValueType(stringAt(inputObject, "type")),
+            });
+        }
+        std::set<std::uint16_t> seenOutputLocations;
+        for (const auto& outputValue : arrayAt(root, "fragment_outputs"))
+        {
+            const JsonObject& outputObject = outputValue.as_object();
+            const std::uint16_t location = narrowUnsigned<std::uint16_t>(
+                outputObject, "location");
+            if (!seenOutputLocations.insert(location).second)
+                throw std::runtime_error(
+                    "shader package contains a duplicate fragment output location");
+            decoded.fragmentOutputs.push_back({
+                location,
+                decodeShaderValueType(stringAt(outputObject, "type")),
             });
         }
         decoded.pushConstantBytes = narrowUnsigned<std::uint16_t>(root, "push_constant_bytes");

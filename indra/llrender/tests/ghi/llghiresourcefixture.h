@@ -81,10 +81,12 @@ inline ResourceFixtureResult runResourceFixture(Device& device)
     QueryPoolHandle queries = device.createQueryPool({QueryType::Timestamp, 2}, status);
     if (!status) return fail("create timestamp queries", status);
 
-    const std::array<std::pair<Format, ImageAspect>, 9> representativeFormats{{
+    const std::array<std::pair<Format, ImageAspect>, 11> representativeFormats{{
         {Format::R8UNorm, ImageAspect::Color},
         {Format::RGBA8UNorm, ImageAspect::Color},
         {Format::BGRA8SRGB, ImageAspect::Color},
+        {Format::RGB10A2UNorm, ImageAspect::Color},
+        {Format::RGBA16UNorm, ImageAspect::Color},
         {Format::RGBA16Float, ImageAspect::Color},
         {Format::R32UInt, ImageAspect::Color},
         {Format::Depth16UNorm, ImageAspect::Depth},

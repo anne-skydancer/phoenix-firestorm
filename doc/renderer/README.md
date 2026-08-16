@@ -20,6 +20,10 @@ supported peer and recovery path.
   native-Vulkan presentation slice and its validation evidence.
 - [R2 resource checkpoint](r2-resource-checkpoint.md) records the neutral
   resource/transfer contract, validation model, and native-peer entry gate.
+- [R3 pipeline checkpoint](r3-pipeline-checkpoint.md) records offline shader
+  packaging, reflected bindings, deterministic draw parity, and cache identity.
+- [R4 opaque-world checkpoint](r4-opaque-world-checkpoint.md) records the
+  incremental G-buffer and opaque-geometry gates beginning with R4a.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

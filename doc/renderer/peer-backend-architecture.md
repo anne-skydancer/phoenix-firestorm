@@ -422,6 +422,12 @@ references; cold and warm pipeline evidence is recorded.
 
 - Render targets, depth, G-buffer, static/dynamic geometry, simple materials,
   culling, and occlusion.
+- R4a separates shader value interfaces from buffer/target storage, reflects
+  fragment outputs, and validates the real multi-target G-buffer contract.
+- R4b executes a static opaque deferred fixture through both native peers with
+  independent attachment state and exact target formats.
+- R4c adds dynamic and instanced geometry plus explicit culling and occlusion
+  commands before any production scene routing is considered.
 
 Exit gate: relevant R01/R02 geometry and deferred targets reach parity.
 

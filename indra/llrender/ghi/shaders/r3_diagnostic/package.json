@@ -1,6 +1,6 @@
 {
   "name": "r3_diagnostic",
-  "schema_version": 2,
+  "schema_version": 3,
   "toolchain": {
     "glslang_version": "11:16.2.0",
     "spirv_tools_version": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
@@ -28,8 +28,11 @@
       }
     ],
     "vertex_inputs": [
-      {"location": 0, "format": "float32x3"},
-      {"location": 1, "format": "float32x2"}
+      {"location": 0, "type": "float3"},
+      {"location": 1, "type": "float2"}
+    ],
+    "fragment_outputs": [
+      {"location": 0, "type": "float4"}
     ],
     "push_constant_bytes": 0
   },

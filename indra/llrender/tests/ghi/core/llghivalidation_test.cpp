@@ -501,10 +501,12 @@ void LLGHIValidationObject::test<12>()
     DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
     auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
     ensure("validation device", created.status.ok() && device);
-    const std::array<std::pair<Format, ImageAspect>, 8> formats{{
+    const std::array<std::pair<Format, ImageAspect>, 10> formats{{
         {Format::R8UNorm, ImageAspect::Color},
         {Format::RGBA8UNorm, ImageAspect::Color},
         {Format::BGRA8SRGB, ImageAspect::Color},
+        {Format::RGB10A2UNorm, ImageAspect::Color},
+        {Format::RGBA16UNorm, ImageAspect::Color},
         {Format::RGBA16Float, ImageAspect::Color},
         {Format::R32UInt, ImageAspect::Color},
         {Format::Depth16UNorm, ImageAspect::Depth},
@@ -577,9 +579,10 @@ void LLGHIValidationObject::test<14>()
          ShaderPackageDesc::StageVisibility::Fragment, 1, false, "colorTexture"},
     };
     package.vertexInputs = {
-        {0, VertexFormat::Float32x3},
-        {1, VertexFormat::Float32x2},
+        {0, ShaderValueType::Float3},
+        {1, ShaderValueType::Float2},
     };
+    package.fragmentOutputs = {{0, ShaderValueType::Float4}};
 
     ShaderPackageDesc equivalent = package;
     ensure("equivalent shader packages compare equal", equivalent == package);
@@ -635,6 +638,8 @@ void LLGHIValidationObject::test<15>()
     ensure_equals("offline package binding count", package.bindings.size(), std::size_t{2});
     ensure_equals("offline package vertex input count",
                   package.vertexInputs.size(), std::size_t{2});
+    ensure_equals("offline package fragment output count",
+                  package.fragmentOutputs.size(), std::size_t{1});
 
     std::ifstream input(LL_GHI_R3_SHADER_PACKAGE, std::ios::binary);
     std::string corrupted((std::istreambuf_iterator<char>(input)),
@@ -813,6 +818,137 @@ void LLGHIValidationObject::test<18>()
         identity != pipelineCacheIdentity(package, pipeline,
             ShaderPackageDesc::TargetProfile::OpenGL46,
             Backend::OpenGL, {"device-a", "driver-b"}));
+}
+
+template<> template<>
+void LLGHIValidationObject::test<19>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R4 vertex-interface validation device", created.status.ok() && device);
+
+    ShaderPackageDesc package = makeUnboundShaderPackage();
+    package.vertexInputs = {
+        {0, ShaderValueType::Float3},
+        {1, ShaderValueType::Float4},
+        {2, ShaderValueType::UInt4},
+    };
+    package.fragmentOutputs = {{0, ShaderValueType::Float4}};
+    Status status = Status::success();
+    ShaderPackageHandle shader = device->createShaderPackage(package, status);
+    ensure("R4 reflected shader package", status.ok() && shader);
+
+    PipelineDesc compatible;
+    compatible.shader = shader;
+    compatible.depthTest = false;
+    compatible.depthWrite = false;
+    compatible.colorFormats = {Format::RGBA8UNorm};
+    compatible.blendStates = {BlendState{}};
+    compatible.vertexBuffers = {{0, 24, VertexInputRate::PerVertex}};
+    compatible.vertexAttributes = {
+        {0, 0, VertexFormat::Float32x3, 0},
+        // Packed normalized colors deliver a float4 shader value.
+        {1, 0, VertexFormat::UNorm8x4, 12},
+        // Packed joint indices deliver a uvec4 shader value.
+        {2, 0, VertexFormat::UInt16x4, 16},
+    };
+    PipelineHandle pipeline = device->createPipeline(compatible, status);
+    ensure("normalized colors and packed joints satisfy reflected values",
+           status.ok() && pipeline);
+
+    PipelineDesc incompatible = compatible;
+    incompatible.vertexAttributes[1].format = VertexFormat::UInt32;
+    PipelineHandle rejected = device->createPipeline(incompatible, status);
+    ensure("storage with the wrong delivered value shape is rejected",
+           !rejected && status.code() == StatusCode::InvalidArgument);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<20>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R4 MRT validation device", created.status.ok() && device);
+    ensure("R4 fixture supports four color targets",
+           device->capabilities().maxColorAttachments >= 4);
+
+    Status status = Status::success();
+    std::array<ImageHandle, 4> images;
+    std::array<ImageViewHandle, 4> views;
+    const std::array<Format, 4> targetFormats{{
+        Format::RGBA8UNorm,
+        Format::RGBA8UNorm,
+        Format::RGBA16UNorm,
+        Format::RGBA16Float,
+    }};
+    for (std::size_t index = 0; index < images.size(); ++index)
+    {
+        images[index] = device->createImage(
+            {{32, 32, 1}, targetFormats[index],
+             ResourceUsage::ColorAttachment, 1, 1, 1}, status);
+        ensure("R4 MRT image", status.ok() && images[index]);
+        views[index] = device->createImageView(
+            {images[index], targetFormats[index],
+             {ImageAspect::Color, 0, 1, 0, 1}}, status);
+        ensure("R4 MRT image view", status.ok() && views[index]);
+    }
+
+    ShaderPackageDesc package = makeUnboundShaderPackage();
+    package.fragmentOutputs = {
+        {0, ShaderValueType::Float4},
+        {1, ShaderValueType::Float4},
+        {2, ShaderValueType::Float4},
+        {3, ShaderValueType::Float4},
+    };
+    ShaderPackageHandle shader = device->createShaderPackage(package, status);
+    ensure("R4 MRT shader package", status.ok() && shader);
+
+    PipelineDesc pipelineDesc;
+    pipelineDesc.shader = shader;
+    pipelineDesc.depthTest = false;
+    pipelineDesc.depthWrite = false;
+    pipelineDesc.colorFormats.assign(targetFormats.begin(), targetFormats.end());
+    pipelineDesc.blendStates.assign(4, BlendState{});
+    PipelineHandle pipeline = device->createPipeline(pipelineDesc, status);
+    ensure("four reflected outputs match four color targets", status.ok() && pipeline);
+
+    PipelineDesc missingTarget = pipelineDesc;
+    missingTarget.colorFormats.pop_back();
+    missingTarget.blendStates.pop_back();
+    PipelineHandle rejected = device->createPipeline(missingTarget, status);
+    ensure("missing reflected fragment target is rejected",
+           !rejected && status.code() == StatusCode::InvalidArgument);
+
+    PipelineDesc wrongType = pipelineDesc;
+    wrongType.colorFormats[3] = Format::R32UInt;
+    rejected = device->createPipeline(wrongType, status);
+    ensure("fragment output numeric type mismatch is rejected",
+           !rejected && status.code() == StatusCode::InvalidArgument);
+
+    RenderingInfo pass;
+    pass.semanticId = 0x52345f4d5254ull; // "R4_MRT"
+    pass.width = 32;
+    pass.height = 32;
+    for (std::size_t index = 0; index < views.size(); ++index)
+    {
+        pass.colors.push_back(
+            {views[index], targetFormats[index], LoadOp::Clear, StoreOp::Store, {}});
+    }
+
+    CommandContext& commands = device->commandContext();
+    ensure("begin R4 MRT frame", commands.beginFrame().ok());
+    RenderingInfo aliased = pass;
+    aliased.colors[3].view = aliased.colors[0].view;
+    ensure("aliased MRT attachment is rejected",
+           commands.beginRendering(aliased).code() == StatusCode::InvalidArgument);
+    ensure("begin four-target rendering", commands.beginRendering(pass).ok());
+    ensure("bind four-target pipeline", commands.bindPipeline(pipeline).ok());
+    ensure("end four-target rendering", commands.endRendering().ok());
+    ensure("end R4 MRT frame", commands.endFrame().ok());
 }
 #endif
 

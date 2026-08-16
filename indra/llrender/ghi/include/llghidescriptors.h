@@ -179,11 +179,31 @@ enum class VertexFormat : std::uint8_t
     UInt16x2,
     UInt16x4,
     UInt32,
+    UInt32x4,
+};
+
+// Shader interfaces describe the numeric value received by a stage, not the
+// byte layout used by a vertex buffer or render target. For example, a shader
+// Float4 input may be supplied by Float32x4, UNorm8x4, or SNorm8x4 storage.
+enum class ShaderValueType : std::uint8_t
+{
+    Float,
+    Float2,
+    Float3,
+    Float4,
+    UInt,
+    UInt2,
+    UInt3,
+    UInt4,
+    SInt,
+    SInt2,
+    SInt3,
+    SInt4,
 };
 
 struct ShaderPackageDesc
 {
-    static constexpr std::uint32_t CURRENT_SCHEMA_VERSION = 2;
+    static constexpr std::uint32_t CURRENT_SCHEMA_VERSION = 3;
 
     std::uint32_t schemaVersion = CURRENT_SCHEMA_VERSION;
     // Stable content/permutation identity produced by the shader packager.
@@ -263,14 +283,23 @@ struct ShaderPackageDesc
     struct VertexInput
     {
         std::uint16_t location = 0;
-        VertexFormat format = VertexFormat::Float32;
+        ShaderValueType type = ShaderValueType::Float;
 
         friend bool operator==(const VertexInput&, const VertexInput&) = default;
+    };
+
+    struct FragmentOutput
+    {
+        std::uint16_t location = 0;
+        ShaderValueType type = ShaderValueType::Float4;
+
+        friend bool operator==(const FragmentOutput&, const FragmentOutput&) = default;
     };
 
     std::vector<StageArtifact> stages;
     std::vector<Binding> bindings;
     std::vector<VertexInput> vertexInputs;
+    std::vector<FragmentOutput> fragmentOutputs;
     std::uint16_t pushConstantBytes = 0;
 
     friend bool operator==(const ShaderPackageDesc&, const ShaderPackageDesc&) = default;

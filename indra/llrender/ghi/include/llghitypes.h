@@ -184,6 +184,10 @@ enum class Format : std::uint16_t
     Depth24Stencil8,
     Depth32Float,
     Depth32FloatStencil8,
+    // New serialized format values append here. Do not renumber existing
+    // entries: Format participates in the semantic trace contract.
+    RGB10A2UNorm,
+    RGBA16UNorm,
 };
 
 struct RendererCapabilities

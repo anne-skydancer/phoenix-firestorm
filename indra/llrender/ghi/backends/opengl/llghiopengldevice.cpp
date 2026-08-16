@@ -202,6 +202,8 @@ GLFormat translateFormat(Format format)
     case Format::RGBA8SRGB: return {GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE, 4, ImageAspect::Color};
     case Format::BGRA8UNorm: return {GL_RGBA8, GL_BGRA, GL_UNSIGNED_BYTE, 4, ImageAspect::Color};
     case Format::BGRA8SRGB: return {GL_SRGB8_ALPHA8, GL_BGRA, GL_UNSIGNED_BYTE, 4, ImageAspect::Color};
+    case Format::RGB10A2UNorm: return {GL_RGB10_A2, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, 4, ImageAspect::Color};
+    case Format::RGBA16UNorm: return {GL_RGBA16, GL_RGBA, GL_UNSIGNED_SHORT, 8, ImageAspect::Color};
     case Format::R16Float: return {GL_R16F, GL_RED, GL_HALF_FLOAT, 2, ImageAspect::Color};
     case Format::RG16Float: return {GL_RG16F, GL_RG, GL_HALF_FLOAT, 4, ImageAspect::Color};
     case Format::RGBA16Float: return {GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, 8, ImageAspect::Color};
@@ -323,6 +325,7 @@ GLVertexFormat translateVertexFormat(VertexFormat format)
     case VertexFormat::UInt16x2: return {2, GL_UNSIGNED_SHORT, GL_FALSE, true, 4};
     case VertexFormat::UInt16x4: return {4, GL_UNSIGNED_SHORT, GL_FALSE, true, 8};
     case VertexFormat::UInt32: return {1, GL_UNSIGNED_INT, GL_FALSE, true, 4};
+    case VertexFormat::UInt32x4: return {4, GL_UNSIGNED_INT, GL_FALSE, true, 16};
     }
     return {};
 }

@@ -66,11 +66,13 @@ std::uint32_t formatBytesPerTexel(Format format)
         case Format::RGBA8SRGB:
         case Format::BGRA8UNorm:
         case Format::BGRA8SRGB:
+        case Format::RGB10A2UNorm:
         case Format::RG16Float:
         case Format::R32Float:
         case Format::R32UInt:
         case Format::Depth24Stencil8:
         case Format::Depth32Float: return 4;
+        case Format::RGBA16UNorm:
         case Format::RGBA16Float:
         case Format::RG32Float:
         case Format::Depth32FloatStencil8: return 8;
@@ -93,8 +95,55 @@ std::uint32_t vertexFormatBytes(VertexFormat format)
         case VertexFormat::UInt16x4: return 8;
         case VertexFormat::Float32x3: return 12;
         case VertexFormat::Float32x4: return 16;
+        case VertexFormat::UInt32x4: return 16;
     }
     return 0;
+}
+
+ShaderValueType vertexShaderValueType(VertexFormat format)
+{
+    switch (format)
+    {
+        case VertexFormat::Float32: return ShaderValueType::Float;
+        case VertexFormat::Float32x2: return ShaderValueType::Float2;
+        case VertexFormat::Float32x3: return ShaderValueType::Float3;
+        case VertexFormat::Float32x4:
+        case VertexFormat::UNorm8x4:
+        case VertexFormat::SNorm8x4: return ShaderValueType::Float4;
+        case VertexFormat::UInt16x2: return ShaderValueType::UInt2;
+        case VertexFormat::UInt16x4:
+        case VertexFormat::UInt32x4: return ShaderValueType::UInt4;
+        case VertexFormat::UInt32: return ShaderValueType::UInt;
+    }
+    return ShaderValueType::Float;
+}
+
+std::optional<ShaderValueType> colorShaderValueType(Format format)
+{
+    switch (format)
+    {
+        case Format::R8UNorm:
+        case Format::R16Float:
+        case Format::R32Float: return ShaderValueType::Float;
+        case Format::RG8UNorm:
+        case Format::RG16Float:
+        case Format::RG32Float: return ShaderValueType::Float2;
+        case Format::RGBA8UNorm:
+        case Format::RGBA8SRGB:
+        case Format::BGRA8UNorm:
+        case Format::BGRA8SRGB:
+        case Format::RGB10A2UNorm:
+        case Format::RGBA16UNorm:
+        case Format::RGBA16Float:
+        case Format::RGBA32Float: return ShaderValueType::Float4;
+        case Format::R32UInt: return ShaderValueType::UInt;
+        case Format::Undefined:
+        case Format::Depth16UNorm:
+        case Format::Depth24Stencil8:
+        case Format::Depth32Float:
+        case Format::Depth32FloatStencil8: break;
+    }
+    return std::nullopt;
 }
 
 bool isColorFormat(Format format)
@@ -292,8 +341,18 @@ Status ValidationCommandContext::beginRendering(const RenderingInfo& info)
             "rendering pass must declare at least one attachment");
     }
 
+    if (info.colors.size() > mDevice.capabilities().maxColorAttachments)
+    {
+        return invalidArgument("rendering pass exceeds the color attachment limit");
+    }
+    std::set<std::pair<std::uint32_t, std::uint32_t>> attachmentViews;
     for (const AttachmentDesc& attachment : info.colors)
     {
+        if (!attachmentViews.emplace(
+                attachment.view.index(), attachment.view.generation()).second)
+        {
+            return invalidArgument("rendering pass aliases a color attachment view");
+        }
         if (!mDevice.imageViewMatches(
                 attachment.view,
                 attachment.format,
@@ -304,10 +363,16 @@ Status ValidationCommandContext::beginRendering(const RenderingInfo& info)
         }
     }
     if (info.depthStencil &&
+        !attachmentViews.emplace(info.depthStencil->view.index(),
+                                 info.depthStencil->view.generation()).second)
+    {
+        return invalidArgument("rendering pass aliases its depth/stencil attachment view");
+    }
+    if (info.depthStencil &&
         (!mDevice.imageViewMatches(
-             info.depthStencil->view,
-             info.depthStencil->format,
-             ResourceUsage::DepthStencilAttachment) ||
+              info.depthStencil->view,
+              info.depthStencil->format,
+              ResourceUsage::DepthStencilAttachment) ||
          !mDevice.imageViewCovers(info.depthStencil->view, info.width, info.height)))
     {
         return invalidHandle("invalid or incompatible depth/stencil attachment");
@@ -776,6 +841,15 @@ ShaderPackageHandle ValidationDevice::createShaderPackage(
             return {};
         }
     }
+    locations.clear();
+    for (const auto& output : desc.fragmentOutputs)
+    {
+        if (!locations.insert(output.location).second)
+        {
+            status = invalidArgument("duplicate reflected fragment output location");
+            return {};
+        }
+    }
 
     ShaderPackageHandle handle = mShaders.allocate();
     mShaderDescs.emplace(key(handle), desc);
@@ -948,7 +1022,8 @@ PipelineHandle ValidationDevice::createPipeline(const PipelineDesc& desc, Status
         const auto reflected = std::find_if(shader.vertexInputs.begin(), shader.vertexInputs.end(),
             [&](const ShaderPackageDesc::VertexInput& value) { return value.location == attribute.location; });
         if (layout == desc.vertexBuffers.end() || reflected == shader.vertexInputs.end() ||
-            reflected->format != attribute.format || !attributes.insert(attribute.location).second ||
+            reflected->type != vertexShaderValueType(attribute.format) ||
+            !attributes.insert(attribute.location).second ||
             attribute.offset + vertexFormatBytes(attribute.format) > layout->stride)
         {
             status = invalidArgument("pipeline vertex layout differs from reflected shader inputs");
@@ -959,6 +1034,16 @@ PipelineHandle ValidationDevice::createPipeline(const PipelineDesc& desc, Status
     {
         status = invalidArgument("pipeline does not provide every reflected vertex input");
         return {};
+    }
+    for (const auto& output : shader.fragmentOutputs)
+    {
+        if (output.location >= desc.colorFormats.size() ||
+            colorShaderValueType(desc.colorFormats[output.location]) != output.type)
+        {
+            status = invalidArgument(
+                "pipeline attachment format differs from reflected fragment output");
+            return {};
+        }
     }
     std::set<std::uint32_t> constants;
     for (const auto& constant : desc.specializationConstants)

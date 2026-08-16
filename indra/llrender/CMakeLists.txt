@@ -36,6 +36,7 @@ set(llrender_SOURCE_FILES
     llvertexbuffer.cpp
     llglcommonfunc.cpp
     ghi/backends/opengl/llghiopenglinfo.cpp
+    ghi/core/llghidevice.cpp
     ghi/core/llghipresentation.cpp
     ghi/core/llghirendererinfo.cpp
     ghi/core/llghitrace.cpp
@@ -82,6 +83,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghirendererinfo.h
     ghi/include/llghitypes.h
     ghi/core/llghihandlepool.h
+    ghi/core/llghidevicebackend.h
     ghi/core/llghipresentationbackend.h
     ghi/core/llghitrace.h
     ghi/core/llghivalidation.h
@@ -89,6 +91,7 @@ set(llrender_HEADER_FILES
 
 if (WINDOWS)
   list(APPEND llrender_SOURCE_FILES
+      ghi/backends/opengl/llghiopengldevice.cpp
       ghi/backends/opengl/llghiopenglpresentation.cpp
       )
 endif ()
@@ -132,6 +135,7 @@ target_include_directories(llrender
         ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
         )
 target_compile_definitions(llrender PRIVATE
+        LL_GHI_OPENGL_DEVICE=$<BOOL:${WINDOWS}>
         LL_GHI_OPENGL_PRESENTATION=$<BOOL:${WINDOWS}>
         LL_GHI_VULKAN=$<BOOL:${USE_VULKAN_GHI}>
         )
@@ -181,10 +185,23 @@ if (WINDOWS)
       llrender
       OpenGL::GL
       )
+
+  add_executable(llrender_opengl_resource_harness
+      ghi/backends/opengl/llghiopenglresourceharness.cpp
+      )
+  target_include_directories(llrender_opengl_resource_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+      )
+  target_link_libraries(llrender_opengl_resource_harness
+      llrender
+      OpenGL::GL
+      )
 endif ()
 
 if (LL_TESTS)
   add_executable(llrender_ghi_contract_test
+      ghi/core/llghidevice.cpp
       ghi/core/llghitrace.cpp
       ghi/core/llghirendererinfo.cpp
       ghi/core/llghivalidation.cpp
@@ -198,6 +215,7 @@ if (LL_TESTS)
       ${CMAKE_SOURCE_DIR}/test
       )
   target_compile_definitions(llrender_ghi_contract_test PRIVATE
+      LL_GHI_OPENGL_DEVICE=0
       LL_TEST=llghivalidation
       LL_TEST_llghivalidation
       )

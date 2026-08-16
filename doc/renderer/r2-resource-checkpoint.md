@@ -1,11 +1,13 @@
-# R2 resource checkpoint — contracts and validation
+# R2 resource checkpoint — contracts, validation, and OpenGL peer
 
 Date: 2026-08-16  
 Branch: `render/ghi-r2-resources`
 
 R2 adds backend-neutral resource and transfer semantics without routing viewer
 world or UI rendering away from OpenGL. This first checkpoint defines and tests
-the contract before either native resource peer is accepted.
+the contract before accepting either native resource peer. The second slice now
+accepts the OpenGL resource peer against that unchanged contract; Vulkan remains
+pending.
 
 ## Contract decisions
 
@@ -47,19 +49,30 @@ The model rejects:
 - Validation mip generation currently supports byte-UNorm color formats. Other
   formats fail explicitly as `Unsupported`; they are not silently processed
   with incorrect numeric or sRGB averaging.
-- The existing production OpenGL renderer remains untouched. Native OpenGL and
-  Vulkan R2 resource implementations follow only after these fixtures pass.
+- The existing production OpenGL renderer remains untouched. The R2 OpenGL
+  device is an independently executable resource peer, not a route for viewer
+  world or UI rendering.
+- OpenGL 4.1 has no native texture-view object. The OpenGL peer therefore keeps
+  validated view metadata and defers binding semantics to R3.
+- OpenGL 4.1 whole-chain mip generation is exposed only when the requested
+  range names the complete color mip chain; partial requests fail explicitly.
 - R2 does not introduce shader bindings or diagnostic geometry; those remain
   R3 responsibilities.
 
 ## Verification evidence for this slice
 
-- GHI contract tests: 12/12 PASS. They cover upload/copy/readback, mip
+- GHI contract tests: 13/13 PASS. They cover upload/copy/readback, mip
   generation, image-view lifetime, timestamp queries, deferred destruction,
-  16/32-bit indices, and representative color/depth formats.
+  16/32-bit indices, representative color/depth formats, and the shared R2
+  resource fixture.
+- Shared resource fixture on the native AMD OpenGL 4.6 ICD, driver 26.7.1:
+  PASS. The same executable also passes against staged Mesa 26.3 Zink.
+- The fixture verifies a byte-exact buffer roundtrip, constant-color mip-chain
+  upload/generation/readback, nonblocking timestamp availability, dependency-
+  ordered destruction, and explicit retirement drain.
 - Legacy R0 semantic trace hash: unchanged and PASS.
 - Vulkan-enabled full Release viewer build: PASS; production rendering remains
   OpenGL-only.
 - Renderer API-boundary ratchet: PASS with no new native API leakage.
-- Both native resource peers remain pending; therefore this checkpoint does not
+- The Vulkan resource peer remains pending; therefore this checkpoint does not
   claim R2 completion.

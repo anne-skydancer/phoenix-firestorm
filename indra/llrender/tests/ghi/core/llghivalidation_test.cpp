@@ -15,6 +15,7 @@
 #include "ghi/core/llghihandlepool.h"
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghirendererinfo.h"
+#include "tests/ghi/llghiresourcefixture.h"
 
 #include <array>
 #include <cstddef>
@@ -489,6 +490,18 @@ void LLGHIValidationObject::test<12>()
         {color, Format::RGBA8UNorm, {ImageAspect::Depth, 0, 1, 0, 1}}, status);
     ensure("incompatible image aspect rejected",
            !invalid && status.code() == StatusCode::InvalidArgument);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<13>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    ensure("validation device", created.status.ok() && created.device);
+    const Test::ResourceFixtureResult result =
+        Test::runResourceFixture(*created.device);
+    ensure(result.message, result.passed);
 }
 
 } // namespace tut

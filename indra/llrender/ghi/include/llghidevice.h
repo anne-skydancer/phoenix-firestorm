@@ -84,8 +84,7 @@ struct DeviceCreationResult
     Status status = Status::success();
 };
 
-// R0 implements only Backend::Validation. OpenGL and Vulkan factories are
-// added by later increments without changing this renderer-facing contract.
+// Dispatches to a compiled backend without exposing native API types here.
 DeviceCreationResult createDevice(const DeviceCreateInfo& info);
 
 } // namespace LL::GHI

@@ -1417,23 +1417,15 @@ bool ValidationDevice::pipelineMatches(
     return true;
 }
 
-DeviceCreationResult createDevice(const DeviceCreateInfo& info)
+DeviceCreationResult createValidationDevice(const DeviceCreateInfo& info)
 {
-    if (info.framesInFlight == 0 || info.framesInFlight > 16)
-    {
-        return {
-            nullptr,
-            Status::failure(
-                StatusCode::InvalidArgument,
-                "framesInFlight must be between one and sixteen")};
-    }
     if (info.backend != Backend::Validation)
     {
         return {
             nullptr,
             Status::failure(
-                StatusCode::Unsupported,
-                "R0 provides only the non-rendering validation backend")};
+                StatusCode::InvalidArgument,
+                "validation factory received a different backend")};
     }
 
     return {

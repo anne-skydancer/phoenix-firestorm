@@ -106,12 +106,72 @@ de facto contract.
 - The validation fixture semantic SHA-256 is
   `c160ddad9c093695bd701120a7d96edb38cc0a945979c2dffa1ea666324ae925`.
 
+## R3d OpenGL execution peer
+
+- The OpenGL peer selects packaged GLSL 4.6 on capable Windows/Linux contexts
+  and keeps packaged GLSL 4.1 as the compatibility/macOS artifact. Shader
+  compilation and linking occur inside the OpenGL backend; source symbols are
+  mapped to reflected GHI groups and bindings without exposing uniform-block
+  indices or texture units above the backend boundary.
+- Shader packages, immutable binding sets, pipelines, framebuffer attachments,
+  reverse-Z depth state, vertex/index buffers, viewport/scissor state, and
+  indexed draws now execute through `CommandContext` on OpenGL.
+- OpenGL native programs and vertex arrays obey the R2 deferred-retirement
+  window. GHI handles are invalidated immediately while native deletion waits
+  for the configured in-flight frame interval or `waitIdle()`.
+- `llrender_opengl_draw_harness` creates an undisplayed WGL context, loads the
+  deterministic shader package, and executes the same `runDrawFixture()` used
+  by the validation peer. It does not initialize the viewer, log in, present a
+  swapchain image, or alter production world/UI rendering.
+- R3d acceptance on the AMD Radeon RX 9070 XT native OpenGL 4.6 driver
+  26.7.1: shader-package load, GLSL 4.6 primary and GLSL 4.1 fallback
+  compile/link, reflected binding, offscreen reverse-Z indexed draw, teardown,
+  and `waitIdle()` all pass without a GL error. Fixed-pixel comparison remains
+  deliberately assigned to R3f.
+
+## Live-grid offscreen verification tier
+
+The synthetic R3 fixture remains the fast contract smoke test. A later
+live-grid, offscreen harness will log in, consume actual simulator,
+capabilities, object, terrain, avatar, and asset traffic, and continuously feed
+the resulting backend-neutral render data to independent Native OpenGL,
+Mesa+Zink, and Vulkan renderer workers.
+
+- One authoritative grid-ingest process owns login, simulator state, asset
+  decoding, scene timing, camera state, and render-frame identity. This avoids
+  comparing three independently logged-in viewers whose interest lists, asset
+  readiness, simulator updates, and frame timing inevitably drift.
+- The ingest process publishes immutable, frame-numbered GHI resource updates
+  and command streams. It never publishes OpenGL calls, Vulkan calls, native
+  handles, driver cache objects, credentials, or raw capability secrets.
+- Native OpenGL and Mesa+Zink require separate worker processes because the
+  OpenGL implementation is selected at process load time. Vulkan runs as a
+  third peer worker. Every worker consumes the same accepted frame packet.
+- Workers render to offscreen color/depth/ID targets and do not present a
+  swapchain image or construct interactive UI. OpenGL still owns a hidden WGL
+  context; Vulkan uses offscreen images without a presentation surface.
+- Comparisons are keyed by frame packet and resource-readiness epoch, not wall
+  clock. Exact hashes are used where the contract is bit-exact; diagnostic
+  tolerances are explicit for operations whose API/format rules permit bounded
+  floating-point differences.
+- Coverage includes static and rigged mesh, legacy and PBR materials, alpha
+  modes/cards, particles on their intended legacy path, terrain, water,
+  avatars, HUD-like geometry, and the explicit impostor/probe/mirror paths.
+- Offscreen operation removes presentation, compositor, and interactive-UI
+  cost. It does not remove geometry, shading, texture, synchronization, or
+  readback cost; readback frequency is therefore configurable and asynchronous.
+
+This is a distinct mode from the viewer's existing `HeadlessClient`, which
+skips `display()` and disables rendering. The live-grid harness must keep render
+production active while suppressing presentation. It does not replace the
+small contract fixture: live failures must be reduced to focused fixtures
+before changing a backend or the GHI contract.
+
 ## Remaining slices
 
-1. R3d: OpenGL shader, binding, pipeline, and draw implementation.
-2. R3e: Vulkan shader modules, descriptors, dynamic rendering, pipeline, and
+1. R3e: Vulkan shader modules, descriptors, dynamic rendering, pipeline, and
    draw implementation under the Khronos validation layer.
-3. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
+2. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
    checks, cold/warm cache evidence, full Release build, and boundary ratchet.
 
 ## R3 exit gate

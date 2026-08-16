@@ -272,6 +272,24 @@ if (WINDOWS)
       llrender
       OpenGL::GL
       )
+
+  if (USE_VULKAN_GHI)
+    add_executable(llrender_opengl_draw_harness
+        ghi/backends/opengl/llghiopengldrawharness.cpp
+        )
+    target_include_directories(llrender_opengl_draw_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+        )
+    target_compile_definitions(llrender_opengl_draw_harness PRIVATE
+        LL_GHI_R3_SHADER_PACKAGE="${GHI_R3_SHADER_PACKAGE}"
+        )
+    target_link_libraries(llrender_opengl_draw_harness
+        llrender
+        OpenGL::GL
+        )
+    add_dependencies(llrender_opengl_draw_harness llrender_ghi_shaders)
+  endif ()
 endif ()
 
 if (LL_TESTS)

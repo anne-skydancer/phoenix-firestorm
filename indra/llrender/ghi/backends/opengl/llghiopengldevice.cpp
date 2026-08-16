@@ -719,7 +719,10 @@ Status OpenGLDevice::copyBuffer(BufferHandle source, BufferHandle destination, s
     ScopedBufferBinding write(GL_COPY_WRITE_BUFFER, GL_COPY_WRITE_BUFFER_BINDING, dst->second.name);
     for (const auto& region : regions)
     {
-        if (!region.size || !rangeFits(region.sourceOffset, region.size, src->second.desc.size) || !rangeFits(region.destinationOffset, region.size, dst->second.desc.size)) return invalidArgument("copyBuffer region is out of bounds");
+        if (!region.size || ((region.sourceOffset | region.destinationOffset | region.size) & 3u) != 0 ||
+            !rangeFits(region.sourceOffset, region.size, src->second.desc.size) ||
+            !rangeFits(region.destinationOffset, region.size, dst->second.desc.size))
+            return invalidArgument("copyBuffer region is unaligned or out of bounds");
         glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, region.sourceOffset, region.destinationOffset, region.size);
     }
     if (dst->second.desc.memory == MemoryClass::Readback) dst->second.readySerial = mSubmittedSerial + 1;
@@ -738,7 +741,8 @@ Status OpenGLDevice::copyBufferToImage(BufferHandle source, ImageHandle destinat
     for (const auto& region : regions)
     {
         const auto& sub = region.imageSubresource;
-        if (sub.aspect != ImageAspect::Color || !aspectCompatible(sub.aspect, dst->second.format.aspect) ||
+        if ((region.bufferOffset & 3u) != 0 || sub.aspect != ImageAspect::Color ||
+            !aspectCompatible(sub.aspect, dst->second.format.aspect) ||
             sub.mipLevel >= dst->second.desc.mipLevels || !sub.arrayLayerCount ||
             sub.baseArrayLayer + sub.arrayLayerCount > dst->second.desc.arrayLayers ||
             region.imageOffset.x < 0 || region.imageOffset.y < 0 || region.imageOffset.z < 0)
@@ -790,7 +794,8 @@ Status OpenGLDevice::copyImageToBuffer(ImageHandle source, BufferHandle destinat
         const std::uint32_t layers = src->second.target == GL_TEXTURE_2D_ARRAY ? src->second.desc.arrayLayers : 1;
         const std::uint32_t depth = src->second.target == GL_TEXTURE_3D
             ? std::max(1u, src->second.desc.extent.depth >> sub.mipLevel) : 1;
-        if (sub.aspect != ImageAspect::Color || sub.mipLevel >= src->second.desc.mipLevels ||
+        if ((region.bufferOffset & 3u) != 0 || sub.aspect != ImageAspect::Color ||
+            sub.mipLevel >= src->second.desc.mipLevels ||
             region.imageOffset != Offset3D{} || region.imageExtent.width != width ||
             region.imageExtent.height != height || region.imageExtent.depth != depth ||
             sub.baseArrayLayer != 0 || sub.arrayLayerCount != layers ||

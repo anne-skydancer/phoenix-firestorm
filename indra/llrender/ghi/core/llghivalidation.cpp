@@ -953,10 +953,11 @@ Status ValidationDevice::executeCopyBuffer(
     for (const BufferCopyRegion& region : regions)
     {
         if (region.size == 0 ||
+            ((region.sourceOffset | region.destinationOffset | region.size) & 3u) != 0 ||
             !rangeFits(region.sourceOffset, region.size, source_size) ||
             !rangeFits(region.destinationOffset, region.size, destination_size))
         {
-            return invalidArgument("buffer copy region is empty or out of bounds");
+            return invalidArgument("buffer copy region is unaligned, empty, or out of bounds");
         }
         if (source == destination)
         {
@@ -1021,7 +1022,8 @@ Status ValidationDevice::executeCopyBufferToImage(
     for (const BufferImageCopyRegion& region : regions)
     {
         const ImageSubresourceLayers& layers = region.imageSubresource;
-        if (!aspectMatchesFormat(layers.aspect, image->second.format) ||
+        if ((region.bufferOffset & 3u) != 0 ||
+            !aspectMatchesFormat(layers.aspect, image->second.format) ||
             layers.mipLevel >= image->second.mipLevels ||
             layers.arrayLayerCount == 0 ||
             layers.baseArrayLayer >= image->second.arrayLayers ||
@@ -1134,7 +1136,8 @@ Status ValidationDevice::executeCopyImageToBuffer(
     for (const BufferImageCopyRegion& region : regions)
     {
         const ImageSubresourceLayers& layers = region.imageSubresource;
-        if (!aspectMatchesFormat(layers.aspect, image->second.format) ||
+        if ((region.bufferOffset & 3u) != 0 ||
+            !aspectMatchesFormat(layers.aspect, image->second.format) ||
             layers.mipLevel >= image->second.mipLevels || layers.arrayLayerCount == 0 ||
             layers.baseArrayLayer >= image->second.arrayLayers ||
             layers.arrayLayerCount > image->second.arrayLayers - layers.baseArrayLayer ||

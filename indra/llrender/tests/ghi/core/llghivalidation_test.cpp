@@ -283,6 +283,10 @@ void LLGHIValidationObject::test<7>()
 
     CommandContext& commands = device->commandContext();
     ensure("begin transfer frame", commands.beginFrame().ok());
+    const std::array<BufferCopyRegion, 1> unaligned_copy{{{1, 4, 4}}};
+    ensure("unaligned transfer rejected",
+           commands.copyBuffer(upload, local, unaligned_copy).code() ==
+               StatusCode::InvalidArgument);
     const std::array<BufferCopyRegion, 1> upload_copy{{{8, 4, source.size()}}};
     ensure("upload copy", commands.copyBuffer(upload, local, upload_copy).ok());
     const std::array<BufferCopyRegion, 1> readback_copy{{{4, 12, source.size()}}};

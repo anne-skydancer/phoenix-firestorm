@@ -1,13 +1,12 @@
-# R2 resource checkpoint — contracts, validation, and OpenGL peer
+# R2 resource checkpoint — contracts and resource peers
 
 Date: 2026-08-16  
 Branch: `render/ghi-r2-resources`
 
 R2 adds backend-neutral resource and transfer semantics without routing viewer
 world or UI rendering away from OpenGL. This first checkpoint defines and tests
-the contract before accepting either native resource peer. The second slice now
-accepts the OpenGL resource peer against that unchanged contract; Vulkan remains
-pending.
+the contract before accepting either native resource peer. Both the OpenGL and
+Vulkan resource peers now pass the same backend-independent workload.
 
 ## Contract decisions
 
@@ -16,6 +15,9 @@ pending.
   readback buffers after their producing frame completes.
 - Buffer and image transfers are recorded commands inside a frame and outside
   a rendering pass.
+- Buffer-copy offsets and sizes, and buffer-image offsets, use the common
+  four-byte alignment required by Vulkan; validation and OpenGL enforce the
+  same rule so the peers cannot accept different command streams.
 - Image views own an explicit format, aspect, mip range, and array-layer range.
 - Mip generation names its exact subresource range.
 - Timestamp queries use typed pools. Result reads are nonblocking
@@ -49,6 +51,9 @@ The model rejects:
 - Validation mip generation currently supports byte-UNorm color formats. Other
   formats fail explicitly as `Unsupported`; they are not silently processed
   with incorrect numeric or sRGB averaging.
+- Vulkan R2 buffer-image transfers currently support color images. Depth and
+  stencil transfer semantics are deferred until their separate aspects can be
+  expressed without emitting an invalid combined-aspect Vulkan copy.
 - The existing production OpenGL renderer remains untouched. The R2 OpenGL
   device is an independently executable resource peer, not a route for viewer
   world or UI rendering.
@@ -56,6 +61,18 @@ The model rejects:
   validated view metadata and defers binding semantics to R3.
 - OpenGL 4.1 whole-chain mip generation is exposed only when the requested
   range names the complete color mip chain; partial requests fail explicitly.
+- The Vulkan peer owns R2-only instance, adapter, device, queue, command-frame,
+  allocation, layout-transition, query, and deferred-retirement state. It does
+  not replace or redirect the R1 presentation path.
+- Vulkan format/usage combinations are queried before native creation. D24S8
+  is optional and unsupported by the tested AMD Vulkan driver, so it returns
+  explicit `Unsupported`; D32FS8 is exercised as the portable fallback. The
+  backend does not silently substitute formats with different bit semantics.
+- This difference does not create AMD and NVIDIA renderer paths. A later
+  capability-policy layer will select a supported depth/stencil format for the
+  active physical device, while exact-format resource creation stays strict.
+  Vendor quirks are reserved for reproduced conformance or driver defects that
+  cannot be described by Vulkan feature and format queries.
 - R2 does not introduce shader bindings or diagnostic geometry; those remain
   R3 responsibilities.
 
@@ -67,12 +84,15 @@ The model rejects:
   resource fixture.
 - Shared resource fixture on the native AMD OpenGL 4.6 ICD, driver 26.7.1:
   PASS. The same executable also passes against staged Mesa 26.3 Zink.
+- Shared resource fixture on native Vulkan 1.3 with
+  `VK_LAYER_KHRONOS_validation`: PASS with no validation or lifetime errors.
 - The fixture verifies a byte-exact buffer roundtrip, constant-color mip-chain
   upload/generation/readback, nonblocking timestamp availability, dependency-
-  ordered destruction, and explicit retirement drain.
+  ordered destruction, immediate post-submit destruction, explicit retirement
+  drain, and nine representative color/depth image-view descriptors.
 - Legacy R0 semantic trace hash: unchanged and PASS.
 - Vulkan-enabled full Release viewer build: PASS; production rendering remains
   OpenGL-only.
 - Renderer API-boundary ratchet: PASS with no new native API leakage.
-- The Vulkan resource peer remains pending; therefore this checkpoint does not
-  claim R2 completion.
+- R2 resource scope and its exit gate are complete. Shader bindings, pipelines,
+  and diagnostic indexed drawing remain R3 work.

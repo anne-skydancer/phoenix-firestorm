@@ -81,6 +81,47 @@ inline ResourceFixtureResult runResourceFixture(Device& device)
     QueryPoolHandle queries = device.createQueryPool({QueryType::Timestamp, 2}, status);
     if (!status) return fail("create timestamp queries", status);
 
+    const std::array<std::pair<Format, ImageAspect>, 9> representativeFormats{{
+        {Format::R8UNorm, ImageAspect::Color},
+        {Format::RGBA8UNorm, ImageAspect::Color},
+        {Format::BGRA8SRGB, ImageAspect::Color},
+        {Format::RGBA16Float, ImageAspect::Color},
+        {Format::R32UInt, ImageAspect::Color},
+        {Format::Depth16UNorm, ImageAspect::Depth},
+        {Format::Depth24Stencil8, ImageAspect::DepthStencil},
+        {Format::Depth32Float, ImageAspect::Depth},
+        {Format::Depth32FloatStencil8, ImageAspect::DepthStencil},
+    }};
+    for (const auto& [format, aspect] : representativeFormats)
+    {
+        ImageDesc representativeDesc;
+        representativeDesc.extent = {8, 8, 1};
+        representativeDesc.format = format;
+        representativeDesc.usage = aspect == ImageAspect::Color
+            ? ResourceUsage::Sampled
+            : ResourceUsage::DepthStencilAttachment;
+        ImageHandle representative = device.createImage(representativeDesc, status);
+        // D24S8 is optional in Vulkan. A peer must either implement it or
+        // reject it explicitly so higher layers can select D32FS8.
+        if (!status && format == Format::Depth24Stencil8 &&
+            status.code() == StatusCode::Unsupported)
+        {
+            continue;
+        }
+        if (!status) return fail("create representative image", status);
+        ImageViewDesc representativeViewDesc;
+        representativeViewDesc.image = representative;
+        representativeViewDesc.format = format;
+        representativeViewDesc.subresources = {aspect, 0, 1, 0, 1};
+        ImageViewHandle representativeView =
+            device.createImageView(representativeViewDesc, status);
+        if (!status) return fail("create representative image view", status);
+        status = device.destroy(representativeView);
+        if (!status) return fail("destroy representative image view", status);
+        status = device.destroy(representative);
+        if (!status) return fail("destroy representative image", status);
+    }
+
     CommandContext& commands = device.commandContext();
     status = commands.beginFrame();
     if (!status) return fail("begin frame", status);
@@ -142,6 +183,31 @@ inline ResourceFixtureResult runResourceFixture(Device& device)
     if (!status) return fail("read timestamp queries", status);
     if (timestampValues[1] < timestampValues[0])
         return {false, "timestamp results are not monotonic"};
+
+    BufferHandle transientUpload = device.createBuffer(
+        {16, transferSource, MemoryClass::Upload}, status);
+    if (!status) return fail("create transient upload buffer", status);
+    BufferHandle transientLocal = device.createBuffer(
+        {16, transferDestination, MemoryClass::DeviceLocal}, status);
+    if (!status) return fail("create transient local buffer", status);
+    const std::array<std::byte, 16> transientData{
+        std::byte{0x01}, std::byte{0x23}, std::byte{0x45}, std::byte{0x67},
+        std::byte{0x89}, std::byte{0xab}, std::byte{0xcd}, std::byte{0xef},
+        std::byte{0x10}, std::byte{0x32}, std::byte{0x54}, std::byte{0x76},
+        std::byte{0x98}, std::byte{0xba}, std::byte{0xdc}, std::byte{0xfe}};
+    status = device.writeBuffer(transientUpload, 0, transientData);
+    if (!status) return fail("write transient upload buffer", status);
+    status = commands.beginFrame();
+    if (!status) return fail("begin retirement frame", status);
+    const std::array<BufferCopyRegion, 1> transientCopy{{{0, 0, 16}}};
+    status = commands.copyBuffer(transientUpload, transientLocal, transientCopy);
+    if (!status) return fail("record transient copy", status);
+    status = commands.endFrame();
+    if (!status) return fail("submit retirement frame", status);
+    status = device.destroy(transientUpload);
+    if (!status) return fail("defer transient upload destruction", status);
+    status = device.destroy(transientLocal);
+    if (!status) return fail("defer transient local destruction", status);
 
     for (Status destroyStatus : {
         device.destroy(view), device.destroy(sampler), device.destroy(queries),

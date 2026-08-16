@@ -102,6 +102,7 @@ if (USE_VULKAN_GHI)
   endif ()
   find_package(Vulkan 1.3 REQUIRED)
   list(APPEND llrender_SOURCE_FILES
+      ghi/backends/vulkan/llghivulkandevice.cpp
       ghi/backends/vulkan/llghivulkanpresentation.cpp
       ghi/backends/vulkan/llghivulkanpresentation.h
       )
@@ -136,6 +137,7 @@ target_include_directories(llrender
         )
 target_compile_definitions(llrender PRIVATE
         LL_GHI_OPENGL_DEVICE=$<BOOL:${WINDOWS}>
+        LL_GHI_VULKAN_DEVICE=$<BOOL:${USE_VULKAN_GHI}>
         LL_GHI_OPENGL_PRESENTATION=$<BOOL:${WINDOWS}>
         LL_GHI_VULKAN=$<BOOL:${USE_VULKAN_GHI}>
         )
@@ -168,6 +170,18 @@ if (USE_VULKAN_GHI)
       ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
       )
   target_link_libraries(llrender_vulkan_lifecycle_harness
+      llrender
+      Vulkan::Vulkan
+      )
+
+  add_executable(llrender_vulkan_resource_harness
+      ghi/backends/vulkan/llghivulkanresourceharness.cpp
+      )
+  target_include_directories(llrender_vulkan_resource_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+      )
+  target_link_libraries(llrender_vulkan_resource_harness
       llrender
       Vulkan::Vulkan
       )
@@ -216,6 +230,7 @@ if (LL_TESTS)
       )
   target_compile_definitions(llrender_ghi_contract_test PRIVATE
       LL_GHI_OPENGL_DEVICE=0
+      LL_GHI_VULKAN_DEVICE=0
       LL_TEST=llghivalidation
       LL_TEST_llghivalidation
       )

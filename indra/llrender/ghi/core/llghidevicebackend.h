@@ -18,6 +18,7 @@ namespace LL::GHI
 
 DeviceCreationResult createValidationDevice(const DeviceCreateInfo& info);
 DeviceCreationResult createOpenGLDevice(const DeviceCreateInfo& info);
+DeviceCreationResult createVulkanDevice(const DeviceCreateInfo& info);
 
 } // namespace LL::GHI
 

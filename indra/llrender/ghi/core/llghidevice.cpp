@@ -13,6 +13,9 @@
 #ifndef LL_GHI_OPENGL_DEVICE
 #define LL_GHI_OPENGL_DEVICE 0
 #endif
+#ifndef LL_GHI_VULKAN_DEVICE
+#define LL_GHI_VULKAN_DEVICE 0
+#endif
 
 namespace LL::GHI
 {
@@ -40,8 +43,12 @@ DeviceCreationResult createDevice(const DeviceCreateInfo& info)
             "the OpenGL GHI device is not compiled for this platform")};
 #endif
     case Backend::Vulkan:
+#if LL_GHI_VULKAN_DEVICE
+        return createVulkanDevice(info);
+#else
         return {nullptr, Status::failure(StatusCode::Unsupported,
-            "the Vulkan GHI resource device is not implemented in R2")};
+            "the Vulkan GHI resource device is not compiled")};
+#endif
     }
 
     return {nullptr, Status::failure(StatusCode::InvalidArgument,

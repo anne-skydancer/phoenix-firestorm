@@ -8,6 +8,7 @@ include(FreeType)
 include(LLCommon)
 include(LLImage)
 include(LLWindow)
+include(OpenSSL)
 
 set(llrender_SOURCE_FILES
     llcubemap.cpp
@@ -34,6 +35,8 @@ set(llrender_SOURCE_FILES
     lluiimage.cpp
     llvertexbuffer.cpp
     llglcommonfunc.cpp
+    ghi/core/llghitrace.cpp
+    ghi/core/llghivalidation.cpp
     )
     
 set(llrender_HEADER_FILES
@@ -66,6 +69,14 @@ set(llrender_HEADER_FILES
     lluiimage.inl
     llvertexbuffer.h
     llglcommonfunc.h
+    ghi/include/llghi.h
+    ghi/include/llghicommand.h
+    ghi/include/llghidescriptors.h
+    ghi/include/llghidevice.h
+    ghi/include/llghitypes.h
+    ghi/core/llghihandlepool.h
+    ghi/core/llghitrace.h
+    ghi/core/llghivalidation.h
     )
 
 list(APPEND llrender_SOURCE_FILES ${llrender_HEADER_FILES})
@@ -90,7 +101,11 @@ if (BUILD_HEADLESS)
 endif (BUILD_HEADLESS)
 
 add_library (llrender ${llrender_SOURCE_FILES})
-target_include_directories( llrender  INTERFACE   ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(llrender
+        PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+        )
 
 set_property(TARGET llrender PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -104,7 +119,32 @@ target_link_libraries(llrender
         llxml
         llwindow
         ll::freetype
+        ll::openssl
         OpenGL::GL
         OpenGL::GLU
         )
 
+if (LL_TESTS)
+  add_executable(llrender_ghi_contract_test
+      ghi/core/llghitrace.cpp
+      ghi/core/llghivalidation.cpp
+      tests/ghi/core/llghivalidation_test.cpp
+      ${CMAKE_SOURCE_DIR}/test/test.cpp
+      ${CMAKE_SOURCE_DIR}/test/lltut.cpp
+      )
+  target_include_directories(llrender_ghi_contract_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+      ${CMAKE_SOURCE_DIR}/test
+      )
+  target_compile_definitions(llrender_ghi_contract_test PRIVATE
+      LL_TEST=llghivalidation
+      LL_TEST_llghivalidation
+      )
+  target_link_libraries(llrender_ghi_contract_test
+      llcommon
+      llmath
+      ll::openssl
+      )
+  add_test(NAME llrender_ghi_contract COMMAND llrender_ghi_contract_test)
+endif (LL_TESTS)

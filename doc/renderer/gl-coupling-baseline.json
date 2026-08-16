@@ -12,8 +12,8 @@
       "indra/newview"
     ],
     "excluded_backend_prefixes": [
-      "indra/llrender/rhi/gl/",
-      "indra/llrender/rhi/vulkan/"
+      "indra/llrender/ghi/backends/opengl/",
+      "indra/llrender/ghi/backends/vulkan/"
     ]
   },
   "metrics": {

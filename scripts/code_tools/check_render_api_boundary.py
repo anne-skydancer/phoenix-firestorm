@@ -3,7 +3,7 @@
 @file   check_render_api_boundary.py
 @author Vulkanstorm contributors
 @date   2026-08-12
-@brief  Prevent growth of legacy graphics-API coupling during RHI migration.
+@brief  Prevent growth of graphics-API coupling above the GHI backend boundary.
 
 $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
 Phoenix Firestorm Viewer Source Code
@@ -36,8 +36,8 @@ HEADER_SUFFIXES = {".h", ".hpp", ".inl"}
 # exist yet; declaring the boundary now prevents another API from leaking into
 # renderer-facing code when implementation begins.
 EXCLUDED_BACKEND_PREFIXES = (
-    "indra/llrender/rhi/gl/",
-    "indra/llrender/rhi/vulkan/",
+    "indra/llrender/ghi/backends/opengl/",
+    "indra/llrender/ghi/backends/vulkan/",
 )
 
 METRICS = {
@@ -195,7 +195,7 @@ def check_inventory(inventory, baseline):
             file=sys.stderr,
         )
     print(
-        "Move native API work below the RHI backend boundary. Update the baseline "
+        "Move native API work below the GHI backend boundary. Update the baseline "
         "only after an explicit architecture review.",
         file=sys.stderr,
     )

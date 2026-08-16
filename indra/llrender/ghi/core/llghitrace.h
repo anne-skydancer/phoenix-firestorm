@@ -1,0 +1,88 @@
+/**
+ * @file llghitrace.h
+ * @brief Canonical semantic command stream for GHI validation.
+ *
+ * $LicenseInfo:firstyear=2026&license=fsviewerlgpl$
+ * Phoenix Firestorm Viewer Source Code
+ * Copyright (C) 2026, The Phoenix Firestorm Project, Inc.
+ * $/LicenseInfo$
+ */
+
+#ifndef LL_LLGHITRACE_H
+#define LL_LLGHITRACE_H
+
+#include "ghi/include/llghidescriptors.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace LL::GHI
+{
+
+enum class TraceOpcode : std::uint8_t
+{
+    BeginFrame = 1,
+    EndFrame,
+    BeginRendering,
+    EndRendering,
+    BindPipeline,
+    BindVertexBuffer,
+    BindIndexBuffer,
+    Draw,
+    DrawIndexed,
+};
+
+class SemanticTrace
+{
+public:
+    void reset();
+
+    void beginFrame();
+    void endFrame();
+    void beginRendering(const RenderingInfo& info);
+    void endRendering();
+    void bindPipeline(PipelineHandle pipeline);
+    void bindVertexBuffer(
+        std::uint32_t slot,
+        BufferHandle buffer,
+        std::uint64_t offset);
+    void bindIndexBuffer(BufferHandle buffer, std::uint64_t offset, IndexType type);
+    void draw(const DrawArguments& arguments);
+    void drawIndexed(const DrawIndexedArguments& arguments);
+
+    const std::vector<std::uint8_t>& bytes() const { return mBytes; }
+    std::string sha256() const;
+
+private:
+    template<typename Enum>
+    void appendEnum(Enum value)
+    {
+        appendUnsigned(static_cast<std::uint64_t>(value), sizeof(Enum));
+    }
+
+    template<typename Tag>
+    void appendHandle(Handle<Tag> handle)
+    {
+        appendU32(handle.index());
+        appendU32(handle.generation());
+    }
+
+    void appendOpcode(TraceOpcode opcode);
+    void appendUnsigned(std::uint64_t value, std::size_t bytes);
+    void appendU8(std::uint8_t value);
+    void appendU16(std::uint16_t value);
+    void appendU32(std::uint32_t value);
+    void appendI32(std::int32_t value);
+    void appendU64(std::uint64_t value);
+    void appendFloat(float value);
+    void appendClearValue(const ClearValue& value);
+    void appendAttachment(const AttachmentDesc& attachment);
+
+    std::vector<std::uint8_t> mBytes;
+};
+
+} // namespace LL::GHI
+
+#endif // LL_LLGHITRACE_H

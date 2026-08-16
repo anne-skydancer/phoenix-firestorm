@@ -258,6 +258,35 @@ Graphics settings are keyed by physical GPU identity, not by backend. Switching
 OpenGL/Vulkan on the same GPU preserves the profile. A different GPU resets or
 selects that GPU's profile, consistent with the existing persistence design.
 
+## Renderer identity, capabilities, and quality policy
+
+Both peer backends publish one backend-neutral renderer snapshot after device
+creation and before graphics policy is applied. It has two distinct parts:
+
+- `RendererIdentity`: rendering API and version, backend/provider, physical
+  device name and stable identifier, vendor/device IDs, driver name/version,
+  and memory totals/budget.
+- `DeviceCapabilities`: semantic limits and features used by viewer policy,
+  such as attachment and texture limits, sample counts, queries, storage image
+  atomics, descriptor/binding capacity, and depth clamp.
+
+No viewer policy or user-facing diagnostics may infer Vulkan support from raw
+extensions or infer the selected backend from OpenGL renderer strings. Native
+API discovery is translated into these structures inside its GHI backend.
+
+`LLFeatureManager` remains the policy owner and feature tables remain the
+settings mechanism, but backend masks are selected from semantic capabilities
+rather than `gGLManager` fields. Quality level and saved settings belong to the
+physical GPU profile; backend-dependent feature availability is recalculated
+whenever the rendering API changes. Changing API/provider on the same GPU does
+not reset the profile. Changing the physical GPU does.
+
+Help -> About, recommended-settings notifications, logs, viewer stats, and
+crash diagnostics consume the same identity snapshot and formatter. OpenGL
+retains its API/version reporting, Mesa + Zink remains identified as an OpenGL
+provider, and native Vulkan reports its Vulkan API/device/driver information
+without presenting itself as Mesa or OpenGL.
+
 ## Frame scheduling and synchronization
 
 - Default to two bounded frames in flight, adjustable only for diagnostics.
@@ -324,13 +353,21 @@ pass.
 
 ### R1 — device, window surface, and presentation
 
+- Add the shared renderer identity/capability snapshot and formatter.
 - Implement the OpenGL lifecycle adapter.
 - Implement Vulkan instance/device/queue/surface/swapchain ownership.
 - Add resize, minimize/restore, display change, clear, present, and shutdown.
+- Adapt feature policy to semantic capabilities while preserving per-physical-
+  GPU settings across backend changes.
+- Route Help -> About and recommended-settings notifications through the shared
+  renderer identity, with the same data available to logs and diagnostics.
 - Keep Vulkan behind a developer setting.
 
 Exit gate: R00 lifecycle variants pass, including explicit invalid-ICD failure,
-without world rendering.
+without world rendering. Both peer backends publish complete identity and
+capability snapshots; recommended settings require no native API access above
+the GHI boundary; About correctly and consistently identifies the selected
+backend.
 
 ### R2 — resources, upload, readback, and queries
 
@@ -444,4 +481,3 @@ subsequent OpenGL and Vulkan work an enforceable architectural boundary.
   are measured.
 - Runtime shader compilation versus fully packaged SPIR-V after permutation
   counts and cache behavior are known.
-

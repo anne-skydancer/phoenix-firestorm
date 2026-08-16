@@ -504,11 +504,17 @@ LLWindowWin32::LLWindowWin32(LLWindowCallbacks* callbacks,
     mMaxGLVersion(max_gl_version),
     mMaxCores(max_cores)
 {
+    mUseGL = use_gl;
     sMainThreadId = LLThread::currentID();
     mWindowThread = new LLWindowWin32Thread();
 
-    //MAINT-516 -- force a load of opengl32.dll just in case windows went sideways
-    LoadLibrary(L"opengl32.dll");
+    // MAINT-516: force-load opengl32.dll for the OpenGL peer. An externally
+    // presented window must not acquire an OpenGL implementation as a side
+    // effect of creating its native surface.
+    if (mUseGL)
+    {
+        LoadLibrary(L"opengl32.dll");
+    }
 
 
     if (mMaxCores != 0)
@@ -638,7 +644,7 @@ LLWindowWin32::LLWindowWin32(LLWindowCallbacks* callbacks,
     if (name.empty())
     {
         mWindowClassName = new WCHAR[50];
-        wsprintf(mWindowClassName, L"OpenGL Window");
+        wsprintf(mWindowClassName, mUseGL ? L"OpenGL Window" : L"Renderer Window");
     }
     else
     {
@@ -1225,7 +1231,10 @@ bool LLWindowWin32::switchContext(bool fullscreen, const LLCoordScreen& size, bo
     }
     mRefreshRate = current_refresh;
 
-    gGLManager.shutdownGL();
+    if (mUseGL)
+    {
+        gGLManager.shutdownGL();
+    }
     //destroy gl context
     if (mhRC)
     {
@@ -1354,6 +1363,30 @@ bool LLWindowWin32::switchContext(bool fullscreen, const LLCoordScreen& size, bo
     else
     {
         LL_WARNS("Window") << "Window creation failed, code: " << GetLastError() << LL_ENDL;
+    }
+
+    // A peer renderer owns surface creation and presentation. Preserve the
+    // normal Win32 window/input lifecycle without choosing a WGL pixel format
+    // or creating an OpenGL context.
+    if (!mUseGL)
+    {
+        if (!mWindowHandle || !mhDC)
+        {
+            close();
+            return false;
+        }
+
+        SetWindowLongPtr(mWindowHandle, GWLP_USERDATA, (LONG_PTR)this);
+        DragAcceptFiles(mWindowHandle, TRUE);
+        mDragDrop->init(mWindowHandle);
+        SetTimer(mWindowHandle, 0, 1000 / 30, NULL);
+        mPostQuit = true;
+
+        if (auto_show)
+        {
+            show();
+        }
+        return true;
     }
 
     //-----------------------------------------------------------------------
@@ -3869,6 +3902,11 @@ bool LLWindowWin32::resetDisplayResolution()
 
 void LLWindowWin32::swapBuffers()
 {
+    if (!mUseGL)
+    {
+        return;
+    }
+
     {
         LL_PROFILE_ZONE_SCOPED_CATEGORY_WIN32;
         SwapBuffers(mhDC);

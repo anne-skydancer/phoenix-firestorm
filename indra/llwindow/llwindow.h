@@ -320,7 +320,8 @@ public:
         U32 fsaa_samples = 0,
         U32 max_cores = 0,
         F32 max_gl_version = 4.6f,
-        bool useLegacyCursors = false); // <FS:LO> Legacy cursor setting from main program
+        bool useLegacyCursors = false, // <FS:LO> Legacy cursor setting from main program
+        bool headless = false);
     static bool destroyWindow(LLWindow* window);
     static bool isWindowValid(LLWindow *window);
 };

@@ -418,11 +418,12 @@ LLWindow* LLWindowManager::createWindow(
     U32 fsaa_samples,
     U32 max_cores,
     F32 max_gl_version,
-    bool useLegacyCursors) // <FS:LO> Legacy cursor setting from main program
+    bool useLegacyCursors, // <FS:LO> Legacy cursor setting from main program
+    bool headless)
 {
     LLWindow* new_window;
 
-    if (use_gl)
+    if (!headless)
     {
 #if LL_MESA_HEADLESS
         new_window = new LLWindowMesaHeadless(callbacks,

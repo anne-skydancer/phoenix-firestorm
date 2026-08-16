@@ -2039,7 +2039,8 @@ LLViewerWindow::LLViewerWindow(const Params& p)
         0,
         max_core_count,
         max_gl_version, //don't use window level anti-aliasing, windows only
-        useLegacyCursors); // <FS:LO> Legacy cursor setting from main program
+        useLegacyCursors, // <FS:LO> Legacy cursor setting from main program
+        gHeadlessClient);
 
     if (NULL == mWindow)
     {

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 
 namespace LL::GHI
 {
@@ -29,6 +30,17 @@ struct DeviceCreateInfo
     bool enableValidation = false;
 };
 
+struct PipelineCacheDomain
+{
+    // Native programs/pipelines are reusable only inside this exact device
+    // and driver domain. Backends provide opaque, stable identity strings;
+    // renderer-facing code does not parse them.
+    std::string deviceIdentity;
+    std::string driverIdentity;
+
+    friend bool operator==(const PipelineCacheDomain&, const PipelineCacheDomain&) = default;
+};
+
 class Device
 {
 public:
@@ -36,6 +48,7 @@ public:
 
     virtual Backend backend() const = 0;
     virtual const RendererCapabilities& capabilities() const = 0;
+    virtual PipelineCacheDomain pipelineCacheDomain() const = 0;
     virtual CommandContext& commandContext() = 0;
 
     virtual BufferHandle createBuffer(const BufferDesc& desc, Status& status) = 0;

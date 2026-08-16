@@ -102,9 +102,9 @@ de facto contract.
 - `llghidrawfixture.h` defines the single workload R3d and R3e must execute: a
   64x64 offscreen reverse-Z textured indexed quad with explicit vertex/index/
   uniform/texture uploads, reflected groups 0 and 2, color plus depth/stencil
-  attachments, viewport, scissor, and deterministic teardown.
+  attachments, viewport, scissor, deterministic image readback, and teardown.
 - The validation fixture semantic SHA-256 is
-  `c160ddad9c093695bd701120a7d96edb38cc0a945979c2dffa1ea666324ae925`.
+  `a12dd9256c090e3f8575508fd39f73d35f151b40ab970eef2c8e72d8ad0e906b`.
 
 ## R3d OpenGL execution peer
 
@@ -141,8 +141,8 @@ de facto contract.
 - Graphics-pipeline creation maps vertex input, topology, multisampling,
   reverse-Z depth/stencil, culling, blending, attachment formats, dynamic
   viewport/scissor, and specialization data. The centralized Vulkan shader
-  clip conversion flips Y; Vulkan front-face state is inverted exactly once to
-  preserve the canonical OpenGL winding contract.
+  clip conversion owns the Y conversion. Native front-face state therefore
+  uses the canonical GHI winding directly and is not inverted a second time.
 - Transfer writes receive an explicit transfer-to-graphics memory barrier.
   Images transition between transfer, shader-read/general, color-attachment,
   depth/stencil-attachment, and readback layouts with matching stage/access
@@ -160,6 +160,60 @@ de facto contract.
   selects D32FS8 because D24S8 is not available for the required attachment
   usage; no AMD-specific path is introduced. Loader-only warnings identify
   duplicate AMD switchable-graphics and OBS layer manifests.
+
+## R3f deterministic parity and cache evidence
+
+- The shared fixture copies its complete color target to a GHI readback buffer
+  before submission completes. OpenGL's bottom-left `glGetTexImage` rows are
+  normalized to the diagnostic contract's top-left row order before hashing;
+  this does not change the command stream or production image resources.
+- Back-face culling is enabled for the canonical counter-clockwise quad. This
+  initially exposed a real Vulkan double-inversion defect: the whole quad was
+  culled. Removing the redundant native winding inversion restores the exact
+  OpenGL result.
+- The quad is exactly 48 by 48 pixels (2304 shaded pixels) inside a 64 by 64
+  clear target. That coverage plus the exact image reference jointly asserts
+  clip conversion, counter-clockwise winding, 16-bit indexed topology,
+  reflected uniform/texture bindings, nearest texture sampling, and reverse-Z
+  `GreaterEqual` drawing against a zero depth clear. A failure in any of those
+  rules leaves the target clear, changes coverage, or changes the hash.
+- Linear RGBA8 output is bit-exact across native OpenGL 4.6, packaged OpenGL
+  4.1 fallback, and Vulkan 1.3:
+  `f126a216776f58450335bc39732b8b1df604329cee2adc11e0bd9c8ec686937f`.
+- sRGB RGBA8 output is also bit-exact across OpenGL 4.6, OpenGL 4.1 fallback,
+  and Vulkan 1.3:
+  `15f2cdf81d3b51469bb4082df1453ba60fccd40f043c7ff1e11a7ac211a4c53a`.
+  The OpenGL peer now selects `GL_FRAMEBUFFER_SRGB` from the active attachment
+  formats rather than inheriting ambient context state.
+- `PipelineCacheDomain` keeps opaque device and driver compatibility strings
+  below the backend boundary. OpenGL uses vendor/renderer plus GL and GLSL
+  versions; Vulkan uses vendor/device IDs, `pipelineCacheUUID`, and driver
+  version. The backend-neutral cache identity adds backend, target profile,
+  shader semantic/toolchain hashes, complete immutable pipeline state, and the
+  domain strings.
+- Contract tests prove the cache identity is deterministic and that shader
+  source, toolchain, pipeline format/state, target profile, backend, device, or
+  driver changes each invalidate it. This defines safe future native-cache
+  storage; R3 does not add a persistent disk cache.
+- One acceptance sample on this machine recorded native creation evidence for
+  identical cold/warm fixture runs. OpenGL 4.6 shader creation changed from
+  42,466 microseconds to 27 microseconds and pipeline creation from 25 to 1
+  microseconds. Vulkan shader creation changed from 325 to 94 microseconds and
+  pipeline creation from 202 to 90 microseconds. These figures demonstrate the
+  instrumented cold/warm path and stable identity, not a performance promise.
+- Khronos validation, including synchronization validation, reports no API,
+  synchronization, descriptor, layout, or lifetime errors for the linear,
+  warm-repeat, and sRGB Vulkan fixtures. The only messages are the previously
+  identified duplicate AMD switchable-graphics and OBS layer manifests.
+- GHI contract tests pass 18/18. The shader package remains byte deterministic
+  with SHA-256
+  `cd051070bfc871480c94909a647d4a0ea78ef4388182349d741b986dec96b61a`.
+- The renderer API-boundary ratchet passes: no Vulkan calls or types leak above
+  the backend directory, no tracked legacy-coupling category grows, and raw GL
+  calls outside backend directories decrease by three.
+- The Vulkan-enabled Release viewer build passes and produces
+  `build-vc170-64/newview/Release/firestorm-bin.exe`. Production world and UI
+  rendering remain OpenGL-only.
 
 ## Live-grid offscreen verification tier
 
@@ -201,10 +255,13 @@ before changing a backend or the GHI contract.
 
 ## Remaining slices
 
-1. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
-   checks, cold/warm cache evidence, full Release build, and boundary ratchet.
+R3 is complete. Live-grid scene ingestion, persistent native pipeline-cache
+storage, and production renderer slices begin in later milestones; they are not
+silently folded into this contract checkpoint.
 
 ## R3 exit gate
+
+Status: PASS.
 
 - Both native peers render the same fixed offscreen diagnostic from the same
   GHI command sequence.

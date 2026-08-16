@@ -368,6 +368,22 @@ public:
 
     Backend backend() const override { return Backend::Vulkan; }
     const RendererCapabilities& capabilities() const override { return mCapabilities; }
+    PipelineCacheDomain pipelineCacheDomain() const override
+    {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(mPhysicalDevice, &properties);
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string uuid;
+        uuid.reserve(VK_UUID_SIZE * 2);
+        for (std::uint8_t byte : properties.pipelineCacheUUID)
+        {
+            uuid.push_back(hex[byte >> 4]);
+            uuid.push_back(hex[byte & 0x0f]);
+        }
+        return {std::to_string(properties.vendorID) + ":" +
+                    std::to_string(properties.deviceID) + ":" + uuid,
+                std::to_string(properties.driverVersion)};
+    }
     CommandContext& commandContext() override { return mCommands; }
     BufferHandle createBuffer(const BufferDesc&, Status&) override;
     ImageHandle createImage(const ImageDesc&, Status&) override;
@@ -1117,9 +1133,11 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc, Status& st
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     raster.cullMode = desc.cullMode == CullMode::None ? VK_CULL_MODE_NONE :
         desc.cullMode == CullMode::Front ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
-    // The Vulkan shader performs the canonical OpenGL-to-Vulkan Y flip.
-    raster.frontFace = desc.frontFaceCounterClockwise ? VK_FRONT_FACE_CLOCKWISE
-                                                      : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    // Front-face state is expressed in the GHI's canonical framebuffer
+    // convention. The shader prelude owns the clip-space Y conversion, so the
+    // native winding selection is not inverted again here.
+    raster.frontFace = desc.frontFaceCounterClockwise ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                                                      : VK_FRONT_FACE_CLOCKWISE;
     raster.lineWidth = 1.f;
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = samples;

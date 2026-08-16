@@ -37,7 +37,9 @@ set(llrender_SOURCE_FILES
     llglcommonfunc.cpp
     ghi/backends/opengl/llghiopenglinfo.cpp
     ghi/core/llghidevice.cpp
+    ghi/core/llghihash.cpp
     ghi/core/llghipresentation.cpp
+    ghi/core/llghipipelinecache.cpp
     ghi/core/llghirendererinfo.cpp
     ghi/core/llghishaderpackage.cpp
     ghi/core/llghitrace.cpp
@@ -84,6 +86,8 @@ set(llrender_HEADER_FILES
     ghi/include/llghirendererinfo.h
     ghi/include/llghitypes.h
     ghi/core/llghihandlepool.h
+    ghi/core/llghihash.h
+    ghi/core/llghipipelinecache.h
     ghi/core/llghidevicebackend.h
     ghi/core/llghipresentationbackend.h
     ghi/core/llghishaderpackage.h
@@ -311,6 +315,8 @@ endif ()
 if (LL_TESTS)
   add_executable(llrender_ghi_contract_test
       ghi/core/llghidevice.cpp
+      ghi/core/llghihash.cpp
+      ghi/core/llghipipelinecache.cpp
       ghi/core/llghishaderpackage.cpp
       ghi/core/llghitrace.cpp
       ghi/core/llghirendererinfo.cpp

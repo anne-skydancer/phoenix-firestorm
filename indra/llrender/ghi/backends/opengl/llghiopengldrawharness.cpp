@@ -98,7 +98,8 @@ int main()
         else
         {
             const auto fixture = LL::GHI::Test::runDrawFixture(
-                *creation.device, shaderPackage);
+                *creation.device, shaderPackage,
+                {LL::GHI::Format::RGBA8UNorm, true});
             if (!fixture.passed)
             {
                 std::cerr << fixture.message << '\n';
@@ -107,7 +108,29 @@ int main()
             else
             {
                 std::cout << fixture.message << " profile=OpenGL46 depth-stencil="
-                          << static_cast<int>(fixture.depthStencilFormat) << '\n';
+                          << static_cast<int>(fixture.depthStencilFormat)
+                          << " color-sha256=" << fixture.colorSha256
+                          << " cache-id=" << fixture.pipelineCacheIdentity
+                          << " shader-us=" << fixture.shaderCreateMicroseconds
+                          << " pipeline-us=" << fixture.pipelineCreateMicroseconds << '\n';
+                const auto warm = LL::GHI::Test::runDrawFixture(
+                    *creation.device, shaderPackage,
+                    {LL::GHI::Format::RGBA8UNorm, true,
+                     LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL46});
+                if (!warm.passed || warm.colorSha256 != fixture.colorSha256 ||
+                    warm.pipelineCacheIdentity != fixture.pipelineCacheIdentity)
+                {
+                    std::cerr << "OpenGL 4.6 warm run: " << warm.message << '\n';
+                    result = 9;
+                }
+                else
+                {
+                    std::cout << warm.message << " profile=OpenGL46 cache=warm"
+                              << " color-sha256=" << warm.colorSha256
+                              << " cache-id=" << warm.pipelineCacheIdentity
+                              << " shader-us=" << warm.shaderCreateMicroseconds
+                              << " pipeline-us=" << warm.pipelineCreateMicroseconds << '\n';
+                }
                 LL::GHI::ShaderPackageDesc fallbackPackage = shaderPackage;
                 for (auto& stage : fallbackPackage.stages)
                 {
@@ -118,7 +141,9 @@ int main()
                     });
                 }
                 const auto fallback = LL::GHI::Test::runDrawFixture(
-                    *creation.device, fallbackPackage);
+                    *creation.device, fallbackPackage,
+                    {LL::GHI::Format::RGBA8UNorm, true,
+                     LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL41});
                 if (!fallback.passed)
                 {
                     std::cerr << "OpenGL 4.1 fallback: " << fallback.message << '\n';
@@ -127,7 +152,42 @@ int main()
                 else
                 {
                     std::cout << fallback.message << " profile=OpenGL41 depth-stencil="
-                              << static_cast<int>(fallback.depthStencilFormat) << '\n';
+                              << static_cast<int>(fallback.depthStencilFormat)
+                              << " color-sha256=" << fallback.colorSha256
+                              << " cache-id=" << fallback.pipelineCacheIdentity << '\n';
+                }
+                if (!result)
+                {
+                    const auto srgb = LL::GHI::Test::runDrawFixture(
+                        *creation.device, shaderPackage,
+                        {LL::GHI::Format::RGBA8SRGB, true});
+                    if (!srgb.passed)
+                    {
+                        std::cerr << "OpenGL sRGB: " << srgb.message << '\n';
+                        result = 8;
+                    }
+                    else
+                    {
+                        std::cout << srgb.message << " profile=OpenGL46 color=sRGB"
+                                  << " color-sha256=" << srgb.colorSha256 << '\n';
+                        const auto fallbackSrgb = LL::GHI::Test::runDrawFixture(
+                            *creation.device, fallbackPackage,
+                            {LL::GHI::Format::RGBA8SRGB, true,
+                             LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL41});
+                        if (!fallbackSrgb.passed)
+                        {
+                            std::cerr << "OpenGL 4.1 sRGB fallback: "
+                                      << fallbackSrgb.message << '\n';
+                            result = 10;
+                        }
+                        else
+                        {
+                            std::cout << fallbackSrgb.message
+                                      << " profile=OpenGL41 color=sRGB"
+                                      << " color-sha256="
+                                      << fallbackSrgb.colorSha256 << '\n';
+                        }
+                    }
                 }
             }
         }

@@ -102,6 +102,10 @@ public:
 
     Backend backend() const override { return Backend::Validation; }
     const RendererCapabilities& capabilities() const override { return mCapabilities; }
+    PipelineCacheDomain pipelineCacheDomain() const override
+    {
+        return {"validation-device", "validation-driver-v1"};
+    }
     CommandContext& commandContext() override { return mCommands; }
 
     BufferHandle createBuffer(const BufferDesc& desc, Status& status) override;

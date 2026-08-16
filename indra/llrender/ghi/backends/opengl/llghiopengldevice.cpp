@@ -502,6 +502,16 @@ public:
 
     Backend backend() const override { return Backend::OpenGL; }
     const RendererCapabilities& capabilities() const override { return mCapabilities; }
+    PipelineCacheDomain pipelineCacheDomain() const override
+    {
+        const auto text = [](GLenum name)
+        {
+            const GLubyte* value = glGetString(name);
+            return value ? std::string(reinterpret_cast<const char*>(value)) : std::string{};
+        };
+        return {text(GL_VENDOR) + "|" + text(GL_RENDERER),
+                text(GL_VERSION) + "|" + text(GL_SHADING_LANGUAGE_VERSION)};
+    }
     CommandContext& commandContext() override { return mCommands; }
 
     BufferHandle createBuffer(const BufferDesc&, Status&) override;
@@ -1416,6 +1426,14 @@ Status OpenGLDevice::beginRendering(const RenderingInfo& info)
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_TRUE);
     glStencilMask(~GLuint{0});
+    const bool srgbTarget = std::any_of(info.colors.begin(), info.colors.end(),
+        [](const AttachmentDesc& attachment)
+        {
+            return attachment.format == Format::RGBA8SRGB ||
+                   attachment.format == Format::BGRA8SRGB;
+        });
+    if (srgbTarget) glEnable(GL_FRAMEBUFFER_SRGB);
+    else glDisable(GL_FRAMEBUFFER_SRGB);
     for (std::size_t i = 0; i < info.colors.size(); ++i)
     {
         const auto& attachment = info.colors[i];

@@ -13,6 +13,7 @@
 #include "lltut.h"
 
 #include "ghi/core/llghihandlepool.h"
+#include "ghi/core/llghipipelinecache.h"
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghirendererinfo.h"
@@ -666,7 +667,7 @@ void LLGHIValidationObject::test<16>()
            result.depthStencilFormat == Format::Depth24Stencil8);
     ensure_equals("R3 indexed fixture semantic hash",
                   validation->semanticTrace().sha256(),
-                  std::string{"c160ddad9c093695bd701120a7d96edb38cc0a945979c2dffa1ea666324ae925"});
+                  std::string{"a12dd9256c090e3f8575508fd39f73d35f151b40ab970eef2c8e72d8ad0e906b"});
 }
 
 template<> template<>
@@ -744,6 +745,74 @@ void LLGHIValidationObject::test<17>()
     ensure("destroy wrong-usage buffer", device->destroy(wrongUsage).ok());
     ensure("destroy reflected package", device->destroy(shader).ok());
     ensure("wait for R3 negative retirements", device->waitIdle().ok());
+}
+
+template<> template<>
+void LLGHIValidationObject::test<18>()
+{
+    using namespace LL::GHI;
+
+    ShaderPackageDesc package;
+    Status status = loadShaderPackage(LL_GHI_R3_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    PipelineDesc pipeline;
+    pipeline.cullMode = CullMode::Back;
+    pipeline.depthTest = true;
+    pipeline.depthWrite = true;
+    pipeline.depthCompare = CompareOp::GreaterEqual;
+    pipeline.colorFormats = {Format::RGBA8UNorm};
+    pipeline.depthStencilFormat = Format::Depth24Stencil8;
+    pipeline.blendStates = {BlendState{}};
+    pipeline.vertexBuffers = {{0, 20, VertexInputRate::PerVertex}};
+    pipeline.vertexAttributes = {
+        {0, 0, VertexFormat::Float32x3, 0},
+        {1, 0, VertexFormat::Float32x2, 12},
+    };
+    const PipelineCacheDomain domain{"device-a", "driver-a"};
+    const auto identity = pipelineCacheIdentity(
+        package, pipeline, ShaderPackageDesc::TargetProfile::OpenGL46,
+        Backend::OpenGL, domain);
+    ensure_equals("pipeline cache identity is deterministic", identity,
+        pipelineCacheIdentity(package, pipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL46,
+            Backend::OpenGL, domain));
+    ensure_equals("pipeline cache identity is SHA-256", identity.size(), std::size_t{64});
+
+    ShaderPackageDesc changedPackage = package;
+    changedPackage.semanticHash[0] ^= 1;
+    ensure("semantic source change invalidates pipeline cache",
+        identity != pipelineCacheIdentity(changedPackage, pipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL46,
+            Backend::OpenGL, domain));
+    changedPackage = package;
+    changedPackage.toolchainHash[0] ^= 1;
+    ensure("toolchain change invalidates pipeline cache",
+        identity != pipelineCacheIdentity(changedPackage, pipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL46,
+            Backend::OpenGL, domain));
+
+    PipelineDesc changedPipeline = pipeline;
+    changedPipeline.colorFormats = {Format::RGBA8SRGB};
+    ensure("pipeline state change invalidates pipeline cache",
+        identity != pipelineCacheIdentity(package, changedPipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL46,
+            Backend::OpenGL, domain));
+    ensure("target profile change invalidates pipeline cache",
+        identity != pipelineCacheIdentity(package, pipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL41,
+            Backend::OpenGL, domain));
+    ensure("backend change invalidates pipeline cache",
+        identity != pipelineCacheIdentity(package, pipeline,
+            ShaderPackageDesc::TargetProfile::VulkanSpirV13,
+            Backend::Vulkan, domain));
+    ensure("device change invalidates pipeline cache",
+        identity != pipelineCacheIdentity(package, pipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL46,
+            Backend::OpenGL, {"device-b", "driver-a"}));
+    ensure("driver change invalidates pipeline cache",
+        identity != pipelineCacheIdentity(package, pipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL46,
+            Backend::OpenGL, {"device-a", "driver-b"}));
 }
 #endif
 

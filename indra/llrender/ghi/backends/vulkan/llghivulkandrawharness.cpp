@@ -45,7 +45,9 @@ int main(int argc, char** argv)
         return 3;
     }
     const auto fixture = LL::GHI::Test::runDrawFixture(
-        *creation.device, shaderPackage);
+        *creation.device, shaderPackage,
+        {LL::GHI::Format::RGBA8UNorm, true,
+         LL::GHI::ShaderPackageDesc::TargetProfile::VulkanSpirV13});
     if (!fixture.passed)
     {
         std::cerr << fixture.message << '\n';
@@ -53,7 +55,39 @@ int main(int argc, char** argv)
     }
     std::cout << fixture.message << " backend=Vulkan depth-stencil="
               << static_cast<int>(fixture.depthStencilFormat)
-              << " validation=" << (validation ? "on" : "off") << '\n';
+              << " validation=" << (validation ? "on" : "off")
+              << " color-sha256=" << fixture.colorSha256
+              << " cache-id=" << fixture.pipelineCacheIdentity
+              << " shader-us=" << fixture.shaderCreateMicroseconds
+              << " pipeline-us=" << fixture.pipelineCreateMicroseconds << '\n';
+    const auto warm = LL::GHI::Test::runDrawFixture(
+        *creation.device, shaderPackage,
+        {LL::GHI::Format::RGBA8UNorm, true,
+         LL::GHI::ShaderPackageDesc::TargetProfile::VulkanSpirV13});
+    if (!warm.passed || warm.colorSha256 != fixture.colorSha256 ||
+        warm.pipelineCacheIdentity != fixture.pipelineCacheIdentity)
+    {
+        std::cerr << "Vulkan warm run: " << warm.message << '\n';
+        return 5;
+    }
+    std::cout << warm.message << " backend=Vulkan cache=warm"
+              << " validation=" << (validation ? "on" : "off")
+              << " color-sha256=" << warm.colorSha256
+              << " cache-id=" << warm.pipelineCacheIdentity
+              << " shader-us=" << warm.shaderCreateMicroseconds
+              << " pipeline-us=" << warm.pipelineCreateMicroseconds << '\n';
+    const auto srgb = LL::GHI::Test::runDrawFixture(
+        *creation.device, shaderPackage,
+        {LL::GHI::Format::RGBA8SRGB, true,
+         LL::GHI::ShaderPackageDesc::TargetProfile::VulkanSpirV13});
+    if (!srgb.passed)
+    {
+        std::cerr << "Vulkan sRGB: " << srgb.message << '\n';
+        return 6;
+    }
+    std::cout << srgb.message << " backend=Vulkan color=sRGB"
+              << " validation=" << (validation ? "on" : "off")
+              << " color-sha256=" << srgb.colorSha256 << '\n';
     creation.device.reset();
     return 0;
 }

@@ -84,6 +84,23 @@ OpenGL 4.6.0 Compatibility Profile Context 26.7.1.260716
 stable-device-id=luid:d2bf010000000000
 ```
 
+## Production OpenGL runtime acceptance
+
+Runtime acceptance was completed on the same AMD Radeon RX 9070 XT used for
+the lifecycle evidence:
+
+- Mesa + Zink viewer rendering: nominal.
+- Mesa + Zink Help -> About renderer identification: correct.
+- Native OpenGL viewer rendering: nominal.
+- Native OpenGL Help -> About renderer identification: correct.
+- Switching from Mesa + Zink to Native OpenGL preserved rendering settings,
+  confirming that provider changes on one physical GPU retain the same-GPU
+  settings profile.
+
+These checks validate both production OpenGL providers and the shared identity
+integration. They do not claim Vulkan world/UI rendering, which remains outside
+R1 by design.
+
 ## R1 scope boundary
 
 R1 is complete. It does not expose Vulkan as a normal viewer rendering choice:
@@ -92,3 +109,5 @@ The selected Vulkan lifecycle is exercised by the developer-gated harness, and
 its canonical support/About fields are verified without routing viewer draws to
 it. Resource ownership, upload/readback, and semantic performance probes begin
 in later increments.
+
+R1 is closed. Further GHI implementation begins at R2.

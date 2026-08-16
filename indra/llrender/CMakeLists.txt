@@ -73,6 +73,7 @@ set(llrender_HEADER_FILES
     llvertexbuffer.h
     llglcommonfunc.h
     ghi/backends/opengl/llghiopenglinfo.h
+    ghi/backends/opengl/llghiopenglpresentation.h
     ghi/include/llghi.h
     ghi/include/llghicommand.h
     ghi/include/llghidescriptors.h
@@ -81,9 +82,16 @@ set(llrender_HEADER_FILES
     ghi/include/llghirendererinfo.h
     ghi/include/llghitypes.h
     ghi/core/llghihandlepool.h
+    ghi/core/llghipresentationbackend.h
     ghi/core/llghitrace.h
     ghi/core/llghivalidation.h
     )
+
+if (WINDOWS)
+  list(APPEND llrender_SOURCE_FILES
+      ghi/backends/opengl/llghiopenglpresentation.cpp
+      )
+endif ()
 
 if (USE_VULKAN_GHI)
   if (NOT WINDOWS)
@@ -124,6 +132,7 @@ target_include_directories(llrender
         ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
         )
 target_compile_definitions(llrender PRIVATE
+        LL_GHI_OPENGL_PRESENTATION=$<BOOL:${WINDOWS}>
         LL_GHI_VULKAN=$<BOOL:${USE_VULKAN_GHI}>
         )
 
@@ -157,6 +166,20 @@ if (USE_VULKAN_GHI)
   target_link_libraries(llrender_vulkan_lifecycle_harness
       llrender
       Vulkan::Vulkan
+      )
+endif ()
+
+if (WINDOWS)
+  add_executable(llrender_opengl_lifecycle_harness
+      ghi/backends/opengl/llghiopengllifecycleharness.cpp
+      )
+  target_include_directories(llrender_opengl_lifecycle_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+      )
+  target_link_libraries(llrender_opengl_lifecycle_harness
+      llrender
+      OpenGL::GL
       )
 endif ()
 

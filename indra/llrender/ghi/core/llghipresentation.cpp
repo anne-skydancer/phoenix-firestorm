@@ -9,16 +9,23 @@
  */
 
 #include "ghi/include/llghipresentation.h"
-
-#if LL_GHI_VULKAN
-#include "ghi/backends/vulkan/llghivulkanpresentation.h"
-#endif
+#include "llghipresentationbackend.h"
 
 namespace LL::GHI
 {
 
 PresentationCreationResult createPresentationSurface(const PresentationCreateInfo& info)
 {
+    if (info.backend == Backend::OpenGL)
+    {
+#if LL_GHI_OPENGL_PRESENTATION
+        return createOpenGLPresentationSurface(info);
+#else
+        return { nullptr, Status::failure(
+            StatusCode::Unsupported,
+            "The OpenGL presentation adapter is not available on this platform") };
+#endif
+    }
     if (info.backend != Backend::Vulkan)
     {
         return { nullptr, Status::failure(
@@ -37,6 +44,14 @@ PresentationCreationResult createPresentationSurface(const PresentationCreateInf
 
 bool presentationBackendBuilt(Backend backend)
 {
+    if (backend == Backend::OpenGL)
+    {
+#if LL_GHI_OPENGL_PRESENTATION
+        return true;
+#else
+        return false;
+#endif
+    }
 #if LL_GHI_VULKAN
     return backend == Backend::Vulkan;
 #else

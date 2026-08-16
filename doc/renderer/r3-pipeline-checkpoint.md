@@ -129,6 +129,38 @@ de facto contract.
   and `waitIdle()` all pass without a GL error. Fixed-pixel comparison remains
   deliberately assigned to R3f.
 
+## R3e Vulkan execution peer
+
+- Device creation explicitly requires and enables Vulkan 1.3 dynamic
+  rendering. R3e does not create compatibility render passes or framebuffers
+  and does not require a presentation surface or swapchain.
+- Packaged Vulkan 1.3 SPIR-V creates native shader modules. Reflected sparse
+  groups create descriptor-set layouts (including empty intervening layouts),
+  one pipeline layout, per-binding-set descriptor pools/sets, and typed buffer,
+  image, and sampler writes without leaking Vulkan objects through the GHI.
+- Graphics-pipeline creation maps vertex input, topology, multisampling,
+  reverse-Z depth/stencil, culling, blending, attachment formats, dynamic
+  viewport/scissor, and specialization data. The centralized Vulkan shader
+  clip conversion flips Y; Vulkan front-face state is inverted exactly once to
+  preserve the canonical OpenGL winding contract.
+- Transfer writes receive an explicit transfer-to-graphics memory barrier.
+  Images transition between transfer, shader-read/general, color-attachment,
+  depth/stencil-attachment, and readback layouts with matching stage/access
+  masks before use.
+- Shader modules, descriptor layouts/pipeline layouts, descriptor pools, and
+  graphics pipelines obey immediate GHI handle invalidation plus the R2
+  deferred native-retirement window.
+- `llrender_vulkan_draw_harness --validation` loads the same deterministic
+  package and executes the same `runDrawFixture()` as the validation and
+  OpenGL peers. The Khronos validation callback makes severity-error messages
+  fail the fixture and explicitly enables synchronization validation.
+- R3e acceptance on the AMD Radeon RX 9070 XT Vulkan implementation: the
+  offscreen fixture passes with no API, synchronization, descriptor, image
+  layout, dynamic-rendering, or lifetime validation errors. Capability probing
+  selects D32FS8 because D24S8 is not available for the required attachment
+  usage; no AMD-specific path is introduced. Loader-only warnings identify
+  duplicate AMD switchable-graphics and OBS layer manifests.
+
 ## Live-grid offscreen verification tier
 
 The synthetic R3 fixture remains the fast contract smoke test. A later
@@ -169,9 +201,7 @@ before changing a backend or the GHI contract.
 
 ## Remaining slices
 
-1. R3e: Vulkan shader modules, descriptors, dynamic rendering, pipeline, and
-   draw implementation under the Khronos validation layer.
-2. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
+1. R3f: fixed diagnostic images, semantic hashes, reverse-Z/clip/winding/sRGB
    checks, cold/warm cache evidence, full Release build, and boundary ratchet.
 
 ## R3 exit gate

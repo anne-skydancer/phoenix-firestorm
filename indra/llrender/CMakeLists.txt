@@ -246,6 +246,22 @@ if (USE_VULKAN_GHI)
       llrender
       Vulkan::Vulkan
       )
+
+  add_executable(llrender_vulkan_draw_harness
+      ghi/backends/vulkan/llghivulkandrawharness.cpp
+      )
+  target_include_directories(llrender_vulkan_draw_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+      )
+  target_compile_definitions(llrender_vulkan_draw_harness PRIVATE
+      LL_GHI_R3_SHADER_PACKAGE="${GHI_R3_SHADER_PACKAGE}"
+      )
+  target_link_libraries(llrender_vulkan_draw_harness
+      llrender
+      Vulkan::Vulkan
+      )
+  add_dependencies(llrender_vulkan_draw_harness llrender_ghi_shaders)
 endif ()
 
 if (WINDOWS)

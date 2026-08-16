@@ -1,6 +1,6 @@
 /**
  * @file llghivulkandevice.cpp
- * @brief Vulkan 1.3 implementation of the R2 GHI resource contract.
+ * @brief Vulkan 1.3 implementation of the R3 GHI draw contract.
  *
  * Native Vulkan handles remain private to this translation unit.
  *
@@ -17,12 +17,16 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <span>
 #include <unordered_map>
@@ -68,6 +72,16 @@ bool hasLayer(const char* requested)
     {
         return std::strcmp(layer.layerName, requested) == 0;
     });
+}
+
+bool hasInstanceExtension(const char* requested)
+{
+    std::uint32_t count = 0;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr) != VK_SUCCESS) return false;
+    std::vector<VkExtensionProperties> extensions(count);
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions.data()) != VK_SUCCESS) return false;
+    return std::any_of(extensions.begin(), extensions.end(), [requested](const auto& extension)
+    { return std::strcmp(extension.extensionName, requested) == 0; });
 }
 
 struct VulkanFormat
@@ -153,6 +167,153 @@ VkSampleCountFlagBits translateSamples(std::uint8_t samples)
     }
 }
 
+VkShaderStageFlags translateVisibility(ShaderPackageDesc::StageVisibility visibility)
+{
+    VkShaderStageFlags flags = 0;
+    const auto bits = static_cast<std::uint8_t>(visibility);
+    if (bits & static_cast<std::uint8_t>(ShaderPackageDesc::StageVisibility::Vertex))
+        flags |= VK_SHADER_STAGE_VERTEX_BIT;
+    if (bits & static_cast<std::uint8_t>(ShaderPackageDesc::StageVisibility::Fragment))
+        flags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    if (bits & static_cast<std::uint8_t>(ShaderPackageDesc::StageVisibility::Compute))
+        flags |= VK_SHADER_STAGE_COMPUTE_BIT;
+    return flags;
+}
+
+VkDescriptorType translateDescriptorType(ShaderPackageDesc::BindingType type, bool dynamic)
+{
+    using Type = ShaderPackageDesc::BindingType;
+    switch (type)
+    {
+    case Type::UniformBuffer: return dynamic ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+                                             : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    case Type::StorageBuffer: return dynamic ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
+                                             : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    case Type::Sampler: return VK_DESCRIPTOR_TYPE_SAMPLER;
+    case Type::SampledImage: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    case Type::CombinedImageSampler: return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    case Type::StorageImage: return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    }
+    return VK_DESCRIPTOR_TYPE_MAX_ENUM;
+}
+
+VkPrimitiveTopology translateTopology(PrimitiveTopology topology)
+{
+    switch (topology)
+    {
+    case PrimitiveTopology::Points: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+    case PrimitiveTopology::Lines: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    case PrimitiveTopology::LineStrip: return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+    case PrimitiveTopology::Triangles: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    case PrimitiveTopology::TriangleStrip: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    }
+    return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+}
+
+VkCompareOp translateCompare(CompareOp compare)
+{
+    switch (compare)
+    {
+    case CompareOp::Never: return VK_COMPARE_OP_NEVER;
+    case CompareOp::Less: return VK_COMPARE_OP_LESS;
+    case CompareOp::Equal: return VK_COMPARE_OP_EQUAL;
+    case CompareOp::LessEqual: return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case CompareOp::Greater: return VK_COMPARE_OP_GREATER;
+    case CompareOp::NotEqual: return VK_COMPARE_OP_NOT_EQUAL;
+    case CompareOp::GreaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    case CompareOp::Always: return VK_COMPARE_OP_ALWAYS;
+    }
+    return VK_COMPARE_OP_ALWAYS;
+}
+
+VkStencilOp translateStencilOp(StencilOp op)
+{
+    switch (op)
+    {
+    case StencilOp::Keep: return VK_STENCIL_OP_KEEP;
+    case StencilOp::Zero: return VK_STENCIL_OP_ZERO;
+    case StencilOp::Replace: return VK_STENCIL_OP_REPLACE;
+    case StencilOp::IncrementClamp: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+    case StencilOp::DecrementClamp: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+    case StencilOp::Invert: return VK_STENCIL_OP_INVERT;
+    case StencilOp::IncrementWrap: return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+    case StencilOp::DecrementWrap: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    }
+    return VK_STENCIL_OP_KEEP;
+}
+
+VkBlendFactor translateBlendFactor(BlendFactor factor)
+{
+    switch (factor)
+    {
+    case BlendFactor::Zero: return VK_BLEND_FACTOR_ZERO;
+    case BlendFactor::One: return VK_BLEND_FACTOR_ONE;
+    case BlendFactor::SourceColor: return VK_BLEND_FACTOR_SRC_COLOR;
+    case BlendFactor::OneMinusSourceColor: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    case BlendFactor::DestinationColor: return VK_BLEND_FACTOR_DST_COLOR;
+    case BlendFactor::OneMinusDestinationColor: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+    case BlendFactor::SourceAlpha: return VK_BLEND_FACTOR_SRC_ALPHA;
+    case BlendFactor::OneMinusSourceAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    case BlendFactor::DestinationAlpha: return VK_BLEND_FACTOR_DST_ALPHA;
+    case BlendFactor::OneMinusDestinationAlpha: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+    }
+    return VK_BLEND_FACTOR_ONE;
+}
+
+VkBlendOp translateBlendOp(BlendOp op)
+{
+    switch (op)
+    {
+    case BlendOp::Add: return VK_BLEND_OP_ADD;
+    case BlendOp::Subtract: return VK_BLEND_OP_SUBTRACT;
+    case BlendOp::ReverseSubtract: return VK_BLEND_OP_REVERSE_SUBTRACT;
+    case BlendOp::Minimum: return VK_BLEND_OP_MIN;
+    case BlendOp::Maximum: return VK_BLEND_OP_MAX;
+    }
+    return VK_BLEND_OP_ADD;
+}
+
+VkFormat translateVertexFormat(VertexFormat format)
+{
+    switch (format)
+    {
+    case VertexFormat::Float32: return VK_FORMAT_R32_SFLOAT;
+    case VertexFormat::Float32x2: return VK_FORMAT_R32G32_SFLOAT;
+    case VertexFormat::Float32x3: return VK_FORMAT_R32G32B32_SFLOAT;
+    case VertexFormat::Float32x4: return VK_FORMAT_R32G32B32A32_SFLOAT;
+    case VertexFormat::UNorm8x4: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VertexFormat::SNorm8x4: return VK_FORMAT_R8G8B8A8_SNORM;
+    case VertexFormat::UInt16x2: return VK_FORMAT_R16G16_UINT;
+    case VertexFormat::UInt16x4: return VK_FORMAT_R16G16B16A16_UINT;
+    case VertexFormat::UInt32: return VK_FORMAT_R32_UINT;
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+
+VkAttachmentLoadOp translateLoadOp(LoadOp op)
+{
+    switch (op)
+    {
+    case LoadOp::Load: return VK_ATTACHMENT_LOAD_OP_LOAD;
+    case LoadOp::Clear: return VK_ATTACHMENT_LOAD_OP_CLEAR;
+    case LoadOp::Discard: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    }
+    return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+}
+
+VkAttachmentStoreOp translateStoreOp(StoreOp op)
+{
+    return op == StoreOp::Store ? VK_ATTACHMENT_STORE_OP_STORE
+                                : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+}
+
+VkStencilOpState translateStencilState(const StencilFaceState& state)
+{
+    return {translateStencilOp(state.fail), translateStencilOp(state.pass),
+            translateStencilOp(state.depthFail), translateCompare(state.compare),
+            state.compareMask, state.writeMask, state.reference};
+}
+
 class VulkanDevice;
 
 class VulkanCommandContext final : public CommandContext
@@ -167,22 +328,35 @@ public:
     Status generateMipmaps(ImageHandle, const ImageSubresourceRange&) override;
     Status resetQueryPool(QueryPoolHandle, std::uint32_t, std::uint32_t) override;
     Status writeTimestamp(QueryPoolHandle, std::uint32_t) override;
-    Status beginRendering(const RenderingInfo&) override { return unsupported("Vulkan rendering begins in R3"); }
-    Status endRendering() override { return unsupported("Vulkan rendering begins in R3"); }
-    Status bindPipeline(PipelineHandle) override { return unsupported("Vulkan pipelines begin in R3"); }
-    Status bindBindingSet(std::uint8_t, BindingSetHandle, std::span<const std::uint32_t>) override { return unsupported("Vulkan binding sets begin in R3"); }
-    Status setViewport(const Viewport&) override { return unsupported("Vulkan dynamic state begins in R3"); }
-    Status setScissor(const ScissorRect&) override { return unsupported("Vulkan dynamic state begins in R3"); }
-    Status bindVertexBuffer(std::uint32_t, BufferHandle, std::uint64_t) override { return unsupported("Vulkan vertex binding begins in R3"); }
-    Status bindIndexBuffer(BufferHandle, std::uint64_t, IndexType) override { return unsupported("Vulkan index binding begins in R3"); }
-    Status draw(const DrawArguments&) override { return unsupported("Vulkan drawing begins in R3"); }
-    Status drawIndexed(const DrawIndexedArguments&) override { return unsupported("Vulkan drawing begins in R3"); }
+    Status beginRendering(const RenderingInfo&) override;
+    Status endRendering() override;
+    Status bindPipeline(PipelineHandle) override;
+    Status bindBindingSet(std::uint8_t, BindingSetHandle, std::span<const std::uint32_t>) override;
+    Status setViewport(const Viewport&) override;
+    Status setScissor(const ScissorRect&) override;
+    Status bindVertexBuffer(std::uint32_t, BufferHandle, std::uint64_t) override;
+    Status bindIndexBuffer(BufferHandle, std::uint64_t, IndexType) override;
+    Status draw(const DrawArguments&) override;
+    Status drawIndexed(const DrawIndexedArguments&) override;
     bool frameActive() const { return mFrameActive; }
     void setFrameActive(bool value) { mFrameActive = value; }
+    bool renderingActive() const { return mRenderingActive; }
+    void resetDrawState();
 private:
+    friend class VulkanDevice;
     Status requireTransfer() const;
     VulkanDevice& mDevice;
     bool mFrameActive = false;
+    bool mRenderingActive = false;
+    bool mViewportSet = false;
+    bool mScissorSet = false;
+    std::uint32_t mRenderWidth = 0;
+    std::uint32_t mRenderHeight = 0;
+    std::vector<Format> mRenderColorFormats;
+    std::optional<Format> mRenderDepthFormat;
+    PipelineHandle mPipeline;
+    std::set<std::uint8_t> mBoundGroups;
+    BufferHandle mIndexBuffer;
 };
 
 class VulkanDevice final : public Device
@@ -200,17 +374,17 @@ public:
     ImageViewHandle createImageView(const ImageViewDesc&, Status&) override;
     SamplerHandle createSampler(const SamplerDesc&, Status&) override;
     QueryPoolHandle createQueryPool(const QueryPoolDesc&, Status&) override;
-    ShaderPackageHandle createShaderPackage(const ShaderPackageDesc&, Status& status) override { status = unsupported("Vulkan shader packages begin in R3"); return {}; }
-    BindingSetHandle createBindingSet(const BindingSetDesc&, Status& status) override { status = unsupported("Vulkan binding sets begin in R3"); return {}; }
-    PipelineHandle createPipeline(const PipelineDesc&, Status& status) override { status = unsupported("Vulkan pipelines begin in R3"); return {}; }
+    ShaderPackageHandle createShaderPackage(const ShaderPackageDesc&, Status&) override;
+    BindingSetHandle createBindingSet(const BindingSetDesc&, Status&) override;
+    PipelineHandle createPipeline(const PipelineDesc&, Status&) override;
     Status destroy(BufferHandle) override;
     Status destroy(ImageHandle) override;
     Status destroy(ImageViewHandle) override;
     Status destroy(SamplerHandle) override;
     Status destroy(QueryPoolHandle) override;
-    Status destroy(ShaderPackageHandle) override { return unsupported("Vulkan shader packages begin in R3"); }
-    Status destroy(BindingSetHandle) override { return unsupported("Vulkan binding sets begin in R3"); }
-    Status destroy(PipelineHandle) override { return unsupported("Vulkan pipelines begin in R3"); }
+    Status destroy(ShaderPackageHandle) override;
+    Status destroy(BindingSetHandle) override;
+    Status destroy(PipelineHandle) override;
     Status writeBuffer(BufferHandle, std::uint64_t, std::span<const std::byte>) override;
     Status readBuffer(BufferHandle, std::uint64_t, std::span<std::byte>) override;
     Status getQueryResults(QueryPoolHandle, std::uint32_t, std::span<std::uint64_t>, QueryReadMode) override;
@@ -224,6 +398,16 @@ public:
     Status generateMipmaps(ImageHandle, const ImageSubresourceRange&);
     Status resetQueryPool(QueryPoolHandle, std::uint32_t, std::uint32_t);
     Status writeTimestamp(QueryPoolHandle, std::uint32_t);
+    Status beginRendering(const RenderingInfo&);
+    Status endRendering();
+    Status bindPipeline(PipelineHandle);
+    Status bindBindingSet(std::uint8_t, BindingSetHandle, std::span<const std::uint32_t>);
+    Status setViewport(const Viewport&);
+    Status setScissor(const ScissorRect&);
+    Status bindVertexBuffer(std::uint32_t, BufferHandle, std::uint64_t);
+    Status bindIndexBuffer(BufferHandle, std::uint64_t, IndexType);
+    Status draw(const DrawArguments&);
+    Status drawIndexed(const DrawIndexedArguments&);
 
 private:
     struct BufferRecord { BufferDesc desc; VkBuffer buffer = VK_NULL_HANDLE; VkDeviceMemory memory = VK_NULL_HANDLE; std::uint64_t readySerial = 0; };
@@ -231,8 +415,28 @@ private:
     struct ViewRecord { ImageViewDesc desc; VkImageView view = VK_NULL_HANDLE; };
     struct SamplerRecord { SamplerDesc desc; VkSampler sampler = VK_NULL_HANDLE; };
     struct QueryRecord { QueryPoolDesc desc; VkQueryPool pool = VK_NULL_HANDLE; std::vector<bool> written; };
+    struct ShaderStageRecord
+    {
+        ShaderPackageDesc::Stage stage = ShaderPackageDesc::Stage::Vertex;
+        std::string entryPoint;
+        VkShaderModule module = VK_NULL_HANDLE;
+    };
+    struct ShaderRecord
+    {
+        ShaderPackageDesc desc;
+        std::vector<ShaderStageRecord> stages;
+        std::vector<VkDescriptorSetLayout> setLayouts;
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    };
+    struct BindingSetRecord
+    {
+        BindingSetDesc desc;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+    };
+    struct PipelineRecord { PipelineDesc desc; VkPipeline pipeline = VK_NULL_HANDLE; };
     struct Frame { VkCommandBuffer commands = VK_NULL_HANDLE; VkFence fence = VK_NULL_HANDLE; std::uint64_t serial = 0; };
-    enum class RetireKind { Buffer, Image, ImageView, Sampler, QueryPool };
+    enum class RetireKind { Buffer, Image, ImageView, Sampler, QueryPool, Shader, BindingSet, Pipeline };
     struct Retirement
     {
         RetireKind kind;
@@ -243,6 +447,11 @@ private:
         VkSampler sampler = VK_NULL_HANDLE;
         VkQueryPool queryPool = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
+        std::vector<VkShaderModule> shaderModules;
+        std::vector<VkDescriptorSetLayout> setLayouts;
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
     };
 
     Status canMutate() const;
@@ -252,14 +461,21 @@ private:
     void shutdown();
     Status transition(ImageRecord&, std::uint32_t mip, VkImageLayout layout);
     VkCommandBuffer commands() const { return mFrames[mFrameIndex].commands; }
+    static VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT,
+        VkDebugUtilsMessageTypeFlagsEXT,
+        const VkDebugUtilsMessengerCallbackDataEXT*,
+        void*);
 
     VkInstance mInstance = VK_NULL_HANDLE;
     VkPhysicalDevice mPhysicalDevice = VK_NULL_HANDLE;
     VkDevice mDevice = VK_NULL_HANDLE;
     VkQueue mQueue = VK_NULL_HANDLE;
     VkCommandPool mCommandPool = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT mDebugMessenger = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties mMemoryProperties{};
     bool mSamplerAnisotropy = false;
+    std::atomic_bool mValidationError = false;
     float mMaxSamplerAnisotropy = 1.f;
     RendererCapabilities mCapabilities;
     std::uint32_t mQueueFamily = 0;
@@ -272,27 +488,49 @@ private:
     HandlePool<ImageViewTag> mViewPool;
     HandlePool<SamplerTag> mSamplerPool;
     HandlePool<QueryPoolTag> mQueryPool;
+    HandlePool<ShaderPackageTag> mShaderPool;
+    HandlePool<BindingSetTag> mBindingSetPool;
+    HandlePool<PipelineTag> mPipelinePool;
     std::unordered_map<std::uint64_t, BufferRecord> mBuffers;
     std::unordered_map<std::uint64_t, ImageRecord> mImages;
     std::unordered_map<std::uint64_t, ViewRecord> mViews;
     std::unordered_map<std::uint64_t, SamplerRecord> mSamplers;
     std::unordered_map<std::uint64_t, QueryRecord> mQueries;
+    std::unordered_map<std::uint64_t, ShaderRecord> mShaders;
+    std::unordered_map<std::uint64_t, BindingSetRecord> mBindingSets;
+    std::unordered_map<std::uint64_t, PipelineRecord> mPipelines;
     std::vector<Frame> mFrames;
     std::vector<Retirement> mRetirements;
     VulkanCommandContext mCommands;
 };
+
+VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDevice::validationCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT,
+    const VkDebugUtilsMessengerCallbackDataEXT* data,
+    void* userData)
+{
+    auto* device = static_cast<VulkanDevice*>(userData);
+    if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+        device->mValidationError = true;
+    std::fprintf(stderr, "Vulkan validation: %s\n",
+                 data && data->pMessage ? data->pMessage : "unspecified message");
+    return VK_FALSE;
+}
 
 Status VulkanDevice::initialize(const DeviceCreateInfo& info)
 {
     constexpr const char* validationLayer = "VK_LAYER_KHRONOS_validation";
     if (info.enableValidation && !hasLayer(validationLayer))
         return unsupported("Vulkan validation was requested but VK_LAYER_KHRONOS_validation is unavailable");
+    if (info.enableValidation && !hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+        return unsupported("Vulkan validation requires VK_EXT_debug_utils");
     std::uint32_t loaderVersion = VK_API_VERSION_1_0;
     if (vkEnumerateInstanceVersion(&loaderVersion) != VK_SUCCESS || loaderVersion < VK_API_VERSION_1_3)
-        return unsupported("Vulkan R2 requires a Vulkan 1.3 loader");
+        return unsupported("Vulkan R3 requires a Vulkan 1.3 loader");
 
     VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    application.pApplicationName = "Vulkanstorm R2 resources";
+    application.pApplicationName = "Vulkanstorm R3 draw peer";
     application.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     application.pEngineName = "Vulkanstorm GHI";
     application.engineVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -302,8 +540,35 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     instanceInfo.pApplicationInfo = &application;
     instanceInfo.enabledLayerCount = info.enableValidation ? 1u : 0u;
     instanceInfo.ppEnabledLayerNames = info.enableValidation ? layers : nullptr;
+    const char* validationExtensions[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
+    instanceInfo.enabledExtensionCount = info.enableValidation ? 1u : 0u;
+    instanceInfo.ppEnabledExtensionNames = info.enableValidation ? validationExtensions : nullptr;
+    const VkValidationFeatureEnableEXT validationEnable =
+        VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+    VkValidationFeaturesEXT validationFeatures{VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+    validationFeatures.enabledValidationFeatureCount = 1;
+    validationFeatures.pEnabledValidationFeatures = &validationEnable;
+    VkDebugUtilsMessengerCreateInfoEXT debugInfo{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    debugInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    debugInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    debugInfo.pfnUserCallback = validationCallback;
+    debugInfo.pUserData = this;
+    validationFeatures.pNext = &debugInfo;
+    instanceInfo.pNext = info.enableValidation ? &validationFeatures : nullptr;
     VkResult result = vkCreateInstance(&instanceInfo, nullptr, &mInstance);
     if (result != VK_SUCCESS) return vkFailure("vkCreateInstance", result);
+    if (info.enableValidation)
+    {
+        auto createDebugMessenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(mInstance, "vkCreateDebugUtilsMessengerEXT"));
+        if (!createDebugMessenger)
+            return unsupported("vkCreateDebugUtilsMessengerEXT is unavailable");
+        result = createDebugMessenger(mInstance, &debugInfo, nullptr, &mDebugMessenger);
+        if (result != VK_SUCCESS) return vkFailure("vkCreateDebugUtilsMessengerEXT", result);
+    }
 
     std::uint32_t deviceCount = 0;
     result = vkEnumeratePhysicalDevices(mInstance, &deviceCount, nullptr);
@@ -338,10 +603,19 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     queueInfo.pQueuePriorities = &priority;
     VkPhysicalDeviceFeatures availableFeatures{};
     vkGetPhysicalDeviceFeatures(mPhysicalDevice, &availableFeatures);
+    VkPhysicalDeviceVulkan13Features available13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 available2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    available2.pNext = &available13;
+    vkGetPhysicalDeviceFeatures2(mPhysicalDevice, &available2);
+    if (!available13.dynamicRendering)
+        return unsupported("Vulkan R3 requires the Vulkan 1.3 dynamicRendering feature");
     VkPhysicalDeviceFeatures enabledFeatures{};
     enabledFeatures.samplerAnisotropy = availableFeatures.samplerAnisotropy;
     enabledFeatures.depthClamp = availableFeatures.depthClamp;
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    VkPhysicalDeviceVulkan13Features enabled13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    enabled13.dynamicRendering = VK_TRUE;
+    deviceInfo.pNext = &enabled13;
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;
     deviceInfo.pEnabledFeatures = &enabledFeatures;
@@ -584,6 +858,337 @@ QueryPoolHandle VulkanDevice::createQueryPool(const QueryPoolDesc& desc, Status&
     status = Status::success(); return handle;
 }
 
+ShaderPackageHandle VulkanDevice::createShaderPackage(
+    const ShaderPackageDesc& desc, Status& status)
+{
+    status = canMutate(); if (!status) return {};
+    if (desc.schemaVersion != ShaderPackageDesc::CURRENT_SCHEMA_VERSION)
+    { status = invalidArgument("Vulkan shader package schema is unsupported"); return {}; }
+
+    ShaderRecord record;
+    record.desc = desc;
+    auto cleanup = [&]()
+    {
+        if (record.pipelineLayout) vkDestroyPipelineLayout(mDevice, record.pipelineLayout, nullptr);
+        for (VkDescriptorSetLayout layout : record.setLayouts)
+            if (layout) vkDestroyDescriptorSetLayout(mDevice, layout, nullptr);
+        for (const auto& stage : record.stages)
+            if (stage.module) vkDestroyShaderModule(mDevice, stage.module, nullptr);
+    };
+
+    bool vertex = false;
+    bool fragment = false;
+    for (const auto& stage : desc.stages)
+    {
+        if (stage.stage == ShaderPackageDesc::Stage::Vertex) vertex = true;
+        else if (stage.stage == ShaderPackageDesc::Stage::Fragment) fragment = true;
+        else { status = unsupported("R3e Vulkan supports graphics shader packages only"); cleanup(); return {}; }
+        auto artifact = std::find_if(stage.artifacts.begin(), stage.artifacts.end(), [](const auto& value)
+        { return value.target == ShaderPackageDesc::TargetProfile::VulkanSpirV13; });
+        if (artifact == stage.artifacts.end() || artifact->spirv.empty())
+        { status = invalidArgument("shader package lacks Vulkan 1.3 SPIR-V"); cleanup(); return {}; }
+        ShaderStageRecord native;
+        native.stage = stage.stage;
+        native.entryPoint = stage.entryPoint;
+        VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        moduleInfo.codeSize = artifact->spirv.size() * sizeof(std::uint32_t);
+        moduleInfo.pCode = artifact->spirv.data();
+        VkResult result = vkCreateShaderModule(mDevice, &moduleInfo, nullptr, &native.module);
+        if (result != VK_SUCCESS)
+        { status = vkFailure("vkCreateShaderModule", result); cleanup(); return {}; }
+        record.stages.push_back(std::move(native));
+    }
+    if (!vertex || !fragment)
+    { status = invalidArgument("Vulkan graphics package requires vertex and fragment stages"); cleanup(); return {}; }
+
+    std::uint8_t maxGroup = 0;
+    for (const auto& binding : desc.bindings) maxGroup = std::max(maxGroup, binding.group);
+    record.setLayouts.resize(desc.bindings.empty() ? 0 : static_cast<std::size_t>(maxGroup) + 1);
+    for (std::size_t group = 0; group < record.setLayouts.size(); ++group)
+    {
+        std::vector<VkDescriptorSetLayoutBinding> bindings;
+        for (const auto& binding : desc.bindings)
+        {
+            if (binding.group != group) continue;
+            VkDescriptorSetLayoutBinding native{};
+            native.binding = binding.binding;
+            native.descriptorType = translateDescriptorType(binding.type, binding.dynamicOffset);
+            native.descriptorCount = binding.arrayCount;
+            native.stageFlags = translateVisibility(binding.visibility);
+            if (native.descriptorType == VK_DESCRIPTOR_TYPE_MAX_ENUM || !native.stageFlags || !native.descriptorCount)
+            { status = invalidArgument("shader reflection contains an invalid Vulkan binding"); cleanup(); return {}; }
+            bindings.push_back(native);
+        }
+        std::sort(bindings.begin(), bindings.end(), [](const auto& lhs, const auto& rhs)
+        { return lhs.binding < rhs.binding; });
+        VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        layoutInfo.bindingCount = static_cast<std::uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+        VkResult result = vkCreateDescriptorSetLayout(
+            mDevice, &layoutInfo, nullptr, &record.setLayouts[group]);
+        if (result != VK_SUCCESS)
+        { status = vkFailure("vkCreateDescriptorSetLayout", result); cleanup(); return {}; }
+    }
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = static_cast<std::uint32_t>(record.setLayouts.size());
+    pipelineLayoutInfo.pSetLayouts = record.setLayouts.data();
+    VkResult result = vkCreatePipelineLayout(
+        mDevice, &pipelineLayoutInfo, nullptr, &record.pipelineLayout);
+    if (result != VK_SUCCESS)
+    { status = vkFailure("vkCreatePipelineLayout", result); cleanup(); return {}; }
+
+    ShaderPackageHandle handle = mShaderPool.allocate();
+    mShaders.emplace(handleKey(handle), std::move(record));
+    status = Status::success();
+    return handle;
+}
+
+BindingSetHandle VulkanDevice::createBindingSet(
+    const BindingSetDesc& desc, Status& status)
+{
+    status = canMutate(); if (!status) return {};
+    auto shader = mShaders.find(handleKey(desc.shader));
+    if (!mShaderPool.isLive(desc.shader) || shader == mShaders.end() ||
+        desc.group >= shader->second.setLayouts.size())
+    { status = invalidHandle("binding set references an invalid shader package or group"); return {}; }
+
+    std::size_t expected = 0;
+    for (const auto& reflected : shader->second.desc.bindings)
+        if (reflected.group == desc.group) expected += reflected.arrayCount;
+    if (expected != desc.resources.size())
+    { status = invalidArgument("binding set does not exactly cover its reflected group"); return {}; }
+
+    std::map<VkDescriptorType, std::uint32_t> counts;
+    for (const auto& resource : desc.resources)
+    {
+        auto reflected = std::find_if(shader->second.desc.bindings.begin(),
+            shader->second.desc.bindings.end(), [&](const auto& binding)
+            {
+                return binding.group == desc.group && binding.binding == resource.binding &&
+                       binding.type == resource.type && resource.arrayElement < binding.arrayCount;
+            });
+        if (reflected == shader->second.desc.bindings.end())
+        { status = invalidArgument("binding resource does not match Vulkan reflection"); return {}; }
+        ++counts[translateDescriptorType(reflected->type, reflected->dynamicOffset)];
+    }
+
+    std::vector<VkDescriptorPoolSize> sizes;
+    for (const auto& [type, count] : counts) sizes.push_back({type, count});
+    BindingSetRecord record;
+    record.desc = desc;
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.maxSets = 1;
+    poolInfo.poolSizeCount = static_cast<std::uint32_t>(sizes.size());
+    poolInfo.pPoolSizes = sizes.data();
+    VkResult result = vkCreateDescriptorPool(mDevice, &poolInfo, nullptr, &record.pool);
+    if (result != VK_SUCCESS)
+    { status = vkFailure("vkCreateDescriptorPool", result); return {}; }
+    VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocation.descriptorPool = record.pool;
+    allocation.descriptorSetCount = 1;
+    allocation.pSetLayouts = &shader->second.setLayouts[desc.group];
+    result = vkAllocateDescriptorSets(mDevice, &allocation, &record.set);
+    if (result != VK_SUCCESS)
+    {
+        vkDestroyDescriptorPool(mDevice, record.pool, nullptr);
+        status = vkFailure("vkAllocateDescriptorSets", result); return {};
+    }
+
+    std::vector<VkDescriptorBufferInfo> bufferInfos(desc.resources.size());
+    std::vector<VkDescriptorImageInfo> imageInfos(desc.resources.size());
+    std::vector<VkWriteDescriptorSet> writes;
+    writes.reserve(desc.resources.size());
+    for (std::size_t i = 0; i < desc.resources.size(); ++i)
+    {
+        const auto& resource = desc.resources[i];
+        const auto reflected = std::find_if(shader->second.desc.bindings.begin(),
+            shader->second.desc.bindings.end(), [&](const auto& binding)
+            { return binding.group == desc.group && binding.binding == resource.binding; });
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = record.set;
+        write.dstBinding = resource.binding;
+        write.dstArrayElement = resource.arrayElement;
+        write.descriptorCount = 1;
+        write.descriptorType = translateDescriptorType(reflected->type, reflected->dynamicOffset);
+        if (resource.type == ShaderPackageDesc::BindingType::UniformBuffer ||
+            resource.type == ShaderPackageDesc::BindingType::StorageBuffer)
+        {
+            auto buffer = mBuffers.find(handleKey(resource.buffer));
+            const ResourceUsage required = resource.type == ShaderPackageDesc::BindingType::UniformBuffer
+                ? ResourceUsage::Uniform : ResourceUsage::Storage;
+            if (!mBufferPool.isLive(resource.buffer) || buffer == mBuffers.end() ||
+                !hasUsage(buffer->second.desc.usage, required) || resource.bufferOffset >= buffer->second.desc.size)
+            { vkDestroyDescriptorPool(mDevice, record.pool, nullptr); status = invalidArgument("buffer descriptor is invalid"); return {}; }
+            const std::uint64_t range = resource.bufferRange ? resource.bufferRange :
+                buffer->second.desc.size - resource.bufferOffset;
+            if (!rangeFits(resource.bufferOffset, range, buffer->second.desc.size))
+            { vkDestroyDescriptorPool(mDevice, record.pool, nullptr); status = invalidArgument("buffer descriptor range is invalid"); return {}; }
+            bufferInfos[i] = {buffer->second.buffer, resource.bufferOffset, range};
+            write.pBufferInfo = &bufferInfos[i];
+        }
+        else
+        {
+            if (resource.imageView)
+            {
+                auto view = mViews.find(handleKey(resource.imageView));
+                if (!mViewPool.isLive(resource.imageView) || view == mViews.end())
+                { vkDestroyDescriptorPool(mDevice, record.pool, nullptr); status = invalidHandle("image descriptor view is invalid"); return {}; }
+                imageInfos[i].imageView = view->second.view;
+                imageInfos[i].imageLayout = resource.type == ShaderPackageDesc::BindingType::StorageImage
+                    ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+            if (resource.sampler)
+            {
+                auto sampler = mSamplers.find(handleKey(resource.sampler));
+                if (!mSamplerPool.isLive(resource.sampler) || sampler == mSamplers.end())
+                { vkDestroyDescriptorPool(mDevice, record.pool, nullptr); status = invalidHandle("image descriptor sampler is invalid"); return {}; }
+                imageInfos[i].sampler = sampler->second.sampler;
+            }
+            write.pImageInfo = &imageInfos[i];
+        }
+        writes.push_back(write);
+    }
+    vkUpdateDescriptorSets(mDevice, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    BindingSetHandle handle = mBindingSetPool.allocate();
+    mBindingSets.emplace(handleKey(handle), std::move(record));
+    status = Status::success();
+    return handle;
+}
+
+PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc, Status& status)
+{
+    status = canMutate(); if (!status) return {};
+    auto shader = mShaders.find(handleKey(desc.shader));
+    if (!mShaderPool.isLive(desc.shader) || shader == mShaders.end())
+    { status = invalidHandle("pipeline references an invalid shader package"); return {}; }
+    const VkSampleCountFlagBits samples = translateSamples(desc.samples);
+    if (!samples || desc.colorFormats.empty() || desc.colorFormats.size() != desc.blendStates.size())
+    { status = invalidArgument("invalid Vulkan graphics pipeline descriptor"); return {}; }
+    if (desc.depthClamp && !mCapabilities.depthClamp)
+    { status = unsupported("Vulkan depth clamp is unavailable"); return {}; }
+
+    std::vector<VkSpecializationMapEntry> specializationEntries;
+    std::vector<std::byte> specializationData;
+    for (const auto& value : desc.specializationConstants)
+    {
+        specializationEntries.push_back({value.id,
+            static_cast<std::uint32_t>(specializationData.size()), value.size});
+        specializationData.insert(specializationData.end(), value.value.begin(),
+                                  value.value.begin() + value.size);
+    }
+    VkSpecializationInfo specialization{};
+    specialization.mapEntryCount = static_cast<std::uint32_t>(specializationEntries.size());
+    specialization.pMapEntries = specializationEntries.data();
+    specialization.dataSize = specializationData.size();
+    specialization.pData = specializationData.data();
+
+    std::vector<VkPipelineShaderStageCreateInfo> stages;
+    for (const auto& native : shader->second.stages)
+    {
+        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stage.stage = native.stage == ShaderPackageDesc::Stage::Vertex
+            ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+        stage.module = native.module;
+        stage.pName = native.entryPoint.c_str();
+        stage.pSpecializationInfo = specializationEntries.empty() ? nullptr : &specialization;
+        stages.push_back(stage);
+    }
+
+    std::vector<VkVertexInputBindingDescription> vertexBindings;
+    for (const auto& value : desc.vertexBuffers)
+        vertexBindings.push_back({value.slot, value.stride,
+            value.inputRate == VertexInputRate::PerVertex ? VK_VERTEX_INPUT_RATE_VERTEX
+                                                          : VK_VERTEX_INPUT_RATE_INSTANCE});
+    std::vector<VkVertexInputAttributeDescription> vertexAttributes;
+    for (const auto& value : desc.vertexAttributes)
+        vertexAttributes.push_back({value.location, value.bufferSlot,
+            translateVertexFormat(value.format), value.offset});
+    VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInput.vertexBindingDescriptionCount = static_cast<std::uint32_t>(vertexBindings.size());
+    vertexInput.pVertexBindingDescriptions = vertexBindings.data();
+    vertexInput.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(vertexAttributes.size());
+    vertexInput.pVertexAttributeDescriptions = vertexAttributes.data();
+    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    assembly.topology = translateTopology(desc.topology);
+    VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport.viewportCount = 1; viewport.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    raster.depthClampEnable = desc.depthClamp;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = desc.cullMode == CullMode::None ? VK_CULL_MODE_NONE :
+        desc.cullMode == CullMode::Front ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
+    // The Vulkan shader performs the canonical OpenGL-to-Vulkan Y flip.
+    raster.frontFace = desc.frontFaceCounterClockwise ? VK_FRONT_FACE_CLOCKWISE
+                                                      : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.f;
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = samples;
+    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth.depthTestEnable = desc.depthTest;
+    depth.depthWriteEnable = desc.depthWrite;
+    depth.depthCompareOp = translateCompare(desc.depthCompare);
+    depth.stencilTestEnable = desc.stencilTest;
+    depth.front = translateStencilState(desc.frontStencil);
+    depth.back = translateStencilState(desc.backStencil);
+    std::vector<VkPipelineColorBlendAttachmentState> blendAttachments;
+    for (const auto& value : desc.blendStates)
+    {
+        VkPipelineColorBlendAttachmentState blend{};
+        blend.blendEnable = value.enabled;
+        blend.srcColorBlendFactor = translateBlendFactor(value.sourceColor);
+        blend.dstColorBlendFactor = translateBlendFactor(value.destinationColor);
+        blend.colorBlendOp = translateBlendOp(value.colorOp);
+        blend.srcAlphaBlendFactor = translateBlendFactor(value.sourceAlpha);
+        blend.dstAlphaBlendFactor = translateBlendFactor(value.destinationAlpha);
+        blend.alphaBlendOp = translateBlendOp(value.alphaOp);
+        if (value.colorWriteMask & 1) blend.colorWriteMask |= VK_COLOR_COMPONENT_R_BIT;
+        if (value.colorWriteMask & 2) blend.colorWriteMask |= VK_COLOR_COMPONENT_G_BIT;
+        if (value.colorWriteMask & 4) blend.colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
+        if (value.colorWriteMask & 8) blend.colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
+        blendAttachments.push_back(blend);
+    }
+    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    blend.attachmentCount = static_cast<std::uint32_t>(blendAttachments.size());
+    blend.pAttachments = blendAttachments.data();
+    const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size());
+    dynamic.pDynamicStates = dynamicStates.data();
+    std::vector<VkFormat> colorFormats;
+    for (Format format : desc.colorFormats) colorFormats.push_back(translateFormat(format).format);
+    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = static_cast<std::uint32_t>(colorFormats.size());
+    rendering.pColorAttachmentFormats = colorFormats.data();
+    if (desc.depthStencilFormat)
+    {
+        const auto format = translateFormat(*desc.depthStencilFormat);
+        rendering.depthAttachmentFormat = format.format;
+        if (format.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) rendering.stencilAttachmentFormat = format.format;
+    }
+    VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipelineInfo.pNext = &rendering;
+    pipelineInfo.stageCount = static_cast<std::uint32_t>(stages.size());
+    pipelineInfo.pStages = stages.data();
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &assembly;
+    pipelineInfo.pViewportState = &viewport;
+    pipelineInfo.pRasterizationState = &raster;
+    pipelineInfo.pMultisampleState = &multisample;
+    pipelineInfo.pDepthStencilState = &depth;
+    pipelineInfo.pColorBlendState = &blend;
+    pipelineInfo.pDynamicState = &dynamic;
+    pipelineInfo.layout = shader->second.pipelineLayout;
+    PipelineRecord record{desc};
+    VkResult result = vkCreateGraphicsPipelines(
+        mDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &record.pipeline);
+    if (result != VK_SUCCESS)
+    { status = vkFailure("vkCreateGraphicsPipelines", result); return {}; }
+    PipelineHandle handle = mPipelinePool.allocate();
+    mPipelines.emplace(handleKey(handle), std::move(record));
+    status = Status::success();
+    return handle;
+}
+
 Status VulkanDevice::destroy(BufferHandle handle)
 {
     Status status = canMutate(); if (!status) return status; auto found = mBuffers.find(handleKey(handle));
@@ -623,6 +1228,51 @@ Status VulkanDevice::destroy(QueryPoolHandle handle)
     if (!mQueryPool.release(handle) || found == mQueries.end()) return invalidHandle("invalid query-pool handle");
     Retirement item{RetireKind::QueryPool, mSubmittedSerial + mFramesInFlight}; item.queryPool = found->second.pool;
     mRetirements.push_back(item); mQueries.erase(found); return Status::success();
+}
+
+Status VulkanDevice::destroy(ShaderPackageHandle handle)
+{
+    Status status = canMutate(); if (!status) return status;
+    for (const auto& [unused, set] : mBindingSets)
+        if (set.desc.shader == handle) return invalidState("shader package must outlive its binding sets");
+    for (const auto& [unused, pipeline] : mPipelines)
+        if (pipeline.desc.shader == handle) return invalidState("shader package must outlive its pipelines");
+    auto found = mShaders.find(handleKey(handle));
+    if (!mShaderPool.release(handle) || found == mShaders.end())
+        return invalidHandle("invalid shader-package handle");
+    Retirement item{RetireKind::Shader, mSubmittedSerial + mFramesInFlight};
+    item.pipelineLayout = found->second.pipelineLayout;
+    item.setLayouts = std::move(found->second.setLayouts);
+    for (const auto& stage : found->second.stages) item.shaderModules.push_back(stage.module);
+    mRetirements.push_back(std::move(item));
+    mShaders.erase(found);
+    return Status::success();
+}
+
+Status VulkanDevice::destroy(BindingSetHandle handle)
+{
+    Status status = canMutate(); if (!status) return status;
+    auto found = mBindingSets.find(handleKey(handle));
+    if (!mBindingSetPool.release(handle) || found == mBindingSets.end())
+        return invalidHandle("invalid binding-set handle");
+    Retirement item{RetireKind::BindingSet, mSubmittedSerial + mFramesInFlight};
+    item.descriptorPool = found->second.pool;
+    mRetirements.push_back(std::move(item));
+    mBindingSets.erase(found);
+    return Status::success();
+}
+
+Status VulkanDevice::destroy(PipelineHandle handle)
+{
+    Status status = canMutate(); if (!status) return status;
+    auto found = mPipelines.find(handleKey(handle));
+    if (!mPipelinePool.release(handle) || found == mPipelines.end())
+        return invalidHandle("invalid pipeline handle");
+    Retirement item{RetireKind::Pipeline, mSubmittedSerial + mFramesInFlight};
+    item.pipeline = found->second.pipeline;
+    mRetirements.push_back(std::move(item));
+    mPipelines.erase(found);
+    return Status::success();
 }
 
 Status VulkanDevice::writeBuffer(BufferHandle handle, std::uint64_t offset, std::span<const std::byte> data)
@@ -682,17 +1332,24 @@ Status VulkanDevice::beginFrame()
     result = vkResetCommandBuffer(frame.commands, 0); if (result != VK_SUCCESS) return vkFailure("vkResetCommandBuffer", result);
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     result = vkBeginCommandBuffer(frame.commands, &begin); if (result != VK_SUCCESS) return vkFailure("vkBeginCommandBuffer", result);
+    mCommands.resetDrawState();
     mCommands.setFrameActive(true); return Status::success();
 }
 
 Status VulkanDevice::endFrame()
 {
-    if (!mCommands.frameActive()) return invalidState("no frame is active"); Frame& frame = mFrames[mFrameIndex];
+    if (!mCommands.frameActive()) return invalidState("no frame is active");
+    if (mCommands.renderingActive()) return invalidState("endFrame requires endRendering first");
+    Frame& frame = mFrames[mFrameIndex];
     VkResult result = vkEndCommandBuffer(frame.commands); if (result != VK_SUCCESS) { mCommands.setFrameActive(false); return vkFailure("vkEndCommandBuffer", result); }
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &frame.commands;
     result = vkQueueSubmit(mQueue, 1, &submit, frame.fence); mCommands.setFrameActive(false);
     if (result != VK_SUCCESS) return vkFailure("vkQueueSubmit", result);
-    frame.serial = ++mSubmittedSerial; return Status::success();
+    frame.serial = ++mSubmittedSerial;
+    if (mValidationError.load())
+        return Status::failure(StatusCode::BackendError,
+            "Khronos validation reported a Vulkan error");
+    return Status::success();
 }
 
 Status VulkanDevice::transition(ImageRecord& image, std::uint32_t mip, VkImageLayout layout)
@@ -703,11 +1360,39 @@ Status VulkanDevice::transition(ImageRecord& image, std::uint32_t mip, VkImageLa
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image.image;
     barrier.subresourceRange = {image.format.aspect, mip, 1, 0, image.desc.arrayLayers};
-    VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    if (barrier.oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) { barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT; }
-    else if (barrier.oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) { barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT; }
-    VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    barrier.dstAccessMask = layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_TRANSFER_READ_BIT;
+    const auto source = [](VkImageLayout value)
+    {
+        switch (value)
+        {
+        case VK_IMAGE_LAYOUT_UNDEFINED:
+            return std::pair<VkPipelineStageFlags, VkAccessFlags>{VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0};
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            return std::pair<VkPipelineStageFlags, VkAccessFlags>{VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT};
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+            return std::pair<VkPipelineStageFlags, VkAccessFlags>{VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT};
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            return std::pair<VkPipelineStageFlags, VkAccessFlags>{
+                VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_SHADER_READ_BIT};
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            return std::pair<VkPipelineStageFlags, VkAccessFlags>{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
+        case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+            return std::pair<VkPipelineStageFlags, VkAccessFlags>{
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
+        case VK_IMAGE_LAYOUT_GENERAL:
+            return std::pair<VkPipelineStageFlags, VkAccessFlags>{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+        default:
+            return std::pair<VkPipelineStageFlags, VkAccessFlags>{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+        }
+    };
+    const auto [sourceStage, sourceAccess] = source(barrier.oldLayout);
+    const auto [destinationStage, destinationAccess] = source(layout);
+    barrier.srcAccessMask = sourceAccess;
+    barrier.dstAccessMask = destinationAccess;
     vkCmdPipelineBarrier(commands(), sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     image.layouts[mip] = layout; return Status::success();
 }
@@ -727,6 +1412,14 @@ Status VulkanDevice::copyBuffer(BufferHandle source, BufferHandle destination, s
         copies.push_back({region.sourceOffset, region.destinationOffset, region.size});
     }
     vkCmdCopyBuffer(commands(), src->second.buffer, dst->second.buffer, static_cast<std::uint32_t>(copies.size()), copies.data());
+    // The GHI transfer contract permits a later transfer command in the same
+    // frame to consume this destination. Until explicit transfer batches are
+    // introduced, preserve that ordering conservatively at the backend seam.
+    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(commands(), VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
     if (dst->second.desc.memory == MemoryClass::Readback) dst->second.readySerial = mSubmittedSerial + 1;
     return Status::success();
 }
@@ -861,6 +1554,286 @@ Status VulkanDevice::writeTimestamp(QueryPoolHandle pool, std::uint32_t query)
     found->second.written[query] = true; return Status::success();
 }
 
+Status VulkanDevice::beginRendering(const RenderingInfo& info)
+{
+    if (!mCommands.frameActive()) return invalidState("beginRendering requires an active frame");
+    if (mCommands.renderingActive()) return invalidState("a rendering scope is already active");
+    if (!info.width || !info.height || info.colors.empty() ||
+        info.colors.size() > mCapabilities.maxColorAttachments)
+        return invalidArgument("invalid Vulkan rendering scope");
+
+    VkMemoryBarrier transferBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    transferBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    transferBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+        VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commands(), VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 1, &transferBarrier, 0, nullptr, 0, nullptr);
+    // Resource bindings occur inside the rendering scope, so sampled/storage
+    // images must reach their shader layouts before dynamic rendering begins.
+    for (auto& [unused, image] : mImages)
+    {
+        if (hasUsage(image.desc.usage, ResourceUsage::Storage))
+        {
+            for (std::uint32_t mip = 0; mip < image.desc.mipLevels; ++mip)
+                transition(image, mip, VK_IMAGE_LAYOUT_GENERAL);
+        }
+        else if (hasUsage(image.desc.usage, ResourceUsage::Sampled))
+        {
+            for (std::uint32_t mip = 0; mip < image.desc.mipLevels; ++mip)
+                transition(image, mip, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+    }
+
+    std::vector<VkRenderingAttachmentInfo> colors;
+    colors.reserve(info.colors.size());
+    for (const auto& attachment : info.colors)
+    {
+        auto view = mViews.find(handleKey(attachment.view));
+        if (!mViewPool.isLive(attachment.view) || view == mViews.end())
+            return invalidHandle("rendering references an invalid color view");
+        auto image = mImages.find(handleKey(view->second.desc.image));
+        if (image == mImages.end() || attachment.format != image->second.desc.format ||
+            !hasUsage(image->second.desc.usage, ResourceUsage::ColorAttachment) ||
+            image->second.desc.extent.width < info.width || image->second.desc.extent.height < info.height)
+            return invalidArgument("Vulkan color rendering attachment is incompatible");
+        Status status = transition(image->second, view->second.desc.subresources.baseMipLevel,
+                                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        if (!status) return status;
+        VkRenderingAttachmentInfo native{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        native.imageView = view->second.view;
+        native.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        native.loadOp = translateLoadOp(attachment.load);
+        native.storeOp = translateStoreOp(attachment.store);
+        std::copy(attachment.clear.color.begin(), attachment.clear.color.end(),
+                  native.clearValue.color.float32);
+        colors.push_back(native);
+    }
+
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    bool hasStencil = false;
+    if (info.depthStencil)
+    {
+        const auto& attachment = *info.depthStencil;
+        auto view = mViews.find(handleKey(attachment.view));
+        if (!mViewPool.isLive(attachment.view) || view == mViews.end())
+            return invalidHandle("rendering references an invalid depth/stencil view");
+        auto image = mImages.find(handleKey(view->second.desc.image));
+        if (image == mImages.end() || attachment.format != image->second.desc.format ||
+            !hasUsage(image->second.desc.usage, ResourceUsage::DepthStencilAttachment) ||
+            image->second.desc.extent.width < info.width || image->second.desc.extent.height < info.height)
+            return invalidArgument("Vulkan depth/stencil rendering attachment is incompatible");
+        Status status = transition(image->second, view->second.desc.subresources.baseMipLevel,
+                                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        if (!status) return status;
+        depth.imageView = view->second.view;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth.loadOp = translateLoadOp(attachment.load);
+        depth.storeOp = translateStoreOp(attachment.store);
+        depth.clearValue.depthStencil = {attachment.clear.depth, attachment.clear.stencil};
+        hasStencil = (image->second.format.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
+    }
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = {info.width, info.height};
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = static_cast<std::uint32_t>(colors.size());
+    rendering.pColorAttachments = colors.data();
+    rendering.pDepthAttachment = info.depthStencil ? &depth : nullptr;
+    rendering.pStencilAttachment = info.depthStencil && hasStencil ? &depth : nullptr;
+    vkCmdBeginRendering(commands(), &rendering);
+    mCommands.resetDrawState();
+    mCommands.mRenderingActive = true;
+    mCommands.mRenderWidth = info.width;
+    mCommands.mRenderHeight = info.height;
+    for (const auto& attachment : info.colors)
+        mCommands.mRenderColorFormats.push_back(attachment.format);
+    if (info.depthStencil) mCommands.mRenderDepthFormat = info.depthStencil->format;
+    return Status::success();
+}
+
+Status VulkanDevice::endRendering()
+{
+    if (!mCommands.renderingActive()) return invalidState("no rendering scope is active");
+    vkCmdEndRendering(commands());
+    mCommands.mRenderingActive = false;
+    mCommands.resetDrawState();
+    return Status::success();
+}
+
+Status VulkanDevice::bindPipeline(PipelineHandle handle)
+{
+    if (!mCommands.renderingActive()) return invalidState("bindPipeline requires a rendering scope");
+    auto pipeline = mPipelines.find(handleKey(handle));
+    if (!mPipelinePool.isLive(handle) || pipeline == mPipelines.end())
+        return invalidHandle("invalid pipeline handle");
+    if (pipeline->second.desc.colorFormats != mCommands.mRenderColorFormats ||
+        pipeline->second.desc.depthStencilFormat != mCommands.mRenderDepthFormat)
+        return invalidArgument("pipeline formats do not match the Vulkan rendering scope");
+    vkCmdBindPipeline(commands(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->second.pipeline);
+    mCommands.mPipeline = handle;
+    return Status::success();
+}
+
+Status VulkanDevice::bindBindingSet(
+    std::uint8_t group, BindingSetHandle handle, std::span<const std::uint32_t> dynamicOffsets)
+{
+    if (!mCommands.renderingActive() || !mCommands.mPipeline)
+        return invalidState("bindBindingSet requires a bound pipeline");
+    auto set = mBindingSets.find(handleKey(handle));
+    if (!mBindingSetPool.isLive(handle) || set == mBindingSets.end())
+        return invalidHandle("invalid binding-set handle");
+    auto pipeline = mPipelines.find(handleKey(mCommands.mPipeline));
+    auto shader = mShaders.find(handleKey(pipeline->second.desc.shader));
+    if (set->second.desc.shader != pipeline->second.desc.shader || set->second.desc.group != group)
+        return invalidArgument("binding set is incompatible with the Vulkan pipeline or group");
+    std::size_t expectedDynamic = 0;
+    for (const auto& binding : shader->second.desc.bindings)
+        if (binding.group == group && binding.dynamicOffset) expectedDynamic += binding.arrayCount;
+    if (expectedDynamic != dynamicOffsets.size())
+        return invalidArgument("Vulkan dynamic offset count does not match reflection");
+    std::vector<const ShaderPackageDesc::Binding*> dynamicBindings;
+    for (const auto& binding : shader->second.desc.bindings)
+        if (binding.group == group && binding.dynamicOffset) dynamicBindings.push_back(&binding);
+    std::sort(dynamicBindings.begin(), dynamicBindings.end(), [](const auto* lhs, const auto* rhs)
+    { return lhs->binding < rhs->binding; });
+    std::size_t dynamicIndex = 0;
+    for (const auto* binding : dynamicBindings)
+    {
+        const std::uint64_t alignment = binding->type == ShaderPackageDesc::BindingType::UniformBuffer
+            ? mCapabilities.uniformBufferOffsetAlignment : mCapabilities.storageBufferOffsetAlignment;
+        for (std::uint16_t element = 0; element < binding->arrayCount; ++element)
+        {
+            auto resource = std::find_if(set->second.desc.resources.begin(),
+                set->second.desc.resources.end(), [&](const auto& value)
+                { return value.binding == binding->binding && value.arrayElement == element; });
+            if (resource == set->second.desc.resources.end())
+                return invalidArgument("dynamic descriptor resource is missing");
+            auto buffer = mBuffers.find(handleKey(resource->buffer));
+            if (buffer == mBuffers.end()) return invalidHandle("dynamic descriptor buffer is stale");
+            const std::uint64_t offset = resource->bufferOffset + dynamicOffsets[dynamicIndex++];
+            const std::uint64_t range = resource->bufferRange ? resource->bufferRange :
+                buffer->second.desc.size - resource->bufferOffset;
+            if (offset % std::max<std::uint64_t>(1, alignment) != 0 ||
+                !rangeFits(offset, range, buffer->second.desc.size))
+                return invalidArgument("Vulkan dynamic descriptor offset is unaligned or out of range");
+        }
+    }
+    for (const auto& resource : set->second.desc.resources)
+    {
+        if (!resource.imageView) continue;
+        auto view = mViews.find(handleKey(resource.imageView));
+        if (view == mViews.end()) return invalidHandle("binding set image view is stale");
+        auto image = mImages.find(handleKey(view->second.desc.image));
+        if (image == mImages.end()) return invalidHandle("binding set image is stale");
+        Status status = transition(image->second, view->second.desc.subresources.baseMipLevel,
+            resource.type == ShaderPackageDesc::BindingType::StorageImage
+                ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (!status) return status;
+    }
+    vkCmdBindDescriptorSets(commands(), VK_PIPELINE_BIND_POINT_GRAPHICS,
+        shader->second.pipelineLayout, group, 1, &set->second.set,
+        static_cast<std::uint32_t>(dynamicOffsets.size()), dynamicOffsets.data());
+    mCommands.mBoundGroups.insert(group);
+    return Status::success();
+}
+
+Status VulkanDevice::setViewport(const Viewport& viewport)
+{
+    if (!mCommands.renderingActive()) return invalidState("setViewport requires a rendering scope");
+    if (viewport.x < 0.f || viewport.y < 0.f || viewport.width <= 0.f || viewport.height <= 0.f ||
+        viewport.x + viewport.width > mCommands.mRenderWidth ||
+        viewport.y + viewport.height > mCommands.mRenderHeight ||
+        viewport.minDepth < 0.f || viewport.maxDepth > 1.f || viewport.minDepth > viewport.maxDepth)
+        return invalidArgument("invalid Vulkan viewport");
+    const VkViewport native{viewport.x, viewport.y, viewport.width, viewport.height,
+                            viewport.minDepth, viewport.maxDepth};
+    vkCmdSetViewport(commands(), 0, 1, &native);
+    mCommands.mViewportSet = true;
+    return Status::success();
+}
+
+Status VulkanDevice::setScissor(const ScissorRect& scissor)
+{
+    if (!mCommands.renderingActive()) return invalidState("setScissor requires a rendering scope");
+    if (scissor.x < 0 || scissor.y < 0 || !scissor.width || !scissor.height ||
+        static_cast<std::uint64_t>(scissor.x) + scissor.width > mCommands.mRenderWidth ||
+        static_cast<std::uint64_t>(scissor.y) + scissor.height > mCommands.mRenderHeight)
+        return invalidArgument("invalid Vulkan scissor rectangle");
+    const VkRect2D native{{scissor.x, scissor.y}, {scissor.width, scissor.height}};
+    vkCmdSetScissor(commands(), 0, 1, &native);
+    mCommands.mScissorSet = true;
+    return Status::success();
+}
+
+Status VulkanDevice::bindVertexBuffer(
+    std::uint32_t slot, BufferHandle handle, std::uint64_t offset)
+{
+    if (!mCommands.renderingActive() || !mCommands.mPipeline)
+        return invalidState("bindVertexBuffer requires a bound pipeline");
+    auto buffer = mBuffers.find(handleKey(handle));
+    if (!mBufferPool.isLive(handle) || buffer == mBuffers.end())
+        return invalidHandle("invalid vertex-buffer handle");
+    if (!hasUsage(buffer->second.desc.usage, ResourceUsage::Vertex) || offset >= buffer->second.desc.size)
+        return invalidArgument("vertex-buffer usage or offset is invalid");
+    const VkDeviceSize nativeOffset = offset;
+    vkCmdBindVertexBuffers(commands(), slot, 1, &buffer->second.buffer, &nativeOffset);
+    return Status::success();
+}
+
+Status VulkanDevice::bindIndexBuffer(BufferHandle handle, std::uint64_t offset, IndexType type)
+{
+    if (!mCommands.renderingActive() || !mCommands.mPipeline)
+        return invalidState("bindIndexBuffer requires a bound pipeline");
+    auto buffer = mBuffers.find(handleKey(handle));
+    if (!mBufferPool.isLive(handle) || buffer == mBuffers.end())
+        return invalidHandle("invalid index-buffer handle");
+    const std::uint64_t alignment = type == IndexType::UInt16 ? 2 : 4;
+    if (!hasUsage(buffer->second.desc.usage, ResourceUsage::Index) ||
+        offset >= buffer->second.desc.size || offset % alignment != 0)
+        return invalidArgument("index-buffer usage or offset is invalid");
+    vkCmdBindIndexBuffer(commands(), buffer->second.buffer, offset,
+        type == IndexType::UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+    mCommands.mIndexBuffer = handle;
+    return Status::success();
+}
+
+Status VulkanDevice::draw(const DrawArguments& arguments)
+{
+    if (!mCommands.renderingActive() || !mCommands.mPipeline)
+        return invalidState("draw requires a bound pipeline");
+    if (!mCommands.mViewportSet || !mCommands.mScissorSet)
+        return invalidState("draw requires explicit viewport and scissor state");
+    if (!arguments.vertexCount || !arguments.instanceCount)
+        return invalidArgument("draw counts must be nonzero");
+    auto pipeline = mPipelines.find(handleKey(mCommands.mPipeline));
+    auto shader = mShaders.find(handleKey(pipeline->second.desc.shader));
+    for (const auto& binding : shader->second.desc.bindings)
+        if (!mCommands.mBoundGroups.contains(binding.group))
+            return invalidState("draw is missing a reflected binding group");
+    vkCmdDraw(commands(), arguments.vertexCount, arguments.instanceCount,
+              arguments.firstVertex, arguments.firstInstance);
+    return Status::success();
+}
+
+Status VulkanDevice::drawIndexed(const DrawIndexedArguments& arguments)
+{
+    if (!mCommands.mIndexBuffer) return invalidState("drawIndexed requires an index buffer");
+    if (!arguments.indexCount || !arguments.instanceCount)
+        return invalidArgument("drawIndexed counts must be nonzero");
+    if (!mCommands.renderingActive() || !mCommands.mPipeline ||
+        !mCommands.mViewportSet || !mCommands.mScissorSet)
+        return invalidState("drawIndexed requires pipeline, viewport, and scissor state");
+    auto pipeline = mPipelines.find(handleKey(mCommands.mPipeline));
+    auto shader = mShaders.find(handleKey(pipeline->second.desc.shader));
+    for (const auto& binding : shader->second.desc.bindings)
+        if (!mCommands.mBoundGroups.contains(binding.group))
+            return invalidState("drawIndexed is missing a reflected binding group");
+    vkCmdDrawIndexed(commands(), arguments.indexCount, arguments.instanceCount,
+        arguments.firstIndex, arguments.vertexOffset, arguments.firstInstance);
+    return Status::success();
+}
+
 void VulkanDevice::drainRetirements(bool force)
 {
     auto end = std::remove_if(mRetirements.begin(), mRetirements.end(), [&](const Retirement& item)
@@ -873,6 +1846,19 @@ void VulkanDevice::drainRetirements(bool force)
         case RetireKind::ImageView: vkDestroyImageView(mDevice, item.view, nullptr); break;
         case RetireKind::Sampler: vkDestroySampler(mDevice, item.sampler, nullptr); break;
         case RetireKind::QueryPool: vkDestroyQueryPool(mDevice, item.queryPool, nullptr); break;
+        case RetireKind::Shader:
+            vkDestroyPipelineLayout(mDevice, item.pipelineLayout, nullptr);
+            for (VkDescriptorSetLayout layout : item.setLayouts)
+                vkDestroyDescriptorSetLayout(mDevice, layout, nullptr);
+            for (VkShaderModule module : item.shaderModules)
+                vkDestroyShaderModule(mDevice, module, nullptr);
+            break;
+        case RetireKind::BindingSet:
+            vkDestroyDescriptorPool(mDevice, item.descriptorPool, nullptr);
+            break;
+        case RetireKind::Pipeline:
+            vkDestroyPipeline(mDevice, item.pipeline, nullptr);
+            break;
         }
         return true;
     });
@@ -884,7 +1870,11 @@ Status VulkanDevice::waitIdle()
     if (!mDevice) return Status::success();
     if (mCommands.frameActive()) return invalidState("waitIdle is not allowed during an active frame");
     VkResult result = vkDeviceWaitIdle(mDevice); if (result != VK_SUCCESS) return vkFailure("vkDeviceWaitIdle", result);
-    mCompletedSerial = mSubmittedSerial; drainRetirements(true); return Status::success();
+    mCompletedSerial = mSubmittedSerial; drainRetirements(true);
+    if (mValidationError.load())
+        return Status::failure(StatusCode::BackendError,
+            "Khronos validation reported a Vulkan error");
+    return Status::success();
 }
 
 void VulkanDevice::shutdown()
@@ -894,6 +1884,18 @@ void VulkanDevice::shutdown()
     {
         if (mCommands.frameActive()) mCommands.setFrameActive(false);
         vkDeviceWaitIdle(mDevice); drainRetirements(true);
+        for (const auto& [unused, pipeline] : mPipelines)
+            vkDestroyPipeline(mDevice, pipeline.pipeline, nullptr);
+        for (const auto& [unused, set] : mBindingSets)
+            vkDestroyDescriptorPool(mDevice, set.pool, nullptr);
+        for (const auto& [unused, shader] : mShaders)
+        {
+            vkDestroyPipelineLayout(mDevice, shader.pipelineLayout, nullptr);
+            for (VkDescriptorSetLayout layout : shader.setLayouts)
+                vkDestroyDescriptorSetLayout(mDevice, layout, nullptr);
+            for (const auto& stage : shader.stages)
+                vkDestroyShaderModule(mDevice, stage.module, nullptr);
+        }
         for (const auto& [unused, view] : mViews) vkDestroyImageView(mDevice, view.view, nullptr);
         for (const auto& [unused, sampler] : mSamplers) vkDestroySampler(mDevice, sampler.sampler, nullptr);
         for (const auto& [unused, query] : mQueries) vkDestroyQueryPool(mDevice, query.pool, nullptr);
@@ -903,10 +1905,30 @@ void VulkanDevice::shutdown()
         if (mCommandPool) vkDestroyCommandPool(mDevice, mCommandPool, nullptr);
         vkDestroyDevice(mDevice, nullptr); mDevice = VK_NULL_HANDLE;
     }
+    if (mDebugMessenger)
+    {
+        auto destroyDebugMessenger = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(mInstance, "vkDestroyDebugUtilsMessengerEXT"));
+        if (destroyDebugMessenger)
+            destroyDebugMessenger(mInstance, mDebugMessenger, nullptr);
+        mDebugMessenger = VK_NULL_HANDLE;
+    }
     vkDestroyInstance(mInstance, nullptr); mInstance = VK_NULL_HANDLE;
 }
 
 Status VulkanCommandContext::requireTransfer() const { return mFrameActive ? Status::success() : invalidState("transfer commands require an active frame"); }
+void VulkanCommandContext::resetDrawState()
+{
+    mViewportSet = false;
+    mScissorSet = false;
+    mRenderWidth = 0;
+    mRenderHeight = 0;
+    mRenderColorFormats.clear();
+    mRenderDepthFormat.reset();
+    mPipeline = {};
+    mBoundGroups.clear();
+    mIndexBuffer = {};
+}
 Status VulkanCommandContext::beginFrame() { return mDevice.beginFrame(); }
 Status VulkanCommandContext::endFrame() { return mDevice.endFrame(); }
 Status VulkanCommandContext::copyBuffer(BufferHandle a, BufferHandle b, std::span<const BufferCopyRegion> r) { Status s=requireTransfer(); return s ? mDevice.copyBuffer(a,b,r) : s; }
@@ -915,6 +1937,16 @@ Status VulkanCommandContext::copyImageToBuffer(ImageHandle a, BufferHandle b, st
 Status VulkanCommandContext::generateMipmaps(ImageHandle a, const ImageSubresourceRange& r) { Status s=requireTransfer(); return s ? mDevice.generateMipmaps(a,r) : s; }
 Status VulkanCommandContext::resetQueryPool(QueryPoolHandle a, std::uint32_t b, std::uint32_t c) { Status s=requireTransfer(); return s ? mDevice.resetQueryPool(a,b,c) : s; }
 Status VulkanCommandContext::writeTimestamp(QueryPoolHandle a, std::uint32_t b) { Status s=requireTransfer(); return s ? mDevice.writeTimestamp(a,b) : s; }
+Status VulkanCommandContext::beginRendering(const RenderingInfo& a) { return mDevice.beginRendering(a); }
+Status VulkanCommandContext::endRendering() { return mDevice.endRendering(); }
+Status VulkanCommandContext::bindPipeline(PipelineHandle a) { return mDevice.bindPipeline(a); }
+Status VulkanCommandContext::bindBindingSet(std::uint8_t a, BindingSetHandle b, std::span<const std::uint32_t> c) { return mDevice.bindBindingSet(a,b,c); }
+Status VulkanCommandContext::setViewport(const Viewport& a) { return mDevice.setViewport(a); }
+Status VulkanCommandContext::setScissor(const ScissorRect& a) { return mDevice.setScissor(a); }
+Status VulkanCommandContext::bindVertexBuffer(std::uint32_t a, BufferHandle b, std::uint64_t c) { return mDevice.bindVertexBuffer(a,b,c); }
+Status VulkanCommandContext::bindIndexBuffer(BufferHandle a, std::uint64_t b, IndexType c) { return mDevice.bindIndexBuffer(a,b,c); }
+Status VulkanCommandContext::draw(const DrawArguments& a) { return mDevice.draw(a); }
+Status VulkanCommandContext::drawIndexed(const DrawIndexedArguments& a) { return mDevice.drawIndexed(a); }
 
 } // namespace
 

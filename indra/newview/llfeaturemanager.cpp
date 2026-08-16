@@ -633,7 +633,7 @@ std::string LLFeatureManager::getRenderGPUIdentity() const
     {
         if (!snapshot->identity.stableDeviceId.empty())
         {
-            return snapshot->identity.stableDeviceId;
+            return canonicalizeRenderGPUIdentity(snapshot->identity.stableDeviceId);
         }
     }
     return canonicalizeRenderGPUIdentity(gGLManager.mGLRenderer);

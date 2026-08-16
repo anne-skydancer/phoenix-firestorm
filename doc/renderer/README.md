@@ -12,7 +12,8 @@ Vulkan backend nor the architectural reference for it.
   seam, ownership rules, implementation increments, and acceptance gates.
 - [GL coupling baseline](gl-coupling-baseline.json) anchors the source-level
   API-boundary ratchet.
+- [R1 lifecycle checkpoint](r1-lifecycle-checkpoint.md) records the gated
+  native-Vulkan presentation slice and its validation evidence.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.
-

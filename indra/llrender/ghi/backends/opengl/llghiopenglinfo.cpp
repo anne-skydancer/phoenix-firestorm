@@ -13,10 +13,19 @@
 #include "llgl.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstring>
+#include <iomanip>
 #include <limits>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
+
+#if LL_WINDOWS
+#include <dxgi.h>
+#endif
 
 namespace LL::GHI
 {
@@ -121,6 +130,137 @@ std::string stableNameIdentity(std::string device)
     trim(device);
     return uppercase(std::move(device));
 }
+
+#if LL_WINDOWS
+struct AdapterIdentity
+{
+    std::string stableId;
+    std::uint32_t vendorId = 0;
+    std::uint32_t deviceId = 0;
+    std::uint64_t dedicatedMemory = 0;
+};
+
+std::string wideToUtf8(const wchar_t* value)
+{
+    if (!value || !*value)
+    {
+        return {};
+    }
+    const int count = WideCharToMultiByte(
+        CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+    if (count <= 1)
+    {
+        return {};
+    }
+    std::string result(static_cast<std::size_t>(count), '\0');
+    WideCharToMultiByte(
+        CP_UTF8, 0, value, -1, result.data(), count, nullptr, nullptr);
+    result.pop_back();
+    return result;
+}
+
+DeviceVendor vendorFromId(std::uint32_t vendor)
+{
+    switch (vendor)
+    {
+        case 0x1002: return DeviceVendor::AMD;
+        case 0x10de: return DeviceVendor::NVIDIA;
+        case 0x8086: return DeviceVendor::Intel;
+        case 0x106b: return DeviceVendor::Apple;
+        default: return DeviceVendor::Unknown;
+    }
+}
+
+std::string luidIdentity(const LUID& luid)
+{
+    std::array<unsigned char, sizeof(LUID)> bytes{};
+    std::memcpy(bytes.data(), &luid, bytes.size());
+    std::ostringstream output;
+    output << "luid:" << std::hex << std::setfill('0');
+    for (unsigned char byte : bytes)
+    {
+        output << std::setw(2) << static_cast<unsigned int>(byte);
+    }
+    return output.str();
+}
+
+std::optional<AdapterIdentity> queryDxgiAdapter(
+    const std::string& deviceName,
+    DeviceVendor vendor)
+{
+    IDXGIFactory1* factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                  reinterpret_cast<void**>(&factory))))
+    {
+        return std::nullopt;
+    }
+
+    const std::string wanted = stableNameIdentity(deviceName);
+    int bestScore = 0;
+    int vendorMatches = 0;
+    std::optional<AdapterIdentity> best;
+    for (UINT index = 0;; ++index)
+    {
+        IDXGIAdapter1* adapter = nullptr;
+        if (factory->EnumAdapters1(index, &adapter) == DXGI_ERROR_NOT_FOUND)
+        {
+            break;
+        }
+        if (!adapter)
+        {
+            continue;
+        }
+
+        DXGI_ADAPTER_DESC1 description{};
+        const HRESULT result = adapter->GetDesc1(&description);
+        adapter->Release();
+        if (FAILED(result) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+        {
+            continue;
+        }
+
+        const std::string candidate = stableNameIdentity(wideToUtf8(description.Description));
+        const DeviceVendor candidateVendor = vendorFromId(description.VendorId);
+        if (vendor != DeviceVendor::Unknown && candidateVendor == vendor)
+        {
+            ++vendorMatches;
+        }
+        int score = 0;
+        if (!wanted.empty() && candidate == wanted)
+        {
+            score = 4;
+        }
+        else if (!wanted.empty() &&
+                 (candidate.find(wanted) != std::string::npos ||
+                  wanted.find(candidate) != std::string::npos))
+        {
+            score = 3;
+        }
+        else if (vendor != DeviceVendor::Unknown && candidateVendor == vendor)
+        {
+            score = 1;
+        }
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = AdapterIdentity{
+                luidIdentity(description.AdapterLuid),
+                description.VendorId,
+                description.DeviceId,
+                static_cast<std::uint64_t>(description.DedicatedVideoMemory)
+            };
+        }
+    }
+    factory->Release();
+    // A vendor-only match is useful on a single-adapter desktop but unsafe on
+    // laptops and multi-GPU systems when more than one adapter shares a vendor.
+    if (bestScore == 1 && vendorMatches != 1)
+    {
+        return std::nullopt;
+    }
+    return best;
+}
+#endif
 }
 
 RendererSnapshot queryOpenGLRendererSnapshot()
@@ -159,7 +299,6 @@ RendererSnapshot queryOpenGLRendererSnapshot()
         identity.rendererName = "Mesa zink Vulkan " + zink.vulkanVersion +
             " (" + zink.deviceName + (zink.vendorIcd ? " - Vendor ICD)" : ")");
     }
-    identity.stableDeviceId = stableNameIdentity(identity.deviceName);
     identity.vendor = detectVendor(raw_vendor, identity.deviceName);
     identity.vendorName = identity.vendor == DeviceVendor::Unknown
         ? raw_vendor
@@ -171,6 +310,19 @@ RendererSnapshot queryOpenGLRendererSnapshot()
     identity.detectedVideoMemoryBytes = gGLManager.mVRAMDetected > 0
         ? static_cast<std::uint64_t>(gGLManager.mVRAMDetected) * BYTES_PER_MEBIBYTE
         : 0;
+    identity.stableDeviceId = stableNameIdentity(identity.deviceName);
+#if LL_WINDOWS
+    if (const auto adapter = queryDxgiAdapter(identity.deviceName, identity.vendor))
+    {
+        identity.stableDeviceId = adapter->stableId;
+        identity.vendorId = adapter->vendorId;
+        identity.deviceId = adapter->deviceId;
+        if (adapter->dedicatedMemory > 0)
+        {
+            identity.dedicatedVideoMemoryBytes = adapter->dedicatedMemory;
+        }
+    }
+#endif
 
     GLint color_attachments = 1;
     glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS, &color_attachments);

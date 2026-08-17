@@ -12585,6 +12585,45 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderVulkanDeveloperProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: create and retain a native Vulkan GHI device beside the production OpenGL renderer. Does not select Vulkan for visible rendering. Requires restart.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
+    <key>RenderVulkanAdapterIndex</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: zero-based native Vulkan graphics-adapter index used by the coexistence device.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
+    <key>RenderVulkanValidation</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: enable Khronos validation and synchronization validation for native Vulkan GHI integration. Requires restart.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

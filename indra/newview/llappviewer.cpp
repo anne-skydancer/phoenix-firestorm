@@ -87,6 +87,7 @@
 #include "llurlhistory.h"
 #include "llrender.h"
 #include "llghirendererinfo.h"
+#include "llghiruntime.h"
 #include "llteleporthistory.h"
 #include "lltoast.h"
 #include "llsdutil_math.h"
@@ -1211,6 +1212,9 @@ bool LLAppViewer::init()
     // first snapshot. Refresh the backend-owned snapshot before feature policy
     // and persistence consume it.
     LL::GHI::publishInitializedOpenGLRendererSnapshot();
+    // Integration checkpoint I0: keep visible rendering on OpenGL while an
+    // explicit developer setting validates native Vulkan device coexistence.
+    LLGHIRuntime::initialize();
     // </FS:Beq> 
 
 
@@ -2441,6 +2445,10 @@ bool LLAppViewer::cleanup()
     LLLFSThread::sLocal->shutdown();
 
     LL_INFOS() << "Shutting down OpenGL" << LL_ENDL;
+
+    // The native Vulkan coexistence device owns its own queue and resources.
+    // Drain it before the production OpenGL context and native window vanish.
+    LLGHIRuntime::shutdown();
 
     // Shut down OpenGL
     if (gViewerWindow)

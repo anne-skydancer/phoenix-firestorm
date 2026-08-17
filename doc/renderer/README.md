@@ -30,6 +30,9 @@ supported peer and recovery path.
 - [R7 offscreen and recursive checkpoint](r7-offscreen-checkpoint.md) records
   recursive-view policy, cube-array topology, dynamic/media update semantics,
   and exact offscreen native-peer evidence.
+- [I0 runtime integration checkpoint](i0-runtime-integration-checkpoint.md)
+  begins real-viewer integration by retaining an opt-in native Vulkan device
+  beside the unchanged production OpenGL renderer.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

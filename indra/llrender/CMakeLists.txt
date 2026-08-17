@@ -88,6 +88,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghimaterialscenepacket.h
     ghi/include/llghiopaquescenepacket.h
     ghi/include/llghirendererinfo.h
+    ghi/include/llghiworldcontract.h
     ghi/include/llghitypes.h
     ghi/core/llghihandlepool.h
     ghi/core/llghihash.h
@@ -231,11 +232,40 @@ if (USE_VULKAN_GHI)
       COMMENT "Building deterministic R5a material/skin GHI shader package"
       VERBATIM
       )
+  set(GHI_R5_WORLD_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r5_world")
+  set(GHI_R5_WORLD_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r5_world.llghisp")
+  set(GHI_R5_WORLD_SHADER_SOURCES
+      "${GHI_R5_WORLD_SHADER_ROOT}/package.json"
+      "${GHI_R5_WORLD_SHADER_ROOT}/opengl41/world.vert.glsl"
+      "${GHI_R5_WORLD_SHADER_ROOT}/opengl41/world.frag.glsl"
+      "${GHI_R5_WORLD_SHADER_ROOT}/opengl46/world.vert.glsl"
+      "${GHI_R5_WORLD_SHADER_ROOT}/opengl46/world.frag.glsl"
+      "${GHI_R5_WORLD_SHADER_ROOT}/vulkan/world.vert.glsl"
+      "${GHI_R5_WORLD_SHADER_ROOT}/vulkan/world.frag.glsl"
+      "${GHI_R5_WORLD_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
+      )
+  add_custom_command(
+      OUTPUT "${GHI_R5_WORLD_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_R5_WORLD_SHADER_ROOT}/package.json"
+              --output "${GHI_R5_WORLD_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_R5_WORLD_SHADER_SOURCES}
+      COMMENT "Building deterministic R5c-e world GHI shader package"
+      VERBATIM
+      )
   add_custom_target(llrender_ghi_shaders DEPENDS
       "${GHI_R3_SHADER_PACKAGE}"
       "${GHI_R4_SHADER_PACKAGE}"
       "${GHI_R4C_SHADER_PACKAGE}"
       "${GHI_R5A_SHADER_PACKAGE}"
+      "${GHI_R5_WORLD_SHADER_PACKAGE}"
       )
   if (LL_TESTS)
     add_custom_target(
@@ -244,6 +274,14 @@ if (USE_VULKAN_GHI)
                 "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
                 --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
                 --manifest "${GHI_R3_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_R5_WORLD_SHADER_ROOT}/package.json"
                 --glslang "${GHI_GLSLANG_VALIDATOR}"
                 --spirv-val "${GHI_SPIRV_VAL}"
                 --spirv-opt "${GHI_SPIRV_OPT}"
@@ -431,6 +469,22 @@ if (USE_VULKAN_GHI)
       Vulkan::Vulkan
       )
   add_dependencies(llrender_vulkan_material_skin_harness llrender_ghi_shaders)
+
+  add_executable(llrender_vulkan_world_harness
+      ghi/backends/vulkan/llghivulkanworldharness.cpp
+      )
+  target_include_directories(llrender_vulkan_world_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+      )
+  target_compile_definitions(llrender_vulkan_world_harness PRIVATE
+      LL_GHI_R5_WORLD_SHADER_PACKAGE="${GHI_R5_WORLD_SHADER_PACKAGE}"
+      )
+  target_link_libraries(llrender_vulkan_world_harness
+      llrender
+      Vulkan::Vulkan
+      )
+  add_dependencies(llrender_vulkan_world_harness llrender_ghi_shaders)
 endif ()
 
 if (WINDOWS)
@@ -522,6 +576,22 @@ if (WINDOWS)
         OpenGL::GL
         )
     add_dependencies(llrender_opengl_material_skin_harness llrender_ghi_shaders)
+
+    add_executable(llrender_opengl_world_harness
+        ghi/backends/opengl/llghiopenglworldharness.cpp
+        )
+    target_include_directories(llrender_opengl_world_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include
+        )
+    target_compile_definitions(llrender_opengl_world_harness PRIVATE
+        LL_GHI_R5_WORLD_SHADER_PACKAGE="${GHI_R5_WORLD_SHADER_PACKAGE}"
+        )
+    target_link_libraries(llrender_opengl_world_harness
+        llrender
+        OpenGL::GL
+        )
+    add_dependencies(llrender_opengl_world_harness llrender_ghi_shaders)
   endif ()
 endif ()
 
@@ -555,6 +625,7 @@ if (LL_TESTS)
     target_compile_definitions(llrender_ghi_contract_test PRIVATE
         LL_GHI_R3_SHADER_PACKAGE="${GHI_R3_SHADER_PACKAGE}"
         LL_GHI_R5A_SHADER_PACKAGE="${GHI_R5A_SHADER_PACKAGE}"
+        LL_GHI_R5_WORLD_SHADER_PACKAGE="${GHI_R5_WORLD_SHADER_PACKAGE}"
         )
     add_dependencies(llrender_ghi_contract_test llrender_ghi_shader_packager_test)
   endif ()

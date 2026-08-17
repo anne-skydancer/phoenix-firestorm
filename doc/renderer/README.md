@@ -24,6 +24,9 @@ supported peer and recovery path.
   packaging, reflected bindings, deterministic draw parity, and cache identity.
 - [R4 opaque-world checkpoint](r4-opaque-world-checkpoint.md) records the
   incremental G-buffer and opaque-geometry gates beginning with R4a.
+- [R5 material, terrain, and lighting checkpoint](r5-material-lighting-checkpoint.md)
+  records material/skin observation plus exact terrain, lighting/shadow, and
+  sky/water native-peer contracts.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

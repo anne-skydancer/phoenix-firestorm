@@ -148,15 +148,83 @@ R5b establishes resource observation and comparability; it does not claim that
 the full production material scene is rasterized by Vulkan. Production world
 and UI rendering remains OpenGL-only. Terrain begins at R5c.
 
+## R5c-e world and environment contract
+
+R5c-e adds a backend-neutral world-state contract rather than exposing viewer
+or native-API objects. It names the four terrain layers and their transforms,
+legacy versus metallic/roughness terrain intent, height and normal policy,
+sun/moon and local/projector light inputs, explicit shadow textures and biases,
+and the sky/water/underwater inputs required by the R09 references.
+
+The dependency order is also explicit:
+
+1. terrain depth and terrain material;
+2. directional and projector shadow production;
+3. deferred lighting;
+4. atmosphere and water reflection;
+5. water surface and underwater classification.
+
+A backend may fuse adjacent work, but it may not change the observable inputs
+or outputs. This is intentionally a semantic dependency list, not a sequence of
+OpenGL calls or Vulkan render-pass objects.
+
+The shared R5 world fixture uses a reverse-Z indexed terrain quad and produces
+three independent RGBA8 targets in one deterministic execution:
+
+- **R5c terrain:** four weight-controlled texture layers, repeat sampling,
+  independent transforms, height-modified weights, height-derived normals, and
+  selection between legacy detail and PBR terrain treatment;
+- **R5d lighting/shadows:** sun and moon directional inputs, distance/falloff
+  local lighting, projector cone classification, sampled projector shadow, and
+  explicit shadow bias;
+- **R5e environment:** sky zenith/horizon and haze, animated wave inputs,
+  water normal and Fresnel treatment, water-line classification, and an
+  underwater override.
+
+OpenGL 4.6, the OpenGL 4.1 fallback, and Vulkan 1.3 with Khronos validation
+produce 2,304 shaded pixels and bit-exact hashes for every target:
+
+1. terrain: `a5cf6a0b67b9227adaa765a0560512cfe3c559a7bcedd8461915c873c04b2cd2`;
+2. lighting/shadows: `8b6f8bb2356985056adf8d073d48b1cc5ab4d5550518ac9175ba17c1a304f751`;
+3. sky/water: `a7a89831e9fa70c1cdb73cf90e28ee896c956ebca8fb27d65d2697f4da1afa9b`.
+
+The deterministic `r5_world` shader package SHA-256 is
+`fbbdc73aec6f8e89a09352be95b97bf2483dd5bbd6ff0daf6150c70607542027`.
+Reflection requires seven bindings, three vertex inputs, and three fragment
+outputs. The contract suite rejects incomplete terrain/environment resource
+sets, rejects a pipeline missing the environment target, and verifies the
+world dependency order. The suite is **25/25 pass** and the renderer boundary
+ratchet remains clean with zero direct Vulkan calls or Vulkan types outside the
+backend.
+
+The R08/R09 baseline evidence on the harness branch remains the production
+reference: legacy/PBR terrain (including heightmap and paintmap composition),
+deferred/local/projector lighting, shadows, directional sky, and above/below
+water. The R5 fixture converts those requirements into a native-peer oracle;
+it does not alter the production draw route or claim that a complete live grid
+frame is already rasterized by Vulkan.
+
+## R5 checkpoint result
+
+R5 is complete as an additive GHI contract and native-execution checkpoint.
+Material/skin, live material-resource observation, terrain, lighting/shadows,
+and environment semantics now have portable interfaces and exact OpenGL/Vulkan
+oracles. Production world and UI rendering is still OpenGL-only, so the viewer
+remains usable through native OpenGL or Mesa + Zink while R6 begins alpha
+coverage. Production Vulkan selection remains prohibited until R8.
+
 ## Limits and revisit points
 
-R5a is an interface and native-execution oracle, not a claim that Firestorm's
+R5 is an interface and native-execution oracle, not a claim that Firestorm's
 production legacy/PBR shaders have been ported. It deliberately omits alpha
 mask/blend behavior, texture arrays, anisotropic quality policy, mip generation
-quality, material animation, morph targets, cloth, and shadow/environment
-lighting. Those enter only in the slice that owns their semantic decisions.
+quality, material animation, morph targets, and cloth. Alpha enters R6;
+recursive/offscreen environment rendering enters R7.
 
 Revisit combined versus separate descriptors and descriptor indexing after R5b
 records representative material/texture counts. Revisit palette UBO sizing and
 storage-buffer use after actual avatar/animesh joint counts and update bandwidth
 are captured. Neither decision should be driven by an API-specific shortcut.
+Revisit pass fusion, terrain texture arrays, shadow-atlas layout, and atmosphere
+lookup tables only after production packet replay provides representative
+counts and timings; the semantic dependency order remains invariant.

@@ -19,6 +19,7 @@
 #include "ghi/include/llghimaterialscenepacket.h"
 #include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
+#include "ghi/include/llghiworldcontract.h"
 #include "tests/ghi/llghidrawfixture.h"
 #include "tests/ghi/llghiresourcefixture.h"
 
@@ -1238,5 +1239,87 @@ void LLGHIValidationObject::test<24>()
     ensure("pixel payload without content identity rejected",
            encodeMaterialScenePacket(source, first).code() == StatusCode::InvalidArgument);
 }
+
+#ifdef LL_GHI_R5_WORLD_SHADER_PACKAGE
+template<> template<>
+void LLGHIValidationObject::test<25>()
+{
+    using namespace LL::GHI;
+
+    ensure("R5 terrain depth precedes material",
+           WORLD_PASS_ORDER[0] == WorldPass::TerrainDepth);
+    ensure("R5 lighting follows shadow inputs",
+           WORLD_PASS_ORDER[4] == WorldPass::DeferredLighting);
+    ensure("R5 water follows atmosphere and reflection",
+           WORLD_PASS_ORDER[7] == WorldPass::WaterSurface);
+    ensure("R5 underwater is the final environment classification",
+           WORLD_PASS_ORDER[8] == WorldPass::Underwater);
+
+    ShaderPackageDesc package;
+    Status status = loadShaderPackage(LL_GHI_R5_WORLD_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    ensure_equals("R5 world reflected binding count",
+                  package.bindings.size(), std::size_t{7});
+    ensure_equals("R5 world reflected vertex input count",
+                  package.vertexInputs.size(), std::size_t{3});
+    ensure_equals("R5 world reflected output count",
+                  package.fragmentOutputs.size(), std::size_t{3});
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R5 world validation device", created.status.ok() && device);
+    ShaderPackageHandle shader = device->createShaderPackage(package, status);
+    ensure("R5 world shader package", status.ok() && shader);
+    BufferHandle world = device->createBuffer(
+        {352, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
+    ImageHandle image = device->createImage(
+        {{2, 2, 1}, Format::RGBA8UNorm, ResourceUsage::Sampled, 1, 1, 1}, status);
+    ImageViewHandle view = device->createImageView(
+        {image, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
+    SamplerHandle sampler = device->createSampler({}, status);
+    ensure("R5 world resources", status.ok() && world && image && view && sampler);
+
+    BindingSetDesc worldSet;
+    worldSet.shader = shader;
+    worldSet.group = 0;
+    worldSet.resources.push_back(
+        {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         world, 0, 352, {}, {}});
+    for (std::uint16_t binding = 1; binding < 6; ++binding)
+        worldSet.resources.push_back(
+            {binding, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+             {}, 0, 0, view, sampler});
+    BindingSetHandle rejected = device->createBindingSet(worldSet, status);
+    ensure("R5 world incomplete terrain/environment resources rejected",
+           !rejected && status.code() == StatusCode::InvalidArgument);
+    worldSet.resources.push_back(
+        {6, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+         {}, 0, 0, view, sampler});
+    BindingSetHandle accepted = device->createBindingSet(worldSet, status);
+    ensure("R5 world complete resources accepted", status.ok() && accepted);
+
+    PipelineDesc pipeline;
+    pipeline.shader = shader;
+    pipeline.depthTest = true;
+    pipeline.depthWrite = true;
+    pipeline.depthCompare = CompareOp::GreaterEqual;
+    pipeline.colorFormats.assign(3, Format::RGBA8UNorm);
+    pipeline.depthStencilFormat = Format::Depth24Stencil8;
+    pipeline.blendStates.assign(3, BlendState{});
+    pipeline.vertexBuffers = {{0, 32, VertexInputRate::PerVertex}};
+    pipeline.vertexAttributes = {
+        {0, 0, VertexFormat::Float32x3, 0},
+        {1, 0, VertexFormat::Float32x3, 12},
+        {2, 0, VertexFormat::Float32x2, 24}};
+    PipelineHandle compatible = device->createPipeline(pipeline, status);
+    ensure("R5 world terrain/lighting/environment pipeline accepted",
+           status.ok() && compatible);
+    pipeline.colorFormats.pop_back();
+    pipeline.blendStates.pop_back();
+    PipelineHandle missingEnvironment = device->createPipeline(pipeline, status);
+    ensure("R5 world pipeline without environment target rejected",
+           !missingEnvironment && status.code() == StatusCode::InvalidArgument);
+}
+#endif
 
 } // namespace tut

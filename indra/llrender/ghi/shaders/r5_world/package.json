@@ -1,0 +1,51 @@
+{
+  "name": "r5_world",
+  "schema_version": 3,
+  "toolchain": {
+    "glslang_version": "11:16.2.0",
+    "spirv_tools_version": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
+    "vulkan_target": "vulkan1.3",
+    "optimization": "spirv-opt -O"
+  },
+  "dependencies": [
+    "vulkan/ghi_vulkan_clip.glsl"
+  ],
+  "expected": {
+    "bindings": [
+      {"group": 0, "binding": 0, "type": "uniform_buffer", "name": "WorldData", "stages": ["vertex", "fragment"]},
+      {"group": 0, "binding": 1, "type": "combined_image_sampler", "name": "terrainWeights", "stages": ["fragment"]},
+      {"group": 0, "binding": 2, "type": "combined_image_sampler", "name": "terrainLayer0", "stages": ["fragment"]},
+      {"group": 0, "binding": 3, "type": "combined_image_sampler", "name": "terrainLayer1", "stages": ["fragment"]},
+      {"group": 0, "binding": 4, "type": "combined_image_sampler", "name": "terrainLayer2", "stages": ["fragment"]},
+      {"group": 0, "binding": 5, "type": "combined_image_sampler", "name": "terrainLayer3", "stages": ["fragment"]},
+      {"group": 0, "binding": 6, "type": "combined_image_sampler", "name": "shadowProjector", "stages": ["fragment"]}
+    ],
+    "vertex_inputs": [
+      {"location": 0, "type": "float3"},
+      {"location": 1, "type": "float3"},
+      {"location": 2, "type": "float2"}
+    ],
+    "fragment_outputs": [
+      {"location": 0, "type": "float4"},
+      {"location": 1, "type": "float4"},
+      {"location": 2, "type": "float4"}
+    ],
+    "push_constant_bytes": 0
+  },
+  "stages": [
+    {
+      "stage": "vertex",
+      "entry_point": "main",
+      "opengl_41": "opengl41/world.vert.glsl",
+      "opengl_46": "opengl46/world.vert.glsl",
+      "vulkan": "vulkan/world.vert.glsl"
+    },
+    {
+      "stage": "fragment",
+      "entry_point": "main",
+      "opengl_41": "opengl41/world.frag.glsl",
+      "opengl_46": "opengl46/world.frag.glsl",
+      "vulkan": "vulkan/world.frag.glsl"
+    }
+  ]
+}

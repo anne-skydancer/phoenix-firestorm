@@ -13,7 +13,8 @@
   "expected": {
     "bindings": [
       {"group": 0, "binding": 0, "type": "uniform_buffer", "name": "FrameData", "stages": ["vertex"]},
-      {"group": 1, "binding": 0, "type": "uniform_buffer", "name": "SkinData", "stages": ["vertex"]},
+      {"group": 1, "binding": 0, "type": "uniform_buffer", "name": "ObjectData", "stages": ["vertex"]},
+      {"group": 1, "binding": 1, "type": "uniform_buffer", "name": "SkinData", "stages": ["vertex"]},
       {"group": 2, "binding": 0, "type": "uniform_buffer", "name": "MaterialData", "stages": ["fragment"]},
       {"group": 2, "binding": 1, "type": "combined_image_sampler", "name": "baseColorMap", "stages": ["fragment"]},
       {"group": 2, "binding": 2, "type": "combined_image_sampler", "name": "normalMap", "stages": ["fragment"]},

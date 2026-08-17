@@ -8,7 +8,13 @@ layout(set = 0, binding = 0, std140) uniform FrameData
     mat4 viewProjection;
 } frameData;
 
-layout(set = 1, binding = 0, std140) uniform SkinData
+layout(set = 1, binding = 0, std140) uniform ObjectData
+{
+    mat4 modelTransform;
+    mat4 normalTransform;
+} objectData;
+
+layout(set = 1, binding = 1, std140) uniform SkinData
 {
     mat4 jointTransforms[4];
 } skinData;
@@ -33,10 +39,14 @@ void main()
               + skinData.jointTransforms[min(inJoints.y, 3u)] * weights.y
               + skinData.jointTransforms[min(inJoints.z, 3u)] * weights.z
               + skinData.jointTransforms[min(inJoints.w, 3u)] * weights.w;
-    gl_Position = ghiToVulkanClip(frameData.viewProjection * skin * vec4(inPosition, 1.0));
+    gl_Position = ghiToVulkanClip(frameData.viewProjection * objectData.modelTransform
+                                  * skin * vec4(inPosition, 1.0));
     mat3 skinNormal = mat3(skin);
+    vec3 normal = normalize(mat3(objectData.normalTransform) * skinNormal * inNormal);
+    vec3 tangent = mat3(objectData.modelTransform) * skinNormal * inTangent.xyz;
+    tangent = normalize(tangent - normal * dot(normal, tangent));
     texCoord = inTexCoord;
     vertexColor = inColor;
-    worldNormal = normalize(skinNormal * inNormal);
-    worldTangent = vec4(normalize(skinNormal * inTangent.xyz), inTangent.w);
+    worldNormal = normal;
+    worldTangent = vec4(tangent, inTangent.w);
 }

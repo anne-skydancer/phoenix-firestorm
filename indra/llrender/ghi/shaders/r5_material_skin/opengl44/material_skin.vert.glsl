@@ -5,7 +5,13 @@ layout(std140, binding = 0) uniform FrameData
     mat4 viewProjection;
 };
 
-layout(std140, binding = 1) uniform SkinData
+layout(std140, binding = 1) uniform ObjectData
+{
+    mat4 modelTransform;
+    mat4 normalTransform;
+};
+
+layout(std140, binding = 2) uniform SkinData
 {
     mat4 jointTransforms[4];
 };
@@ -30,10 +36,13 @@ void main()
               + jointTransforms[min(inJoints.y, 3u)] * weights.y
               + jointTransforms[min(inJoints.z, 3u)] * weights.z
               + jointTransforms[min(inJoints.w, 3u)] * weights.w;
-    gl_Position = viewProjection * skin * vec4(inPosition, 1.0);
+    gl_Position = viewProjection * modelTransform * skin * vec4(inPosition, 1.0);
     mat3 skinNormal = mat3(skin);
+    vec3 normal = normalize(mat3(normalTransform) * skinNormal * inNormal);
+    vec3 tangent = mat3(modelTransform) * skinNormal * inTangent.xyz;
+    tangent = normalize(tangent - normal * dot(normal, tangent));
     texCoord = inTexCoord;
     vertexColor = inColor;
-    worldNormal = normalize(skinNormal * inNormal);
-    worldTangent = vec4(normalize(skinNormal * inTangent.xyz), inTangent.w);
+    worldNormal = normal;
+    worldTangent = vec4(tangent, inTangent.w);
 }

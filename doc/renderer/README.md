@@ -42,6 +42,9 @@ supported peer and recovery path.
 - [I3 live rigid-material integration checkpoint](i3-live-material-integration-checkpoint.md)
   adds a tested geometry-bearing material packet and asynchronously executes
   bounded real-viewer rigid opaque PBR draws without presenting them.
+- [I4 material-transform integration checkpoint](i4-material-transform-integration-checkpoint.md)
+  separates object and skin transforms, applies inverse-transpose normals and
+  executes independent per-map UV transforms on the live rigid PBR path.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

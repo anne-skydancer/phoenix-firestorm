@@ -45,11 +45,95 @@ Status invalid(const char* message)
     return Status::failure(StatusCode::InvalidArgument, message);
 }
 
-bool identityTextureTransform(const MaterialResource& material)
+bool supportedTextureCoordinates(const MaterialResource& material)
+{
+    for (const auto& binding : material.textures)
+        if (binding.texcoord != 0) return false;
+    return true;
+}
+
+bool hasTextureTransform(const MaterialResource& material)
 {
     constexpr std::array<float, 5> identity{{0.f, 0.f, 1.f, 1.f, 0.f}};
-    for (const auto& binding : material.textures)
-        if (binding.texcoord != 0 || binding.transform != identity) return false;
+    return std::any_of(material.textures.begin(), material.textures.end(),
+        [&identity](const MaterialTextureBinding& binding)
+        {
+            return binding.transform != identity;
+        });
+}
+
+std::array<double, 4> transformPoint(const std::array<float, 16>& matrix,
+                                     const std::array<double, 4>& point)
+{
+    std::array<double, 4> result{};
+    for (std::size_t row = 0; row < result.size(); ++row)
+        result[row] = matrix[row] * point[0] + matrix[4 + row] * point[1] +
+                      matrix[8 + row] * point[2] + matrix[12 + row] * point[3];
+    return result;
+}
+
+bool potentiallyVisible(const MaterialScenePacket& packet,
+                        const MaterialSceneDraw& draw)
+{
+    std::array<bool, 6> allOutside{{true, true, true, true, true, true}};
+    for (std::uint32_t item = 0; item < draw.indexCount; ++item)
+    {
+        const MaterialSceneVertex& vertex =
+            packet.vertices[packet.indices[draw.firstIndex + item]];
+        const std::array<double, 4> local{{
+            vertex.position[0], vertex.position[1], vertex.position[2], 1.0}};
+        const auto world = transformPoint(draw.modelTransform, local);
+        const auto clip = transformPoint(draw.transform, world);
+        if (!std::all_of(clip.begin(), clip.end(),
+                         [](double value) { return std::isfinite(value); }))
+            continue;
+        const double w = clip[3];
+        const std::array<bool, 6> inside{{
+            clip[0] >= -w, clip[0] <= w, clip[1] >= -w,
+            clip[1] <= w, clip[2] >= -w, clip[2] <= w}};
+        for (std::size_t plane = 0; plane < allOutside.size(); ++plane)
+            if (inside[plane]) allOutside[plane] = false;
+    }
+    return std::none_of(allOutside.begin(), allOutside.end(),
+                        [](bool outside) { return outside; });
+}
+
+bool makeObjectData(const MaterialSceneDraw& draw, std::array<float, 32>& data)
+{
+    std::copy(draw.modelTransform.begin(), draw.modelTransform.end(), data.begin());
+    const auto& model = draw.modelTransform;
+    const double a00 = model[0], a01 = model[4], a02 = model[8];
+    const double a10 = model[1], a11 = model[5], a12 = model[9];
+    const double a20 = model[2], a21 = model[6], a22 = model[10];
+    const double c00 = a11 * a22 - a12 * a21;
+    const double c01 = a12 * a20 - a10 * a22;
+    const double c02 = a10 * a21 - a11 * a20;
+    const double c10 = a02 * a21 - a01 * a22;
+    const double c11 = a00 * a22 - a02 * a20;
+    const double c12 = a01 * a20 - a00 * a21;
+    const double c20 = a01 * a12 - a02 * a11;
+    const double c21 = a02 * a10 - a00 * a12;
+    const double c22 = a00 * a11 - a01 * a10;
+    const double determinant = a00 * c00 + a01 * c01 + a02 * c02;
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1.e-12)
+        return false;
+    const double inverseDeterminant = 1.0 / determinant;
+    const std::array<double, 9> normal{{
+        c00 * inverseDeterminant, c10 * inverseDeterminant,
+        c20 * inverseDeterminant, c01 * inverseDeterminant,
+        c11 * inverseDeterminant, c21 * inverseDeterminant,
+        c02 * inverseDeterminant, c12 * inverseDeterminant,
+        c22 * inverseDeterminant}};
+    constexpr std::array<float, 16> identity{{
+        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+    std::copy(identity.begin(), identity.end(), data.begin() + 16);
+    constexpr std::array<std::size_t, 9> indices{{0, 1, 2, 4, 5, 6, 8, 9, 10}};
+    for (std::size_t index = 0; index < normal.size(); ++index)
+    {
+        if (!std::isfinite(normal[index])) return false;
+        data[16 + indices[index]] = static_cast<float>(normal[index]);
+    }
     return true;
 }
 
@@ -159,7 +243,8 @@ public:
         std::size_t rigidDraws = 0;
         std::size_t comparableDraws = 0;
         std::size_t opaquePbrDraws = 0;
-        std::size_t identityUvDraws = 0;
+        std::size_t uv0Draws = 0;
+        std::size_t potentiallyVisibleDraws = 0;
         std::array<std::size_t, 5> comparabilityCauses{};
         struct TextureDiagnostic
         {
@@ -226,12 +311,14 @@ public:
             for (std::size_t cause = 0; cause < causes.size(); ++cause)
                 if (hasComparability(draw.comparability, causes[cause]))
                     ++comparabilityCauses[cause];
-            if (!identityTextureTransform(material)) continue;
-            ++identityUvDraws;
+            if (!supportedTextureCoordinates(material)) continue;
+            ++uv0Draws;
             if (draw.comparability != ResourceComparability::Comparable ||
                 material.comparability != ResourceComparability::Comparable)
                 continue;
             ++comparableDraws;
+            if (!potentiallyVisible(packet, draw)) continue;
+            ++potentiallyVisibleDraws;
             selected.push_back(index);
             if (selected.size() * 4 > limits.maxTextures)
             {
@@ -243,10 +330,11 @@ public:
         {
             std::ostringstream message;
             message << "live material packet has no executable rigid opaque PBR draws"
-                    << " (packet/geometry/rigid/pbr/identity-uv/comparable="
+                    << " (packet/geometry/rigid/pbr/uv0/comparable/visible="
                     << packet.draws.size() << '/' << geometryDraws << '/'
                     << rigidDraws << '/' << opaquePbrDraws << '/'
-                    << identityUvDraws << '/' << comparableDraws
+                    << uv0Draws << '/' << comparableDraws << '/'
+                    << potentiallyVisibleDraws
                     << "; causes=missing/fetching/skin/alpha/layout="
                     << comparabilityCauses[0] << '/' << comparabilityCauses[1]
                     << '/' << comparabilityCauses[2] << '/'
@@ -283,11 +371,17 @@ public:
         const std::uint64_t indexOffset = align(vertexBytes);
         const std::uint64_t frameOffset = align(indexOffset + indexBytes);
         const std::uint64_t frameStride = align(sizeof(packet.draws.front().transform));
-        const std::uint64_t skinOffset = align(frameOffset + frameStride * selected.size());
+        const std::uint64_t objectOffset = align(
+            frameOffset + frameStride * selected.size());
+        constexpr std::size_t OBJECT_FLOATS = 32;
+        const std::uint64_t objectStride = align(OBJECT_FLOATS * sizeof(float));
+        const std::uint64_t skinOffset = align(
+            objectOffset + objectStride * selected.size());
         const std::uint64_t skinStride = align(sizeof(IDENTITY_SKIN));
         const std::uint64_t materialOffset = align(
             skinOffset + skinStride * selected.size());
-        const std::uint64_t materialStride = align(12 * sizeof(float));
+        constexpr std::size_t MATERIAL_FLOATS = 44;
+        const std::uint64_t materialStride = align(MATERIAL_FLOATS * sizeof(float));
         std::uint64_t textureOffset = align(materialOffset + materialStride * selected.size());
         if (textureOffset == std::numeric_limits<std::uint64_t>::max())
             return invalid("material offscreen upload size overflow");
@@ -295,6 +389,7 @@ public:
         struct DrawResources
         {
             std::size_t sourceDraw = 0;
+            bool textureTransformed = false;
             BindingSetHandle frameSet;
             BindingSetHandle skinSet;
             BindingSetHandle materialSet;
@@ -319,6 +414,7 @@ public:
             candidate.sourceDraw = selected[item];
             const MaterialResource& material =
                 packet.materials[packet.draws[selected[item]].material];
+            candidate.textureTransformed = hasTextureTransform(material);
             const std::uint64_t drawTextureOffset = textureOffset;
             bool drawFits = true;
             for (std::size_t texture = 0; texture < 4; ++texture)
@@ -365,17 +461,34 @@ public:
             const MaterialResource& material = packet.materials[draw.material];
             std::memcpy(uploadData.data() + frameOffset + frameStride * item,
                         draw.transform.data(), sizeof(draw.transform));
-            for (std::size_t joint = 0; joint < 4; ++joint)
-                std::memcpy(uploadData.data() + skinOffset + skinStride * item +
-                                joint * sizeof(draw.modelTransform),
-                            draw.modelTransform.data(),
-                            sizeof(draw.modelTransform));
-            std::array<float, 12> factors{{
+            std::array<float, OBJECT_FLOATS> objectData{};
+            if (!makeObjectData(draw, objectData))
+                return invalid("material draw has a singular model transform");
+            std::memcpy(uploadData.data() + objectOffset + objectStride * item,
+                        objectData.data(), sizeof(objectData));
+            std::memcpy(uploadData.data() + skinOffset + skinStride * item,
+                        IDENTITY_SKIN.data(), sizeof(IDENTITY_SKIN));
+            std::array<float, MATERIAL_FLOATS> factors{{
                 material.baseColor[0], material.baseColor[1],
                 material.baseColor[2], material.baseColor[3],
                 material.emissive[0], material.emissive[1],
                 material.emissive[2], material.metallic,
                 material.roughness, 1.f, 0.f, 0.f}};
+            for (std::size_t texture = 0; texture < semantics.size(); ++texture)
+            {
+                constexpr std::array<float, 5> identity{{0.f, 0.f, 1.f, 1.f, 0.f}};
+                const MaterialTextureBinding* binding =
+                    findBinding(material, semantics[texture]);
+                const auto& transform = binding ? binding->transform : identity;
+                const std::size_t offsetScale = 12 + texture * 4;
+                factors[offsetScale] = transform[0];
+                factors[offsetScale + 1] = transform[1];
+                factors[offsetScale + 2] = transform[2];
+                factors[offsetScale + 3] = transform[3];
+                const std::size_t rotation = 28 + texture * 4;
+                factors[rotation] = std::cos(transform[4]);
+                factors[rotation + 1] = std::sin(transform[4]);
+            }
             std::memcpy(uploadData.data() + materialOffset + materialStride * item,
                         factors.data(), sizeof(factors));
             for (std::size_t texture = 0; texture < 4; ++texture)
@@ -384,7 +497,7 @@ public:
                             draws[item].pixels[texture].size());
         }
 
-        BufferHandle upload, vertices, indices, frames, skin, materials;
+        BufferHandle upload, vertices, indices, frames, objects, skin, materials;
         auto cleanup = [&]()
         {
             Status first = Status::success();
@@ -400,7 +513,8 @@ public:
                 }
             }
             destroy(upload, first); destroy(vertices, first); destroy(indices, first);
-            destroy(frames, first); destroy(skin, first); destroy(materials, first);
+            destroy(frames, first); destroy(objects, first); destroy(skin, first);
+            destroy(materials, first);
             return first;
         };
         upload = mDevice.createBuffer(
@@ -413,6 +527,9 @@ public:
              MemoryClass::DeviceLocal}, status);
         if (status) frames = mDevice.createBuffer(
             {frameStride * selected.size(), ResourceUsage::Uniform |
+             ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
+        if (status) objects = mDevice.createBuffer(
+            {objectStride * selected.size(), ResourceUsage::Uniform |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
         if (status) skin = mDevice.createBuffer(
             {skinStride * selected.size(), ResourceUsage::Uniform |
@@ -431,9 +548,11 @@ public:
                 0, 0, ShaderPackageDesc::BindingType::UniformBuffer, frames,
                 frameStride * item, sizeof(packet.draws.front().transform), {}, {}}}};
             draws[item].frameSet = mDevice.createBindingSet(frameDesc, status);
-            BindingSetDesc skinDesc{mShader, 1, {{
-                0, 0, ShaderPackageDesc::BindingType::UniformBuffer, skin,
-                skinStride * item, sizeof(IDENTITY_SKIN), {}, {}}}};
+            BindingSetDesc skinDesc{mShader, 1, {
+                {0, 0, ShaderPackageDesc::BindingType::UniformBuffer, objects,
+                 objectStride * item, OBJECT_FLOATS * sizeof(float), {}, {}},
+                {1, 0, ShaderPackageDesc::BindingType::UniformBuffer, skin,
+                 skinStride * item, sizeof(IDENTITY_SKIN), {}, {}}}};
             if (status) draws[item].skinSet =
                 mDevice.createBindingSet(skinDesc, status);
             BindingSetDesc materialDesc;
@@ -441,7 +560,7 @@ public:
             materialDesc.group = 2;
             materialDesc.resources.push_back({
                 0, 0, ShaderPackageDesc::BindingType::UniformBuffer, materials,
-                materialStride * item, 12 * sizeof(float), {}, {}});
+                materialStride * item, MATERIAL_FLOATS * sizeof(float), {}, {}});
             for (std::size_t texture = 0; status && texture < 4; ++texture)
             {
                 const Format format = texture == 0 || texture == 3
@@ -470,6 +589,8 @@ public:
         const std::array<BufferCopyRegion, 1> indexCopy{{{indexOffset, 0, indexBytes}}};
         const std::array<BufferCopyRegion, 1> frameCopy{{
             {frameOffset, 0, frameStride * selected.size()}}};
+        const std::array<BufferCopyRegion, 1> objectCopy{{
+            {objectOffset, 0, objectStride * selected.size()}}};
         const std::array<BufferCopyRegion, 1> skinCopy{{
             {skinOffset, 0, skinStride * selected.size()}}};
         const std::array<BufferCopyRegion, 1> materialCopy{{
@@ -477,6 +598,7 @@ public:
         if (status) status = commands.copyBuffer(upload, vertices, vertexCopy);
         if (status) status = commands.copyBuffer(upload, indices, indexCopy);
         if (status) status = commands.copyBuffer(upload, frames, frameCopy);
+        if (status) status = commands.copyBuffer(upload, objects, objectCopy);
         if (status) status = commands.copyBuffer(upload, skin, skinCopy);
         if (status) status = commands.copyBuffer(upload, materials, materialCopy);
         for (auto& draw : draws)
@@ -491,7 +613,7 @@ public:
             }
 
         RenderingInfo rendering;
-        rendering.semanticId = 0x49335f4d41544cull; // "I3_MATL"
+        rendering.semanticId = 0x49345f4d41544cull; // "I4_MATL"
         rendering.width = PROBE_WIDTH; rendering.height = PROBE_HEIGHT;
         for (std::size_t target = 0; target < 4; ++target)
             rendering.colors.push_back({mColorViews[target], COLOR_FORMATS[target],
@@ -549,6 +671,9 @@ public:
         mPendingResult.vertices = static_cast<std::uint32_t>(packet.vertices.size());
         mPendingResult.indices = static_cast<std::uint32_t>(packet.indices.size());
         mPendingResult.draws = static_cast<std::uint32_t>(draws.size());
+        mPendingResult.textureTransformedDraws = static_cast<std::uint32_t>(
+            std::count_if(draws.begin(), draws.end(),
+                [](const DrawResources& draw) { return draw.textureTransformed; }));
         mPendingResult.textures = static_cast<std::uint32_t>(draws.size() * 4);
         mPendingResult.packetSha256 = materialScenePacketSha256(packet);
         return Status::success();
@@ -624,7 +749,7 @@ private:
             capabilities.maxTexture2DSize < PROBE_WIDTH ||
             capabilities.preferredDepthStencilFormat == Format::Undefined)
             return Status::failure(StatusCode::Unsupported,
-                                   "device lacks I3 material target capabilities");
+                                   "device lacks I4 material target capabilities");
         Status status = Status::success();
         for (std::size_t target = 0; target < 4; ++target)
         {

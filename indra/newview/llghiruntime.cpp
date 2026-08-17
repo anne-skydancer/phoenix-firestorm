@@ -117,19 +117,34 @@ void pollMaterialProbe()
         if (status.code() != LL::GHI::StatusCode::NotReady)
         {
             LL_WARNS("GHIIntegration")
-                << "I3 live material offscreen poll failed: "
+                << "I4 live material offscreen poll failed: "
                 << status.message() << LL_ENDL;
             sMaterialDisabled = true;
         }
         return;
     }
+    if (!std::all_of(result.nonClearPixels.begin(), result.nonClearPixels.end(),
+                     [](std::uint64_t pixels) { return pixels != 0; }))
+    {
+        LL_INFOS("GHIIntegration")
+            << "I4 live material sample completed without comparable coverage; "
+            << "retrying without counting a pass. frame=" << result.frameId
+            << " draws=" << result.draws << " uv-transformed-draws="
+            << result.textureTransformedDraws << " non-clear-pixels="
+            << result.nonClearPixels[0] << ',' << result.nonClearPixels[1] << ','
+            << result.nonClearPixels[2] << ',' << result.nonClearPixels[3]
+            << LL_ENDL;
+        sPendingMaterialBudgetLimited = false;
+        return;
+    }
     ++sMaterialSamples;
     LL_INFOS("GHIIntegration")
-        << "I3 live rigid opaque PBR offscreen PASS: sample="
+        << "I4 live transform-correct rigid opaque PBR offscreen PASS: sample="
         << sMaterialSamples << '/' << livePacketMaximum()
         << " frame=" << result.frameId << " draws=" << result.draws
         << " vertices=" << result.vertices << " indices=" << result.indices
-        << " textures=" << result.textures << " packet-sha256="
+        << " textures=" << result.textures << " uv-transformed-draws="
+        << result.textureTransformedDraws << " packet-sha256="
         << result.packetSha256 << " color-sha256="
         << result.colorSha256[0] << ',' << result.colorSha256[1] << ','
         << result.colorSha256[2] << ',' << result.colorSha256[3]
@@ -231,7 +246,7 @@ void initialize()
         if (!status)
         {
             LL_WARNS("GHIIntegration")
-                << "I3 runtime material shader package was not loaded from "
+                << "I4 runtime material shader package was not loaded from "
                 << packagePath << ": " << status.message()
                 << ". Visible rendering remains OpenGL." << LL_ENDL;
         }
@@ -242,7 +257,7 @@ void initialize()
                     *sVulkanDevice, std::move(shaderPackage));
             const LL::GHI::MaterialOffscreenProbeLimits limits;
             LL_INFOS("GHIIntegration")
-                << "I3 asynchronous rigid opaque PBR material probe armed from "
+                << "I4 asynchronous transform-correct rigid opaque PBR material probe armed from "
                 << packagePath << "; extent=256x256 limits(draws/vertices/indices/textures/bytes)="
                 << limits.maxDraws << '/' << limits.maxVertices << '/'
                 << limits.maxIndices << '/' << limits.maxTextures << '/'
@@ -292,7 +307,7 @@ void shutdown()
         const LL::GHI::Status probeStatus = sMaterialProbe->shutdown();
         if (!probeStatus)
             LL_WARNS("GHIIntegration")
-                << "I3 material offscreen resources did not retire cleanly: "
+                << "I4 material offscreen resources did not retire cleanly: "
                 << probeStatus.message() << LL_ENDL;
         sMaterialProbe.reset();
     }
@@ -452,21 +467,21 @@ void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
     if (!status)
     {
         LL_WARNS("GHIIntegration")
-            << "I3 live material offscreen submission rejected at frame "
+            << "I4 live material offscreen submission rejected at frame "
             << packet.frameId << ": " << status.message()
             << " attempt=" << sMaterialAttempts << LL_ENDL;
         if (status.code() == LL::GHI::StatusCode::DeviceLost)
         {
             sMaterialDisabled = true;
             LL_WARNS("GHIIntegration")
-                << "I3 material probe disabled after device loss. The production OpenGL renderer remains active."
+                << "I4 material probe disabled after device loss. The production OpenGL renderer remains active."
                 << LL_ENDL;
         }
         return;
     }
     sPendingMaterialBudgetLimited = budget_limited;
     LL_INFOS("GHIIntegration")
-        << "I3 live rigid opaque PBR offscreen submitted asynchronously: frame="
+        << "I4 live transform-correct rigid opaque PBR offscreen submitted asynchronously: frame="
         << packet.frameId << " draws=" << packet.draws.size()
         << " vertices=" << packet.vertices.size() << " indices="
         << packet.indices.size()

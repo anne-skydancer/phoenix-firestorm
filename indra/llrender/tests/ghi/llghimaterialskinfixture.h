@@ -58,19 +58,28 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
     static_assert(sizeof(Vertex) == 76);
 
     constexpr std::array<Vertex, 4> vertices{{
-        {{-0.75f, -0.75f, 0.75f}, {0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f},
+        {{-0.75f, -0.75f, 0.75f}, {.4472136f, 0.f, .8944272f},
+         {.8944272f, 0.f, -.4472136f, 1.f},
          {-0.25f, -0.25f}, {255, 224, 192, 255}, {0, 1, 2, 3}, {.5f, .5f, 0.f, 0.f}},
-        {{ 0.75f, -0.75f, 0.75f}, {0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f},
+        {{ 0.75f, -0.75f, 0.75f}, {.4472136f, 0.f, .8944272f},
+         {.8944272f, 0.f, -.4472136f, 1.f},
          { 1.25f, -0.25f}, {224, 255, 192, 255}, {0, 1, 2, 3}, {.5f, .5f, 0.f, 0.f}},
-        {{ 0.75f,  0.75f, 0.75f}, {0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f},
+        {{ 0.75f,  0.75f, 0.75f}, {.4472136f, 0.f, .8944272f},
+         {.8944272f, 0.f, -.4472136f, 1.f},
          { 1.25f,  1.25f}, {192, 224, 255, 255}, {0, 1, 2, 3}, {.5f, .5f, 0.f, 0.f}},
-        {{-0.75f,  0.75f, 0.75f}, {0.f, 0.f, 1.f}, {1.f, 0.f, 0.f, 1.f},
+        {{-0.75f,  0.75f, 0.75f}, {.4472136f, 0.f, .8944272f},
+         {.8944272f, 0.f, -.4472136f, 1.f},
          {-0.25f,  1.25f}, {255, 255, 255, 255}, {0, 1, 2, 3}, {.5f, .5f, 0.f, 0.f}},
     }};
     constexpr std::array<std::uint16_t, 6> indices{{0, 1, 2, 2, 3, 0}};
     constexpr std::array<float, 16> frame{{
         1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
         0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+    constexpr std::array<float, 32> object{{
+        .75f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, .5f, 0.f, .125f, -.0625f, 0.f, 1.f,
+        1.333333333f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 2.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
     constexpr std::array<float, 64> skin{{
         1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
         0.f, 0.f, 1.f, 0.f, -.25f, 0.f, 0.f, 1.f,
@@ -80,10 +89,18 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
         0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f,
         1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
         0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
-    constexpr std::array<float, 12> material{{
+    constexpr std::array<float, 44> material{{
         .75f, .875f, 1.f, 1.f,
         .5f, .75f, 1.f, .625f,
-        .8f, .75f, 0.f, 0.f}};
+        .8f, .75f, 0.f, 0.f,
+        .125f, -.125f, .5f, .75f,
+        -.25f, .125f, 1.25f, .5f,
+        .25f, .25f, .75f, 1.25f,
+        .125f, .25f, 1.f, .5f,
+        0.f, 1.f, 0.f, 0.f,
+        1.f, 0.f, 0.f, 0.f,
+        0.f, -1.f, 0.f, 0.f,
+        .70710678f, .70710678f, 0.f, 0.f}};
     constexpr std::array<std::array<std::uint8_t, 16>, 4> texels{{
         {{64, 128, 255, 255, 255, 64, 128, 255,
           128, 255, 64, 255, 224, 192, 96, 255}},
@@ -98,7 +115,8 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
     constexpr std::uint64_t vertexOffset = 0;
     constexpr std::uint64_t indexOffset = vertexOffset + sizeof(vertices);
     constexpr std::uint64_t frameOffset = indexOffset + sizeof(indices);
-    constexpr std::uint64_t skinOffset = frameOffset + sizeof(frame);
+    constexpr std::uint64_t objectOffset = frameOffset + sizeof(frame);
+    constexpr std::uint64_t skinOffset = objectOffset + sizeof(object);
     constexpr std::uint64_t materialOffset = skinOffset + sizeof(skin);
     constexpr std::uint64_t textureOffset = materialOffset + sizeof(material);
     constexpr std::uint64_t uploadBytes = textureOffset + sizeof(texels);
@@ -112,11 +130,13 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
         Format::RGBA16UNorm, Format::RGBA16Float}};
     constexpr std::array<std::uint32_t, 4> colorBytes{{4, 4, 8, 8}};
     constexpr std::array<const char*, 4> referenceHashes{{
-        "b1c0a0fdf973dac4aebb8eac51dac984cf46b4b3727fc843033f94e81ab07b03",
-        "85c747cd8d2957fa7b50524b040043d09796bd87240487bf8a31527dff80727b",
-        "989b3688b9b05357ae0e6a7c5704cfaa0072cba40e1cd0d7c44ba32e1956c538",
-        "175704093dee3c161a3e279276bc137406866fc72c90a729c32e2dfd24543137",
+        "6009f38eca5792f3affb6f08896ff588cd03ab2639dd39197efe5fccd49262ef",
+        "d7c4959f70b881adb21212fb23f078d44d5404d741c101bdb8c7c85e62af63f1",
+        "51faf358a0eb7d9f37041f8926cded6a9fdfe26a7c6b21117c4a8b99aee3cf0b",
+        "663b7e11df673d77c194801b17c8395b6bf09982f03eac1382926c9407457ab0",
     }};
+    constexpr std::array<std::uint32_t, 4> referenceCoverage{{
+        1728, 1728, 1728, 1728}};
 
     Status status = Status::success();
     BufferHandle upload = device.createBuffer(
@@ -134,6 +154,10 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
         {sizeof(frame), ResourceUsage::Uniform | ResourceUsage::TransferDestination,
          MemoryClass::DeviceLocal}, status);
     if (!status) return fail("create R5a frame buffer", status);
+    BufferHandle objectBuffer = device.createBuffer(
+        {sizeof(object), ResourceUsage::Uniform | ResourceUsage::TransferDestination,
+         MemoryClass::DeviceLocal}, status);
+    if (!status) return fail("create I4 object buffer", status);
     BufferHandle skinBuffer = device.createBuffer(
         {sizeof(skin), ResourceUsage::Uniform | ResourceUsage::TransferDestination,
          MemoryClass::DeviceLocal}, status);
@@ -147,6 +171,7 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
     std::memcpy(uploadData.data() + vertexOffset, vertices.data(), sizeof(vertices));
     std::memcpy(uploadData.data() + indexOffset, indices.data(), sizeof(indices));
     std::memcpy(uploadData.data() + frameOffset, frame.data(), sizeof(frame));
+    std::memcpy(uploadData.data() + objectOffset, object.data(), sizeof(object));
     std::memcpy(uploadData.data() + skinOffset, skin.data(), sizeof(skin));
     std::memcpy(uploadData.data() + materialOffset, material.data(), sizeof(material));
     std::memcpy(uploadData.data() + textureOffset, texels.data(), sizeof(texels));
@@ -209,9 +234,11 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
         frameBuffer, 0, sizeof(frame), {}, {}}}};
     BindingSetHandle frameSet = device.createBindingSet(frameDesc, status);
     if (!status) return fail("create R5a frame bindings", status);
-    BindingSetDesc skinDesc{shader, 1, {{
-        0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
-        skinBuffer, 0, sizeof(skin), {}, {}}}};
+    BindingSetDesc skinDesc{shader, 1, {
+        {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         objectBuffer, 0, sizeof(object), {}, {}},
+        {1, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         skinBuffer, 0, sizeof(skin), {}, {}}}};
     BindingSetHandle skinSet = device.createBindingSet(skinDesc, status);
     if (!status) return fail("create R5a skin bindings", status);
     BindingSetDesc materialDesc;
@@ -257,11 +284,13 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
     const std::array<BufferCopyRegion, 1> vertexCopy{{{vertexOffset, 0, sizeof(vertices)}}};
     const std::array<BufferCopyRegion, 1> indexCopy{{{indexOffset, 0, sizeof(indices)}}};
     const std::array<BufferCopyRegion, 1> frameCopy{{{frameOffset, 0, sizeof(frame)}}};
+    const std::array<BufferCopyRegion, 1> objectCopy{{{objectOffset, 0, sizeof(object)}}};
     const std::array<BufferCopyRegion, 1> skinCopy{{{skinOffset, 0, sizeof(skin)}}};
     const std::array<BufferCopyRegion, 1> materialCopy{{{materialOffset, 0, sizeof(material)}}};
     if (!(status = commands.copyBuffer(upload, vertex, vertexCopy)) ||
         !(status = commands.copyBuffer(upload, index, indexCopy)) ||
         !(status = commands.copyBuffer(upload, frameBuffer, frameCopy)) ||
+        !(status = commands.copyBuffer(upload, objectBuffer, objectCopy)) ||
         !(status = commands.copyBuffer(upload, skinBuffer, skinCopy)) ||
         !(status = commands.copyBuffer(upload, materialBuffer, materialCopy)))
         return fail("upload R5a buffers", status);
@@ -344,7 +373,7 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
                             [](std::byte value) { return value != std::byte{0}; }))
                 ++result.shadedPixelCount[target];
         }
-        if (result.shadedPixelCount[target] != 48u * 48u)
+        if (result.shadedPixelCount[target] != referenceCoverage[target])
             return {false, "R5a target coverage mismatch", depthFormat,
                     result.colorSha256, result.shadedPixelCount};
         if (result.colorSha256[target] != referenceHashes[target])
@@ -357,7 +386,8 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
         device.destroy(materialSet), device.destroy(shader), device.destroy(depthView),
         device.destroy(depth), device.destroy(clampSampler), device.destroy(repeatSampler),
         device.destroy(upload), device.destroy(vertex), device.destroy(index),
-        device.destroy(frameBuffer), device.destroy(skinBuffer), device.destroy(materialBuffer)})
+        device.destroy(frameBuffer), device.destroy(objectBuffer),
+        device.destroy(skinBuffer), device.destroy(materialBuffer)})
         if (!destroyStatus) return fail("destroy R5a resource", destroyStatus);
     for (std::size_t target = 0; target < colors.size(); ++target)
     {
@@ -370,7 +400,7 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
     }
     if (!(status = device.waitIdle())) return fail("wait for R5a retirement", status);
     result.passed = true;
-    result.message = "R5a material and skin fixture PASS";
+    result.message = "I4 material transform fixture PASS";
     return result;
 }
 

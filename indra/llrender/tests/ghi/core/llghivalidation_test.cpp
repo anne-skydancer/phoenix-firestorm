@@ -1101,7 +1101,7 @@ void LLGHIValidationObject::test<23>()
     ShaderPackageDesc package;
     Status status = loadShaderPackage(LL_GHI_R5A_SHADER_PACKAGE, package);
     ensure(status.message(), status.ok());
-    ensure_equals("R5a reflected binding count", package.bindings.size(), std::size_t{7});
+    ensure_equals("I4 reflected binding count", package.bindings.size(), std::size_t{8});
     ensure_equals("R5a reflected vertex input count",
                   package.vertexInputs.size(), std::size_t{7});
     ensure_equals("R5a reflected deferred output count",
@@ -1112,21 +1112,42 @@ void LLGHIValidationObject::test<23>()
     ensure("R5a validation device", created.status.ok() && device);
     ShaderPackageHandle shader = device->createShaderPackage(package, status);
     ensure("R5a shader package", status.ok() && shader);
+    BufferHandle object = device->createBuffer(
+        {128, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
+    BufferHandle skin = device->createBuffer(
+        {256, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
     BufferHandle material = device->createBuffer(
-        {48, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
+        {176, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
     ImageHandle image = device->createImage(
         {{2, 2, 1}, Format::RGBA8UNorm, ResourceUsage::Sampled, 1, 1, 1}, status);
     ImageViewHandle view = device->createImageView(
         {image, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
     SamplerHandle sampler = device->createSampler({}, status);
-    ensure("R5a material resources", status.ok() && material && image && view && sampler);
+    ensure("I4 object, skin and material resources",
+           status.ok() && object && skin && material && image && view && sampler);
+
+    BindingSetDesc objectSet;
+    objectSet.shader = shader;
+    objectSet.group = 1;
+    objectSet.resources.push_back(
+        {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         object, 0, 128, {}, {}});
+    BindingSetHandle missingSkin = device->createBindingSet(objectSet, status);
+    ensure("I4 object binding without the separate skin binding is rejected",
+           !missingSkin && status.code() == StatusCode::InvalidArgument);
+    objectSet.resources.push_back(
+        {1, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         skin, 0, 256, {}, {}});
+    BindingSetHandle completeObject = device->createBindingSet(objectSet, status);
+    ensure("I4 separate object and skin bindings are accepted",
+           status.ok() && completeObject);
 
     BindingSetDesc materialSet;
     materialSet.shader = shader;
     materialSet.group = 2;
     materialSet.resources.push_back(
         {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
-         material, 0, 48, {}, {}});
+         material, 0, 176, {}, {}});
     for (std::uint16_t binding = 1; binding < 4; ++binding)
         materialSet.resources.push_back(
             {binding, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
@@ -1809,6 +1830,18 @@ void LLGHIValidationObject::test<32>()
     packet.frameId = 81422;
     packet.sceneEpoch = 3;
     packet.resourceEpoch = 1;
+    MaterialTextureResource texture;
+    for (std::size_t index = 0; index < texture.sourceIdentity.size(); ++index)
+    {
+        texture.sourceIdentity[index] = static_cast<std::byte>(index + 3);
+        texture.contentIdentity[index] = static_cast<std::byte>(index + 7);
+    }
+    texture.colorSpace = TextureColorSpace::SRGB;
+    texture.width = texture.height = 1;
+    texture.components = 4;
+    texture.decodedPixels = {
+        std::byte{192}, std::byte{224}, std::byte{255}, std::byte{255}};
+    packet.textures.push_back(texture);
     MaterialResource material;
     for (std::size_t index = 0; index < material.identity.size(); ++index)
         material.identity[index] = static_cast<std::byte>(index + 1);
@@ -1818,6 +1851,9 @@ void LLGHIValidationObject::test<32>()
     material.emissive = {{0.1f, 0.2f, 0.3f}};
     material.metallic = 0.625f;
     material.roughness = 0.8f;
+    material.textures.push_back({
+        TextureSemantic::BaseColor, 0, 0,
+        {{0.125f, -0.25f, 0.75f, 1.25f, 0.5f}}});
     packet.materials.push_back(material);
 
     MaterialSceneVertex vertex;
@@ -1836,6 +1872,9 @@ void LLGHIValidationObject::test<32>()
     draw.material = 0;
     draw.indexCount = 3;
     draw.transform[12] = 0.125f;
+    draw.modelTransform[0] = 0.75f;
+    draw.modelTransform[5] = 1.25f;
+    draw.modelTransform[10] = 0.5f;
     draw.modelTransform[13] = -0.25f;
     packet.draws.push_back(draw);
 
@@ -1845,7 +1884,8 @@ void LLGHIValidationObject::test<32>()
     MaterialScenePacket decoded;
     status = decodeMaterialScenePacket(encoded, decoded);
     ensure(status.message(), status.ok());
-    ensure("R5b2 geometry and transform round trip exactly", decoded == packet);
+    ensure("I4 geometry, model and texture transforms round trip exactly",
+           decoded == packet);
     ensure("R5b2 deterministic geometry packet hash",
            !materialScenePacketSha256(packet).empty());
 
@@ -1871,6 +1911,11 @@ void LLGHIValidationObject::test<32>()
                       std::uint32_t{3});
         ensure_equals("R5b2 retained index count", result.indices,
                       std::uint32_t{3});
+        packet.draws[0].modelTransform[0] = 0.f;
+        status = probe.submit(packet, limits);
+        ensure("I4 rejects a singular live model transform",
+               status.code() == StatusCode::InvalidArgument);
+        packet.draws[0].modelTransform[0] = 0.75f;
         ensure("R5b2 material probe shuts down", probe.shutdown().ok());
     }
     ensure("R5b2 deferred resources drain", device->waitIdle().ok());

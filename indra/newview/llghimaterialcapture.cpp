@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -85,24 +86,6 @@ LL::GHI::MaterialAlphaMode alphaMode(std::uint32_t mode)
     return LL::GHI::MaterialAlphaMode::Opaque;
 }
 
-bool hasIdentityBoundTextureTransforms(const LLFetchedGLTFMaterial& material)
-{
-    const LLViewerTexture* textures[] = {
-        material.mBaseColorTexture.get(), material.mNormalTexture.get(),
-        material.mMetallicRoughnessTexture.get(), material.mEmissiveTexture.get()};
-    for (std::size_t index = 0; index < std::size(textures); ++index)
-    {
-        if (!textures[index]) continue;
-        const auto& transform = material.mTextureTransform[index];
-        if (transform.mOffset.mV[0] != 0.f ||
-            transform.mOffset.mV[1] != 0.f ||
-            transform.mScale.mV[0] != 1.f ||
-            transform.mScale.mV[1] != 1.f ||
-            transform.mRotation != 0.f)
-            return false;
-    }
-    return true;
-}
 } // namespace
 
 class LLGHIMaterialCapture::Impl
@@ -281,8 +264,7 @@ public:
             renderType == LLRenderPass::PASS_GLTF_PBR &&
             draw.mGLTFMaterial.notNull() &&
             alphaMode(draw.mGLTFMaterial->mAlphaMode) ==
-                LL::GHI::MaterialAlphaMode::Opaque &&
-            hasIdentityBoundTextureTransforms(*draw.mGLTFMaterial);
+                LL::GHI::MaterialAlphaMode::Opaque;
         if (mCaptureRuntime && !mCaptureFile && !runtimeGeometry) return;
         LL::GHI::MaterialSceneDraw output;
         output.semanticId = 0x5235620000000000ull |
@@ -471,6 +453,39 @@ private:
         glm::mat4 model{1.f};
         if (source.mModelMatrix)
             model = glm::make_mat4(&source.mModelMatrix->mMatrix[0][0]);
+
+        // Runtime packets have a deliberately small geometry/texture budget.
+        // Do not let main-view draw-map entries that are trivially outside the
+        // clip volume consume that budget ahead of executable visible draws.
+        // Archival captures retain the full post-cull observation set.
+        if (mCaptureRuntime && !mCaptureFile)
+        {
+            const glm::mat4 clipTransform = transform * model;
+            std::array<bool, 6> allOutside{{true, true, true, true, true, true}};
+            for (std::uint32_t item = firstIndex;
+                 item < firstIndex + source.mCount; ++item)
+            {
+                const auto& vertex = mPacket.vertices[mPacket.indices[item]];
+                const glm::vec4 clip = clipTransform * glm::vec4(
+                    vertex.position[0], vertex.position[1], vertex.position[2], 1.f);
+                if (!std::isfinite(clip.x) || !std::isfinite(clip.y) ||
+                    !std::isfinite(clip.z) || !std::isfinite(clip.w))
+                    continue;
+                const std::array<bool, 6> inside{{
+                    clip.x >= -clip.w, clip.x <= clip.w,
+                    clip.y >= -clip.w, clip.y <= clip.w,
+                    clip.z >= -clip.w, clip.z <= clip.w}};
+                for (std::size_t plane = 0; plane < allOutside.size(); ++plane)
+                    allOutside[plane] = allOutside[plane] && !inside[plane];
+            }
+            if (std::any_of(allOutside.begin(), allOutside.end(),
+                            [](bool outside) { return outside; }))
+            {
+                mPacket.vertices.resize(baseVertex);
+                mPacket.indices.resize(firstIndex);
+                return false;
+            }
+        }
         std::copy_n(glm::value_ptr(transform), 16, output.transform.begin());
         std::copy_n(glm::value_ptr(model), 16, output.modelTransform.begin());
         return true;

@@ -97,7 +97,9 @@ private chat, inventory names, or unrestricted raw network payloads.
 
 1. Keep the R3 synthetic fixture as the fast backend contract gate.
 2. Define a serializable GHI resource/command packet after the GHI seam is
-   stable enough to avoid encoding viewer globals.
+   stable enough to avoid encoding viewer globals. R4d now provides the first
+   narrow packet for production post-cull rigid opaque geometry; it is a
+   stepping stone, not the complete frame protocol described above.
 3. Add presentation-suppressed OpenGL and Vulkan worker executables.
 4. Add the live ingest/controller and deterministic camera/epoch coordinator.
 5. Add Native OpenGL versus Mesa+Zink comparison first.

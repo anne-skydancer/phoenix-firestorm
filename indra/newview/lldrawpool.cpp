@@ -26,6 +26,8 @@
 
 #include "llviewerprecompiledheaders.h"
 
+#include "llghiopaquecapture.h"
+
 #include "lldrawpool.h"
 #include "llrender.h"
 #include "llfasttimer.h"
@@ -440,6 +442,7 @@ void LLRenderPass::pushBatches(U32 type, bool texture, bool batch_textures)
             LLDrawInfo* pparams = *i;
             LLCullResult::increment_iterator(i, end);
 
+            LLGHIOpaqueCapture::instance().record(*pparams, type, false);
             pushBatch(*pparams, texture, batch_textures);
         }
     }
@@ -459,6 +462,7 @@ void LLRenderPass::pushUntexturedBatches(U32 type)
         LLDrawInfo* pparams = *i;
         LLCullResult::increment_iterator(i, end);
 
+        LLGHIOpaqueCapture::instance().record(*pparams, type, false);
         pushUntexturedBatch(*pparams);
     }
 }
@@ -479,6 +483,7 @@ void LLRenderPass::pushRiggedBatches(U32 type, bool texture, bool batch_textures
             LLDrawInfo* pparams = *i;
             LLCullResult::increment_iterator(i, end);
 
+            LLGHIOpaqueCapture::instance().record(*pparams, type, true);
             if (uploadMatrixPalette(pparams->mAvatar, pparams->mSkinInfo, lastAvatar, lastMeshId, skipLastSkin))
             {
                 pushBatch(*pparams, texture, batch_textures);
@@ -504,6 +509,7 @@ void LLRenderPass::pushUntexturedRiggedBatches(U32 type)
         LLDrawInfo* pparams = *i;
         LLCullResult::increment_iterator(i, end);
 
+        LLGHIOpaqueCapture::instance().record(*pparams, type, true);
         if (uploadMatrixPalette(pparams->mAvatar, pparams->mSkinInfo, lastAvatar, lastMeshId, skipLastSkin))
         {
             pushUntexturedBatch(*pparams);

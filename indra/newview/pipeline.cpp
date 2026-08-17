@@ -26,6 +26,8 @@
 
 #include "llviewerprecompiledheaders.h"
 
+#include "llghiopaquecapture.h"
+
 #include "pipeline.h"
 
 // library includes
@@ -4270,6 +4272,12 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
     }
 
     bool occlude = LLPipeline::sUseOcclusion > 1 && do_occlusion && !LLGLSLShader::sProfileEnabled;
+    const bool capture_opaque = &camera == LLViewerCamera::getInstance() &&
+        !gCubeSnapshot && gAgent.getRegion() && gViewerWindow &&
+        LLGHIOpaqueCapture::instance().beginFrame(
+            static_cast<U32>(gViewerWindow->getWorldViewWidthRaw()),
+            static_cast<U32>(gViewerWindow->getWorldViewHeightRaw()),
+            gFrameCount, occlude);
 
     setupHWLights();
 
@@ -4375,6 +4383,9 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
     {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
+
+    if (capture_opaque)
+        LLGHIOpaqueCapture::instance().endFrame();
 }
 
 // Render all of our geometry that's required after our deferred pass.

@@ -16,6 +16,7 @@
 #include "ghi/core/llghipipelinecache.h"
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
+#include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
 #include "tests/ghi/llghidrawfixture.h"
 #include "tests/ghi/llghiresourcefixture.h"
@@ -1035,5 +1036,54 @@ void LLGHIValidationObject::test<21>()
     ensure_equals("empty query records zero", results[1], std::uint64_t{0});
 }
 #endif
+
+template<> template<>
+void LLGHIValidationObject::test<22>()
+{
+    using namespace LL::GHI;
+
+    OpaqueScenePacket source;
+    source.sourceWidth = 1920;
+    source.sourceHeight = 1080;
+    source.frameId = 42;
+    source.sceneEpoch = 7;
+    source.productionOcclusionEnabled = true;
+    source.statistics = {2, 4, 1, 2, 0, 1, 0};
+    source.vertices = {
+        {{{-1.f, -1.f, 0.5f}}, {{255, 0, 0, 255}}},
+        {{{ 1.f, -1.f, 0.5f}}, {{0, 255, 0, 255}}},
+        {{{ 1.f,  1.f, 0.5f}}, {{0, 0, 255, 255}}},
+        {{{-1.f,  1.f, 0.5f}}, {{255, 255, 255, 255}}},
+    };
+    source.indices = {0, 1, 2, 2, 3, 0};
+    OpaqueSceneDraw draw;
+    draw.firstIndex = 0;
+    draw.indexCount = 6;
+    draw.transform = {{
+        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+    draw.semanticId = 0x5234645f4c495645ull; // "R4d_LIVE"
+    draw.flags = OpaqueSceneDrawFlags::Fullbright;
+    source.draws.push_back(draw);
+
+    std::vector<std::byte> first;
+    std::vector<std::byte> second;
+    ensure("encode opaque scene packet", encodeOpaqueScenePacket(source, first).ok());
+    ensure("opaque scene encoding is deterministic",
+           encodeOpaqueScenePacket(source, second).ok() && first == second);
+    OpaqueScenePacket decoded;
+    ensure("decode opaque scene packet", decodeOpaqueScenePacket(first, decoded).ok());
+    ensure("opaque scene packet round trips exactly", decoded == source);
+    ensure_equals("opaque scene packet has a stable schema hash",
+                  opaqueScenePacketSha256(source),
+                  std::string{"1021c6d0a2bcc00dd1e67612773ddce948714736cab127ee4989457baa068468"});
+
+    first.pop_back();
+    ensure("truncated opaque packet rejected",
+           decodeOpaqueScenePacket(first, decoded).code() == StatusCode::InvalidArgument);
+    source.indices[0] = 99;
+    ensure("out-of-range opaque index rejected",
+           encodeOpaqueScenePacket(source, first).code() == StatusCode::InvalidArgument);
+}
 
 } // namespace tut

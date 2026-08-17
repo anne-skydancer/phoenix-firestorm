@@ -201,10 +201,87 @@ explicit capability; it must not become a vendor branch.
   `build-vc170-64/newview/Release/firestorm-bin.exe`. Production world and UI
   rendering remain OpenGL-only.
 
-## Remaining R4 closure gate
+## R4d production seam and live opaque replay
 
-R4c's synthetic checkpoint is complete, but R4 is not yet a production parity
-claim. `LLPipeline` is still not routed through GHI and the fixture does not
-ingest live grid scene packets. The applicable accepted R01/R02 geometry and
-deferred-target evidence must still be compared through the integration seam
-before R4 can close.
+R4d adds a dormant observation seam to the existing production OpenGL path.
+For the main viewer camera, `LLPipeline::renderGeomDeferred()` brackets capture
+and the legacy render-pass submission functions expose the already selected,
+post-cull `LLDrawInfo` work. The visible frame continues through the existing
+OpenGL renderer without interception or replacement.
+
+The observer accepts only rigid legacy `PASS_SIMPLE` indexed geometry in this
+checkpoint. It copies backend-neutral vertex/index data from the persistent CPU
+shadow owned by `LLVertexBuffer`, records the canonical clip transform, and
+serializes an immutable versioned packet. It does not read native GL objects
+back from the driver. Rigged draws are counted but excluded; material/PBR,
+fullbright, alpha, particles, mirrors, reflection/hero probes, cube snapshots,
+HUDs, impostors, and other recursive or offscreen phases remain owned by later
+R5-R7 checkpoints.
+
+Capture is disabled unless `VULKANSTORM_GHI_R4_CAPTURE` names an output file.
+`VULKANSTORM_GHI_R4_WARMUP_SECONDS` controls the one-shot settling interval and
+defaults to 120 seconds. The packet contains no login credentials, capability
+URLs, chat, inventory names, or network payloads.
+
+Both native opaque harnesses can replay the same packet into offscreen GHI
+targets. They use device-local buffers, per-draw transforms, reverse-Z depth,
+and the four established R4 G-buffer targets. The comparator checks packet and
+scene structure, normalizes readback to top-left orientation, and applies
+explicit per-target pixel and coverage tolerances. This diagnostic replay is
+not the production batching design and is not presented to the display.
+
+## R4d live evidence
+
+The Release viewer logged in automatically at the saved home location and
+remained responsive. The log identifies the region as UUID
+`953886b5-1611-45f2-9aaf-3d13f7419bdf`, handle `759762535144960`; it did not
+emit a human-readable region name, so this record does not claim that it was
+the earlier named R01 location. After the full 120-second settling interval,
+the production seam wrote:
+
+- packet: `opaque-r4d-20260817-004702.llghiop4`;
+- SHA-256: `40364666cbfc4c679862caea3f546f6a56ab04b02314b88e41b78dbd292d4665`;
+- source frame/extent: frame 18476 at 2560 x 1350;
+- production occlusion: enabled;
+- submitted: 150 draws and 126,542 triangles;
+- comparable rigid slice: 146 draws and 79,974 triangles;
+- explicitly excluded: 4 rigged draws;
+- invalid draws: zero.
+
+The peers replayed that packet at 512 x 512. With strict limits of at most
+eight differing pixels and one pixel of coverage delta per target, comparison
+passed:
+
+| Target | OpenGL coverage | Vulkan coverage | Differing pixels |
+|---|---:|---:|---:|
+| base color | 60,614 | 60,615 | 5 |
+| ORM | 60,619 | 60,620 | 3 |
+| normal | 60,619 | 60,620 | 3 |
+| emissive | 60,614 | 60,615 | 5 |
+
+The largest difference is five edge pixels out of 262,144 pixels, about
+0.0019%. Arbitrary live triangles therefore use this bounded raster-edge rule;
+the synthetic R4b fixture remains the bit-exact storage, depth-selection, and
+target-state oracle. Its four reference hashes remain unchanged on OpenGL 4.6,
+the OpenGL 4.1 fallback, and Vulkan 1.3.
+
+The accepted R01/R02 Native OpenGL and Mesa+Zink captures remain the external
+viewer reference envelopes. R4d demonstrates that the applicable rigid/simple
+post-cull geometry selected by production `LLPipeline` crosses the new seam and
+reaches parity on both native GHI peers. It does not assert parity for the
+rigged and material geometry deliberately assigned to R5.
+
+## R4 closure
+
+R4 is closed for its declared rigid opaque scope:
+
+- the production selection seam is established without changing visible
+  world or UI routing;
+- a versioned, deterministic live opaque packet is validated and replayable;
+- structural evidence and all four deferred targets pass the stated rule;
+- the synthetic exact oracle, OpenGL 4.1 fallback, Vulkan validation, viewer
+  build, and API-boundary ratchet remain clean.
+
+Production rendering remains OpenGL-only. R5 is the next checkpoint for
+legacy/PBR materials, rigging/skinning, terrain, lighting, shadows, sky,
+atmosphere, and water.

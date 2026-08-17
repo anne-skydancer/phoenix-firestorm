@@ -431,8 +431,15 @@ references; cold and warm pipeline evidence is recorded.
   frustum visibility policy stays above GHI; rasterizer culling remains
   immutable `CullMode` pipeline state rather than becoming a backend-owned
   scene algorithm.
+- R4d observes production `LLPipeline` post-cull rigid `PASS_SIMPLE` work
+  without changing the visible OpenGL route, serializes it as a versioned
+  backend-neutral packet, and replays the same packet through both native peers.
+  Rigged, material, alpha, recursive, and offscreen work remains explicitly
+  outside this slice.
 
-Exit gate: relevant R01/R02 geometry and deferred targets reach parity.
+Exit gate: relevant R01/R02 rigid opaque geometry and deferred targets reach
+parity through the production observation seam. This gate is complete; R5 owns
+the explicitly excluded material and rigged geometry.
 
 ### R5 — material, terrain, avatar, and lighting coverage
 

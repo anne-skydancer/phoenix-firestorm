@@ -284,6 +284,7 @@ set(viewer_SOURCE_FILES
     lldonotdisturbnotificationstorage.cpp
     lldndbutton.cpp
     lldrawable.cpp
+    llghiopaquecapture.cpp
     lldrawpool.cpp
     lldrawpoolalpha.cpp
     lldrawpoolavatar.cpp
@@ -1149,6 +1150,7 @@ set(viewer_HEADER_FILES
     lldndbutton.h
     lldrawable.h
     lldrawpool.h
+    llghiopaquecapture.h
     lldrawpoolalpha.h
     lldrawpoolavatar.h
     lldrawpoolbump.h

@@ -39,6 +39,7 @@ set(llrender_SOURCE_FILES
     ghi/core/llghidevice.cpp
     ghi/core/llghihash.cpp
     ghi/core/llghimaterialscenepacket.cpp
+    ghi/core/llghiopaqueoffscreenprobe.cpp
     ghi/core/llghiopaquepacketconsumer.cpp
     ghi/core/llghiopaquescenepacket.cpp
     ghi/core/llghipresentation.cpp
@@ -84,6 +85,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghi.h
     ghi/include/llghialphacontract.h
     ghi/include/llghioffscreencontract.h
+    ghi/include/llghiopaqueoffscreenprobe.h
     ghi/include/llghiopaquepacketconsumer.h
     ghi/include/llghicommand.h
     ghi/include/llghidescriptors.h
@@ -914,6 +916,7 @@ if (LL_TESTS)
       ghi/core/llghidevice.cpp
       ghi/core/llghihash.cpp
       ghi/core/llghimaterialscenepacket.cpp
+      ghi/core/llghiopaqueoffscreenprobe.cpp
       ghi/core/llghiopaquepacketconsumer.cpp
       ghi/core/llghiopaquescenepacket.cpp
       ghi/core/llghipipelinecache.cpp
@@ -939,6 +942,7 @@ if (LL_TESTS)
   if (USE_VULKAN_GHI)
     target_compile_definitions(llrender_ghi_contract_test PRIVATE
         LL_GHI_R3_SHADER_PACKAGE="${GHI_R3_SHADER_PACKAGE}"
+        LL_GHI_R4_SHADER_PACKAGE="${GHI_R4_SHADER_PACKAGE}"
         LL_GHI_R5A_SHADER_PACKAGE="${GHI_R5A_SHADER_PACKAGE}"
         LL_GHI_R5_WORLD_SHADER_PACKAGE="${GHI_R5_WORLD_SHADER_PACKAGE}"
         LL_GHI_R6_PPLL_SHADER_PACKAGE="${GHI_R6_PPLL_SHADER_PACKAGE}"

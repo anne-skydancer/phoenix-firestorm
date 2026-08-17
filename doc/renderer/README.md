@@ -36,6 +36,9 @@ supported peer and recovery path.
 - [I1 live packet integration checkpoint](i1-live-packet-integration-checkpoint.md)
   transfers bounded real-viewer post-cull geometry through that retained
   device without drawing or presenting it.
+- [I2 asynchronous offscreen live integration checkpoint](i2-offscreen-live-integration-checkpoint.md)
+  executes bounded real-viewer opaque geometry into isolated native Vulkan
+  attachments and polls their hashes without presenting them.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

@@ -105,6 +105,15 @@ class ViewerManifest(LLManifest,FSViewerManifest):
             self.path("*.xml")
             self.path("shaders")
 
+        # I2's native Vulkan probe loads the deterministic R4 package at
+        # runtime.  Stage it beside the viewer rather than embedding a build
+        # machine path in the executable.
+        ghi_shader_dir = os.path.join(
+            self.args['build'], os.pardir, 'llrender', 'ghi_shaders')
+        if os.path.isfile(os.path.join(ghi_shader_dir, "r4_opaque.llghisp")):
+            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
+                self.path("r4_opaque.llghisp")
+
         with self.prefix(src_dst="skins"):
             self.path("*/xui/*/*.xml")
             self.path("*/xui/*/widgets/*.xml")

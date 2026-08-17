@@ -19,6 +19,7 @@
 #include "ghi/include/llghimaterialscenepacket.h"
 #include "ghi/include/llghialphacontract.h"
 #include "ghi/include/llghioffscreencontract.h"
+#include "ghi/include/llghiopaqueoffscreenprobe.h"
 #include "ghi/include/llghiopaquepacketconsumer.h"
 #include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
@@ -1730,6 +1731,69 @@ void LLGHIValidationObject::test<30>()
     status = consumeOpaquePacketTransfer(*device, packet, limits, transfer);
     ensure("I1 zero transfer limit is rejected",
            status.code() == StatusCode::InvalidArgument);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<31>()
+{
+    using namespace LL::GHI;
+
+#if defined(LL_GHI_R4_SHADER_PACKAGE)
+    ShaderPackageDesc package;
+    Status status = loadShaderPackage(LL_GHI_R4_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+
+    OpaqueScenePacket packet;
+    packet.sourceWidth = 1280;
+    packet.sourceHeight = 720;
+    packet.frameId = 81421;
+    packet.sceneEpoch = 2;
+    packet.statistics = {1, 1, 1, 1, 0, 0, 0};
+    packet.vertices = {
+        {{{-1.f, -1.f, 0.5f}}, {{255, 0, 0, 255}}},
+        {{{ 1.f, -1.f, 0.5f}}, {{0, 255, 0, 255}}},
+        {{{ 0.f,  1.f, 0.5f}}, {{0, 0, 255, 255}}},
+    };
+    packet.indices = {0, 1, 2};
+    OpaqueSceneDraw draw;
+    draw.indexCount = 3;
+    draw.transform = {{
+        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+    draw.semanticId = 0x49325f4c495645ull; // "I2_LIVE"
+    packet.draws.push_back(draw);
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("I2 validation device", created.status.ok() && device);
+    {
+        OpaqueOffscreenProbe probe(*device, std::move(package));
+        OpaquePacketTransferLimits limits;
+        status = probe.submit(packet, limits);
+        ensure(status.message(), status.ok());
+        ensure("I2 has one asynchronous sample pending", probe.pending());
+        status = probe.submit(packet, limits);
+        ensure("I2 rejects overlapping submissions",
+               status.code() == StatusCode::NotReady);
+        OpaqueOffscreenProbeResult result;
+        status = probe.poll(result);
+        ensure(status.message(), status.ok());
+        ensure("I2 sample is complete after nonblocking validation poll",
+               !probe.pending());
+        ensure_equals("I2 retains frame identity", result.frameId,
+                      packet.frameId);
+        ensure_equals("I2 draw count", result.draws, std::uint32_t{1});
+        ensure("I2 retains deterministic packet identity",
+               !result.packetSha256.empty());
+        for (const std::string& hash : result.colorSha256)
+            ensure("I2 produces an offscreen attachment hash", !hash.empty());
+        ensure("I2 shutdown invalidates private resources",
+               probe.shutdown().ok());
+    }
+    ensure("I2 deferred resources drain", device->waitIdle().ok());
+    ensure_equals("I2 retirement queue is empty",
+                  device->pendingRetirementCount(), std::size_t{0});
+#endif
 }
 
 } // namespace tut

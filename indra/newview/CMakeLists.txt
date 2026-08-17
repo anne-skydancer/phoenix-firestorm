@@ -2365,6 +2365,12 @@ if (WINDOWS)
       #media_plugin_example # <FS:Ansariel> Don't package example plugin
       )
 
+    if (USE_VULKAN_GHI)
+      list(APPEND COPY_INPUT_DEPENDENCIES
+           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/r4_opaque.llghisp
+          )
+    endif ()
+
     # <FS:Ansariel> Only copy OpenJPEG dll if needed
     if (NOT USE_KDU AND NOT USE_GROK)
         list(APPEND COPY_INPUT_DEPENDENCIES
@@ -2455,6 +2461,9 @@ if (WINDOWS)
     add_custom_target(copy_w_viewer_manifest ALL DEPENDS ${CMAKE_CFG_INTDIR}/copy_touched.bat)
 
     add_dependencies(${VIEWER_BINARY_NAME} stage_third_party_libs llcommon llwebrtc copy_w_viewer_manifest)
+    if (USE_VULKAN_GHI)
+      add_dependencies(copy_w_viewer_manifest llrender_ghi_shaders)
+    endif ()
 
     # Useful for remote debugging or profiling if set to target a shared drive. for example, brad sets it to "dist/secondlife" to deploy under
     # the build tree (and then I share that directory) or "f:/dist/secondlife" to deploy to a network mounted drive (although this can be slow).

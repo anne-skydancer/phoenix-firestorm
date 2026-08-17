@@ -12640,7 +12640,7 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>RenderVulkanLivePacketIntervalFrames</key>
     <map>
       <key>Comment</key>
-      <string>Developer only: minimum production-frame interval between I1 live post-cull Vulkan transfers.</string>
+      <string>Developer only: minimum production-frame interval between I1 transfer or I2 offscreen live Vulkan samples.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
@@ -12653,13 +12653,26 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>RenderVulkanLivePacketMaxSamples</key>
     <map>
       <key>Comment</key>
-      <string>Developer only: maximum successful I1 live post-cull Vulkan transfer samples per viewer process.</string>
+      <string>Developer only: maximum successful I1 transfer or I2 offscreen live Vulkan samples per viewer process.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>
       <string>U32</string>
       <key>Value</key>
       <integer>6</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
+    <key>RenderVulkanOffscreenPacketProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: execute bounded live post-cull opaque packets into isolated native Vulkan attachments and poll hashes asynchronously. Uses no surface, swapchain, or presentation and supersedes the I1 transfer-only path. Requires RenderVulkanDeveloperProbe and restart.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
       <key>Backup</key>
       <integer>0</integer>
     </map>

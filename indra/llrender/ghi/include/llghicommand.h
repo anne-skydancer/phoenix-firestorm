@@ -53,6 +53,10 @@ public:
     virtual Status beginRendering(const RenderingInfo& info) = 0;
     virtual Status endRendering() = 0;
 
+    // Barriers are explicit semantic dependencies. They are recorded outside
+    // rendering scopes so both peers can map them without implicit drains.
+    virtual Status resourceBarrier(ResourceBarrier barrier) = 0;
+
     virtual Status bindPipeline(PipelineHandle pipeline) = 0;
     virtual Status bindBindingSet(
         std::uint8_t group,

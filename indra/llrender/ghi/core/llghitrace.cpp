@@ -237,6 +237,12 @@ void SemanticTrace::endRendering()
     appendOpcode(TraceOpcode::EndRendering);
 }
 
+void SemanticTrace::resourceBarrier(ResourceBarrier barrier)
+{
+    appendOpcode(TraceOpcode::ResourceBarrier);
+    appendEnum(barrier);
+}
+
 void SemanticTrace::bindPipeline(PipelineHandle pipeline)
 {
     appendOpcode(TraceOpcode::BindPipeline);

@@ -164,6 +164,15 @@ enum class MemoryClass : std::uint8_t
     Readback,
 };
 
+enum class ResourceBarrier : std::uint8_t
+{
+    // Shader storage buffer/image writes become visible to later shader
+    // storage or sampled reads in the same frame.
+    StorageWriteToRead,
+    // A completed depth attachment becomes a sampled input to a later peel.
+    DepthAttachmentWriteToSampledRead,
+};
+
 enum class Format : std::uint16_t
 {
     Undefined,

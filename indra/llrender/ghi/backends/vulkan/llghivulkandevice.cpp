@@ -336,6 +336,7 @@ public:
     Status endQuery(QueryPoolHandle, std::uint32_t) override;
     Status beginRendering(const RenderingInfo&) override;
     Status endRendering() override;
+    Status resourceBarrier(ResourceBarrier) override;
     Status bindPipeline(PipelineHandle) override;
     Status bindBindingSet(std::uint8_t, BindingSetHandle, std::span<const std::uint32_t>) override;
     Status setViewport(const Viewport&) override;
@@ -426,6 +427,7 @@ public:
     Status endQuery(QueryPoolHandle, std::uint32_t);
     Status beginRendering(const RenderingInfo&);
     Status endRendering();
+    Status resourceBarrier(ResourceBarrier);
     Status bindPipeline(PipelineHandle);
     Status bindBindingSet(std::uint8_t, BindingSetHandle, std::span<const std::uint32_t>);
     Status setViewport(const Viewport&);
@@ -639,6 +641,8 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     enabledFeatures.samplerAnisotropy = availableFeatures.samplerAnisotropy;
     enabledFeatures.depthClamp = availableFeatures.depthClamp;
     enabledFeatures.independentBlend = availableFeatures.independentBlend;
+    enabledFeatures.fragmentStoresAndAtomics =
+        availableFeatures.fragmentStoresAndAtomics;
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     VkPhysicalDeviceVulkan13Features enabled13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     enabled13.dynamicRendering = VK_TRUE;
@@ -688,6 +692,13 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     mCapabilities.maxBufferSize = std::numeric_limits<VkDeviceSize>::max();
     mCapabilities.uniformBufferOffsetAlignment = properties.limits.minUniformBufferOffsetAlignment;
     mCapabilities.storageBufferOffsetAlignment = properties.limits.minStorageBufferOffsetAlignment;
+    VkFormatProperties r32Properties{};
+    vkGetPhysicalDeviceFormatProperties(
+        mPhysicalDevice, VK_FORMAT_R32_UINT, &r32Properties);
+    mCapabilities.storageImageAtomics =
+        enabledFeatures.fragmentStoresAndAtomics &&
+        (r32Properties.optimalTilingFeatures &
+         VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT) != 0;
     for (Format candidate : {Format::Depth24Stencil8, Format::Depth32FloatStencil8})
     {
         const VulkanFormat translated = translateFormat(candidate);
@@ -1660,7 +1671,8 @@ Status VulkanDevice::beginRendering(const RenderingInfo& info)
     VkMemoryBarrier transferBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     transferBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     transferBarrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
-        VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+        VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT |
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(commands(), VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -1755,6 +1767,34 @@ Status VulkanDevice::endRendering()
     vkCmdEndRendering(commands());
     mCommands.mRenderingActive = false;
     mCommands.resetDrawState();
+    return Status::success();
+}
+
+Status VulkanDevice::resourceBarrier(ResourceBarrier barrier)
+{
+    if (!mCommands.frameActive() || mCommands.renderingActive())
+        return invalidState("resourceBarrier requires a frame outside a rendering scope");
+    VkMemoryBarrier memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    if (barrier == ResourceBarrier::StorageWriteToRead)
+    {
+        memory.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+            VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(commands(), VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 1, &memory, 0, nullptr, 0, nullptr);
+    }
+    else if (barrier == ResourceBarrier::DepthAttachmentWriteToSampledRead)
+    {
+        memory.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(commands(),
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 1, &memory, 0, nullptr, 0, nullptr);
+    }
+    else return invalidArgument("unknown Vulkan resource barrier");
     return Status::success();
 }
 
@@ -2045,6 +2085,10 @@ Status VulkanCommandContext::beginQuery(QueryPoolHandle a, std::uint32_t b) { re
 Status VulkanCommandContext::endQuery(QueryPoolHandle a, std::uint32_t b) { return mDevice.endQuery(a,b); }
 Status VulkanCommandContext::beginRendering(const RenderingInfo& a) { return mDevice.beginRendering(a); }
 Status VulkanCommandContext::endRendering() { return mDevice.endRendering(); }
+Status VulkanCommandContext::resourceBarrier(ResourceBarrier barrier)
+{
+    return mDevice.resourceBarrier(barrier);
+}
 Status VulkanCommandContext::bindPipeline(PipelineHandle a) { return mDevice.bindPipeline(a); }
 Status VulkanCommandContext::bindBindingSet(std::uint8_t a, BindingSetHandle b, std::span<const std::uint32_t> c) { return mDevice.bindBindingSet(a,b,c); }
 Status VulkanCommandContext::setViewport(const Viewport& a) { return mDevice.setViewport(a); }

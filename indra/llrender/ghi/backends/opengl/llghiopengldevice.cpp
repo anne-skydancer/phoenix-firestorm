@@ -117,8 +117,12 @@ bool loadResourceEntryPoints()
     LL_GHI_LOAD_GL(glGetShaderiv);
     LL_GHI_LOAD_GL(glGetUniformBlockIndex);
     LL_GHI_LOAD_GL(glGetUniformLocation);
+    LL_GHI_LOAD_GL(glGetProgramResourceIndex);
     LL_GHI_LOAD_GL(glLinkProgram);
+    LL_GHI_LOAD_GL(glMemoryBarrier);
+    LL_GHI_LOAD_GL(glBindImageTexture);
     LL_GHI_LOAD_GL(glShaderSource);
+    LL_GHI_LOAD_GL(glShaderStorageBlockBinding);
     LL_GHI_LOAD_GL(glStencilFuncSeparate);
     LL_GHI_LOAD_GL(glStencilMaskSeparate);
     LL_GHI_LOAD_GL(glStencilOpSeparate);
@@ -475,6 +479,7 @@ public:
 
     Status beginRendering(const RenderingInfo&) override;
     Status endRendering() override;
+    Status resourceBarrier(ResourceBarrier) override;
     Status bindPipeline(PipelineHandle) override;
     Status bindBindingSet(std::uint8_t, BindingSetHandle, std::span<const std::uint32_t>) override;
     Status setViewport(const Viewport&) override;
@@ -566,6 +571,7 @@ public:
     Status endQuery(QueryPoolHandle, std::uint32_t);
     Status beginRendering(const RenderingInfo&);
     Status endRendering();
+    Status resourceBarrier(ResourceBarrier);
     Status bindPipeline(PipelineHandle);
     Status bindBindingSet(std::uint8_t, BindingSetHandle, std::span<const std::uint32_t>);
     Status setViewport(const Viewport&);
@@ -663,7 +669,11 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     {
         glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, &value);
         mCapabilities.storageBufferOffsetAlignment = std::max(1, value);
+        glGetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &value);
+        mCapabilities.maxStorageBuffersPerStage = std::max(0, value);
     }
+    mCapabilities.storageImageAtomics =
+        major > 4 || (major == 4 && minor >= 2);
     mCapabilities.advancedGraphicsPipeline = major > 4 || (major == 4 && minor >= 6);
     glGenFramebuffers(1, &mFramebuffer);
 }
@@ -961,10 +971,18 @@ ShaderPackageHandle OpenGLDevice::createShaderPackage(
     ShaderRecord record;
     record.desc = desc;
     record.program = program;
-    GLuint nextBufferSlot = 0;
+    GLuint nextUniformSlot = 0;
+    GLuint nextStorageSlot = 0;
     GLuint nextTextureUnit = 0;
-    GLint maxBufferSlots = 0;
-    glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, &maxBufferSlots);
+    GLuint nextImageUnit = 0;
+    GLint maxUniformSlots = 0;
+    GLint maxStorageSlots = 0;
+    GLint maxImageUnits = 0;
+    glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, &maxUniformSlots);
+    if (mCapabilities.maxStorageBuffersPerStage > 0)
+        glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, &maxStorageSlots);
+    if (mCapabilities.storageImageAtomics)
+        glGetIntegerv(GL_MAX_IMAGE_UNITS, &maxImageUnits);
     GLint previousProgram = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
     glUseProgram(program);
@@ -992,13 +1010,26 @@ ShaderPackageHandle OpenGLDevice::createShaderPackage(
         if (binding.type == ShaderPackageDesc::BindingType::UniformBuffer)
         {
             const GLuint index = glGetUniformBlockIndex(program, binding.name.c_str());
-            if (index == GL_INVALID_INDEX || nextBufferSlot >= static_cast<GLuint>(maxBufferSlots))
+            if (index == GL_INVALID_INDEX || nextUniformSlot >= static_cast<GLuint>(maxUniformSlots))
             {
                 status = backendError("reflected OpenGL uniform block was not linked");
                 break;
             }
-            glUniformBlockBinding(program, index, nextBufferSlot);
-            record.bufferSlots.emplace(key, nextBufferSlot++);
+            glUniformBlockBinding(program, index, nextUniformSlot);
+            record.bufferSlots.emplace(key, nextUniformSlot++);
+        }
+        else if (binding.type == ShaderPackageDesc::BindingType::StorageBuffer)
+        {
+            const GLuint index = glGetProgramResourceIndex(
+                program, GL_SHADER_STORAGE_BLOCK, binding.name.c_str());
+            if (index == GL_INVALID_INDEX ||
+                nextStorageSlot >= static_cast<GLuint>(maxStorageSlots))
+            {
+                status = backendError("reflected OpenGL storage block was not linked");
+                break;
+            }
+            glShaderStorageBlockBinding(program, index, nextStorageSlot);
+            record.bufferSlots.emplace(key, nextStorageSlot++);
         }
         else if (binding.type == ShaderPackageDesc::BindingType::CombinedImageSampler)
         {
@@ -1011,9 +1042,20 @@ ShaderPackageHandle OpenGLDevice::createShaderPackage(
             glUniform1i(location, static_cast<GLint>(nextTextureUnit));
             record.textureUnits.emplace(key, nextTextureUnit++);
         }
+        else if (binding.type == ShaderPackageDesc::BindingType::StorageImage)
+        {
+            const GLint location = glGetUniformLocation(program, binding.name.c_str());
+            if (location < 0 || nextImageUnit >= static_cast<GLuint>(maxImageUnits))
+            {
+                status = backendError("reflected OpenGL storage image was not linked");
+                break;
+            }
+            glUniform1i(location, static_cast<GLint>(nextImageUnit));
+            record.textureUnits.emplace(key, nextImageUnit++);
+        }
         else
         {
-            status = unsupported("R3d OpenGL supports uniform buffers and combined samplers");
+            status = unsupported("OpenGL binding type is not implemented");
             break;
         }
     }
@@ -1062,21 +1104,24 @@ BindingSetHandle OpenGLDevice::createBindingSet(
             status = invalidArgument("binding set resource does not match shader reflection");
             return {};
         }
-        if (resource.type == ShaderPackageDesc::BindingType::UniformBuffer)
+        if (resource.type == ShaderPackageDesc::BindingType::UniformBuffer ||
+            resource.type == ShaderPackageDesc::BindingType::StorageBuffer)
         {
             auto buffer = mBuffers.find(handleKey(resource.buffer));
             if (!mBufferPool.isLive(resource.buffer) || buffer == mBuffers.end() ||
-                !hasUsage(buffer->second.desc.usage, ResourceUsage::Uniform) ||
+                !hasUsage(buffer->second.desc.usage,
+                    resource.type == ShaderPackageDesc::BindingType::UniformBuffer
+                        ? ResourceUsage::Uniform : ResourceUsage::Storage) ||
                 !rangeFits(resource.bufferOffset,
                     resource.bufferRange ? resource.bufferRange :
                         buffer->second.desc.size - resource.bufferOffset,
                     buffer->second.desc.size))
             {
-                status = invalidArgument("uniform binding references an incompatible buffer range");
+                status = invalidArgument("buffer binding references an incompatible range");
                 return {};
             }
         }
-        else
+        else if (resource.type == ShaderPackageDesc::BindingType::CombinedImageSampler)
         {
             auto view = mViews.find(handleKey(resource.imageView));
             auto sampler = mSamplers.find(handleKey(resource.sampler));
@@ -1093,6 +1138,28 @@ BindingSetHandle OpenGLDevice::createBindingSet(
                 status = invalidArgument("combined sampler image lacks sampled usage");
                 return {};
             }
+        }
+        else if (resource.type == ShaderPackageDesc::BindingType::StorageImage)
+        {
+            auto view = mViews.find(handleKey(resource.imageView));
+            if (!mViewPool.isLive(resource.imageView) || view == mViews.end() ||
+                resource.sampler)
+            {
+                status = invalidHandle("storage image references an invalid view or sampler");
+                return {};
+            }
+            const auto image = mImages.find(handleKey(view->second.desc.image));
+            if (image == mImages.end() ||
+                !hasUsage(image->second.desc.usage, ResourceUsage::Storage))
+            {
+                status = invalidArgument("storage image lacks storage usage");
+                return {};
+            }
+        }
+        else
+        {
+            status = unsupported("OpenGL binding resource type is not implemented");
+            return {};
         }
     }
     BindingSetHandle handle = mBindingSetPool.allocate();
@@ -1601,6 +1668,23 @@ Status OpenGLDevice::endRendering()
                                        : backendError("OpenGL rendering-scope teardown failed");
 }
 
+Status OpenGLDevice::resourceBarrier(ResourceBarrier barrier)
+{
+    if (!mCommands.frameActive() || mCommands.renderingActive())
+        return invalidState("resourceBarrier requires a frame outside a rendering scope");
+    if (barrier == ResourceBarrier::StorageWriteToRead)
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT |
+                        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                        GL_TEXTURE_FETCH_BARRIER_BIT |
+                        GL_BUFFER_UPDATE_BARRIER_BIT);
+    else if (barrier == ResourceBarrier::DepthAttachmentWriteToSampledRead)
+        glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    else
+        return invalidArgument("unknown OpenGL resource barrier");
+    return glGetError() == GL_NO_ERROR ? Status::success()
+                                       : backendError("OpenGL resource barrier failed");
+}
+
 Status OpenGLDevice::bindPipeline(PipelineHandle handle)
 {
     if (!mCommands.renderingActive()) return invalidState("bindPipeline requires a rendering scope");
@@ -1693,21 +1777,28 @@ Status OpenGLDevice::bindBindingSet(
         const std::uint64_t dynamicOffset = reflected->dynamicOffset
             ? (dynamicIndex < dynamicOffsets.size() ? dynamicOffsets[dynamicIndex++] : 0) : 0;
         const std::uint32_t key = bindingKey(group, resource.binding, resource.arrayElement);
-        if (resource.type == ShaderPackageDesc::BindingType::UniformBuffer)
+        if (resource.type == ShaderPackageDesc::BindingType::UniformBuffer ||
+            resource.type == ShaderPackageDesc::BindingType::StorageBuffer)
         {
             auto buffer = mBuffers.find(handleKey(resource.buffer));
-            if (buffer == mBuffers.end()) return invalidHandle("uniform buffer is stale");
+            if (buffer == mBuffers.end()) return invalidHandle("bound buffer is stale");
             const std::uint64_t offset = resource.bufferOffset + dynamicOffset;
             const std::uint64_t range = resource.bufferRange ? resource.bufferRange :
                 buffer->second.desc.size - resource.bufferOffset;
+            const std::uint64_t alignment =
+                resource.type == ShaderPackageDesc::BindingType::UniformBuffer
+                    ? mCapabilities.uniformBufferOffsetAlignment
+                    : mCapabilities.storageBufferOffsetAlignment;
             if (!rangeFits(offset, range, buffer->second.desc.size) ||
-                offset % mCapabilities.uniformBufferOffsetAlignment != 0)
-                return invalidArgument("dynamic uniform-buffer range is invalid or unaligned");
-            glBindBufferRange(GL_UNIFORM_BUFFER, shader->second.bufferSlots.at(key),
+                offset % std::max<std::uint64_t>(1, alignment) != 0)
+                return invalidArgument("dynamic buffer range is invalid or unaligned");
+            const GLenum target = resource.type == ShaderPackageDesc::BindingType::UniformBuffer
+                ? GL_UNIFORM_BUFFER : GL_SHADER_STORAGE_BUFFER;
+            glBindBufferRange(target, shader->second.bufferSlots.at(key),
                               buffer->second.name, static_cast<GLintptr>(offset),
                               static_cast<GLsizeiptr>(range));
         }
-        else
+        else if (resource.type == ShaderPackageDesc::BindingType::CombinedImageSampler)
         {
             auto view = mViews.find(handleKey(resource.imageView));
             auto sampler = mSamplers.find(handleKey(resource.sampler));
@@ -1718,6 +1809,21 @@ Status OpenGLDevice::bindBindingSet(
             glActiveTexture(GL_TEXTURE0 + unit);
             glBindTexture(image->second.target, image->second.name);
             glBindSampler(unit, sampler->second.name);
+        }
+        else if (resource.type == ShaderPackageDesc::BindingType::StorageImage)
+        {
+            auto view = mViews.find(handleKey(resource.imageView));
+            if (view == mViews.end()) return invalidHandle("storage image view is stale");
+            auto image = mImages.find(handleKey(view->second.desc.image));
+            if (image == mImages.end()) return invalidHandle("storage image is stale");
+            const GLuint unit = shader->second.textureUnits.at(key);
+            glBindImageTexture(unit, image->second.name,
+                static_cast<GLint>(view->second.desc.subresources.baseMipLevel),
+                GL_FALSE, 0, GL_READ_WRITE, image->second.format.internal);
+        }
+        else
+        {
+            return unsupported("OpenGL binding resource type is not implemented");
         }
     }
     if (dynamicIndex != dynamicOffsets.size())
@@ -1963,6 +2069,10 @@ Status OpenGLCommandContext::beginQuery(QueryPoolHandle a, std::uint32_t b) { re
 Status OpenGLCommandContext::endQuery(QueryPoolHandle a, std::uint32_t b) { return mDevice.endQuery(a,b); }
 Status OpenGLCommandContext::beginRendering(const RenderingInfo& a) { return mDevice.beginRendering(a); }
 Status OpenGLCommandContext::endRendering() { return mDevice.endRendering(); }
+Status OpenGLCommandContext::resourceBarrier(ResourceBarrier barrier)
+{
+    return mDevice.resourceBarrier(barrier);
+}
 Status OpenGLCommandContext::bindPipeline(PipelineHandle a) { return mDevice.bindPipeline(a); }
 Status OpenGLCommandContext::bindBindingSet(std::uint8_t a, BindingSetHandle b, std::span<const std::uint32_t> c) { return mDevice.bindBindingSet(a,b,c); }
 Status OpenGLCommandContext::setViewport(const Viewport& a) { return mDevice.setViewport(a); }

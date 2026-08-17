@@ -44,6 +44,7 @@ enum class TraceOpcode : std::uint8_t
     SetScissor,
     BeginQuery,
     EndQuery,
+    ResourceBarrier,
 };
 
 class SemanticTrace
@@ -72,6 +73,7 @@ public:
     void endQuery(QueryPoolHandle pool, std::uint32_t query);
     void beginRendering(const RenderingInfo& info);
     void endRendering();
+    void resourceBarrier(ResourceBarrier barrier);
     void bindPipeline(PipelineHandle pipeline);
     void bindBindingSet(
         std::uint8_t group,

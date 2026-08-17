@@ -57,6 +57,7 @@ public:
     Status endQuery(QueryPoolHandle pool, std::uint32_t query) override;
     Status beginRendering(const RenderingInfo& info) override;
     Status endRendering() override;
+    Status resourceBarrier(ResourceBarrier barrier) override;
     Status bindPipeline(PipelineHandle pipeline) override;
     Status bindBindingSet(
         std::uint8_t group,

@@ -1,0 +1,36 @@
+{
+  "name": "r6_legacy_alpha",
+  "schema_version": 3,
+  "toolchain": {
+    "glslang_version": "11:16.2.0",
+    "spirv_tools_version": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
+    "vulkan_target": "vulkan1.3",
+    "optimization": "spirv-opt -O"
+  },
+  "dependencies": ["vulkan/ghi_vulkan_clip.glsl"],
+  "expected": {
+    "bindings": [
+      {"group": 0, "binding": 0, "type": "uniform_buffer", "name": "LegacyData", "stages": ["fragment"]}
+    ],
+    "vertex_inputs": [
+      {"location": 0, "type": "float3"},
+      {"location": 1, "type": "float4"}
+    ],
+    "fragment_outputs": [{"location": 0, "type": "float4"}],
+    "push_constant_bytes": 0
+  },
+  "stages": [
+    {
+      "stage": "vertex", "entry_point": "main",
+      "opengl_41": "opengl41/legacy_alpha.vert.glsl",
+      "opengl_46": "opengl46/legacy_alpha.vert.glsl",
+      "vulkan": "vulkan/legacy_alpha.vert.glsl"
+    },
+    {
+      "stage": "fragment", "entry_point": "main",
+      "opengl_41": "opengl41/legacy_alpha.frag.glsl",
+      "opengl_46": "opengl46/legacy_alpha.frag.glsl",
+      "vulkan": "vulkan/legacy_alpha.frag.glsl"
+    }
+  ]
+}

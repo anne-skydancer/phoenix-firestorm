@@ -329,7 +329,7 @@ RendererSnapshot queryOpenGLRendererSnapshot()
     GLint storage_bindings = 0;
     if (gGLManager.mGLVersion >= 4.3f)
     {
-        glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, &storage_bindings);
+        glGetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, &storage_bindings);
     }
 
     device_caps.maxFramesInFlight = 1;

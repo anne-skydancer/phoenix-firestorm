@@ -1,0 +1,37 @@
+{
+  "name": "r6_depth_peel",
+  "schema_version": 3,
+  "toolchain": {
+    "glslang_version": "11:16.2.0",
+    "spirv_tools_version": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
+    "vulkan_target": "vulkan1.3",
+    "optimization": "spirv-opt -O"
+  },
+  "dependencies": ["vulkan/ghi_vulkan_clip.glsl"],
+  "expected": {
+    "bindings": [
+      {"group": 0, "binding": 0, "type": "uniform_buffer", "name": "PeelData", "stages": ["fragment"]},
+      {"group": 0, "binding": 1, "type": "combined_image_sampler", "name": "priorDepth", "stages": ["fragment"]}
+    ],
+    "vertex_inputs": [
+      {"location": 0, "type": "float3"},
+      {"location": 1, "type": "float4"}
+    ],
+    "fragment_outputs": [{"location": 0, "type": "float4"}],
+    "push_constant_bytes": 0
+  },
+  "stages": [
+    {
+      "stage": "vertex", "entry_point": "main",
+      "opengl_41": "opengl41/depth_peel.vert.glsl",
+      "opengl_46": "opengl46/depth_peel.vert.glsl",
+      "vulkan": "vulkan/depth_peel.vert.glsl"
+    },
+    {
+      "stage": "fragment", "entry_point": "main",
+      "opengl_41": "opengl41/depth_peel.frag.glsl",
+      "opengl_46": "opengl46/depth_peel.frag.glsl",
+      "vulkan": "vulkan/depth_peel.frag.glsl"
+    }
+  ]
+}

@@ -453,6 +453,17 @@ Status ValidationCommandContext::endRendering()
     return Status::success();
 }
 
+Status ValidationCommandContext::resourceBarrier(ResourceBarrier barrier)
+{
+    if (!mFrameActive || mRendering)
+        return invalidState("resourceBarrier requires a frame outside a rendering pass");
+    if (barrier != ResourceBarrier::StorageWriteToRead &&
+        barrier != ResourceBarrier::DepthAttachmentWriteToSampledRead)
+        return invalidArgument("unknown resource barrier");
+    mTrace.resourceBarrier(barrier);
+    return Status::success();
+}
+
 Status ValidationCommandContext::requireRendering(const char* operation) const
 {
     if (!mFrameActive || !mRendering)

@@ -17,6 +17,7 @@
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghimaterialscenepacket.h"
+#include "ghi/include/llghialphacontract.h"
 #include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
 #include "ghi/include/llghiworldcontract.h"
@@ -1319,6 +1320,161 @@ void LLGHIValidationObject::test<25>()
     PipelineHandle missingEnvironment = device->createPipeline(pipeline, status);
     ensure("R5 world pipeline without environment target rejected",
            !missingEnvironment && status.code() == StatusCode::InvalidArgument);
+}
+#endif
+
+template<> template<>
+void LLGHIValidationObject::test<26>()
+{
+    using namespace LL::GHI;
+
+    AlphaRoutingState ppll{AlphaMethod::PPLL, true, true, false};
+    AlphaRoutingState peel{AlphaMethod::DepthPeeling, true, true, false};
+    ensure("R6 masks remain masks",
+        routeAlphaSubmission({AlphaViewPhase::MainPostWater,
+                              AlphaSubmissionClass::Mask}, ppll).route ==
+        AlphaRoute::Mask);
+    ensure("R6 particles remain on residual legacy alpha",
+        routeAlphaSubmission({AlphaViewPhase::MainPostWater,
+                              AlphaSubmissionClass::Particle}, ppll).route ==
+        AlphaRoute::LegacyResidual);
+    ensure("R6 custom blends remain on residual legacy alpha",
+        routeAlphaSubmission({AlphaViewPhase::MainPostWater,
+                              AlphaSubmissionClass::CustomBlend}, peel).route ==
+        AlphaRoute::LegacyResidual);
+    ensure("R6 pre-water alpha never enters PPLL",
+        routeAlphaSubmission({AlphaViewPhase::PreWater,
+                              AlphaSubmissionClass::StandardBlend}, ppll).route ==
+        AlphaRoute::LegacySorted);
+    ensure("R6 mirrors never enter depth peeling",
+        routeAlphaSubmission({AlphaViewPhase::Reflection,
+                              AlphaSubmissionClass::StandardBlend}, peel).route ==
+        AlphaRoute::LegacySorted);
+    AlphaSubmission fullbright{AlphaViewPhase::MainPostWater,
+        AlphaSubmissionClass::StandardBlend, false, true, true};
+    ensure("R6 fullbright alpha is captured once with one emissive replay",
+        routeAlphaSubmission(fullbright, ppll) ==
+            AlphaRoutingDecision{AlphaRoute::PPLLCapture, true});
+    ensure("R6 depth peeling accepts ordinary cards",
+        routeAlphaSubmission({AlphaViewPhase::MainPostWater,
+                              AlphaSubmissionClass::StandardBlend}, peel).route ==
+        AlphaRoute::DepthPeelExact);
+    peel.transientLoad = true;
+    ensure("R6 transient load falls back to legacy",
+        routeAlphaSubmission({AlphaViewPhase::MainPostWater,
+                              AlphaSubmissionClass::StandardBlend}, peel).route ==
+        AlphaRoute::LegacySorted);
+
+    const AlphaPPLLAllocation planned = planAlphaPPLLAllocation(
+        2560, 1369, 512ull << 20, {});
+    ensure("R6 default PPLL allocation is usable", planned.usable);
+    ensure_equals("R6 PPLL exact layer clamp", planned.exactLayersPerPixel, 24u);
+    ensure("R6 rejects sub-pixel-average PPLL pools",
+        !planAlphaPPLLAllocation(2560, 1369, 32, {}).usable);
+    ensure("R6 depth peeling keeps accepted defaults",
+        clampAlphaDepthPeelPolicy({4, 2}) == AlphaDepthPeelPolicy{4, 2});
+    ensure("R6 depth peeling clamps pathological settings",
+        clampAlphaDepthPeelPolicy({0, 100}) == AlphaDepthPeelPolicy{1, 50});
+
+    RendererCapabilities capabilities;
+    capabilities.advancedGraphicsPipeline = false;
+    capabilities.storageImageAtomics = true;
+    capabilities.maxStorageBuffersPerStage = 2;
+    ensure("R6 PPLL semantic capabilities accepted", supportsPPLL(capabilities));
+    capabilities.maxStorageBuffersPerStage = 1;
+    ensure("R6 PPLL requires node and counter storage buffers",
+        !supportsPPLL(capabilities));
+    capabilities.maxStorageBuffersPerStage = 2;
+    capabilities.storageImageAtomics = false;
+    ensure("R6 PPLL requires storage image atomics", !supportsPPLL(capabilities));
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R6 validation device", created.status.ok() && device);
+    ensure("R6 barrier outside a frame rejected",
+        device->commandContext().resourceBarrier(
+            ResourceBarrier::StorageWriteToRead).code() == StatusCode::InvalidState);
+    ensure("R6 barrier frame begins", device->commandContext().beginFrame().ok());
+    ensure("R6 storage dependency barrier accepted",
+        device->commandContext().resourceBarrier(
+            ResourceBarrier::StorageWriteToRead).ok());
+    ensure("R6 depth-peel dependency barrier accepted",
+        device->commandContext().resourceBarrier(
+            ResourceBarrier::DepthAttachmentWriteToSampledRead).ok());
+    ensure("R6 barrier frame ends", device->commandContext().endFrame().ok());
+}
+
+#if defined(LL_GHI_R6_PPLL_SHADER_PACKAGE) && \
+    defined(LL_GHI_R6_PEEL_SHADER_PACKAGE) && \
+    defined(LL_GHI_R6_LEGACY_SHADER_PACKAGE)
+template<> template<>
+void LLGHIValidationObject::test<27>()
+{
+    using namespace LL::GHI;
+
+    ShaderPackageDesc ppllPackage;
+    Status status = loadShaderPackage(LL_GHI_R6_PPLL_SHADER_PACKAGE, ppllPackage);
+    ensure(status.message(), status.ok());
+    ensure_equals("R6 PPLL reflected binding count",
+                  ppllPackage.bindings.size(), std::size_t{4});
+    ensure("R6 PPLL reflection includes storage image",
+        ppllPackage.bindings[1].type == ShaderPackageDesc::BindingType::StorageImage);
+    ensure("R6 PPLL reflection includes compact node storage",
+        ppllPackage.bindings[2].type == ShaderPackageDesc::BindingType::StorageBuffer);
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R6 package validation device", created.status.ok() && device);
+    ShaderPackageHandle ppllShader = device->createShaderPackage(ppllPackage, status);
+    ensure("R6 PPLL package accepted", status.ok() && ppllShader);
+    BufferHandle uniform = device->createBuffer(
+        {32, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
+    BufferHandle nodes = device->createBuffer(
+        {4096, ResourceUsage::Storage, MemoryClass::DeviceLocal}, status);
+    BufferHandle counter = device->createBuffer(
+        {8, ResourceUsage::Storage, MemoryClass::DeviceLocal}, status);
+    ImageHandle head = device->createImage(
+        {{16, 16, 1}, Format::R32UInt, ResourceUsage::Storage, 1, 1, 1}, status);
+    ImageViewHandle headView = device->createImageView(
+        {head, Format::R32UInt, {ImageAspect::Color, 0, 1, 0, 1}}, status);
+    ensure("R6 PPLL validation resources", status.ok());
+    BindingSetDesc ppllSet;
+    ppllSet.shader = ppllShader;
+    ppllSet.group = 0;
+    ppllSet.resources = {
+        {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         uniform, 0, 32, {}, {}},
+        {1, 0, ShaderPackageDesc::BindingType::StorageImage,
+         {}, 0, 0, headView, {}},
+        {2, 0, ShaderPackageDesc::BindingType::StorageBuffer,
+         nodes, 0, 4096, {}, {}},
+    };
+    BindingSetHandle incomplete = device->createBindingSet(ppllSet, status);
+    ensure("R6 PPLL missing counter is rejected",
+        !incomplete && status.code() == StatusCode::InvalidArgument);
+    ppllSet.resources.push_back(
+        {3, 0, ShaderPackageDesc::BindingType::StorageBuffer,
+         counter, 0, 8, {}, {}});
+    BindingSetHandle complete = device->createBindingSet(ppllSet, status);
+    ensure("R6 PPLL complete storage contract accepted", status.ok() && complete);
+
+    ShaderPackageDesc peelPackage;
+    status = loadShaderPackage(LL_GHI_R6_PEEL_SHADER_PACKAGE, peelPackage);
+    ensure(status.message(), status.ok());
+    ensure_equals("R6 depth-peel reflected binding count",
+                  peelPackage.bindings.size(), std::size_t{2});
+    ensure("R6 depth-peel reflection samples prior depth",
+        peelPackage.bindings[1].type ==
+            ShaderPackageDesc::BindingType::CombinedImageSampler);
+
+    ShaderPackageDesc legacyPackage;
+    status = loadShaderPackage(LL_GHI_R6_LEGACY_SHADER_PACKAGE, legacyPackage);
+    ensure(status.message(), status.ok());
+    ensure_equals("R6 legacy-alpha reflected binding count",
+                  legacyPackage.bindings.size(), std::size_t{1});
+    ensure("R6 legacy-alpha reflection includes route parameters",
+        legacyPackage.bindings[0].type ==
+            ShaderPackageDesc::BindingType::UniformBuffer);
 }
 #endif
 

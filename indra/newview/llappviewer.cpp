@@ -450,6 +450,7 @@ void init_default_trans_args()
 {
     default_trans_args.insert("SECOND_LIFE"); // World
     default_trans_args.insert("APP_NAME");
+    default_trans_args.insert("APP_NAME_FULL");
     default_trans_args.insert("CAPITALIZED_APP_NAME");
     default_trans_args.insert("CURRENT_GRID"); //<FS:AW make CURRENT_GRID a default substitution>
     default_trans_args.insert("SECOND_LIFE_GRID");
@@ -3560,7 +3561,8 @@ bool LLAppViewer::initConfiguration()
     //
     // Set the name of the window
     //
-    gWindowTitle = LLVersionInfo::getInstance()->getChannelAndVersion();    // <FS:CR>
+    gWindowTitle = LLTrans::getString("APP_NAME_FULL") + " " +
+                   LLVersionInfo::getInstance()->getVersion();
 #if LL_DEBUG
     gWindowTitle += std::string(" [DEBUG]");
 #endif

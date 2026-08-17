@@ -2731,7 +2731,7 @@ set(ARTWORK_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH
 # </FS:Ansariel>
 
 if (LINUX)
-  set(product Firestorm-${ARCH}-${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION})
+  set(product Vulkanstorm-${ARCH}-${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION})
 
   # These are the generated targets that are copied to package/
   set(COPY_INPUT_DEPENDENCIES
@@ -2833,13 +2833,13 @@ if (DARWIN)
   # magically known to CMake -- it's that these names are referenced in the
   # Info-SecondLife.plist file in the configure_file() directive below.
   #set(product "${VIEWER_CHANNEL}")
-  set(product "Firestorm")
-  set(MACOSX_EXECUTABLE_NAME "Firestorm")
-  set(MACOSX_BUNDLE_INFO_STRING "Firestorm Viewer")
+  set(product "Vulkanstorm")
+  set(MACOSX_EXECUTABLE_NAME "Vulkanstorm")
+  set(MACOSX_BUNDLE_INFO_STRING "Vulkanstorm: Firestorm on Vulkan")
   set(MACOSX_BUNDLE_ICON_FILE "firestorm_icon.icns")
-  set(MACOSX_BUNDLE_GUI_IDENTIFIER "org.firestormviewer.firestorm")
+  set(MACOSX_BUNDLE_GUI_IDENTIFIER "org.vulkanstorm.viewer")
   set(MACOSX_BUNDLE_LONG_VERSION_STRING "${VIEWER_CHANNEL} ${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
-  set(MACOSX_BUNDLE_BUNDLE_NAME "Firestorm")
+  set(MACOSX_BUNDLE_BUNDLE_NAME "Vulkanstorm")
   set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
   set(MACOSX_BUNDLE_BUNDLE_VERSION "${VIEWER_SHORT_VERSION}${VIEWER_MACOSX_PHASE}${VIEWER_REVISION}")
   set(MACOSX_BUNDLE_COPYRIGHT "Copyright 2010-2026 The Phoenix Firestorm Project, Inc.")

@@ -33,7 +33,9 @@ enum class AlphaViewPhase : std::uint8_t
     HUD,
     Impostor,
     Reflection,
-    CubeSnapshot
+    CubeSnapshot,
+    DynamicTexture,
+    MediaSurface
 };
 
 enum class AlphaSubmissionClass : std::uint8_t

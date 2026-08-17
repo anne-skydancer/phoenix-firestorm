@@ -171,6 +171,9 @@ enum class ResourceBarrier : std::uint8_t
     StorageWriteToRead,
     // A completed depth attachment becomes a sampled input to a later peel.
     DepthAttachmentWriteToSampledRead,
+    // A completed color attachment becomes a sampled input to a later
+    // offscreen/recursive pass.
+    ColorAttachmentWriteToSampledRead,
 };
 
 enum class Format : std::uint16_t
@@ -223,6 +226,9 @@ struct RendererCapabilities
     bool storageImageAtomics = false;
     bool depthClamp = false;
     bool independentBlend = false;
+    // Required by reflection/hero probes, mirrors, and cube snapshots. This is
+    // a semantic capability, independent of native API version numbering.
+    bool cubeMapArrays = false;
 
     // Semantic viewer feature levels. Backends derive these from their own
     // native requirements so policy consumers never compare unrelated API

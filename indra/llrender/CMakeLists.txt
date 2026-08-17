@@ -82,6 +82,7 @@ set(llrender_HEADER_FILES
     ghi/backends/opengl/llghiopenglpresentation.h
     ghi/include/llghi.h
     ghi/include/llghialphacontract.h
+    ghi/include/llghioffscreencontract.h
     ghi/include/llghicommand.h
     ghi/include/llghidescriptors.h
     ghi/include/llghidevice.h
@@ -344,6 +345,33 @@ if (USE_VULKAN_GHI)
       COMMENT "Building deterministic R6 legacy-alpha GHI shader package"
       VERBATIM
       )
+  set(GHI_R7_OFFSCREEN_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r7_offscreen")
+  set(GHI_R7_OFFSCREEN_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r7_offscreen.llghisp")
+  set(GHI_R7_OFFSCREEN_SHADER_SOURCES
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/package.json"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl41/offscreen.vert.glsl"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl41/offscreen.frag.glsl"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl46/offscreen.vert.glsl"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl46/offscreen.frag.glsl"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/vulkan/offscreen.vert.glsl"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/vulkan/offscreen.frag.glsl"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
+      )
+  add_custom_command(
+      OUTPUT "${GHI_R7_OFFSCREEN_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_R7_OFFSCREEN_SHADER_ROOT}/package.json"
+              --output "${GHI_R7_OFFSCREEN_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_R7_OFFSCREEN_SHADER_SOURCES}
+      COMMENT "Building deterministic R7 offscreen GHI shader package"
+      VERBATIM
+      )
   add_custom_target(llrender_ghi_shaders DEPENDS
       "${GHI_R3_SHADER_PACKAGE}"
       "${GHI_R4_SHADER_PACKAGE}"
@@ -353,6 +381,7 @@ if (USE_VULKAN_GHI)
       "${GHI_R6_PPLL_SHADER_PACKAGE}"
       "${GHI_R6_PEEL_SHADER_PACKAGE}"
       "${GHI_R6_LEGACY_SHADER_PACKAGE}"
+      "${GHI_R7_OFFSCREEN_SHADER_PACKAGE}"
       )
   if (LL_TESTS)
     add_custom_target(
@@ -417,6 +446,14 @@ if (USE_VULKAN_GHI)
                 "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
                 --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
                 --manifest "${GHI_R6_LEGACY_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_R7_OFFSCREEN_SHADER_ROOT}/package.json"
                 --glslang "${GHI_GLSLANG_VALIDATOR}"
                 --spirv-val "${GHI_SPIRV_VAL}"
                 --spirv-opt "${GHI_SPIRV_OPT}"
@@ -634,6 +671,15 @@ if (USE_VULKAN_GHI)
       LL_GHI_R6_LEGACY_SHADER_PACKAGE="${GHI_R6_LEGACY_SHADER_PACKAGE}")
   target_link_libraries(llrender_vulkan_legacy_alpha_harness llrender Vulkan::Vulkan)
   add_dependencies(llrender_vulkan_legacy_alpha_harness llrender_ghi_shaders)
+
+  add_executable(llrender_vulkan_offscreen_harness
+      ghi/backends/vulkan/llghivulkanoffscreenharness.cpp)
+  target_include_directories(llrender_vulkan_offscreen_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+  target_compile_definitions(llrender_vulkan_offscreen_harness PRIVATE
+      LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE="${GHI_R7_OFFSCREEN_SHADER_PACKAGE}")
+  target_link_libraries(llrender_vulkan_offscreen_harness llrender Vulkan::Vulkan)
+  add_dependencies(llrender_vulkan_offscreen_harness llrender_ghi_shaders)
 endif ()
 
 if (WINDOWS)
@@ -779,6 +825,15 @@ if (WINDOWS)
         LL_GHI_R6_LEGACY_SHADER_PACKAGE="${GHI_R6_LEGACY_SHADER_PACKAGE}")
     target_link_libraries(llrender_opengl_legacy_alpha_harness llrender OpenGL::GL)
     add_dependencies(llrender_opengl_legacy_alpha_harness llrender_ghi_shaders)
+
+    add_executable(llrender_opengl_offscreen_harness
+        ghi/backends/opengl/llghiopengloffscreenharness.cpp)
+    target_include_directories(llrender_opengl_offscreen_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+    target_compile_definitions(llrender_opengl_offscreen_harness PRIVATE
+        LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE="${GHI_R7_OFFSCREEN_SHADER_PACKAGE}")
+    target_link_libraries(llrender_opengl_offscreen_harness llrender OpenGL::GL)
+    add_dependencies(llrender_opengl_offscreen_harness llrender_ghi_shaders)
   endif ()
 endif ()
 
@@ -816,6 +871,7 @@ if (LL_TESTS)
         LL_GHI_R6_PPLL_SHADER_PACKAGE="${GHI_R6_PPLL_SHADER_PACKAGE}"
         LL_GHI_R6_PEEL_SHADER_PACKAGE="${GHI_R6_PEEL_SHADER_PACKAGE}"
         LL_GHI_R6_LEGACY_SHADER_PACKAGE="${GHI_R6_LEGACY_SHADER_PACKAGE}"
+        LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE="${GHI_R7_OFFSCREEN_SHADER_PACKAGE}"
         )
     add_dependencies(llrender_ghi_contract_test llrender_ghi_shader_packager_test)
   endif ()

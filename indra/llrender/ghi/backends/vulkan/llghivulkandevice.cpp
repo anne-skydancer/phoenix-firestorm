@@ -157,6 +157,20 @@ VkImageUsageFlags translateImageUsage(ResourceUsage usage)
     return result;
 }
 
+VkImageViewType translateViewType(ImageViewType type)
+{
+    switch (type)
+    {
+    case ImageViewType::Texture2D: return VK_IMAGE_VIEW_TYPE_2D;
+    case ImageViewType::Texture2DArray: return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    case ImageViewType::TextureCube: return VK_IMAGE_VIEW_TYPE_CUBE;
+    case ImageViewType::TextureCubeArray: return VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+    case ImageViewType::Texture3D: return VK_IMAGE_VIEW_TYPE_3D;
+    case ImageViewType::Automatic: break;
+    }
+    return VK_IMAGE_VIEW_TYPE_MAX_ENUM;
+}
+
 VkSampleCountFlagBits translateSamples(std::uint8_t samples)
 {
     switch (samples)
@@ -503,6 +517,7 @@ private:
     VkDebugUtilsMessengerEXT mDebugMessenger = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties mMemoryProperties{};
     bool mSamplerAnisotropy = false;
+    bool mImageCubeArray = false;
     std::atomic_bool mValidationError = false;
     float mMaxSamplerAnisotropy = 1.f;
     RendererCapabilities mCapabilities;
@@ -641,6 +656,7 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     enabledFeatures.samplerAnisotropy = availableFeatures.samplerAnisotropy;
     enabledFeatures.depthClamp = availableFeatures.depthClamp;
     enabledFeatures.independentBlend = availableFeatures.independentBlend;
+    enabledFeatures.imageCubeArray = availableFeatures.imageCubeArray;
     enabledFeatures.fragmentStoresAndAtomics =
         availableFeatures.fragmentStoresAndAtomics;
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
@@ -724,9 +740,11 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     mCapabilities.occlusionQueries = true;
     mCapabilities.depthClamp = enabledFeatures.depthClamp == VK_TRUE;
     mCapabilities.independentBlend = enabledFeatures.independentBlend == VK_TRUE;
+    mCapabilities.cubeMapArrays = enabledFeatures.imageCubeArray == VK_TRUE;
     mCapabilities.baselineGraphicsPipeline = true;
     mCapabilities.advancedGraphicsPipeline = false;
     mSamplerAnisotropy = enabledFeatures.samplerAnisotropy == VK_TRUE;
+    mImageCubeArray = enabledFeatures.imageCubeArray == VK_TRUE;
     mMaxSamplerAnisotropy = properties.limits.maxSamplerAnisotropy;
     return Status::success();
 }
@@ -783,13 +801,18 @@ ImageHandle VulkanDevice::createImage(const ImageDesc& desc, Status& status)
     std::uint16_t maxMips = 1; while (maxDimension > 1) { maxDimension >>= 1; ++maxMips; }
     if (!format.format || !usage || !desc.extent.width || !desc.extent.height || !desc.extent.depth ||
         !desc.arrayLayers || !desc.mipLevels || desc.mipLevels > maxMips || !samples ||
-        (desc.samples > 1 && desc.mipLevels != 1) || (desc.extent.depth > 1 && desc.arrayLayers > 1))
+        (desc.samples > 1 && desc.mipLevels != 1) || (desc.extent.depth > 1 && desc.arrayLayers > 1) ||
+        (desc.cubeCompatible && (!mCapabilities.cubeMapArrays ||
+            desc.extent.depth != 1 ||
+            desc.extent.width != desc.extent.height ||
+            desc.arrayLayers < 6 || desc.arrayLayers % 6 != 0)))
     { status = invalidArgument("invalid Vulkan image descriptor"); return {}; }
     ImageRecord record; record.desc = desc; record.format = format; record.layouts.resize(desc.mipLevels, VK_IMAGE_LAYOUT_UNDEFINED);
     const VkImageType imageType = desc.extent.depth > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     VkImageFormatProperties imageProperties{};
+    const VkImageCreateFlags flags = desc.cubeCompatible ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
     if (vkGetPhysicalDeviceImageFormatProperties(mPhysicalDevice, format.format, imageType,
-            VK_IMAGE_TILING_OPTIMAL, usage, 0, &imageProperties) != VK_SUCCESS)
+            VK_IMAGE_TILING_OPTIMAL, usage, flags, &imageProperties) != VK_SUCCESS)
     {
         status = unsupported("Vulkan image format and usage combination is unsupported");
         return {};
@@ -805,6 +828,7 @@ ImageHandle VulkanDevice::createImage(const ImageDesc& desc, Status& status)
         return {};
     }
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    info.flags = flags;
     info.imageType = imageType;
     info.format = format.format; info.extent = {desc.extent.width, desc.extent.height, desc.extent.depth};
     info.mipLevels = desc.mipLevels; info.arrayLayers = desc.arrayLayers; info.samples = samples;
@@ -838,13 +862,16 @@ ImageViewHandle VulkanDevice::createImageView(const ImageViewDesc& desc, Status&
         !range.mipLevelCount || !range.arrayLayerCount || range.baseMipLevel >= image->second.desc.mipLevels ||
         range.mipLevelCount > image->second.desc.mipLevels - range.baseMipLevel ||
         range.baseArrayLayer >= image->second.desc.arrayLayers ||
-        range.arrayLayerCount > image->second.desc.arrayLayers - range.baseArrayLayer)
+        range.arrayLayerCount > image->second.desc.arrayLayers - range.baseArrayLayer ||
+        !imageViewTypeCompatible(image->second.desc, desc))
     { status = invalidArgument("invalid Vulkan image view descriptor"); return {}; }
+    const ImageViewType resolvedType = resolvedImageViewType(image->second.desc, desc.type);
+    if (resolvedType == ImageViewType::TextureCubeArray && !mImageCubeArray)
+    { status = unsupported("Vulkan cube-array image views are unavailable"); return {}; }
     ViewRecord record; record.desc = desc;
     VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     info.image = image->second.image;
-    info.viewType = image->second.desc.extent.depth > 1 ? VK_IMAGE_VIEW_TYPE_3D :
-                    image->second.desc.arrayLayers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+    info.viewType = translateViewType(resolvedType);
     info.format = image->second.format.format;
     info.subresourceRange = {aspect, range.baseMipLevel, range.mipLevelCount, range.baseArrayLayer, range.arrayLayerCount};
     VkResult result = vkCreateImageView(mDevice, &info, nullptr, &record.view);
@@ -1526,6 +1553,11 @@ Status VulkanDevice::copyBufferToImage(BufferHandle source, ImageHandle destinat
         copy.imageOffset = {region.imageOffset.x, region.imageOffset.y, region.imageOffset.z};
         copy.imageExtent = {region.imageExtent.width, region.imageExtent.height, region.imageExtent.depth}; copies.push_back(copy);
     }
+    VkMemoryBarrier reuseBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    reuseBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    reuseBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(commands(), VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuseBarrier, 0, nullptr, 0, nullptr);
     vkCmdCopyBufferToImage(commands(), src->second.buffer, dst->second.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            static_cast<std::uint32_t>(copies.size()), copies.data()); return Status::success();
 }
@@ -1794,6 +1826,14 @@ Status VulkanDevice::resourceBarrier(ResourceBarrier barrier)
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             0, 1, &memory, 0, nullptr, 0, nullptr);
     }
+    else if (barrier == ResourceBarrier::ColorAttachmentWriteToSampledRead)
+    {
+        memory.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(commands(), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 1, &memory, 0, nullptr, 0, nullptr);
+    }
     else return invalidArgument("unknown Vulkan resource barrier");
     return Status::success();
 }
@@ -1863,10 +1903,14 @@ Status VulkanDevice::bindBindingSet(
         if (view == mViews.end()) return invalidHandle("binding set image view is stale");
         auto image = mImages.find(handleKey(view->second.desc.image));
         if (image == mImages.end()) return invalidHandle("binding set image is stale");
-        Status status = transition(image->second, view->second.desc.subresources.baseMipLevel,
-            resource.type == ShaderPackageDesc::BindingType::StorageImage
-                ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        if (!status) return status;
+        const auto& range = view->second.desc.subresources;
+        const VkImageLayout layout = resource.type == ShaderPackageDesc::BindingType::StorageImage
+            ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        for (std::uint16_t mip = 0; mip < range.mipLevelCount; ++mip)
+        {
+            Status status = transition(image->second, range.baseMipLevel + mip, layout);
+            if (!status) return status;
+        }
     }
     vkCmdBindDescriptorSets(commands(), VK_PIPELINE_BIND_POINT_GRAPHICS,
         shader->second.pipelineLayout, group, 1, &set->second.set,

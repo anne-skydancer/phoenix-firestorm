@@ -11,3 +11,9 @@ enabled. Output must match the OpenGL peer hashes exactly.
 The backend remains developer-gated and additive. It does not yet receive the
 production viewer world or UI command stream, so Mesa/Zink and native OpenGL
 remain usable and unchanged while Vulkan parity is established.
+
+R7 independently executes cube-array face rendering, probe mip generation,
+and synchronized dynamic/media image updates. Cube-array support is queried as
+a semantic capability and enabled explicitly. The R7 native fixture must pass
+with Khronos synchronization validation and match both OpenGL peers bit for
+bit; it does not reroute production mirrors, probes, snapshots, or impostors.

@@ -49,8 +49,21 @@ struct ImageDesc
     std::uint16_t mipLevels = 1;
     std::uint16_t arrayLayers = 1;
     std::uint8_t samples = 1;
+    // Cube-compatible images are 2D arrays whose layer count is a multiple of
+    // six. Face order follows the API-independent CubeFace contract.
+    bool cubeCompatible = false;
 
     friend bool operator==(const ImageDesc&, const ImageDesc&) = default;
+};
+
+enum class ImageViewType : std::uint8_t
+{
+    Automatic,
+    Texture2D,
+    Texture2DArray,
+    TextureCube,
+    TextureCubeArray,
+    Texture3D,
 };
 
 enum class ImageAspect : std::uint8_t
@@ -77,9 +90,45 @@ struct ImageViewDesc
     ImageHandle image;
     Format format = Format::Undefined;
     ImageSubresourceRange subresources;
+    ImageViewType type = ImageViewType::Automatic;
 
     friend bool operator==(const ImageViewDesc&, const ImageViewDesc&) = default;
 };
+
+constexpr ImageViewType resolvedImageViewType(
+    const ImageDesc& image, ImageViewType requested)
+{
+    if (requested != ImageViewType::Automatic) return requested;
+    return image.extent.depth > 1 ? ImageViewType::Texture3D :
+           image.cubeCompatible ? ImageViewType::TextureCubeArray :
+           image.arrayLayers > 1 ? ImageViewType::Texture2DArray :
+           ImageViewType::Texture2D;
+}
+
+constexpr bool imageViewTypeCompatible(
+    const ImageDesc& image, const ImageViewDesc& view)
+{
+    const ImageViewType type = resolvedImageViewType(image, view.type);
+    const auto& range = view.subresources;
+    switch (type)
+    {
+    case ImageViewType::Texture2D:
+        return image.extent.depth == 1 && range.arrayLayerCount == 1;
+    case ImageViewType::Texture2DArray:
+        return image.extent.depth == 1;
+    case ImageViewType::TextureCube:
+        return image.cubeCompatible && range.arrayLayerCount == 6 &&
+               range.baseArrayLayer % 6 == 0;
+    case ImageViewType::TextureCubeArray:
+        return image.cubeCompatible && range.arrayLayerCount >= 6 &&
+               range.arrayLayerCount % 6 == 0 && range.baseArrayLayer % 6 == 0;
+    case ImageViewType::Texture3D:
+        return image.extent.depth > 1 && image.arrayLayers == 1;
+    case ImageViewType::Automatic:
+        break;
+    }
+    return false;
+}
 
 enum class Filter : std::uint8_t
 {

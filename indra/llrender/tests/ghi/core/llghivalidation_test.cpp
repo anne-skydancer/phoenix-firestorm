@@ -18,6 +18,7 @@
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghimaterialscenepacket.h"
 #include "ghi/include/llghialphacontract.h"
+#include "ghi/include/llghioffscreencontract.h"
 #include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
 #include "ghi/include/llghiworldcontract.h"
@@ -1477,5 +1478,116 @@ void LLGHIValidationObject::test<27>()
             ShaderPackageDesc::BindingType::UniformBuffer);
 }
 #endif
+
+template<> template<>
+void LLGHIValidationObject::test<28>()
+{
+    using namespace LL::GHI;
+
+    const OffscreenPassDesc mainPass;
+    ensure("R7 main-view contract accepted", validOffscreenPass(mainPass));
+    OffscreenPassDesc probePass;
+    probePass.view = RenderViewClass::ReflectionProbe;
+    probePass.recursionDepth = 1;
+    probePass.face = CubeFace::PositiveY;
+    probePass.probePhase = ProbePhase::DirectLighting;
+    probePass.arrayLayer = cubeArrayLayer(1, CubeFace::PositiveY);
+    probePass.updateEpoch = 17;
+    ensure("R7 cube face/layer contract accepted", validOffscreenPass(probePass));
+    ensure_equals("R7 cube array layer mapping", probePass.arrayLayer,
+                  std::uint16_t{8});
+    ensure("R7 semantic identity is deterministic",
+           offscreenSemanticId(probePass) == offscreenSemanticId(probePass));
+    OffscreenPassDesc differentEpoch = probePass;
+    ++differentEpoch.updateEpoch;
+    ensure("R7 semantic identity includes scene update epoch",
+           offscreenSemanticId(probePass) != offscreenSemanticId(differentEpoch));
+    OffscreenPassDesc invalidLayer = probePass;
+    ++invalidLayer.arrayLayer;
+    ensure("R7 cube face/layer mismatch rejected",
+           !validOffscreenPass(invalidLayer));
+    OffscreenPassDesc recursive = probePass;
+    recursive.recursionDepth = 2;
+    ensure("R7 recursive offscreen render rejected",
+           !validOffscreenPass(recursive));
+    ensure("R7 main view may schedule a probe",
+           maySpawnPass(RenderViewClass::Main, RenderViewClass::ReflectionProbe));
+    ensure("R7 probe may not schedule a mirror",
+           !maySpawnPass(RenderViewClass::ReflectionProbe, RenderViewClass::Mirror));
+
+    AlphaRoutingState ppll{AlphaMethod::PPLL, true, true, false};
+    for (RenderViewClass view : {
+             RenderViewClass::ReflectionProbe, RenderViewClass::HeroProbe,
+             RenderViewClass::Mirror, RenderViewClass::CubeSnapshot,
+             RenderViewClass::Impostor, RenderViewClass::DynamicTexture,
+             RenderViewClass::MediaSurface})
+    {
+        ensure("R7 offscreen alpha remains on the legacy path",
+            routeAlphaSubmission({alphaPhaseForView(view),
+                                  AlphaSubmissionClass::StandardBlend}, ppll).route ==
+                AlphaRoute::LegacySorted);
+    }
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R7 validation device", created.status.ok() && device);
+    ensure("R7 cube-array capability is explicit",
+           device->capabilities().cubeMapArrays);
+    Status status = Status::success();
+    ImageDesc invalidCube;
+    invalidCube.extent = {32, 16, 1};
+    invalidCube.format = Format::RGBA8UNorm;
+    invalidCube.usage = ResourceUsage::ColorAttachment | ResourceUsage::Sampled;
+    invalidCube.arrayLayers = 6;
+    invalidCube.cubeCompatible = true;
+    ensure("R7 nonsquare cube image rejected",
+        !device->createImage(invalidCube, status) &&
+        status.code() == StatusCode::InvalidArgument);
+    invalidCube.extent = {32, 32, 1};
+    invalidCube.arrayLayers = 7;
+    ensure("R7 incomplete cube layer group rejected",
+        !device->createImage(invalidCube, status) &&
+        status.code() == StatusCode::InvalidArgument);
+
+    ImageDesc cube = invalidCube;
+    cube.arrayLayers = 12;
+    cube.mipLevels = 3;
+    cube.usage = cube.usage | ResourceUsage::TransferSource |
+                 ResourceUsage::TransferDestination;
+    ImageHandle image = device->createImage(cube, status);
+    ensure("R7 cube-compatible array accepted", status.ok() && image);
+    ImageViewHandle cubeArray = device->createImageView(
+        {image, Format::RGBA8UNorm, {ImageAspect::Color, 0, 3, 0, 12},
+         ImageViewType::TextureCubeArray}, status);
+    ensure("R7 cube-array sampling view accepted", status.ok() && cubeArray);
+    ImageViewHandle face = device->createImageView(
+        {image, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 7, 1},
+         ImageViewType::Texture2D}, status);
+    ensure("R7 single cube-face attachment view accepted", status.ok() && face);
+    ImageViewHandle invalidCubeView = device->createImageView(
+        {image, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 1, 6},
+         ImageViewType::TextureCube}, status);
+    ensure("R7 misaligned cube sampling view rejected",
+        !invalidCubeView && status.code() == StatusCode::InvalidArgument);
+    ensure("R7 barrier frame begins", device->commandContext().beginFrame().ok());
+    ensure("R7 color attachment dependency barrier accepted",
+        device->commandContext().resourceBarrier(
+            ResourceBarrier::ColorAttachmentWriteToSampledRead).ok());
+    ensure("R7 barrier frame ends", device->commandContext().endFrame().ok());
+
+#if defined(LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE)
+    ShaderPackageDesc package;
+    status = loadShaderPackage(LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    ensure_equals("R7 offscreen reflected binding count",
+                  package.bindings.size(), std::size_t{3});
+    ensure("R7 probe binding is sampled",
+        package.bindings[0].type ==
+            ShaderPackageDesc::BindingType::CombinedImageSampler);
+    ensure("R7 media binding is sampled",
+        package.bindings[2].type ==
+            ShaderPackageDesc::BindingType::CombinedImageSampler);
+#endif
+}
 
 } // namespace tut

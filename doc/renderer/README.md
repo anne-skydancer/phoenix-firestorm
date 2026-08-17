@@ -27,6 +27,9 @@ supported peer and recovery path.
 - [R5 material, terrain, and lighting checkpoint](r5-material-lighting-checkpoint.md)
   records material/skin observation plus exact terrain, lighting/shadow, and
   sky/water native-peer contracts.
+- [R7 offscreen and recursive checkpoint](r7-offscreen-checkpoint.md) records
+  recursive-view policy, cube-array topology, dynamic/media update semantics,
+  and exact offscreen native-peer evidence.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

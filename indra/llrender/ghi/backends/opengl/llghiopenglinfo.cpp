@@ -358,6 +358,7 @@ RendererSnapshot queryOpenGLRendererSnapshot()
     device_caps.advancedGraphicsPipeline = gGLManager.mGLVersion >= 3.99f;
     device_caps.independentBlend = glEnablei && glDisablei &&
         glBlendFuncSeparatei && glBlendEquationSeparatei && glColorMaski;
+    device_caps.cubeMapArrays = gGLManager.mGLVersion >= 4.f;
 
     return snapshot;
 }

@@ -109,6 +109,7 @@ bool loadResourceEntryPoints()
     LL_GHI_LOAD_GL(glEnablei);
     LL_GHI_LOAD_GL(glEnableVertexAttribArray);
     LL_GHI_LOAD_GL(glFramebufferTexture2D);
+    LL_GHI_LOAD_GL(glFramebufferTextureLayer);
     LL_GHI_LOAD_GL(glGenFramebuffers);
     LL_GHI_LOAD_GL(glGenVertexArrays);
     LL_GHI_LOAD_GL(glGetProgramInfoLog);
@@ -151,7 +152,7 @@ bool loadResourceEntryPoints()
            glDeleteProgram && glDeleteShader && glDeleteVertexArrays &&
            glDrawArraysInstanced && glDrawElementsInstancedBaseVertex &&
            glDisablei && glEnablei && glEnableVertexAttribArray &&
-           glFramebufferTexture2D &&
+           glFramebufferTexture2D && glFramebufferTextureLayer &&
            glGenFramebuffers && glGenVertexArrays && glGetProgramInfoLog &&
            glGetProgramiv && glGetShaderInfoLog && glGetShaderiv &&
            glGetUniformBlockIndex && glGetUniformLocation && glLinkProgram &&
@@ -397,8 +398,14 @@ GLenum textureBinding(GLenum target)
     case GL_TEXTURE_2D: return GL_TEXTURE_BINDING_2D;
     case GL_TEXTURE_3D: return GL_TEXTURE_BINDING_3D;
     case GL_TEXTURE_2D_ARRAY: return GL_TEXTURE_BINDING_2D_ARRAY;
+    case GL_TEXTURE_CUBE_MAP_ARRAY: return GL_TEXTURE_BINDING_CUBE_MAP_ARRAY;
     default: return 0;
     }
+}
+
+bool isLayeredArrayTarget(GLenum target)
+{
+    return target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP_ARRAY;
 }
 
 class ScopedBufferBinding
@@ -665,6 +672,7 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     int minor = 0;
     const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     if (version) std::sscanf(version, "%d.%d", &major, &minor);
+    mCapabilities.cubeMapArrays = major > 4 || (major == 4 && minor >= 0);
     if (major > 4 || (major == 4 && minor >= 3))
     {
         glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, &value);
@@ -749,13 +757,18 @@ ImageHandle OpenGLDevice::createImage(const ImageDesc& desc, Status& status)
         desc.usage == ResourceUsage::None || !desc.mipLevels || !desc.arrayLayers || desc.samples != 1 ||
         desc.mipLevels > maxMips || desc.extent.width > mCapabilities.maxTexture2DSize ||
         desc.extent.height > mCapabilities.maxTexture2DSize ||
-        (desc.extent.depth > 1 && desc.arrayLayers > 1))
+        (desc.extent.depth > 1 && desc.arrayLayers > 1) ||
+        (desc.cubeCompatible && (!mCapabilities.cubeMapArrays ||
+            desc.extent.depth != 1 ||
+            desc.extent.width != desc.extent.height ||
+            desc.arrayLayers < 6 || desc.arrayLayers % 6 != 0)))
     {
         status = invalidArgument("invalid or unsupported OpenGL image descriptor");
         return {};
     }
 
-    const GLenum target = desc.arrayLayers > 1 ? GL_TEXTURE_2D_ARRAY :
+    const GLenum target = desc.cubeCompatible ? GL_TEXTURE_CUBE_MAP_ARRAY :
+                          desc.arrayLayers > 1 ? GL_TEXTURE_2D_ARRAY :
                           desc.extent.depth > 1 ? GL_TEXTURE_3D : GL_TEXTURE_2D;
     GLuint name = 0;
     glGenTextures(1, &name);
@@ -775,7 +788,7 @@ ImageHandle OpenGLDevice::createImage(const ImageDesc& desc, Status& status)
             }
             else
             {
-                const GLsizei depth = target == GL_TEXTURE_2D_ARRAY
+                const GLsizei depth = isLayeredArrayTarget(target)
                     ? desc.arrayLayers : std::max(1u, desc.extent.depth >> mip);
                 sTexImage3D(target, mip, format.internal, width, height, depth, 0,
                             format.external, format.type, nullptr);
@@ -810,7 +823,8 @@ ImageViewHandle OpenGLDevice::createImageView(const ImageViewDesc& desc, Status&
         range.baseMipLevel >= image->second.desc.mipLevels ||
         range.mipLevelCount > image->second.desc.mipLevels - range.baseMipLevel ||
         range.baseArrayLayer >= image->second.desc.arrayLayers ||
-        range.arrayLayerCount > image->second.desc.arrayLayers - range.baseArrayLayer)
+        range.arrayLayerCount > image->second.desc.arrayLayers - range.baseArrayLayer ||
+        !imageViewTypeCompatible(image->second.desc, desc))
     {
         status = invalidArgument("invalid or incompatible image view descriptor"); return {};
     }
@@ -1439,9 +1453,9 @@ Status OpenGLDevice::copyBufferToImage(BufferHandle source, ImageHandle destinat
                 region.imageExtent.width, region.imageExtent.height, dst->second.format.external, dst->second.format.type, offset);
         else
             sTexSubImage3D(dst->second.target, sub.mipLevel, region.imageOffset.x, region.imageOffset.y,
-                dst->second.target == GL_TEXTURE_2D_ARRAY ? sub.baseArrayLayer : region.imageOffset.z,
+                isLayeredArrayTarget(dst->second.target) ? sub.baseArrayLayer : region.imageOffset.z,
                 region.imageExtent.width, region.imageExtent.height,
-                dst->second.target == GL_TEXTURE_2D_ARRAY ? sub.arrayLayerCount : region.imageExtent.depth,
+                isLayeredArrayTarget(dst->second.target) ? sub.arrayLayerCount : region.imageExtent.depth,
                 dst->second.format.external, dst->second.format.type, offset);
     }
     return glGetError() == GL_NO_ERROR ? Status::success() : backendError("OpenGL buffer-to-image copy failed");
@@ -1461,7 +1475,8 @@ Status OpenGLDevice::copyImageToBuffer(ImageHandle source, BufferHandle destinat
         const auto& sub = region.imageSubresource;
         const std::uint32_t width = std::max(1u, src->second.desc.extent.width >> sub.mipLevel);
         const std::uint32_t height = std::max(1u, src->second.desc.extent.height >> sub.mipLevel);
-        const std::uint32_t layers = src->second.target == GL_TEXTURE_2D_ARRAY ? src->second.desc.arrayLayers : 1;
+        const std::uint32_t layers = isLayeredArrayTarget(src->second.target)
+            ? src->second.desc.arrayLayers : 1;
         const std::uint32_t depth = src->second.target == GL_TEXTURE_3D
             ? std::max(1u, src->second.desc.extent.depth >> sub.mipLevel) : 1;
         if ((region.bufferOffset & 3u) != 0 || sub.aspect != ImageAspect::Color ||
@@ -1590,15 +1605,24 @@ Status OpenGLDevice::beginRendering(const RenderingInfo& info)
         if (!mViewPool.isLive(attachment.view) || view == mViews.end())
             return invalidHandle("rendering references an invalid color view");
         auto image = mImages.find(handleKey(view->second.desc.image));
-        if (image == mImages.end() || image->second.target != GL_TEXTURE_2D ||
+        const auto& range = view->second.desc.subresources;
+        const bool layeredFace = isLayeredArrayTarget(image == mImages.end() ? 0 : image->second.target) &&
+            resolvedImageViewType(image->second.desc, view->second.desc.type) == ImageViewType::Texture2D &&
+            range.mipLevelCount == 1 && range.arrayLayerCount == 1;
+        if (image == mImages.end() ||
+            (image->second.target != GL_TEXTURE_2D && !layeredFace) ||
             attachment.format != image->second.desc.format ||
             !hasUsage(image->second.desc.usage, ResourceUsage::ColorAttachment) ||
-            image->second.desc.extent.width < info.width ||
-            image->second.desc.extent.height < info.height)
+            std::max(1u, image->second.desc.extent.width >> range.baseMipLevel) < info.width ||
+            std::max(1u, image->second.desc.extent.height >> range.baseMipLevel) < info.height)
             return invalidArgument("rendering color attachment is incompatible");
         const GLenum slot = GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(i);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, slot, GL_TEXTURE_2D,
-                               image->second.name, view->second.desc.subresources.baseMipLevel);
+        if (layeredFace)
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, slot, image->second.name,
+                                      range.baseMipLevel, range.baseArrayLayer);
+        else
+            glFramebufferTexture2D(GL_FRAMEBUFFER, slot, GL_TEXTURE_2D,
+                                   image->second.name, range.baseMipLevel);
         drawBuffers.push_back(slot);
     }
     glDrawBuffers(static_cast<GLsizei>(drawBuffers.size()), drawBuffers.data());
@@ -1612,16 +1636,25 @@ Status OpenGLDevice::beginRendering(const RenderingInfo& info)
         if (!mViewPool.isLive(attachment.view) || view == mViews.end())
             return invalidHandle("rendering references an invalid depth/stencil view");
         auto image = mImages.find(handleKey(view->second.desc.image));
-        if (image == mImages.end() || image->second.target != GL_TEXTURE_2D ||
+        const auto& range = view->second.desc.subresources;
+        const bool layeredFace = isLayeredArrayTarget(image == mImages.end() ? 0 : image->second.target) &&
+            resolvedImageViewType(image->second.desc, view->second.desc.type) == ImageViewType::Texture2D &&
+            range.mipLevelCount == 1 && range.arrayLayerCount == 1;
+        if (image == mImages.end() ||
+            (image->second.target != GL_TEXTURE_2D && !layeredFace) ||
             attachment.format != image->second.desc.format ||
             !hasUsage(image->second.desc.usage, ResourceUsage::DepthStencilAttachment) ||
-            image->second.desc.extent.width < info.width ||
-            image->second.desc.extent.height < info.height)
+            std::max(1u, image->second.desc.extent.width >> range.baseMipLevel) < info.width ||
+            std::max(1u, image->second.desc.extent.height >> range.baseMipLevel) < info.height)
             return invalidArgument("rendering depth/stencil attachment is incompatible");
         const GLenum slot = image->second.format.aspect == ImageAspect::DepthStencil
             ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT;
-        glFramebufferTexture2D(GL_FRAMEBUFFER, slot, GL_TEXTURE_2D,
-                               image->second.name, view->second.desc.subresources.baseMipLevel);
+        if (layeredFace)
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, slot, image->second.name,
+                                      range.baseMipLevel, range.baseArrayLayer);
+        else
+            glFramebufferTexture2D(GL_FRAMEBUFFER, slot, GL_TEXTURE_2D,
+                                   image->second.name, range.baseMipLevel);
     }
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
     {
@@ -1677,7 +1710,8 @@ Status OpenGLDevice::resourceBarrier(ResourceBarrier barrier)
                         GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
                         GL_TEXTURE_FETCH_BARRIER_BIT |
                         GL_BUFFER_UPDATE_BARRIER_BIT);
-    else if (barrier == ResourceBarrier::DepthAttachmentWriteToSampledRead)
+    else if (barrier == ResourceBarrier::DepthAttachmentWriteToSampledRead ||
+             barrier == ResourceBarrier::ColorAttachmentWriteToSampledRead)
         glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     else
         return invalidArgument("unknown OpenGL resource barrier");

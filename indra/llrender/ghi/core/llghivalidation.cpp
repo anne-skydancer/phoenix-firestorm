@@ -458,7 +458,8 @@ Status ValidationCommandContext::resourceBarrier(ResourceBarrier barrier)
     if (!mFrameActive || mRendering)
         return invalidState("resourceBarrier requires a frame outside a rendering pass");
     if (barrier != ResourceBarrier::StorageWriteToRead &&
-        barrier != ResourceBarrier::DepthAttachmentWriteToSampledRead)
+        barrier != ResourceBarrier::DepthAttachmentWriteToSampledRead &&
+        barrier != ResourceBarrier::ColorAttachmentWriteToSampledRead)
         return invalidArgument("unknown resource barrier");
     mTrace.resourceBarrier(barrier);
     return Status::success();
@@ -685,6 +686,7 @@ ValidationDevice::ValidationDevice(const DeviceCreateInfo& info) :
     mCapabilities.storageImageAtomics = true;
     mCapabilities.depthClamp = true;
     mCapabilities.independentBlend = true;
+    mCapabilities.cubeMapArrays = true;
 }
 
 Status ValidationDevice::canMutateResources() const
@@ -745,6 +747,10 @@ ImageHandle ValidationDevice::createImage(const ImageDesc& desc, Status& status)
         desc.mipLevels > max_mips || desc.samples > mCapabilities.maxSamples ||
         (desc.samples & (desc.samples - 1)) != 0 ||
         (desc.samples > 1 && desc.mipLevels != 1) ||
+        (desc.cubeCompatible && (!mCapabilities.cubeMapArrays ||
+            desc.extent.depth != 1 ||
+            desc.extent.width != desc.extent.height ||
+            desc.arrayLayers < 6 || desc.arrayLayers % 6 != 0)) ||
         hasAnyUsage(desc.usage, ResourceUsage::Vertex | ResourceUsage::Index | ResourceUsage::Uniform) ||
         (isColorFormat(desc.format) && hasUsage(desc.usage, ResourceUsage::DepthStencilAttachment)) ||
         (!isColorFormat(desc.format) &&
@@ -781,7 +787,8 @@ ImageViewHandle ValidationDevice::createImageView(
         range.baseMipLevel >= image->second.mipLevels ||
         range.mipLevelCount > image->second.mipLevels - range.baseMipLevel ||
         range.baseArrayLayer >= image->second.arrayLayers ||
-        range.arrayLayerCount > image->second.arrayLayers - range.baseArrayLayer)
+        range.arrayLayerCount > image->second.arrayLayers - range.baseArrayLayer ||
+        !imageViewTypeCompatible(image->second, desc))
     {
         status = invalidArgument("invalid or incompatible image view descriptor");
         return {};

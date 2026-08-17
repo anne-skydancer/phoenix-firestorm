@@ -693,6 +693,7 @@ void VulkanPresentationSurface::captureSnapshot()
     capabilities.storageImageAtomics = features.features.fragmentStoresAndAtomics != 0;
     capabilities.depthClamp = features.features.depthClamp != 0;
     capabilities.independentBlend = features.features.independentBlend != 0;
+    capabilities.cubeMapArrays = features.features.imageCubeArray != 0;
     // Device creation already enforces the Vulkan baseline required by this
     // presentation peer. These are viewer feature tiers, not API versions.
     capabilities.baselineGraphicsPipeline = true;

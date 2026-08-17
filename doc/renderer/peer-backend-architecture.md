@@ -445,6 +445,11 @@ the explicitly excluded material and rigged geometry.
 
 - Legacy/PBR materials, rigging/skinning, terrain, local/projector lighting,
   shadows, sky, atmosphere, and water.
+- R5a establishes the portable material/skin contract with four sampled
+  material textures, explicit sRGB/linear intent, sampler addressing, packed
+  unsigned joint indices, explicit weights, matrix-palette skinning, and the
+  four deferred targets. Legacy packed `weight4` data is canonicalized above
+  GHI rather than becoming a backend contract.
 
 Exit gate: relevant R08/R09 rows reach parity, including explicit AMD OpenGL
 artifact references where Mesa-correct behavior is the acceptance target.

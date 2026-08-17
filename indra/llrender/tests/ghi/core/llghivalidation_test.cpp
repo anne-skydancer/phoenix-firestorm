@@ -1086,4 +1086,81 @@ void LLGHIValidationObject::test<22>()
            encodeOpaqueScenePacket(source, first).code() == StatusCode::InvalidArgument);
 }
 
+#ifdef LL_GHI_R5A_SHADER_PACKAGE
+template<> template<>
+void LLGHIValidationObject::test<23>()
+{
+    using namespace LL::GHI;
+
+    ShaderPackageDesc package;
+    Status status = loadShaderPackage(LL_GHI_R5A_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    ensure_equals("R5a reflected binding count", package.bindings.size(), std::size_t{7});
+    ensure_equals("R5a reflected vertex input count",
+                  package.vertexInputs.size(), std::size_t{7});
+    ensure_equals("R5a reflected deferred output count",
+                  package.fragmentOutputs.size(), std::size_t{4});
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R5a validation device", created.status.ok() && device);
+    ShaderPackageHandle shader = device->createShaderPackage(package, status);
+    ensure("R5a shader package", status.ok() && shader);
+    BufferHandle material = device->createBuffer(
+        {48, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
+    ImageHandle image = device->createImage(
+        {{2, 2, 1}, Format::RGBA8UNorm, ResourceUsage::Sampled, 1, 1, 1}, status);
+    ImageViewHandle view = device->createImageView(
+        {image, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
+    SamplerHandle sampler = device->createSampler({}, status);
+    ensure("R5a material resources", status.ok() && material && image && view && sampler);
+
+    BindingSetDesc materialSet;
+    materialSet.shader = shader;
+    materialSet.group = 2;
+    materialSet.resources.push_back(
+        {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+         material, 0, 48, {}, {}});
+    for (std::uint16_t binding = 1; binding < 4; ++binding)
+        materialSet.resources.push_back(
+            {binding, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+             {}, 0, 0, view, sampler});
+    BindingSetHandle rejected = device->createBindingSet(materialSet, status);
+    ensure("R5a incomplete texture set is rejected",
+           !rejected && status.code() == StatusCode::InvalidArgument);
+    materialSet.resources.push_back(
+        {4, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+         {}, 0, 0, view, sampler});
+    BindingSetHandle accepted = device->createBindingSet(materialSet, status);
+    ensure("R5a complete four-texture material set is accepted",
+           status.ok() && accepted);
+
+    PipelineDesc pipeline;
+    pipeline.shader = shader;
+    pipeline.depthTest = false;
+    pipeline.depthWrite = false;
+    pipeline.colorFormats = {
+        Format::RGBA8UNorm, Format::RGBA8UNorm,
+        Format::RGBA16UNorm, Format::RGBA16Float};
+    pipeline.blendStates.assign(4, BlendState{});
+    pipeline.vertexBuffers = {{0, 76, VertexInputRate::PerVertex}};
+    pipeline.vertexAttributes = {
+        {0, 0, VertexFormat::Float32x3, 0},
+        {1, 0, VertexFormat::Float32x3, 12},
+        {2, 0, VertexFormat::Float32x4, 24},
+        {3, 0, VertexFormat::Float32x2, 40},
+        {4, 0, VertexFormat::UNorm8x4, 48},
+        {5, 0, VertexFormat::UInt16x4, 52},
+        {6, 0, VertexFormat::Float32x4, 60},
+    };
+    PipelineHandle compatible = device->createPipeline(pipeline, status);
+    ensure("R5a packed material/skin vertex layout is accepted",
+           status.ok() && compatible);
+    pipeline.vertexAttributes[5].format = VertexFormat::Float32x4;
+    PipelineHandle wrongJoints = device->createPipeline(pipeline, status);
+    ensure("R5a floating joint indices are rejected",
+           !wrongJoints && status.code() == StatusCode::InvalidArgument);
+}
+#endif
+
 } // namespace tut

@@ -18,7 +18,7 @@
 namespace LL::GHI
 {
 
-inline constexpr std::uint32_t MATERIAL_SCENE_PACKET_VERSION = 1;
+inline constexpr std::uint32_t MATERIAL_SCENE_PACKET_VERSION = 2;
 inline constexpr std::uint32_t NO_RESOURCE = 0xffffffffu;
 using ResourceDigest = std::array<std::byte, 32>;
 
@@ -120,9 +120,42 @@ struct MaterialSceneDraw
     std::uint32_t material = NO_RESOURCE;
     std::uint32_t skin = NO_RESOURCE;
     ResourceComparability comparability = ResourceComparability::Comparable;
+    // A zero indexCount is a semantic-only R5 observation. I3 packets carry a
+    // real post-cull range and clip transform without backend-native handles.
+    std::uint32_t firstIndex = 0;
+    std::uint32_t indexCount = 0;
+    // Camera view-projection and object model are separate so the material
+    // shader can transform normals without trying to invert a clip matrix.
+    std::array<float, 16> transform{{
+        1.f, 0.f, 0.f, 0.f,
+        0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f,
+        0.f, 0.f, 0.f, 1.f}};
+    std::array<float, 16> modelTransform{{
+        1.f, 0.f, 0.f, 0.f,
+        0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f,
+        0.f, 0.f, 0.f, 1.f}};
 
     friend bool operator==(const MaterialSceneDraw&, const MaterialSceneDraw&) = default;
 };
+
+// Canonical R5 shader input. This deliberately matches neither an OpenGL VBO
+// nor a Vulkan allocation: it is an immutable render-agnostic hand-off.
+struct MaterialSceneVertex
+{
+    std::array<float, 3> position{};
+    std::array<float, 3> normal{{0.f, 0.f, 1.f}};
+    std::array<float, 4> tangent{{1.f, 0.f, 0.f, 1.f}};
+    std::array<float, 2> texCoord{};
+    std::array<std::uint8_t, 4> color{{255, 255, 255, 255}};
+    std::array<std::uint16_t, 4> joints{};
+    std::array<float, 4> weights{{1.f, 0.f, 0.f, 0.f}};
+
+    friend bool operator==(const MaterialSceneVertex&,
+                           const MaterialSceneVertex&) = default;
+};
+static_assert(sizeof(MaterialSceneVertex) == 76);
 
 // Immutable after encoding. No native handles, capability URLs, credentials,
 // or GPU readback data are permitted in this hand-off.
@@ -132,9 +165,13 @@ struct MaterialScenePacket
     std::uint64_t frameId = 0;
     std::uint64_t sceneEpoch = 0;
     std::uint64_t resourceEpoch = 0;
+    std::uint32_t sourceWidth = 0;
+    std::uint32_t sourceHeight = 0;
     std::vector<MaterialTextureResource> textures;
     std::vector<MaterialResource> materials;
     std::vector<SkinResource> skins;
+    std::vector<MaterialSceneVertex> vertices;
+    std::vector<std::uint32_t> indices;
     std::vector<MaterialSceneDraw> draws;
 
     friend bool operator==(const MaterialScenePacket&, const MaterialScenePacket&) = default;

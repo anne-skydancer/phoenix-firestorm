@@ -1234,7 +1234,7 @@ void LLGHIValidationObject::test<24>()
     ensure("material scene packet round trips exactly", decoded == source);
     ensure_equals("material scene packet has a stable schema hash",
                   materialScenePacketSha256(source),
-                  std::string{"057045d1efb57035a83dc1385d2f92a22ad2a4613845a2d4f2597376df3f67fa"});
+                  std::string{"976419b26a480a9e3bf16ea017498181047720af6a5441e121929cc95eab9b14"});
 
     first.pop_back();
     ensure("truncated material scene packet rejected",
@@ -1794,6 +1794,98 @@ void LLGHIValidationObject::test<31>()
     ensure_equals("I2 retirement queue is empty",
                   device->pendingRetirementCount(), std::size_t{0});
 #endif
+}
+
+template<> template<>
+void LLGHIValidationObject::test<32>()
+{
+    using namespace LL::GHI;
+
+    ensure_equals("R5b2 canonical material vertex size",
+                  sizeof(MaterialSceneVertex), std::size_t{76});
+    MaterialScenePacket packet;
+    packet.sourceWidth = 1280;
+    packet.sourceHeight = 720;
+    packet.frameId = 81422;
+    packet.sceneEpoch = 3;
+    packet.resourceEpoch = 1;
+    MaterialResource material;
+    for (std::size_t index = 0; index < material.identity.size(); ++index)
+        material.identity[index] = static_cast<std::byte>(index + 1);
+    material.model = MaterialModel::MetallicRoughness;
+    material.alphaMode = MaterialAlphaMode::Opaque;
+    material.baseColor = {{0.75f, 0.875f, 1.f, 1.f}};
+    material.emissive = {{0.1f, 0.2f, 0.3f}};
+    material.metallic = 0.625f;
+    material.roughness = 0.8f;
+    packet.materials.push_back(material);
+
+    MaterialSceneVertex vertex;
+    vertex.position = {{-0.75f, -0.75f, 0.75f}};
+    vertex.texCoord = {{0.f, 0.f}};
+    packet.vertices.push_back(vertex);
+    vertex.position = {{0.75f, -0.75f, 0.75f}};
+    vertex.texCoord = {{1.f, 0.f}};
+    packet.vertices.push_back(vertex);
+    vertex.position = {{0.f, 0.75f, 0.75f}};
+    vertex.texCoord = {{0.5f, 1.f}};
+    packet.vertices.push_back(vertex);
+    packet.indices = {0, 1, 2};
+    MaterialSceneDraw draw;
+    draw.semanticId = 0x523562325f47454full; // "R5b2_GEO"
+    draw.material = 0;
+    draw.indexCount = 3;
+    draw.transform[12] = 0.125f;
+    draw.modelTransform[13] = -0.25f;
+    packet.draws.push_back(draw);
+
+    std::vector<std::byte> encoded;
+    Status status = encodeMaterialScenePacket(packet, encoded);
+    ensure(status.message(), status.ok());
+    MaterialScenePacket decoded;
+    status = decodeMaterialScenePacket(encoded, decoded);
+    ensure(status.message(), status.ok());
+    ensure("R5b2 geometry and transform round trip exactly", decoded == packet);
+    ensure("R5b2 deterministic geometry packet hash",
+           !materialScenePacketSha256(packet).empty());
+
+#if defined(LL_GHI_R5A_SHADER_PACKAGE)
+    ShaderPackageDesc package;
+    status = loadShaderPackage(LL_GHI_R5A_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R5b2 validation device", created.status.ok() && device);
+    {
+        MaterialOffscreenProbe probe(*device, std::move(package));
+        MaterialOffscreenProbeLimits limits;
+        status = probe.submit(packet, limits);
+        ensure(status.message(), status.ok());
+        ensure("R5b2 asynchronous geometry sample is pending", probe.pending());
+        MaterialOffscreenProbeResult result;
+        status = probe.poll(result);
+        ensure(status.message(), status.ok());
+        ensure_equals("R5b2 executed draw count", result.draws,
+                      std::uint32_t{1});
+        ensure_equals("R5b2 retained vertex count", result.vertices,
+                      std::uint32_t{3});
+        ensure_equals("R5b2 retained index count", result.indices,
+                      std::uint32_t{3});
+        ensure("R5b2 material probe shuts down", probe.shutdown().ok());
+    }
+    ensure("R5b2 deferred resources drain", device->waitIdle().ok());
+#endif
+
+    packet.indices[2] = 3;
+    ensure("R5b2 rejects an out-of-range vertex index",
+           encodeMaterialScenePacket(packet, encoded).code() ==
+               StatusCode::InvalidArgument);
+    packet.indices[2] = 2;
+    packet.draws[0].firstIndex = 2;
+    packet.draws[0].indexCount = 2;
+    ensure("R5b2 rejects an out-of-range draw span",
+           encodeMaterialScenePacket(packet, encoded).code() ==
+               StatusCode::InvalidArgument);
 }
 
 } // namespace tut

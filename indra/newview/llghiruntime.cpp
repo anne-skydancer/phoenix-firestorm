@@ -13,6 +13,7 @@
 #include "ghi/include/llghidevice.h"
 #include "ghi/include/llghiopaqueoffscreenprobe.h"
 #include "ghi/include/llghiopaquepacketconsumer.h"
+#include "ghi/include/llghimaterialoffscreenprobe.h"
 
 #include <algorithm>
 #include <memory>
@@ -22,12 +23,19 @@ namespace
 {
 std::unique_ptr<LL::GHI::Device> sVulkanDevice;
 std::unique_ptr<LL::GHI::OpaqueOffscreenProbe> sOffscreenProbe;
+std::unique_ptr<LL::GHI::MaterialOffscreenProbe> sMaterialProbe;
 std::uint64_t sNextLivePacketFrame = 0;
 std::uint32_t sLivePacketAttempts = 0;
 std::uint32_t sLivePacketSamples = 0;
 bool sLivePacketCaptureClaimed = false;
 bool sLivePacketDisabled = false;
 bool sPendingBudgetLimited = false;
+std::uint64_t sNextMaterialFrame = 0;
+std::uint32_t sMaterialAttempts = 0;
+std::uint32_t sMaterialSamples = 0;
+bool sMaterialCaptureClaimed = false;
+bool sMaterialDisabled = false;
+bool sPendingMaterialBudgetLimited = false;
 
 bool offscreenProbeRequested()
 {
@@ -97,6 +105,41 @@ void pollOffscreenProbe()
         << ". No Vulkan surface, swapchain, or presentation path was used; "
         << "visible rendering remains OpenGL." << LL_ENDL;
     sPendingBudgetLimited = false;
+}
+
+void pollMaterialProbe()
+{
+    if (!sMaterialProbe || !sMaterialProbe->pending()) return;
+    LL::GHI::MaterialOffscreenProbeResult result;
+    const LL::GHI::Status status = sMaterialProbe->poll(result);
+    if (!status)
+    {
+        if (status.code() != LL::GHI::StatusCode::NotReady)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I3 live material offscreen poll failed: "
+                << status.message() << LL_ENDL;
+            sMaterialDisabled = true;
+        }
+        return;
+    }
+    ++sMaterialSamples;
+    LL_INFOS("GHIIntegration")
+        << "I3 live rigid opaque PBR offscreen PASS: sample="
+        << sMaterialSamples << '/' << livePacketMaximum()
+        << " frame=" << result.frameId << " draws=" << result.draws
+        << " vertices=" << result.vertices << " indices=" << result.indices
+        << " textures=" << result.textures << " packet-sha256="
+        << result.packetSha256 << " color-sha256="
+        << result.colorSha256[0] << ',' << result.colorSha256[1] << ','
+        << result.colorSha256[2] << ',' << result.colorSha256[3]
+        << " non-clear-pixels=" << result.nonClearPixels[0] << ','
+        << result.nonClearPixels[1] << ',' << result.nonClearPixels[2] << ','
+        << result.nonClearPixels[3] << " capture-budget-limited="
+        << (sPendingMaterialBudgetLimited ? "yes" : "no")
+        << ". Alpha, rigged, HUD, mirror, cube-snapshot, and presentation paths remain excluded; visible rendering remains OpenGL."
+        << LL_ENDL;
+    sPendingMaterialBudgetLimited = false;
 }
 }
 
@@ -178,6 +221,37 @@ void initialize()
         }
     }
 
+    if (gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe"))
+    {
+        const std::string packagePath = gDirUtilp->getExpandedFilename(
+            LL_PATH_APP_SETTINGS, "ghi_shaders", "r5_material_skin.llghisp");
+        LL::GHI::ShaderPackageDesc shaderPackage;
+        const LL::GHI::Status status = LL::GHI::loadShaderPackage(
+            packagePath, shaderPackage);
+        if (!status)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I3 runtime material shader package was not loaded from "
+                << packagePath << ": " << status.message()
+                << ". Visible rendering remains OpenGL." << LL_ENDL;
+        }
+        else
+        {
+            sMaterialProbe =
+                std::make_unique<LL::GHI::MaterialOffscreenProbe>(
+                    *sVulkanDevice, std::move(shaderPackage));
+            const LL::GHI::MaterialOffscreenProbeLimits limits;
+            LL_INFOS("GHIIntegration")
+                << "I3 asynchronous rigid opaque PBR material probe armed from "
+                << packagePath << "; extent=256x256 limits(draws/vertices/indices/textures/bytes)="
+                << limits.maxDraws << '/' << limits.maxVertices << '/'
+                << limits.maxIndices << '/' << limits.maxTextures << '/'
+                << limits.maxUploadBytes
+                << ". The probe owns no surface, swapchain, or presentation path."
+                << LL_ENDL;
+        }
+    }
+
     if (sOffscreenProbe ||
         gSavedSettings.getBOOL("RenderVulkanLivePacketProbe"))
     {
@@ -213,6 +287,15 @@ void shutdown()
                 << probeStatus.message() << LL_ENDL;
         sOffscreenProbe.reset();
     }
+    if (sMaterialProbe)
+    {
+        const LL::GHI::Status probeStatus = sMaterialProbe->shutdown();
+        if (!probeStatus)
+            LL_WARNS("GHIIntegration")
+                << "I3 material offscreen resources did not retire cleanly: "
+                << probeStatus.message() << LL_ENDL;
+        sMaterialProbe.reset();
+    }
     const LL::GHI::Status status = sVulkanDevice->waitIdle();
     if (!status)
     {
@@ -227,6 +310,12 @@ void shutdown()
     sLivePacketCaptureClaimed = false;
     sLivePacketDisabled = false;
     sPendingBudgetLimited = false;
+    sNextMaterialFrame = 0;
+    sMaterialAttempts = 0;
+    sMaterialSamples = 0;
+    sMaterialCaptureClaimed = false;
+    sMaterialDisabled = false;
+    sPendingMaterialBudgetLimited = false;
     LL_INFOS("GHIIntegration")
         << "Native Vulkan coexistence device shut down."
         << LL_ENDL;
@@ -322,6 +411,66 @@ void consumeLiveOpaquePacket(const LL::GHI::OpaqueScenePacket& packet,
         << (budget_limited ? "yes" : "no")
         << ". Visible rendering remains OpenGL."
         << LL_ENDL;
+}
+
+bool materialCaptureRequested()
+{
+    return sVulkanDevice && !sMaterialDisabled && sMaterialProbe &&
+           gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe");
+}
+
+bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id)
+{
+    pollMaterialProbe();
+    if (!materialCaptureRequested() || sMaterialCaptureClaimed ||
+        sMaterialProbe->pending())
+        return false;
+    const std::uint32_t maximum = livePacketMaximum();
+    if (!maximum || sMaterialSamples >= maximum ||
+        static_cast<std::uint64_t>(sMaterialAttempts) >=
+            static_cast<std::uint64_t>(maximum) * 8ull)
+        return false;
+    if (!sNextMaterialFrame)
+    {
+        sNextMaterialFrame = frame_id + livePacketInterval();
+        return false;
+    }
+    if (frame_id < sNextMaterialFrame) return false;
+    sMaterialCaptureClaimed = true;
+    return true;
+}
+
+void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
+                               bool budget_limited)
+{
+    if (!sMaterialCaptureClaimed || !sMaterialProbe) return;
+    sMaterialCaptureClaimed = false;
+    ++sMaterialAttempts;
+    sNextMaterialFrame = packet.frameId + livePacketInterval();
+    const LL::GHI::MaterialOffscreenProbeLimits limits;
+    const LL::GHI::Status status = sMaterialProbe->submit(packet, limits);
+    if (!status)
+    {
+        LL_WARNS("GHIIntegration")
+            << "I3 live material offscreen submission rejected at frame "
+            << packet.frameId << ": " << status.message()
+            << " attempt=" << sMaterialAttempts << LL_ENDL;
+        if (status.code() == LL::GHI::StatusCode::DeviceLost)
+        {
+            sMaterialDisabled = true;
+            LL_WARNS("GHIIntegration")
+                << "I3 material probe disabled after device loss. The production OpenGL renderer remains active."
+                << LL_ENDL;
+        }
+        return;
+    }
+    sPendingMaterialBudgetLimited = budget_limited;
+    LL_INFOS("GHIIntegration")
+        << "I3 live rigid opaque PBR offscreen submitted asynchronously: frame="
+        << packet.frameId << " draws=" << packet.draws.size()
+        << " vertices=" << packet.vertices.size() << " indices="
+        << packet.indices.size()
+        << ". Completion will be polled on later OpenGL frames." << LL_ENDL;
 }
 
 } // namespace LLGHIRuntime

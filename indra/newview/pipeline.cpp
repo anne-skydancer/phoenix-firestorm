@@ -4280,8 +4280,11 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
             static_cast<U32>(gViewerWindow->getWorldViewHeightRaw()),
             gFrameCount, occlude);
     const bool capture_materials = &camera == LLViewerCamera::getInstance() &&
-        !gCubeSnapshot && gAgent.getRegion() &&
-        LLGHIMaterialCapture::instance().beginFrame(gFrameCount);
+        !gCubeSnapshot && gAgent.getRegion() && gViewerWindow &&
+        LLGHIMaterialCapture::instance().beginFrame(
+            static_cast<U32>(gViewerWindow->getWorldViewWidthRaw()),
+            static_cast<U32>(gViewerWindow->getWorldViewHeightRaw()),
+            gFrameCount);
 
     setupHWLights();
 

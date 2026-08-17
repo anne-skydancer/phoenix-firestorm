@@ -17,6 +17,7 @@
 #include "llghidevice.h"
 #include "llghioffscreencontract.h"
 #include "llghiopaqueoffscreenprobe.h"
+#include "llghimaterialoffscreenprobe.h"
 #include "llghiopaquepacketconsumer.h"
 #include "llghiproductioncontract.h"
 #include "llghirendererinfo.h"

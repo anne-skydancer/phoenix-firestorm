@@ -39,6 +39,9 @@ supported peer and recovery path.
 - [I2 asynchronous offscreen live integration checkpoint](i2-offscreen-live-integration-checkpoint.md)
   executes bounded real-viewer opaque geometry into isolated native Vulkan
   attachments and polls their hashes without presenting them.
+- [I3 live rigid-material integration checkpoint](i3-live-material-integration-checkpoint.md)
+  adds a tested geometry-bearing material packet and asynchronously executes
+  bounded real-viewer rigid opaque PBR draws without presenting them.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

@@ -1,5 +1,11 @@
 # R5 material, avatar, terrain, and lighting checkpoint
 
+> Integration note: R5b intentionally captured resource semantics without
+> geometry. The additive R5b2 contract in
+> [I3 live rigid-material integration](i3-live-material-integration-checkpoint.md)
+> adds canonical vertices, indices, draw spans, and separate camera/model
+> transforms while retaining version-1 decode support.
+
 Date: 2026-08-17
 Branch: `render/ghi-r5-material-lighting`
 

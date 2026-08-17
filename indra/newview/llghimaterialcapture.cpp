@@ -6,6 +6,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llghimaterialcapture.h"
+#include "llghiruntime.h"
 
 #include "lldrawpool.h"
 #include "llfetchedgltfmaterial.h"
@@ -14,6 +15,8 @@
 #include "llspatialpartition.h"
 #include "llviewertexture.h"
 #include "llvoavatar.h"
+#include "llvertexbuffer.h"
+#include "llrender.h"
 #include "ghi/core/llghihash.h"
 #include "ghi/include/llghimaterialscenepacket.h"
 
@@ -22,9 +25,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <numeric>
+#include <set>
 #include <sstream>
+
+#include <glm/gtc/type_ptr.hpp>
 
 using namespace std::chrono_literals;
 
@@ -77,6 +84,25 @@ LL::GHI::MaterialAlphaMode alphaMode(std::uint32_t mode)
         return LL::GHI::MaterialAlphaMode::Blend;
     return LL::GHI::MaterialAlphaMode::Opaque;
 }
+
+bool hasIdentityBoundTextureTransforms(const LLFetchedGLTFMaterial& material)
+{
+    const LLViewerTexture* textures[] = {
+        material.mBaseColorTexture.get(), material.mNormalTexture.get(),
+        material.mMetallicRoughnessTexture.get(), material.mEmissiveTexture.get()};
+    for (std::size_t index = 0; index < std::size(textures); ++index)
+    {
+        if (!textures[index]) continue;
+        const auto& transform = material.mTextureTransform[index];
+        if (transform.mOffset.mV[0] != 0.f ||
+            transform.mOffset.mV[1] != 0.f ||
+            transform.mScale.mV[0] != 1.f ||
+            transform.mScale.mV[1] != 1.f ||
+            transform.mRotation != 0.f)
+            return false;
+    }
+    return true;
+}
 } // namespace
 
 class LLGHIMaterialCapture::Impl
@@ -91,6 +117,7 @@ public:
         std::uint32_t discardLevel = 0;
         LL::GHI::ResourceDigest contentIdentity{};
         std::vector<std::byte> pixels;
+        std::uint64_t serial = 0;
     };
 
     void configure()
@@ -116,19 +143,26 @@ public:
                          << LL_ENDL;
     }
 
-    bool begin(std::uint64_t frameId)
+    bool begin(std::uint32_t width, std::uint32_t height,
+               std::uint64_t frameId)
     {
         configure();
         if (mState == State::Warming &&
             std::chrono::steady_clock::now() - mWarmupStart >= mWarmup)
             mState = State::Recording;
-        if (mState != State::Recording) return false;
+        mCaptureFile = mState == State::Recording;
+        mCaptureRuntime = LLGHIRuntime::shouldCaptureLiveMaterialPacket(frameId);
+        if (!mCaptureFile && !mCaptureRuntime) return false;
         mPacket = {};
         mPacket.frameId = frameId;
         mPacket.sceneEpoch = ++mSceneEpoch;
+        mPacket.sourceWidth = width;
+        mPacket.sourceHeight = height;
         mTextureIndices.clear();
         mMaterialIndices.clear();
         mSkinIndices.clear();
+        mRuntimeBudgetLimited = false;
+        mRuntimeTextureBytes = 0;
         mInFrame = true;
         return true;
     }
@@ -137,28 +171,105 @@ public:
                  std::int32_t discardLevel)
     {
         configure();
-        if (mState == State::Disabled || mState == State::Complete ||
-            mState == State::Failed || !image.getData() || image.getDataSize() <= 0)
+        if ((mState == State::Disabled &&
+             !LLGHIRuntime::materialCaptureRequested()) ||
+            mState == State::Complete || mState == State::Failed ||
+            !image.getData() || image.getDataSize() <= 0)
             return;
+        const std::uint32_t sourceWidth = llmax(0, image.getWidth());
+        const std::uint32_t sourceHeight = llmax(0, image.getHeight());
+        const std::uint32_t components = llmax(0, image.getComponents());
+        if (!sourceWidth || !sourceHeight || !components || components > 4)
+            return;
+        constexpr std::size_t MAX_RUNTIME_IMAGE_BYTES = 1ull * 1024ull * 1024ull;
+        const bool runtimeObservation =
+            LLGHIRuntime::materialCaptureRequested() && mState == State::Disabled;
+        std::uint32_t observedWidth = sourceWidth;
+        std::uint32_t observedHeight = sourceHeight;
+        std::uint32_t extraDiscard = 0;
+        auto observedBytes = [&]() -> std::uint64_t
+        {
+            return static_cast<std::uint64_t>(observedWidth) *
+                   observedHeight * components;
+        };
+        while (runtimeObservation && observedBytes() > MAX_RUNTIME_IMAGE_BYTES &&
+               (observedWidth > 1 || observedHeight > 1))
+        {
+            observedWidth = std::max(1u, observedWidth / 2);
+            observedHeight = std::max(1u, observedHeight / 2);
+            ++extraDiscard;
+        }
+        const std::uint64_t targetBytes64 = observedBytes();
+        if (!targetBytes64 || targetBytes64 > MAX_OBSERVED_TEXTURE_BYTES ||
+            targetBytes64 > std::numeric_limits<std::size_t>::max())
+            return;
+        const std::size_t size = static_cast<std::size_t>(targetBytes64);
+        const std::uint32_t effectiveDiscard =
+            static_cast<std::uint32_t>(llmax(0, discardLevel)) + extraDiscard;
         const std::string key = texture.getID().asString();
-        const auto existing = mObservedTextures.find(key);
+        mRequestedRawTextures.erase(key);
+        auto existing = mObservedTextures.find(key);
         if (existing != mObservedTextures.end() &&
-            existing->second.discardLevel <= static_cast<std::uint32_t>(llmax(0, discardLevel)))
+            existing->second.discardLevel <= effectiveDiscard)
+        {
+            existing->second.serial = ++mObservationSerial;
             return;
-        const std::size_t size = static_cast<std::size_t>(image.getDataSize());
+        }
         const std::size_t previous = existing == mObservedTextures.end()
             ? 0 : existing->second.pixels.size();
-        if (mObservedTextureBytes - previous + size > MAX_OBSERVED_TEXTURE_BYTES)
-            return;
+        while (mObservedTextureBytes - previous + size >
+               MAX_OBSERVED_TEXTURE_BYTES)
+        {
+            auto victim = mObservedTextures.end();
+            for (auto candidate = mObservedTextures.begin();
+                 candidate != mObservedTextures.end(); ++candidate)
+            {
+                if (candidate->first == key) continue;
+                if (victim == mObservedTextures.end() ||
+                    candidate->second.serial < victim->second.serial)
+                    victim = candidate;
+            }
+            if (victim == mObservedTextures.end()) return;
+            mObservedTextureBytes -= victim->second.pixels.size();
+            mObservedTextures.erase(victim);
+        }
         LLImageDataSharedLock lock(&image);
         ObservedTexture observed;
-        observed.width = image.getWidth(); observed.height = image.getHeight();
-        observed.components = image.getComponents();
-        observed.discardLevel = llmax(0, discardLevel);
+        observed.width = observedWidth;
+        observed.height = observedHeight;
+        observed.components = components;
+        observed.discardLevel = effectiveDiscard;
         const auto* bytes = reinterpret_cast<const std::byte*>(image.getData());
-        observed.pixels.assign(bytes, bytes + size);
+        if (observedWidth == sourceWidth && observedHeight == sourceHeight)
+        {
+            if (size > static_cast<std::size_t>(image.getDataSize())) return;
+            observed.pixels.assign(bytes, bytes + size);
+        }
+        else
+        {
+            observed.pixels.resize(size);
+            for (std::uint32_t y = 0; y < observedHeight; ++y)
+            {
+                const std::uint32_t sourceY = static_cast<std::uint32_t>(
+                    static_cast<std::uint64_t>(y) * sourceHeight / observedHeight);
+                for (std::uint32_t x = 0; x < observedWidth; ++x)
+                {
+                    const std::uint32_t sourceX = static_cast<std::uint32_t>(
+                        static_cast<std::uint64_t>(x) * sourceWidth / observedWidth);
+                    const std::size_t sourceOffset =
+                        (static_cast<std::size_t>(sourceY) * sourceWidth + sourceX) *
+                        components;
+                    const std::size_t targetOffset =
+                        (static_cast<std::size_t>(y) * observedWidth + x) * components;
+                    std::copy_n(bytes + sourceOffset, components,
+                                observed.pixels.begin() +
+                                    static_cast<std::ptrdiff_t>(targetOffset));
+                }
+            }
+        }
         observed.contentIdentity =
             digestFromHex(LL::GHI::sha256(observed.pixels));
+        observed.serial = ++mObservationSerial;
         mObservedTextureBytes = mObservedTextureBytes - previous + size;
         mObservedTextures[key] = std::move(observed);
     }
@@ -166,9 +277,24 @@ public:
     void record(LLDrawInfo& draw, std::uint32_t renderType, bool rigged)
     {
         if (!mInFrame) return;
+        const bool runtimeGeometry = !rigged && !draw.mSkinInfo && !draw.mAvatar &&
+            renderType == LLRenderPass::PASS_GLTF_PBR &&
+            draw.mGLTFMaterial.notNull() &&
+            alphaMode(draw.mGLTFMaterial->mAlphaMode) ==
+                LL::GHI::MaterialAlphaMode::Opaque &&
+            hasIdentityBoundTextureTransforms(*draw.mGLTFMaterial);
+        if (mCaptureRuntime && !mCaptureFile && !runtimeGeometry) return;
         LL::GHI::MaterialSceneDraw output;
         output.semanticId = 0x5235620000000000ull |
             static_cast<std::uint64_t>(mPacket.draws.size() & 0xffffffffull);
+        if (runtimeGeometry && !captureGeometry(draw, output))
+        {
+            // Runtime packets contain executable geometry only. Archival R5
+            // capture keeps the semantic-only records below.
+            if (!mCaptureFile) return;
+            output.comparability = output.comparability |
+                LL::GHI::ResourceComparability::UnsupportedVertexLayout;
+        }
         output.material = material(draw, renderType);
         const bool needsSkin = rigged || draw.mSkinInfo || draw.mAvatar;
         if (needsSkin)
@@ -189,7 +315,17 @@ public:
     {
         if (!mInFrame) return;
         mInFrame = false;
-        if (mPacket.draws.empty()) return;
+        const bool captureFile = mCaptureFile;
+        const bool captureRuntime = mCaptureRuntime;
+        mCaptureFile = false;
+        mCaptureRuntime = false;
+        if (mPacket.draws.empty())
+        {
+            if (captureRuntime)
+                LLGHIRuntime::consumeLiveMaterialPacket(
+                    mPacket, mRuntimeBudgetLimited);
+            return;
+        }
 
         canonicalizeResources();
 
@@ -218,6 +354,10 @@ public:
         }
         mPacket.resourceEpoch = mResourceEpoch;
 
+        if (captureRuntime)
+            LLGHIRuntime::consumeLiveMaterialPacket(mPacket, mRuntimeBudgetLimited);
+        if (!captureFile) return;
+
         std::vector<std::byte> bytes;
         LL::GHI::Status status = LL::GHI::encodeMaterialScenePacket(mPacket, bytes);
         if (!status) { fail(status.message()); return; }
@@ -245,6 +385,97 @@ public:
     }
 
 private:
+    bool captureGeometry(const LLDrawInfo& source,
+                         LL::GHI::MaterialSceneDraw& output)
+    {
+        const LLVertexBuffer* buffer = source.mVertexBuffer.get();
+        constexpr std::uint32_t required = LLVertexBuffer::MAP_VERTEX |
+            LLVertexBuffer::MAP_NORMAL | LLVertexBuffer::MAP_TANGENT |
+            LLVertexBuffer::MAP_TEXCOORD0;
+        if (!buffer || !source.mCount || source.mCount % 3 != 0 ||
+            (buffer->getTypeMask() & required) != required ||
+            !buffer->getMappedData() || !buffer->getMappedIndices() ||
+            source.mStart > source.mEnd || source.mEnd >= buffer->getNumVerts() ||
+            source.mOffset > buffer->getNumIndices() ||
+            source.mCount > buffer->getNumIndices() - source.mOffset ||
+            (buffer->getIndexStride() != 2 && buffer->getIndexStride() != 4))
+            return false;
+
+        constexpr std::size_t maxDraws = 32;
+        constexpr std::size_t maxVertices = 65536;
+        constexpr std::size_t maxIndices = 196608;
+        const std::size_t vertexCount = source.mEnd - source.mStart + 1;
+        if (mCaptureRuntime &&
+            (mPacket.draws.size() >= maxDraws ||
+             mPacket.vertices.size() > maxVertices ||
+             vertexCount > maxVertices - mPacket.vertices.size() ||
+             mPacket.indices.size() > maxIndices ||
+             source.mCount > maxIndices - mPacket.indices.size()))
+        {
+            mRuntimeBudgetLimited = true;
+            return false;
+        }
+
+        const std::uint32_t baseVertex =
+            static_cast<std::uint32_t>(mPacket.vertices.size());
+        const auto* data = buffer->getMappedData();
+        const auto* positions = reinterpret_cast<const float*>(
+            data + buffer->getOffset(LLVertexBuffer::TYPE_VERTEX));
+        const auto* normals = reinterpret_cast<const float*>(
+            data + buffer->getOffset(LLVertexBuffer::TYPE_NORMAL));
+        const auto* tangents = reinterpret_cast<const float*>(
+            data + buffer->getOffset(LLVertexBuffer::TYPE_TANGENT));
+        const auto* texcoords = reinterpret_cast<const float*>(
+            data + buffer->getOffset(LLVertexBuffer::TYPE_TEXCOORD0));
+        const LLColor4U* colors = buffer->hasDataType(LLVertexBuffer::TYPE_COLOR)
+            ? reinterpret_cast<const LLColor4U*>(
+                data + buffer->getOffset(LLVertexBuffer::TYPE_COLOR)) : nullptr;
+        mPacket.vertices.reserve(mPacket.vertices.size() + vertexCount);
+        for (std::uint32_t index = source.mStart; index <= source.mEnd; ++index)
+        {
+            LL::GHI::MaterialSceneVertex vertex;
+            std::copy_n(positions + static_cast<std::size_t>(index) * 4, 3,
+                        vertex.position.begin());
+            std::copy_n(normals + static_cast<std::size_t>(index) * 4, 3,
+                        vertex.normal.begin());
+            std::copy_n(tangents + static_cast<std::size_t>(index) * 4, 4,
+                        vertex.tangent.begin());
+            std::copy_n(texcoords + static_cast<std::size_t>(index) * 2, 2,
+                        vertex.texCoord.begin());
+            if (colors) std::copy_n(colors[index].mV, 4, vertex.color.begin());
+            mPacket.vertices.push_back(vertex);
+        }
+
+        const std::uint32_t firstIndex =
+            static_cast<std::uint32_t>(mPacket.indices.size());
+        const std::uint8_t* rawIndices = buffer->getMappedIndices();
+        mPacket.indices.reserve(mPacket.indices.size() + source.mCount);
+        for (std::uint32_t item = 0; item < source.mCount; ++item)
+        {
+            const std::size_t sourceIndex = source.mOffset + item;
+            const std::uint32_t value = buffer->getIndexStride() == 2
+                ? reinterpret_cast<const std::uint16_t*>(rawIndices)[sourceIndex]
+                : reinterpret_cast<const std::uint32_t*>(rawIndices)[sourceIndex];
+            if (value < source.mStart || value > source.mEnd)
+            {
+                mPacket.vertices.resize(baseVertex);
+                mPacket.indices.resize(firstIndex);
+                return false;
+            }
+            mPacket.indices.push_back(baseVertex + value - source.mStart);
+        }
+        output.firstIndex = firstIndex;
+        output.indexCount = source.mCount;
+        const glm::mat4 transform = glm::make_mat4(gGLProjection) *
+                                    glm::make_mat4(gGLModelView);
+        glm::mat4 model{1.f};
+        if (source.mModelMatrix)
+            model = glm::make_mat4(&source.mModelMatrix->mMatrix[0][0]);
+        std::copy_n(glm::value_ptr(transform), 16, output.transform.begin());
+        std::copy_n(glm::value_ptr(model), 16, output.modelTransform.begin());
+        return true;
+    }
+
     template<typename Resource>
     static std::vector<std::uint32_t> canonicalize(std::vector<Resource>& resources)
     {
@@ -321,9 +552,18 @@ private:
         resource.height = llmax(0, source->getFullHeight());
         resource.components = llmax<S32>(0, source->getComponents());
         resource.discardLevel = llmax<S32>(0, source->getDiscardLevel());
-        const auto* fetched = dynamic_cast<const LLViewerFetchedTexture*>(source);
+        auto* fetched = dynamic_cast<LLViewerFetchedTexture*>(source);
         const auto observed = mObservedTextures.find(source->getID().asString());
-        if (observed != mObservedTextures.end())
+        const auto runtimePixelsAllowed = [&](std::size_t bytes)
+        {
+            constexpr std::size_t maxImage = 4ull * 1024ull * 1024ull;
+            constexpr std::size_t maxPacket = 16ull * 1024ull * 1024ull;
+            return !mCaptureRuntime ||
+                (bytes <= maxImage && mRuntimeTextureBytes <= maxPacket &&
+                 bytes <= maxPacket - mRuntimeTextureBytes);
+        };
+        if (observed != mObservedTextures.end() &&
+            runtimePixelsAllowed(observed->second.pixels.size()))
         {
             resource.width = observed->second.width;
             resource.height = observed->second.height;
@@ -331,6 +571,29 @@ private:
             resource.discardLevel = observed->second.discardLevel;
             resource.decodedPixels = observed->second.pixels;
             resource.contentIdentity = observed->second.contentIdentity;
+            if (mCaptureRuntime)
+                mRuntimeTextureBytes += resource.decodedPixels.size();
+        }
+        LLPointer<LLImageRaw> saved = fetched ? fetched->getSavedRawImage() : nullptr;
+        if (resource.decodedPixels.empty() && saved.notNull())
+        {
+            LLImageDataSharedLock lock(saved);
+            const std::size_t size = static_cast<std::size_t>(
+                llmax(0, saved->getDataSize()));
+            if (saved->getData() && size && runtimePixelsAllowed(size))
+            {
+                resource.width = saved->getWidth();
+                resource.height = saved->getHeight();
+                resource.components = saved->getComponents();
+                resource.discardLevel = llmax(0, fetched->getSavedRawImageLevel());
+                const auto* bytes =
+                    reinterpret_cast<const std::byte*>(saved->getData());
+                resource.decodedPixels.assign(bytes, bytes + size);
+                resource.contentIdentity =
+                    digestFromHex(LL::GHI::sha256(resource.decodedPixels));
+                if (mCaptureRuntime)
+                    mRuntimeTextureBytes += resource.decodedPixels.size();
+            }
         }
         LLPointer<LLImageRaw> raw = fetched ? fetched->getRawImage() : nullptr;
         if (resource.decodedPixels.empty() && fetched &&
@@ -338,7 +601,7 @@ private:
         {
             LLImageDataSharedLock lock(raw);
             const std::size_t size = static_cast<std::size_t>(llmax(0, raw->getDataSize()));
-            if (raw->getData() && size)
+            if (raw->getData() && size && runtimePixelsAllowed(size))
             {
                 resource.width = raw->getWidth(); resource.height = raw->getHeight();
                 resource.components = raw->getComponents();
@@ -347,6 +610,8 @@ private:
                 resource.decodedPixels.assign(bytes, bytes + size);
                 resource.contentIdentity =
                     digestFromHex(LL::GHI::sha256(resource.decodedPixels));
+                if (mCaptureRuntime)
+                    mRuntimeTextureBytes += resource.decodedPixels.size();
             }
         }
         if (resource.decodedPixels.empty())
@@ -355,6 +620,34 @@ private:
             if (fetched && fetched->isFetching())
                 resource.comparability = resource.comparability |
                     LL::GHI::ResourceComparability::TextureStillFetching;
+            if (mCaptureRuntime && fetched)
+            {
+                const std::string assetKey = fetched->getID().asString();
+                constexpr std::size_t MAX_RAW_REQUESTS = 64;
+                constexpr std::uint64_t MAX_REQUESTED_IMAGE_BYTES =
+                    1ull * 1024ull * 1024ull;
+                if (mRequestedRawTextures.contains(assetKey) ||
+                    mRequestedRawTextures.size() < MAX_RAW_REQUESTS)
+                {
+                    std::uint32_t width = std::max(1, fetched->getFullWidth());
+                    std::uint32_t height = std::max(1, fetched->getFullHeight());
+                    const std::uint32_t components = static_cast<std::uint32_t>(
+                        std::clamp(static_cast<std::int32_t>(
+                                       fetched->getComponents()),
+                                   1, 4));
+                    std::int32_t desiredDiscard = 0;
+                    while (static_cast<std::uint64_t>(width) * height * components >
+                               MAX_REQUESTED_IMAGE_BYTES &&
+                           (width > 1 || height > 1))
+                    {
+                        width = std::max(1u, width / 2);
+                        height = std::max(1u, height / 2);
+                        ++desiredDiscard;
+                    }
+                    fetched->forceToSaveRawImage(desiredDiscard, 30.f);
+                    mRequestedRawTextures.insert(assetKey);
+                }
+            }
         }
         const std::uint32_t index = static_cast<std::uint32_t>(mPacket.textures.size());
         mPacket.textures.push_back(std::move(resource));
@@ -485,6 +778,10 @@ private:
 
     bool mConfigured = false;
     bool mInFrame = false;
+    bool mCaptureFile = false;
+    bool mCaptureRuntime = false;
+    bool mRuntimeBudgetLimited = false;
+    std::size_t mRuntimeTextureBytes = 0;
     State mState = State::Disabled;
     std::filesystem::path mOutput;
     std::chrono::milliseconds mWarmup{0};
@@ -495,18 +792,24 @@ private:
     std::map<std::string, std::uint32_t> mTextureIndices;
     std::map<std::string, std::uint32_t> mMaterialIndices;
     std::map<std::string, std::uint32_t> mSkinIndices;
-    static constexpr std::size_t MAX_OBSERVED_TEXTURE_BYTES = 512ull * 1024ull * 1024ull;
+    static constexpr std::size_t MAX_OBSERVED_TEXTURE_BYTES = 64ull * 1024ull * 1024ull;
     std::size_t mObservedTextureBytes = 0;
+    std::uint64_t mObservationSerial = 0;
     std::map<std::string, ObservedTexture> mObservedTextures;
+    // Requests are bounded and removed as soon as the normal decoder path
+    // supplies pixels. No production OpenGL texture readback is used.
+    std::set<std::string> mRequestedRawTextures;
     LL::GHI::MaterialScenePacket mPacket;
 };
 
 LLGHIMaterialCapture::LLGHIMaterialCapture() : mImpl(std::make_unique<Impl>()) {}
 LLGHIMaterialCapture::~LLGHIMaterialCapture() = default;
 bool LLGHIMaterialCapture::sActive = false;
-bool LLGHIMaterialCapture::beginFrame(std::uint64_t frame_id)
+bool LLGHIMaterialCapture::beginFrame(std::uint32_t width,
+                                      std::uint32_t height,
+                                      std::uint64_t frame_id)
 {
-    sActive = mImpl->begin(frame_id);
+    sActive = mImpl->begin(width, height, frame_id);
     return sActive;
 }
 void LLGHIMaterialCapture::observeDecodedTexture(

@@ -2368,6 +2368,7 @@ if (WINDOWS)
     if (USE_VULKAN_GHI)
       list(APPEND COPY_INPUT_DEPENDENCIES
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/r4_opaque.llghisp
+           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/r5_material_skin.llghisp
           )
     endif ()
 

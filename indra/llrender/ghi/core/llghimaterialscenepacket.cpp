@@ -20,6 +20,8 @@ constexpr std::array<std::byte, 8> MAGIC{{
     std::byte{'I'}, std::byte{'M'}, std::byte{'5'}, std::byte{'B'}}};
 constexpr std::uint64_t MAX_RESOURCES = 1024ull * 1024ull;
 constexpr std::uint64_t MAX_DRAWS = 4ull * 1024ull * 1024ull;
+constexpr std::uint64_t MAX_VERTICES = 16ull * 1024ull * 1024ull;
+constexpr std::uint64_t MAX_INDICES = 48ull * 1024ull * 1024ull;
 constexpr std::uint64_t MAX_PAYLOAD = 2ull * 1024ull * 1024ull * 1024ull;
 
 void appendU32(std::vector<std::byte>& out, std::uint32_t value)
@@ -93,12 +95,14 @@ bool zeroDigest(const ResourceDigest& digest)
                        [](std::byte value) { return value == std::byte{0}; });
 }
 
-bool validPacket(const MaterialScenePacket& packet)
+bool validPacket(const MaterialScenePacket& packet, bool allowLegacy = false)
 {
-    if (packet.version != MATERIAL_SCENE_PACKET_VERSION ||
+    if ((packet.version != MATERIAL_SCENE_PACKET_VERSION &&
+         !(allowLegacy && packet.version == 1)) ||
         packet.textures.size() > MAX_RESOURCES ||
         packet.materials.size() > MAX_RESOURCES ||
-        packet.skins.size() > MAX_RESOURCES || packet.draws.size() > MAX_DRAWS)
+        packet.skins.size() > MAX_RESOURCES || packet.draws.size() > MAX_DRAWS ||
+        packet.vertices.size() > MAX_VERTICES || packet.indices.size() > MAX_INDICES)
         return false;
     std::uint64_t payload = 0;
     for (const auto& texture : packet.textures)
@@ -123,9 +127,16 @@ bool validPacket(const MaterialScenePacket& packet)
             skin.matrixPalette.size() != static_cast<std::size_t>(skin.jointCount) * 12)
             return false;
     for (const auto& draw : packet.draws)
+    {
         if ((draw.material != NO_RESOURCE && draw.material >= packet.materials.size()) ||
-            (draw.skin != NO_RESOURCE && draw.skin >= packet.skins.size()))
+            (draw.skin != NO_RESOURCE && draw.skin >= packet.skins.size()) ||
+            draw.firstIndex > packet.indices.size() ||
+            draw.indexCount > packet.indices.size() - draw.firstIndex ||
+            (draw.indexCount && draw.material == NO_RESOURCE))
             return false;
+    }
+    for (std::uint32_t index : packet.indices)
+        if (index >= packet.vertices.size()) return false;
     return true;
 }
 
@@ -153,6 +164,10 @@ Status encodeMaterialScenePacket(const MaterialScenePacket& packet,
     appendU64(encoded, packet.materials.size());
     appendU64(encoded, packet.skins.size());
     appendU64(encoded, packet.draws.size());
+    appendU32(encoded, packet.sourceWidth);
+    appendU32(encoded, packet.sourceHeight);
+    appendU64(encoded, packet.vertices.size());
+    appendU64(encoded, packet.indices.size());
     for (const auto& texture : packet.textures)
     {
         appendDigest(encoded, texture.sourceIdentity);
@@ -195,12 +210,32 @@ Status encodeMaterialScenePacket(const MaterialScenePacket& packet,
         appendU32(encoded, skin.jointCount);
         for (float value : skin.matrixPalette) appendFloat(encoded, value);
     }
+    for (const auto& vertex : packet.vertices)
+    {
+        for (float value : vertex.position) appendFloat(encoded, value);
+        for (float value : vertex.normal) appendFloat(encoded, value);
+        for (float value : vertex.tangent) appendFloat(encoded, value);
+        for (float value : vertex.texCoord) appendFloat(encoded, value);
+        for (std::uint8_t value : vertex.color)
+            encoded.push_back(static_cast<std::byte>(value));
+        for (std::uint16_t value : vertex.joints)
+        {
+            encoded.push_back(static_cast<std::byte>(value & 0xffu));
+            encoded.push_back(static_cast<std::byte>((value >> 8) & 0xffu));
+        }
+        for (float value : vertex.weights) appendFloat(encoded, value);
+    }
+    for (std::uint32_t index : packet.indices) appendU32(encoded, index);
     for (const auto& draw : packet.draws)
     {
         appendU64(encoded, draw.semanticId); appendU32(encoded, draw.material);
         appendU32(encoded, draw.skin);
         appendU32(encoded, static_cast<std::uint32_t>(draw.comparability));
         appendU32(encoded, 0);
+        appendU32(encoded, draw.firstIndex);
+        appendU32(encoded, draw.indexCount);
+        for (float value : draw.transform) appendFloat(encoded, value);
+        for (float value : draw.modelTransform) appendFloat(encoded, value);
     }
     return Status::success();
 }
@@ -212,15 +247,29 @@ Status decodeMaterialScenePacket(std::span<const std::byte> encoded,
     std::array<std::byte, 8> magic{};
     std::uint32_t reserved = 0;
     std::uint64_t textureCount = 0, materialCount = 0, skinCount = 0, drawCount = 0;
+    std::uint64_t vertexCount = 0, indexCount = 0;
     MaterialScenePacket out;
     if (!reader.bytes(magic) || magic != MAGIC || !reader.u32(out.version) ||
         !reader.u32(reserved) || !reader.u64(out.frameId) ||
         !reader.u64(out.sceneEpoch) || !reader.u64(out.resourceEpoch) ||
         !counts(reader, textureCount, materialCount, skinCount, drawCount))
         return invalid("truncated or unrecognized material scene packet header");
+    if (out.version == MATERIAL_SCENE_PACKET_VERSION)
+    {
+        if (!reader.u32(out.sourceWidth) || !reader.u32(out.sourceHeight) ||
+            !reader.u64(vertexCount) || !reader.u64(indexCount) ||
+            vertexCount > MAX_VERTICES || indexCount > MAX_INDICES)
+            return invalid("truncated or invalid material geometry header");
+    }
+    else if (out.version != 1)
+    {
+        return invalid("unsupported material scene packet version");
+    }
     out.textures.resize(static_cast<std::size_t>(textureCount));
     out.materials.resize(static_cast<std::size_t>(materialCount));
     out.skins.resize(static_cast<std::size_t>(skinCount));
+    out.vertices.resize(static_cast<std::size_t>(vertexCount));
+    out.indices.resize(static_cast<std::size_t>(indexCount));
     out.draws.resize(static_cast<std::size_t>(drawCount));
     std::uint64_t totalPayload = 0;
     for (auto& texture : out.textures)
@@ -284,6 +333,30 @@ Status decodeMaterialScenePacket(std::span<const std::byte> encoded,
         for (float& value : skin.matrixPalette)
             if (!reader.floating(value)) return invalid("truncated skin palette");
     }
+    for (auto& vertex : out.vertices)
+    {
+        for (float& value : vertex.position)
+            if (!reader.floating(value)) return invalid("truncated material vertex");
+        for (float& value : vertex.normal)
+            if (!reader.floating(value)) return invalid("truncated material vertex");
+        for (float& value : vertex.tangent)
+            if (!reader.floating(value)) return invalid("truncated material vertex");
+        for (float& value : vertex.texCoord)
+            if (!reader.floating(value)) return invalid("truncated material vertex");
+        std::array<std::byte, 4> color{};
+        if (!reader.bytes(color)) return invalid("truncated material vertex color");
+        for (std::size_t i = 0; i < color.size(); ++i)
+            vertex.color[i] = std::to_integer<std::uint8_t>(color[i]);
+        std::array<std::byte, 8> joints{};
+        if (!reader.bytes(joints)) return invalid("truncated material vertex joints");
+        for (std::size_t i = 0; i < vertex.joints.size(); ++i)
+            vertex.joints[i] = std::to_integer<std::uint16_t>(joints[i * 2]) |
+                (std::to_integer<std::uint16_t>(joints[i * 2 + 1]) << 8);
+        for (float& value : vertex.weights)
+            if (!reader.floating(value)) return invalid("truncated material vertex");
+    }
+    for (std::uint32_t& index : out.indices)
+        if (!reader.u32(index)) return invalid("truncated material index data");
     for (auto& draw : out.draws)
     {
         std::uint32_t comparable = 0, ignored = 0;
@@ -291,8 +364,19 @@ Status decodeMaterialScenePacket(std::span<const std::byte> encoded,
             !reader.u32(draw.skin) || !reader.u32(comparable) || !reader.u32(ignored))
             return invalid("truncated material draw record");
         draw.comparability = static_cast<ResourceComparability>(comparable);
+        if (out.version == MATERIAL_SCENE_PACKET_VERSION)
+        {
+            if (!reader.u32(draw.firstIndex) || !reader.u32(draw.indexCount))
+                return invalid("truncated material draw geometry");
+            for (float& value : draw.transform)
+                if (!reader.floating(value))
+                    return invalid("truncated material draw transform");
+            for (float& value : draw.modelTransform)
+                if (!reader.floating(value))
+                    return invalid("truncated material draw model transform");
+        }
     }
-    if (!reader.finished() || !validPacket(out))
+    if (!reader.finished() || !validPacket(out, true))
         return invalid("material scene packet has trailing or invalid data");
     packet = std::move(out);
     return Status::success();

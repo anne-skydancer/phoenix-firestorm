@@ -24,7 +24,8 @@ public:
     static bool active() { return sActive; }
 
     // Dormant unless VULKANSTORM_GHI_R5_CAPTURE names an output file.
-    bool beginFrame(std::uint64_t frame_id);
+    bool beginFrame(std::uint32_t width, std::uint32_t height,
+                    std::uint64_t frame_id);
     void observeDecodedTexture(const LLViewerFetchedTexture& texture,
                                const LLImageRaw& image, std::int32_t discard_level);
     void record(LLDrawInfo& draw, std::uint32_t render_type, bool rigged);

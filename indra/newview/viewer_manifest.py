@@ -113,6 +113,9 @@ class ViewerManifest(LLManifest,FSViewerManifest):
         if os.path.isfile(os.path.join(ghi_shader_dir, "r4_opaque.llghisp")):
             with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
                 self.path("r4_opaque.llghisp")
+        if os.path.isfile(os.path.join(ghi_shader_dir, "r5_material_skin.llghisp")):
+            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
+                self.path("r5_material_skin.llghisp")
 
         with self.prefix(src_dst="skins"):
             self.path("*/xui/*/*.xml")

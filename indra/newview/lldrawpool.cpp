@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llghiopaquecapture.h"
+#include "llghimaterialcapture.h"
 
 #include "lldrawpool.h"
 #include "llrender.h"
@@ -443,6 +444,8 @@ void LLRenderPass::pushBatches(U32 type, bool texture, bool batch_textures)
             LLCullResult::increment_iterator(i, end);
 
             LLGHIOpaqueCapture::instance().record(*pparams, type, false);
+            if (LLGHIMaterialCapture::active())
+                LLGHIMaterialCapture::instance().record(*pparams, type, false);
             pushBatch(*pparams, texture, batch_textures);
         }
     }
@@ -463,6 +466,8 @@ void LLRenderPass::pushUntexturedBatches(U32 type)
         LLCullResult::increment_iterator(i, end);
 
         LLGHIOpaqueCapture::instance().record(*pparams, type, false);
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(*pparams, type, false);
         pushUntexturedBatch(*pparams);
     }
 }
@@ -484,6 +489,8 @@ void LLRenderPass::pushRiggedBatches(U32 type, bool texture, bool batch_textures
             LLCullResult::increment_iterator(i, end);
 
             LLGHIOpaqueCapture::instance().record(*pparams, type, true);
+            if (LLGHIMaterialCapture::active())
+                LLGHIMaterialCapture::instance().record(*pparams, type, true);
             if (uploadMatrixPalette(pparams->mAvatar, pparams->mSkinInfo, lastAvatar, lastMeshId, skipLastSkin))
             {
                 pushBatch(*pparams, texture, batch_textures);
@@ -510,6 +517,8 @@ void LLRenderPass::pushUntexturedRiggedBatches(U32 type)
         LLCullResult::increment_iterator(i, end);
 
         LLGHIOpaqueCapture::instance().record(*pparams, type, true);
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(*pparams, type, true);
         if (uploadMatrixPalette(pparams->mAvatar, pparams->mSkinInfo, lastAvatar, lastMeshId, skipLastSkin))
         {
             pushUntexturedBatch(*pparams);
@@ -527,6 +536,8 @@ void LLRenderPass::pushMaskBatches(U32 type, bool texture, bool batch_textures)
         LLDrawInfo* pparams = *i;
         LLCullResult::increment_iterator(i, end);
         LLGLSLShader::sCurBoundShaderPtr->setMinimumAlpha(pparams->mAlphaMaskCutoff);
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(*pparams, type, false);
         pushBatch(*pparams, texture, batch_textures);
     }
 }
@@ -548,6 +559,8 @@ void LLRenderPass::pushRiggedMaskBatches(U32 type, bool texture, bool batch_text
         llassert(pparams);
 
         LLGLSLShader::sCurBoundShaderPtr->setMinimumAlpha(pparams->mAlphaMaskCutoff);
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(*pparams, type, true);
 
         if (uploadMatrixPalette(pparams->mAvatar, pparams->mSkinInfo, lastAvatar, lastMeshId, skipLastSkin))
         {
@@ -805,6 +818,8 @@ void LLRenderPass::pushGLTFBatches(U32 type)
         LLDrawInfo& params = **i;
         LLCullResult::increment_iterator(i, end);
 
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(params, type, false);
         pushGLTFBatch(params);
     }
 }
@@ -820,6 +835,8 @@ void LLRenderPass::pushUntexturedGLTFBatches(U32 type)
         LLDrawInfo& params = **i;
         LLCullResult::increment_iterator(i, end);
 
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(params, type, false);
         pushUntexturedGLTFBatch(params);
     }
 }
@@ -886,6 +903,8 @@ void LLRenderPass::pushRiggedGLTFBatches(U32 type)
         LLDrawInfo& params = **i;
         LLCullResult::increment_iterator(i, end);
 
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(params, type, true);
         pushRiggedGLTFBatch(params, lastAvatar, lastMeshId, skipLastSkin);
     }
 }
@@ -905,6 +924,8 @@ void LLRenderPass::pushUntexturedRiggedGLTFBatches(U32 type)
         LLDrawInfo& params = **i;
         LLCullResult::increment_iterator(i, end);
 
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(params, type, true);
         pushUntexturedRiggedGLTFBatch(params, lastAvatar, lastMeshId, skipLastSkin);
     }
 }

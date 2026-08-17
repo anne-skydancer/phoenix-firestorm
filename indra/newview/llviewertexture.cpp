@@ -27,6 +27,8 @@
 
 #include "llviewerprecompiledheaders.h"
 
+#include "llghimaterialcapture.h"
+
 #include "llviewertexture.h"
 
 // Library includes
@@ -1660,6 +1662,10 @@ void LLViewerFetchedTexture::postCreateTexture()
 #endif
 
     setActive();
+
+    if (mRawImage.notNull() && mIsRawImageValid)
+        LLGHIMaterialCapture::instance().observeDecodedTexture(
+            *this, *mRawImage, mRawDiscardLevel);
 
     // rebuild any volumes that are using this texture for sculpts in case their LoD has changed
     for (U32 i = 0; i < mNumVolumes[LLRender::SCULPT_TEX]; ++i)
@@ -4224,4 +4230,3 @@ void LLTexturePipelineTester::LLTextureTestSession::reset()
 //----------------------------------------------------------------------------------------------
 //end of LLTexturePipelineTester
 //----------------------------------------------------------------------------------------------
-

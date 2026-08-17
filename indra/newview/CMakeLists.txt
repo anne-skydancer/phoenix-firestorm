@@ -285,6 +285,7 @@ set(viewer_SOURCE_FILES
     lldndbutton.cpp
     lldrawable.cpp
     llghiopaquecapture.cpp
+    llghimaterialcapture.cpp
     lldrawpool.cpp
     lldrawpoolalpha.cpp
     lldrawpoolavatar.cpp
@@ -1151,6 +1152,7 @@ set(viewer_HEADER_FILES
     lldrawable.h
     lldrawpool.h
     llghiopaquecapture.h
+    llghimaterialcapture.h
     lldrawpoolalpha.h
     lldrawpoolavatar.h
     lldrawpoolbump.h

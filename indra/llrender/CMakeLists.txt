@@ -38,6 +38,7 @@ set(llrender_SOURCE_FILES
     ghi/backends/opengl/llghiopenglinfo.cpp
     ghi/core/llghidevice.cpp
     ghi/core/llghihash.cpp
+    ghi/core/llghimaterialscenepacket.cpp
     ghi/core/llghiopaquescenepacket.cpp
     ghi/core/llghipresentation.cpp
     ghi/core/llghipipelinecache.cpp
@@ -84,6 +85,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghidescriptors.h
     ghi/include/llghidevice.h
     ghi/include/llghipresentation.h
+    ghi/include/llghimaterialscenepacket.h
     ghi/include/llghiopaquescenepacket.h
     ghi/include/llghirendererinfo.h
     ghi/include/llghitypes.h
@@ -527,6 +529,7 @@ if (LL_TESTS)
   add_executable(llrender_ghi_contract_test
       ghi/core/llghidevice.cpp
       ghi/core/llghihash.cpp
+      ghi/core/llghimaterialscenepacket.cpp
       ghi/core/llghiopaquescenepacket.cpp
       ghi/core/llghipipelinecache.cpp
       ghi/core/llghishaderpackage.cpp

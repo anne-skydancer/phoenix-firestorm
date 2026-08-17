@@ -16,6 +16,7 @@
 #include "ghi/core/llghipipelinecache.h"
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
+#include "ghi/include/llghimaterialscenepacket.h"
 #include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
 #include "tests/ghi/llghidrawfixture.h"
@@ -1162,5 +1163,80 @@ void LLGHIValidationObject::test<23>()
            !wrongJoints && status.code() == StatusCode::InvalidArgument);
 }
 #endif
+
+template<> template<>
+void LLGHIValidationObject::test<24>()
+{
+    using namespace LL::GHI;
+
+    auto digest = [](std::uint8_t seed)
+    {
+        ResourceDigest value{};
+        for (std::size_t i = 0; i < value.size(); ++i)
+            value[i] = static_cast<std::byte>(seed + static_cast<std::uint8_t>(i));
+        return value;
+    };
+
+    MaterialScenePacket source;
+    source.frameId = 101;
+    source.sceneEpoch = 12;
+    source.resourceEpoch = 4;
+    MaterialTextureResource texture;
+    texture.sourceIdentity = digest(1);
+    texture.contentIdentity = digest(33);
+    texture.colorSpace = TextureColorSpace::SRGB;
+    texture.width = 2;
+    texture.height = 1;
+    texture.components = 4;
+    texture.discardLevel = 2;
+    texture.decodedPixels = {
+        std::byte{0}, std::byte{1}, std::byte{2}, std::byte{3},
+        std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7}};
+    source.textures.push_back(texture);
+
+    MaterialResource material;
+    material.identity = digest(65);
+    material.model = MaterialModel::MetallicRoughness;
+    material.alphaMode = MaterialAlphaMode::Mask;
+    material.baseColor = {{0.25f, 0.5f, 0.75f, 1.f}};
+    material.emissive = {{0.1f, 0.2f, 0.3f}};
+    material.metallic = 0.8f;
+    material.roughness = 0.35f;
+    material.alphaCutoff = 0.42f;
+    material.doubleSided = true;
+    material.textures.push_back({TextureSemantic::BaseColor, 0, 0,
+                                 {{0.1f, 0.2f, 2.f, 3.f, 0.4f}}});
+    source.materials.push_back(material);
+
+    SkinResource skin;
+    skin.identity = digest(97);
+    skin.jointCount = 1;
+    skin.matrixPalette = {1.f, 0.f, 0.f, 2.f, 0.f, 1.f,
+                          0.f, 3.f, 0.f, 0.f, 1.f, 4.f};
+    source.skins.push_back(skin);
+    source.draws.push_back({0x5235625f4c495645ull, 0, 0,
+                            ResourceComparability::Comparable});
+
+    std::vector<std::byte> first;
+    std::vector<std::byte> second;
+    ensure("encode material scene packet",
+           encodeMaterialScenePacket(source, first).ok());
+    ensure("material scene encoding is deterministic",
+           encodeMaterialScenePacket(source, second).ok() && first == second);
+    MaterialScenePacket decoded;
+    ensure("decode material scene packet",
+           decodeMaterialScenePacket(first, decoded).ok());
+    ensure("material scene packet round trips exactly", decoded == source);
+    ensure_equals("material scene packet has a stable schema hash",
+                  materialScenePacketSha256(source),
+                  std::string{"057045d1efb57035a83dc1385d2f92a22ad2a4613845a2d4f2597376df3f67fa"});
+
+    first.pop_back();
+    ensure("truncated material scene packet rejected",
+           decodeMaterialScenePacket(first, decoded).code() == StatusCode::InvalidArgument);
+    source.textures[0].contentIdentity = {};
+    ensure("pixel payload without content identity rejected",
+           encodeMaterialScenePacket(source, first).code() == StatusCode::InvalidArgument);
+}
 
 } // namespace tut

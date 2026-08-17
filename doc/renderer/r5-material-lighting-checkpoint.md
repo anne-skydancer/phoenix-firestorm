@@ -92,6 +92,62 @@ types above backend directories. The Vulkan-enabled Release viewer builds and
 links successfully as `build-vc170-64/newview/Release/firestorm-bin.exe` while
 production rendering remains OpenGL-only.
 
+## R5b production material and rigging seam
+
+R5b adds a separate version-1 `LLGHIM5B` packet instead of changing the
+accepted R4 opaque packet schema. The packet carries three immutable resource
+tables and submission records:
+
+- decoded texture resources with independent source-asset and exact-content
+  SHA-256 identities, explicit sRGB/linear intent, dimensions, component count,
+  and discard level;
+- legacy or metallic/roughness material records with factors, texture
+  semantics and transforms, alpha classification, fullbright, double-sided,
+  and environment inputs;
+- canonical current skin palettes as row-major 3x4 affine matrices, with the
+  mesh/static skin identity separated from current matrix content.
+
+Source UUIDs are not treated as content hashes. If decoded pixels are not
+already available, the record has no content identity and carries an explicit
+`MissingCpuTexture` comparability reason. Blend materials are similarly marked
+`AlphaDeferred`, because R6 owns their ordering algorithm. The observer never
+calls `readbackRawImage()`, forces a texture fetch, waits for the GPU, or changes
+the visible draw route.
+
+Because Firestorm normally releases decoded pixels after texture upload, the
+opt-in observer samples them at the existing CPU decode/upload boundary. It
+retains at most 512 MiB and performs no retention unless
+`VULKANSTORM_GHI_R5_CAPTURE` is set. Submission records are then collected from
+the simple, alpha-mask, legacy material, glTF/PBR, and rigged deferred paths.
+Resources are sorted by identity and references remapped before encoding, so
+resource order does not depend on pointer values or first-use order. A resource
+epoch changes only when the exact canonical resource set changes.
+
+The packet inspector verifies all embedded content hashes, byte dimensions,
+record boundaries, and absence of trailing data. The 120-second live grid
+capture produced:
+
+- 406 texture records, of which 219 contained and verified exact decoded
+  content;
+- 146 material records and 22 current skin palettes;
+- 374 observed material draws, of which 214 were immediately comparable;
+- 286,158,311 decoded texture bytes in a 286,292,927-byte packet;
+- packet SHA-256
+  `c80d5f56ac6a7140dca82a13e40e5793f50918b07fc03e3ca6eddcd7d76129c9`.
+
+The GHI contract suite is now **24/24 pass**. It covers exact packet round-trip,
+deterministic encoding, the stable schema hash
+`057045d1efb57035a83dc1385d2f92a22ad2a4613845a2d4f2597376df3f67fa`,
+truncation rejection, and rejection of pixel payloads without content
+identity. The Vulkan-enabled Release viewer builds and links with `LL_TESTS`
+restored to `OFF`. Enabling all legacy viewer tests also exposes pre-existing
+`llurlmatch_test.cpp` signature drift; that unrelated target is not an R5b
+failure and the dedicated GHI contract target remains 24/24 pass.
+
+R5b establishes resource observation and comparability; it does not claim that
+the full production material scene is rasterized by Vulkan. Production world
+and UI rendering remains OpenGL-only. Terrain begins at R5c.
+
 ## Limits and revisit points
 
 R5a is an interface and native-execution oracle, not a claim that Firestorm's

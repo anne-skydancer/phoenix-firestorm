@@ -19,6 +19,7 @@
 #include "ghi/include/llghimaterialscenepacket.h"
 #include "ghi/include/llghialphacontract.h"
 #include "ghi/include/llghioffscreencontract.h"
+#include "ghi/include/llghiopaquepacketconsumer.h"
 #include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
 #include "ghi/include/llghiworldcontract.h"
@@ -1676,6 +1677,59 @@ void LLGHIValidationObject::test<29>()
     ensure("R8 UI color plus ID/depth pipeline accepted",
            status.ok() && interactionPipeline);
 #endif
+}
+
+template<> template<>
+void LLGHIValidationObject::test<30>()
+{
+    using namespace LL::GHI;
+
+    OpaqueScenePacket packet;
+    packet.sourceWidth = 1280;
+    packet.sourceHeight = 720;
+    packet.frameId = 81420;
+    packet.sceneEpoch = 1;
+    packet.statistics = {1, 1, 1, 1, 0, 0, 0};
+    packet.vertices = {
+        {{{-1.f, -1.f, 0.5f}}, {{255, 0, 0, 255}}},
+        {{{ 1.f, -1.f, 0.5f}}, {{0, 255, 0, 255}}},
+        {{{ 0.f,  1.f, 0.5f}}, {{0, 0, 255, 255}}},
+    };
+    packet.indices = {0, 1, 2};
+    OpaqueSceneDraw draw;
+    draw.indexCount = 3;
+    draw.transform = {{
+        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+    draw.semanticId = 0x49315f4c495645ull; // "I1_LIVE"
+    packet.draws.push_back(draw);
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("I1 validation device", created.status.ok() && device);
+    OpaquePacketTransferResult transfer;
+    OpaquePacketTransferLimits limits;
+    Status status = consumeOpaquePacketTransfer(*device, packet, limits, transfer);
+    ensure(status.message(), status.ok());
+    ensure_equals("I1 transfer retains frame identity", transfer.frameId,
+                  packet.frameId);
+    ensure_equals("I1 transfer draw count", transfer.draws, std::uint32_t{1});
+    ensure_equals("I1 transfer vertex count", transfer.vertices, std::uint32_t{3});
+    ensure_equals("I1 transfer index count", transfer.indices, std::uint32_t{3});
+    ensure("I1 transfer records a deterministic packet hash",
+           !transfer.packetSha256.empty());
+    ensure("I1 transfer emits a non-rendering semantic command stream",
+           !device->semanticTrace().bytes().empty());
+    ensure_equals("I1 transfer retires four temporary buffers",
+                  device->pendingRetirementCount(), std::size_t{4});
+    ensure("I1 transfer retirement drains", device->waitIdle().ok());
+    ensure_equals("I1 transfer retirement queue is empty",
+                  device->pendingRetirementCount(), std::size_t{0});
+
+    limits.maxDraws = 0;
+    status = consumeOpaquePacketTransfer(*device, packet, limits, transfer);
+    ensure("I1 zero transfer limit is rejected",
+           status.code() == StatusCode::InvalidArgument);
 }
 
 } // namespace tut

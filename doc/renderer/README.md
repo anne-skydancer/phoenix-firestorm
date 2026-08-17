@@ -33,6 +33,9 @@ supported peer and recovery path.
 - [I0 runtime integration checkpoint](i0-runtime-integration-checkpoint.md)
   begins real-viewer integration by retaining an opt-in native Vulkan device
   beside the unchanged production OpenGL renderer.
+- [I1 live packet integration checkpoint](i1-live-packet-integration-checkpoint.md)
+  transfers bounded real-viewer post-cull geometry through that retained
+  device without drawing or presenting it.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

@@ -16,6 +16,7 @@
 #include "llghidescriptors.h"
 #include "llghidevice.h"
 #include "llghioffscreencontract.h"
+#include "llghiopaquepacketconsumer.h"
 #include "llghiproductioncontract.h"
 #include "llghirendererinfo.h"
 #include "llghitypes.h"

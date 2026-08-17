@@ -10,12 +10,22 @@
 #ifndef LL_LLGHIRUNTIME_H
 #define LL_LLGHIRUNTIME_H
 
+#include <cstdint>
+
+namespace LL::GHI
+{
+struct OpaqueScenePacket;
+}
+
 namespace LLGHIRuntime
 {
 
 void initialize();
 void shutdown();
 bool active();
+bool shouldCaptureLiveOpaquePacket(std::uint64_t frame_id);
+void consumeLiveOpaquePacket(const LL::GHI::OpaqueScenePacket& packet,
+                             bool budget_limited);
 
 } // namespace LLGHIRuntime
 

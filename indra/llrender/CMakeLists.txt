@@ -39,6 +39,7 @@ set(llrender_SOURCE_FILES
     ghi/core/llghidevice.cpp
     ghi/core/llghihash.cpp
     ghi/core/llghimaterialscenepacket.cpp
+    ghi/core/llghiopaquepacketconsumer.cpp
     ghi/core/llghiopaquescenepacket.cpp
     ghi/core/llghipresentation.cpp
     ghi/core/llghipipelinecache.cpp
@@ -83,6 +84,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghi.h
     ghi/include/llghialphacontract.h
     ghi/include/llghioffscreencontract.h
+    ghi/include/llghiopaquepacketconsumer.h
     ghi/include/llghicommand.h
     ghi/include/llghidescriptors.h
     ghi/include/llghidevice.h
@@ -912,6 +914,7 @@ if (LL_TESTS)
       ghi/core/llghidevice.cpp
       ghi/core/llghihash.cpp
       ghi/core/llghimaterialscenepacket.cpp
+      ghi/core/llghiopaquepacketconsumer.cpp
       ghi/core/llghiopaquescenepacket.cpp
       ghi/core/llghipipelinecache.cpp
       ghi/core/llghishaderpackage.cpp

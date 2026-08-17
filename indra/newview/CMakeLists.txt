@@ -939,8 +939,14 @@ else (OPENSIM)
         )
 endif (OPENSIM)
 
-set(VIEWER_BINARY_NAME "firestorm-bin" CACHE STRING
+set(VIEWER_BINARY_NAME "vulkanstorm-bin" CACHE STRING
     "The name of the viewer executable to create.")
+if (VIEWER_BINARY_NAME STREQUAL "firestorm-bin")
+    # Carry existing Vulkanstorm build trees across the product rename while
+    # preserving any genuinely custom binary name.
+    set(VIEWER_BINARY_NAME "vulkanstorm-bin" CACHE STRING
+        "The name of the viewer executable to create." FORCE)
+endif ()
 
 set(viewer_HEADER_FILES
     CMakeLists.txt

@@ -6,12 +6,14 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llghiopaquecapture.h"
+#include "llghiruntime.h"
 
 #include "lldrawpool.h"
 #include "llspatialpartition.h"
 #include "llvertexbuffer.h"
 #include "llrender.h"
 #include "ghi/core/llghihash.h"
+#include "ghi/include/llghiopaquepacketconsumer.h"
 #include "ghi/include/llghiopaquescenepacket.h"
 
 #include <glm/gtc/type_ptr.hpp>
@@ -63,13 +65,16 @@ public:
         if (mState == State::Warming &&
             std::chrono::steady_clock::now() - mWarmupStart >= mWarmup)
             mState = State::Recording;
-        if (mState != State::Recording) return false;
+        mCaptureFile = mState == State::Recording;
+        mCaptureRuntime = LLGHIRuntime::shouldCaptureLiveOpaquePacket(frame_id);
+        if (!mCaptureFile && !mCaptureRuntime) return false;
         mPacket = {};
         mPacket.sourceWidth = width;
         mPacket.sourceHeight = height;
         mPacket.frameId = frame_id;
         mPacket.sceneEpoch = ++mSceneEpoch;
         mPacket.productionOcclusionEnabled = occlusion;
+        mRuntimeBudgetLimited = false;
         mInFrame = true;
         return true;
     }
@@ -108,6 +113,19 @@ public:
         }
 
         const std::uint32_t vertexCount = source.mEnd - source.mStart + 1;
+        if (mCaptureRuntime && !mCaptureFile)
+        {
+            const LL::GHI::OpaquePacketTransferLimits limits;
+            if (mPacket.draws.size() >= limits.maxDraws ||
+                mPacket.vertices.size() >= limits.maxVertices ||
+                vertexCount > limits.maxVertices - mPacket.vertices.size() ||
+                mPacket.indices.size() >= limits.maxIndices ||
+                source.mCount > limits.maxIndices - mPacket.indices.size())
+            {
+                mRuntimeBudgetLimited = true;
+                return;
+            }
+        }
         if (mPacket.vertices.size() + vertexCount >
             static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
         {
@@ -172,8 +190,15 @@ public:
     {
         if (!mInFrame) return;
         mInFrame = false;
+        const bool captureFile = mCaptureFile;
+        const bool captureRuntime = mCaptureRuntime;
+        mCaptureFile = false;
+        mCaptureRuntime = false;
+        if (captureRuntime)
+            LLGHIRuntime::consumeLiveOpaquePacket(mPacket, mRuntimeBudgetLimited);
         if (mPacket.statistics.capturedTriangles == 0)
             return; // Scene is still empty; try the next eligible main-view frame.
+        if (!captureFile) return;
         std::vector<std::byte> bytes;
         LL::GHI::Status status = LL::GHI::encodeOpaqueScenePacket(mPacket, bytes);
         if (!status)
@@ -211,6 +236,9 @@ private:
 
     bool mConfigured = false;
     bool mInFrame = false;
+    bool mCaptureFile = false;
+    bool mCaptureRuntime = false;
+    bool mRuntimeBudgetLimited = false;
     State mState = State::Disabled;
     std::filesystem::path mOutput;
     std::chrono::milliseconds mWarmup{0};

@@ -12624,6 +12624,45 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderVulkanLivePacketProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: transfer bounded live post-cull opaque packets to the retained native Vulkan device without drawing or presenting. Requires RenderVulkanDeveloperProbe and restart.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
+    <key>RenderVulkanLivePacketIntervalFrames</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: minimum production-frame interval between I1 live post-cull Vulkan transfers.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>300</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
+    <key>RenderVulkanLivePacketMaxSamples</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: maximum successful I1 live post-cull Vulkan transfer samples per viewer process.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>U32</string>
+      <key>Value</key>
+      <integer>6</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

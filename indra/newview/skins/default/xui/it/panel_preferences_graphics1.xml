@@ -158,7 +158,7 @@
 				secondi
 			</text>
 		</panel>
-  <panel label="Rendering I" name="Rendering">
+  <panel label="Rendering 1" name="Rendering">
 			<text name="World Updating">
 				Caricamento del mondo:
 			</text>

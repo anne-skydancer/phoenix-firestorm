@@ -27,6 +27,8 @@
 
 #include "llviewerprecompiledheaders.h"
 
+#include "llghimaterialcapture.h"
+
 #include "lldrawpoolmaterials.h"
 #include "llviewershadermgr.h"
 #include "pipeline.h"
@@ -193,6 +195,9 @@ void LLDrawPoolMaterials::renderDeferred(S32 pass)
         LLDrawInfo& params = **i;
 
         LLCullResult::increment_iterator(i, end);
+
+        if (LLGHIMaterialCapture::active())
+            LLGHIMaterialCapture::instance().record(params, type, rigged);
 
         if (specular > -1 && params.mSpecColor != lastSpecular)
         {

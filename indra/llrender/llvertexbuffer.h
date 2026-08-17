@@ -258,6 +258,7 @@ public:
     bool hasDataType(AttributeType type) const { return ((1 << type) & getTypeMask()); }
     U32 getSize() const                     { return mSize; }
     U32 getIndicesSize() const              { return mIndicesSize; }
+    U32 getIndexStride() const              { return mIndicesStride; }
     U8* getMappedData() const               { return mMappedData; }
     U8* getMappedIndices() const            { return mMappedIndexData; }
     U32 getOffset(AttributeType type) const { return mOffsets[type]; }

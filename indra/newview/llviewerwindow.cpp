@@ -2039,7 +2039,8 @@ LLViewerWindow::LLViewerWindow(const Params& p)
         0,
         max_core_count,
         max_gl_version, //don't use window level anti-aliasing, windows only
-        useLegacyCursors); // <FS:LO> Legacy cursor setting from main program
+        useLegacyCursors, // <FS:LO> Legacy cursor setting from main program
+        gHeadlessClient);
 
     if (NULL == mWindow)
     {
@@ -2136,12 +2137,33 @@ LLViewerWindow::LLViewerWindow(const Params& p)
     }
     // <FS:Ansariel> Exodus vignette
 
-    if (LLFeatureManager::getInstance()->isSafe()
-        || (gSavedSettings.getS32("LastFeatureVersion") != LLFeatureManager::getInstance()->getVersion())
-        || (gSavedSettings.getString("LastGPUString") != LLFeatureManager::getInstance()->getGPUString())
+    LLFeatureManager* feature_manager = LLFeatureManager::getInstance();
+    const std::string previous_gpu = gSavedSettings.getString("LastGPUString");
+    std::string previous_backend = gSavedSettings.getString("LastRenderBackend");
+    if (previous_backend.empty())
+    {
+        previous_backend = gSavedSettings.getString("LastRenderGLBackend");
+    }
+    const bool backend_changed = feature_manager->isRenderBackendChange(
+        previous_backend, previous_gpu);
+    const bool same_gpu = feature_manager->isSameRenderGPU(
+        gSavedSettings.getString("LastRenderGPUIdentity"), previous_gpu);
+    const bool gpu_changed = !previous_gpu.empty() && !same_gpu;
+
+    if (backend_changed && same_gpu)
+    {
+        LL_INFOS("RenderInit") << "Graphics backend changed to "
+                               << feature_manager->getRenderBackend()
+                               << " on the same GPU; preserving the user's graphics settings."
+                               << LL_ENDL;
+    }
+
+    if (feature_manager->isSafe()
+        || (gSavedSettings.getS32("LastFeatureVersion") != feature_manager->getVersion())
+        || gpu_changed
         || (gSavedSettings.getBOOL("ProbeHardwareOnStartup")))
     {
-        LLFeatureManager::getInstance()->applyRecommendedSettings();
+        feature_manager->applyRecommendedSettings();
         gSavedSettings.setBOOL("ProbeHardwareOnStartup", false);
     }
 

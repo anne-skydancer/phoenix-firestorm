@@ -49,6 +49,7 @@
 
 #include "llglheaders.h"
 #include "llglslshader.h"
+#include "ghi/include/llghirendererinfo.h"
 
 #include "glm/glm.hpp"
 #include <glm/gtc/matrix_access.hpp>
@@ -1307,6 +1308,35 @@ bool LLGLManager::initGL()
 
     initGLStates();
 
+    // Keep this OpenGL compatibility override inside the OpenGL owner. The
+    // feature manager consumes only the resulting semantic GHI capability
+    // snapshot and no longer reads or mutates OpenGL globals.
+    if (mIsIntel)
+    {
+        static constexpr F32 TARGET_GL_VERSION =
+#if LL_DARWIN
+            4.09f;
+#else
+            4.59f;
+#endif
+
+        // Check against 3.33 to avoid applying the fallback twice. Older Intel
+        // parts advertise GL 4.3/4.4 but require the viewer's GL 3 feature set.
+        if (mGLVersion < TARGET_GL_VERSION && mGLVersion > 3.33f)
+        {
+            LL_INFOS("RenderInit")
+                << "Applying Intel integrated pre-Haswell fallback. "
+                   "Downgrading feature usage to OpenGL 3.3"
+                << LL_ENDL;
+            mGLVersion = llmin(mGLVersion, 3.33f);
+            mGLVersionString += " 3.3 fallback";
+            mGLSLVersionMajor = 3;
+            mGLSLVersionMinor = 20;
+        }
+    }
+
+    LL::GHI::publishInitializedOpenGLRendererSnapshot();
+
     return true;
 }
 
@@ -1434,6 +1464,7 @@ void LLGLManager::shutdownGL()
         glFinish();
         stop_glerror();
         mInited = false;
+        LL::GHI::clearRendererSnapshot();
     }
 }
 
@@ -3023,5 +3054,3 @@ extern "C"
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 #endif
-
-

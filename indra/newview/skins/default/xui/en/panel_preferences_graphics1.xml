@@ -1274,7 +1274,7 @@ If you do not understand the distinction then leave this control alone."
      left="1"
      right="-1"
      follows="all"
-     label="Rendering I"
+     label="Rendering 1"
      name="Rendering" >
       <!-- world pauser -->
       <text
@@ -1785,7 +1785,7 @@ If you do not understand the distinction then leave this control alone."
      left="1"
      right="-1"
      follows="all"
-     label="Rendering II"
+     label="Rendering 2"
      name="Rendering II">
       <text
        follows="left|top"

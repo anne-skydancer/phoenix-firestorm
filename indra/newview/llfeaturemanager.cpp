@@ -36,6 +36,7 @@
 
 #include "llsys.h"
 #include "llgl.h"
+#include "llghirendererinfo.h"
 
 #include "llappviewer.h"
 #include "llbufferstream.h"
@@ -408,7 +409,7 @@ F32 logExceptionBenchmark()
 }
 #endif
 
-bool checkRDNA35()
+bool checkRDNA35(const std::string& renderer_name)
 {
     // This checks if we're running on an RDNA3.5 GPU.  You're only going to see these on AMD's APUs.
     // As of driver version 25, we're seeing stalls in some of our queries.
@@ -427,7 +428,7 @@ bool checkRDNA35()
 
     for (const auto& gpu_name : rdna35GPUs)
     {
-        if (gGLManager.getRawGLString().find(gpu_name) != std::string::npos)
+        if (renderer_name.find(gpu_name) != std::string::npos)
         {
             LL_WARNS("RenderInit") << "Detected AMD RDNA3.5 GPU (" << gpu_name << ")." << LL_ENDL;
             return true;
@@ -448,14 +449,28 @@ bool LLFeatureManager::loadGPUClass()
     // As a result, we filter out these GPUs for shader profiling.
     // - Geenz 11/11/2025
 
-    if (gGLManager.getRawGLString().find("Radeon") != std::string::npos && checkRDNA35() && gGLManager.mDriverVersionVendorString.find("25.") != std::string::npos)
+    const auto renderer_snapshot = LL::GHI::activeRendererSnapshot();
+    const LL::GHI::RendererIdentity* identity = renderer_snapshot
+        ? &renderer_snapshot->identity
+        : nullptr;
+    const std::string renderer_name = identity
+        ? (identity->rendererName.empty() ? identity->deviceName : identity->rendererName)
+        : std::string{"Unknown renderer"};
+    const bool is_apple = identity && identity->vendor == LL::GHI::DeviceVendor::Apple;
+    const bool benchmark_supported = identity &&
+        identity->backend == LL::GHI::Backend::OpenGL;
+
+    if (identity &&
+        identity->vendor == LL::GHI::DeviceVendor::AMD &&
+        checkRDNA35(renderer_name) &&
+        identity->driverVersion.find("25.") != std::string::npos)
     {
         LL_WARNS("RenderInit") << "Detected AMD RDNA3.5 GPU on a known bad driver; disabling benchmark and occlusion culling to prevent freezes." << LL_ENDL;
         gSavedSettings.setBOOL("SkipBenchmark", true);
         gSavedSettings.setBOOL("UseOcclusion", false);
     }
 
-    if (!gSavedSettings.getBOOL("SkipBenchmark"))
+    if (!gSavedSettings.getBOOL("SkipBenchmark") && benchmark_supported)
     {
         F32 class1_gbps = gSavedSettings.getF32("RenderClass1MemoryBandwidth");
         //get memory bandwidth from benchmark
@@ -507,7 +522,7 @@ bool LLFeatureManager::loadGPUClass()
         }
         else if ((gbps <= class1_gbps*4.f)
                  // Cap silicon's GPUs at med+ as they have high throughput, low capability
-                 || gGLManager.mIsApple)
+                 || is_apple)
         {
             mGPUClass = GPU_CLASS_3;
         }
@@ -532,6 +547,19 @@ bool LLFeatureManager::loadGPUClass()
         }
     #endif //LL_WINDOWS
     } //end if benchmark
+    else if (!benchmark_supported)
+    {
+        // The current throughput probe records an OpenGL workload. It is not a
+        // valid cross-API comparison and must never run merely because a
+        // Vulkan lifecycle snapshot is active. Until a semantic GHI benchmark
+        // exists, use a conservative developer-only class for that snapshot.
+        LL_INFOS("RenderInit")
+            << "No semantic performance probe exists for "
+            << (identity ? LL::GHI::backendDisplayName(identity->backend) : "an unavailable backend")
+            << "; using conservative GPU class 1"
+            << LL_ENDL;
+        mGPUClass = GPU_CLASS_1;
+    }
     else
     {
         //setting says don't benchmark MAINT-7558
@@ -541,7 +569,7 @@ bool LLFeatureManager::loadGPUClass()
     }
 
     // defaults
-    mGPUString = gGLManager.getRawGLString();
+    mGPUString = renderer_name;
     mGPUSupported = true;
 
     return true; // indicates that a gpu value was established
@@ -551,6 +579,138 @@ void LLFeatureManager::cleanupFeatureTables()
 {
     std::for_each(mMaskList.begin(), mMaskList.end(), DeletePairedPointer());
     mMaskList.clear();
+}
+
+namespace
+{
+std::string canonicalizeRenderGPUIdentity(std::string renderer)
+{
+    LLStringUtil::toUpper(renderer);
+    LLStringUtil::trim(renderer);
+
+    // Zink wraps the physical-device name in its renderer string, for example:
+    // zink Vulkan 1.4(AMD Radeon RX 9070 XT (Driver Unknown)).  Extract the
+    // device name so Native GL and Zink resolve to the same adapter identity.
+    const std::string zink_marker = "ZINK VULKAN ";
+    const size_t zink = renderer.find(zink_marker);
+    if (zink != std::string::npos)
+    {
+        const size_t device_open = renderer.find('(', zink + zink_marker.size());
+        const size_t device_close = renderer.rfind(')');
+        if (device_open != std::string::npos &&
+            device_close != std::string::npos &&
+            device_close > device_open)
+        {
+            renderer = renderer.substr(device_open + 1, device_close - device_open - 1);
+            for (const std::string suffix : { " (DRIVER UNKNOWN)", " - VENDOR ICD" })
+            {
+                if (renderer.size() >= suffix.size() &&
+                    renderer.compare(renderer.size() - suffix.size(), suffix.size(), suffix) == 0)
+                {
+                    renderer.erase(renderer.size() - suffix.size());
+                    break;
+                }
+            }
+            LLStringUtil::trim(renderer);
+        }
+    }
+
+    return renderer;
+}
+}
+
+std::string LLFeatureManager::getRenderBackend() const
+{
+    if (const auto snapshot = LL::GHI::activeRendererSnapshot())
+    {
+        if (snapshot->identity.backend == LL::GHI::Backend::Vulkan)
+        {
+            return "vulkan";
+        }
+        if (snapshot->identity.backend == LL::GHI::Backend::Validation)
+        {
+            return "validation";
+        }
+        return snapshot->identity.provider == LL::GHI::RendererProvider::MesaZink
+            ? "zink"
+            : "native";
+    }
+
+    std::string gpu_string = mGPUString;
+    LLStringUtil::toUpper(gpu_string);
+    return gpu_string.find("ZINK") != std::string::npos ? "zink" : "native";
+}
+
+std::string LLFeatureManager::getRenderDisplayName() const
+{
+    if (const auto snapshot = LL::GHI::activeRendererSnapshot())
+    {
+        if (!snapshot->identity.rendererName.empty())
+        {
+            return snapshot->identity.rendererName;
+        }
+        return LL::GHI::formatRendererSummary(snapshot->identity);
+    }
+    return mGPUString;
+}
+
+std::string LLFeatureManager::getRenderGPUIdentity() const
+{
+    if (const auto snapshot = LL::GHI::activeRendererSnapshot())
+    {
+        if (!snapshot->identity.stableDeviceId.empty())
+        {
+            return canonicalizeRenderGPUIdentity(snapshot->identity.stableDeviceId);
+        }
+    }
+    return canonicalizeRenderGPUIdentity(mGPUString);
+}
+
+bool LLFeatureManager::isRenderBackendChange(const std::string& previous_backend,
+                                             const std::string& previous_gpu) const
+{
+    std::string backend = previous_backend;
+    LLStringUtil::toLower(backend);
+
+    // Migrate installations which predate LastRenderGLBackend. The previous
+    // raw GL string is enough to distinguish the bundled Zink renderer from
+    // a native ICD without treating that renderer change as new hardware.
+    if (backend.empty() && !previous_gpu.empty())
+    {
+        std::string gpu_string = previous_gpu;
+        LLStringUtil::toUpper(gpu_string);
+        backend = gpu_string.find("ZINK") != std::string::npos ? "zink" : "native";
+    }
+
+    return !backend.empty() && backend != getRenderBackend();
+}
+
+bool LLFeatureManager::isSameRenderGPU(const std::string& previous_identity,
+                                       const std::string& previous_gpu) const
+{
+    const std::string current_identity = getRenderGPUIdentity();
+    if (current_identity.empty())
+    {
+        return false;
+    }
+
+    std::string old_identity = canonicalizeRenderGPUIdentity(previous_identity);
+    if (!old_identity.empty())
+    {
+        return old_identity == current_identity;
+    }
+
+    // Migrate LastGPUString from builds predating LastRenderGPUIdentity. Native
+    // GL stores vendor + renderer, while Zink embeds the device in its renderer.
+    old_identity = canonicalizeRenderGPUIdentity(previous_gpu);
+    if (old_identity == current_identity)
+    {
+        return true;
+    }
+
+    std::string old_raw = previous_gpu;
+    LLStringUtil::toUpper(old_raw);
+    return !old_raw.empty() && old_raw.find(current_identity) != std::string::npos;
 }
 
 void LLFeatureManager::initSingleton()
@@ -699,46 +859,35 @@ void LLFeatureManager::applyBaseMasks()
         maskFeatures("Unknown");
     }
 
-    // now all those wacky ones
-    if (gGLManager.mIsNVIDIA)
+    const auto renderer_snapshot = LL::GHI::activeRendererSnapshot();
+    if (!renderer_snapshot)
+    {
+        LL_WARNS("RenderInit")
+            << "No renderer capability snapshot; applying conservative feature masks"
+            << LL_ENDL;
+    }
+    const LL::GHI::RendererIdentity identity = renderer_snapshot
+        ? renderer_snapshot->identity
+        : LL::GHI::RendererIdentity{};
+    const LL::GHI::RendererCapabilities capabilities = renderer_snapshot
+        ? renderer_snapshot->capabilities
+        : LL::GHI::RendererCapabilities{};
+
+    // Backend-neutral renderer policy begins here. API-specific discovery and
+    // compatibility overrides are owned by the active GHI backend.
+    if (identity.vendor == LL::GHI::DeviceVendor::NVIDIA)
     {
         maskFeatures("NVIDIA");
     }
-    if (gGLManager.mIsAMD)
+    if (identity.vendor == LL::GHI::DeviceVendor::AMD)
     {
         maskFeatures("AMD");
     }
-    if (gGLManager.mIsIntel)
+    if (identity.vendor == LL::GHI::DeviceVendor::Intel)
     {
         maskFeatures("Intel");
-
-        static constexpr F32 TARGET_GL_VERSION =
-#if LL_DARWIN
-            4.09f;
-#else
-            4.59f;
-#endif
-
-        // check against 3.33 to avoid applying this fallback twice
-        if (gGLManager.mGLVersion < TARGET_GL_VERSION && gGLManager.mGLVersion > 3.33f)
-        {
-            // if we don't have OpenGL 4.6 on intel, set it to OpenGL 3.3
-            // we also want to trigger the GL3 fallbacks on these chipsets
-            // this is expected to be mainly pre-Haswell Intel HD Graphics 4X00 and 5X00.
-            // A lot of these chips claim 4.3 or 4.4 support, but don't seem to work.
-            // https://code.blender.org/2019/04/supported-gpus-in-blender-2-80/
-            // https://docs.blender.org/manual/en/latest/troubleshooting/gpu/windows/intel.html#legacy-intel-hd-4000-5000
-            // https://www.intel.com/content/www/us/en/support/articles/000005524/graphics.html
-            // this will disable things like reflection probes, HDR, FXAA and SMAA
-            LL_INFOS("RenderInit") << "Applying Intel integrated pre-Haswell fallback.  Downgrading feature usage to OpenGL 3.3" << LL_ENDL;
-            gGLManager.mGLVersion = llmin(gGLManager.mGLVersion, 3.33f);
-            gGLManager.mGLVersionString += " 3.3 fallback";  // for ViewerStats reporting
-            // and select GLSL version for OpenGL 3.2
-            gGLManager.mGLSLVersionMajor = 3;
-            gGLManager.mGLSLVersionMinor = 20;
-        }
     }
-    if (gGLManager.mIsApple)
+    if (identity.vendor == LL::GHI::DeviceVendor::Apple)
     {
         maskFeatures("AppleGPU");
     }
@@ -746,27 +895,29 @@ void LLFeatureManager::applyBaseMasks()
     {
         maskFeatures("NonAppleGPU");
     }
-    if (gGLManager.mGLVersion < 3.f)
+    if (!capabilities.baselineGraphicsPipeline)
     {
         maskFeatures("OpenGLPre30");
     }
-    if (gGLManager.mNumTextureImageUnits <= 8)
+    if (capabilities.maxSampledImagesPerStage <= 8)
     {
         maskFeatures("TexUnit8orLess");
     }
-    if (gGLManager.mNumTextureImageUnits <= 16)
+    if (capabilities.maxSampledImagesPerStage <= 16)
     {
         maskFeatures("TexUnit16orLess");
     }
-    if (gGLManager.mVRAM > 512)
+    const std::uint64_t video_memory_mib =
+        identity.dedicatedVideoMemoryBytes / (1024ull * 1024ull);
+    if (video_memory_mib > 512)
     {
         maskFeatures("VRAMGT512");
     }
-    if (gGLManager.mVRAM < 2048)
+    if (video_memory_mib < 2048)
     {
         maskFeatures("VRAMLT2GB");
     }
-    if (gGLManager.mGLVersion < 3.99f)
+    if (!capabilities.advancedGraphicsPipeline)
     {
         maskFeatures("GL3");
 
@@ -777,7 +928,7 @@ void LLFeatureManager::applyBaseMasks()
         // Make extra sure that vintage mode also gets enabled.
         gSavedSettings.setBOOL("RenderDisableVintageMode", false);
     }
-    if (gGLManager.mMaxVaryingVectors <= 16)
+    if (capabilities.maxVaryingVectors <= 16)
     {
         maskFeatures("VaryingVectors16orLess");
     }

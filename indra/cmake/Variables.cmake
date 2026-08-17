@@ -34,6 +34,7 @@ set(SCRIPTS_PREFIX ../scripts)
 set(VIEWER_PREFIX)
 set(INTEGRATION_TESTS_PREFIX)
 set(LL_TESTS OFF CACHE BOOL "Build and run unit and integration tests (disable for build timing runs to reduce variation")
+set(USE_VULKAN_GHI OFF CACHE BOOL "Build the developer-gated native Vulkan GHI presentation backend")
 set(INCREMENTAL_LINK OFF CACHE BOOL "Use incremental linking on win32 builds (enable for faster links on some machines)")
 set(ENABLE_MEDIA_PLUGINS ON CACHE BOOL "Turn off building media plugins if they are imported by third-party library mechanism")
 set(VIEWER_SYMBOL_FILE "" CACHE STRING "Name of tarball into which to place symbol files")
@@ -215,4 +216,3 @@ endif (HAVOK_TPV)
 source_group("CMake Rules" FILES CMakeLists.txt)
 
 get_property(LL_GENERATOR_IS_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
-

@@ -86,6 +86,7 @@
 #include "llurldispatcher.h"
 #include "llurlhistory.h"
 #include "llrender.h"
+#include "llghirendererinfo.h"
 #include "llteleporthistory.h"
 #include "lltoast.h"
 #include "llsdutil_math.h"
@@ -1206,6 +1207,10 @@ bool LLAppViewer::init()
     gGLManager.mVRAMDetected = gGLManager.mVRAM;
     LL_INFOS("AppInit") << "VRAM detected: " << gGLManager.mVRAMDetected << LL_ENDL;
     overrideDetectedHardware(); 
+    // VRAM detection/override occurs after the OpenGL context publishes its
+    // first snapshot. Refresh the backend-owned snapshot before feature policy
+    // and persistence consume it.
+    LL::GHI::publishInitializedOpenGLRendererSnapshot();
     // </FS:Beq> 
 
 
@@ -4091,23 +4096,85 @@ LLSD LLAppViewer::getViewerInfo() const
     info["CONCURRENCY"] = LLSD::Integer(std::thread::hardware_concurrency());    // <FS:Beq> Add hardware concurrency to info
     // Moved hack adjustment to Windows memory size into llsys.cpp
     info["OS_VERSION"] = LLOSInfo::instance().getOSString();
-    info["GRAPHICS_CARD_VENDOR"] = ll_safe_string((const char*)(glGetString(GL_VENDOR)));
-    info["GRAPHICS_CARD"] = ll_safe_string((const char*)(glGetString(GL_RENDERER)));
-    info["GRAPHICS_CARD_MEMORY"] = LLSD::Integer(gGLManager.mVRAM);
-    info["GRAPHICS_CARD_MEMORY_DETECTED"] = gGLManager.mVRAMDetected; // <FS:Beq/> allow detected hardware to be overridden.
+    const auto renderer_snapshot = LL::GHI::activeRendererSnapshot();
+    std::string graphics_card_vendor;
+    std::string graphics_card;
+    S32 graphics_memory = 0;
+    S32 graphics_memory_detected = 0;
+    LL::GHI::DeviceVendor renderer_vendor = LL::GHI::DeviceVendor::Unknown;
+    if (renderer_snapshot)
+    {
+        const LL::GHI::RendererIdentity& identity = renderer_snapshot->identity;
+        const LL::GHI::RendererSupportInfo renderer_info =
+            LL::GHI::makeRendererSupportInfo(*renderer_snapshot);
+        renderer_vendor = identity.vendor;
+        graphics_card_vendor = renderer_info.vendor;
+        graphics_card = renderer_info.renderer;
+        if (renderer_info.videoMemoryBytes != 0)
+        {
+            graphics_memory = static_cast<S32>(
+                renderer_info.videoMemoryBytes / (1024ull * 1024ull));
+        }
+        if (renderer_info.detectedVideoMemoryBytes != 0)
+        {
+            graphics_memory_detected = static_cast<S32>(
+                renderer_info.detectedVideoMemoryBytes / (1024ull * 1024ull));
+        }
+        info["RENDERING_API"] = renderer_info.api;
+        info["RENDERING_API_VERSION"] = renderer_info.apiVersion;
+        info["RENDERING_BACKEND"] = renderer_info.backend;
+        info["RENDERING_PROVIDER"] = renderer_info.provider;
+        info["RENDERER_SUMMARY"] = renderer_info.summary;
+    }
+    else
+    {
+        graphics_card_vendor = "Unavailable";
+        graphics_card = "Renderer snapshot unavailable";
+        info["RENDERING_API"] = "Unavailable";
+        info["RENDERING_API_VERSION"] = "Unavailable";
+        info["RENDERING_BACKEND"] = "Unavailable";
+        info["RENDERING_PROVIDER"] = "Unavailable";
+        info["RENDERER_SUMMARY"] = graphics_card;
+    }
+#if LL_WINDOWS
+    // Mesa's maintenance7 layered driver ID is zero with the AMD Windows ICD,
+    // even though the backend selector has already isolated and verified that
+    // vendor ICD. Keep the raw GL renderer string untouched for renderer logic
+    // and present a readable description only in user-facing system info.
+    const std::string zink_prefix = "zink Vulkan ";
+    const std::string unknown_suffix = " (Driver Unknown))";
+    const size_t device_open = graphics_card.find('(', zink_prefix.size());
+    if (graphics_card.rfind(zink_prefix, 0) == 0 &&
+        device_open != std::string::npos &&
+        graphics_card.size() > unknown_suffix.size() &&
+        graphics_card.compare(graphics_card.size() - unknown_suffix.size(),
+                              unknown_suffix.size(), unknown_suffix) == 0)
+    {
+        const std::string version = graphics_card.substr(
+            zink_prefix.size(), device_open - zink_prefix.size());
+        const std::string device = graphics_card.substr(
+            device_open + 1,
+            graphics_card.size() - device_open - 1 - unknown_suffix.size());
+        graphics_card = "Mesa zink Vulkan " + version + " (" + device + " - Vendor ICD)";
+    }
+#endif
+    info["GRAPHICS_CARD_VENDOR"] = graphics_card_vendor;
+    info["GRAPHICS_CARD"] = graphics_card;
+    info["GRAPHICS_CARD_MEMORY"] = LLSD::Integer(graphics_memory);
+    info["GRAPHICS_CARD_MEMORY_DETECTED"] = graphics_memory_detected; // <FS:Beq/> allow detected hardware to be overridden.
 
 #if LL_WINDOWS
     std::string drvinfo;
 
-    if (gGLManager.mIsIntel)
+    if (renderer_vendor == LL::GHI::DeviceVendor::Intel)
     {
         drvinfo = gDXHardware.getDriverVersionWMI(LLDXHardware::GPU_INTEL);
     }
-    else if (gGLManager.mIsNVIDIA)
+    else if (renderer_vendor == LL::GHI::DeviceVendor::NVIDIA)
     {
         drvinfo = gDXHardware.getDriverVersionWMI(LLDXHardware::GPU_NVIDIA);
     }
-    else if (gGLManager.mIsAMD)
+    else if (renderer_vendor == LL::GHI::DeviceVendor::AMD)
     {
         drvinfo = gDXHardware.getDriverVersionWMI(LLDXHardware::GPU_AMD);
     }
@@ -4137,7 +4204,16 @@ LLSD LLAppViewer::getViewerInfo() const
 // [RLVa:KB] - Checked: 2010-04-18 (RLVa-1.2.0)
     info["RLV_VERSION"] = (rlv_handler_t::isEnabled()) ? RlvStrings::getVersionAbout() : LLTrans::getString("RLVaStatusDisabled");
 // [/RLVa:KB]
-    info["OPENGL_VERSION"] = ll_safe_string((const char*)(glGetString(GL_VERSION)));
+    if (renderer_snapshot &&
+        renderer_snapshot->identity.backend == LL::GHI::Backend::OpenGL)
+    {
+        info["OPENGL_VERSION"] =
+            LL::GHI::formatApiVersion(renderer_snapshot->identity.apiVersion);
+    }
+    else if (!renderer_snapshot)
+    {
+        info["OPENGL_VERSION"] = "Unavailable";
+    }
     info["LIBCURL_VERSION"] = LLCore::LLHttp::getCURLVersion();
     // Settings
     // <FS:Beq> gViewerWindow can be null on shutdown. Crashes if bugsplatt uses the info
@@ -4384,7 +4460,7 @@ std::string LLAppViewer::getViewerInfoString(bool default_string) const
     {
         support << "\n" << LLTrans::getString("AboutDriver", args, default_string);
     }
-    support << "\n" << LLTrans::getString("AboutOGL", args, default_string);
+    support << "\n" << LLTrans::getString("AboutRenderer", args, default_string);
     //support << "\n\n" << LLTrans::getString("AboutSettings", args, default_string); // <FS> Custom sysinfo
 #if LL_DARWIN
     support << "\n" << LLTrans::getString("AboutOSXHiDPI", args, default_string);

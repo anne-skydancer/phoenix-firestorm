@@ -40,6 +40,8 @@
  || ! defined(LL_VIEWER_VERSION_MAJOR) \
  || ! defined(LL_VIEWER_VERSION_MINOR) \
  || ! defined(LL_VIEWER_VERSION_PATCH) \
+ || ! defined(LL_VIEWER_VERSION_YEAR) \
+ || ! defined(LL_VIEWER_VERSION_MONTH_STRING) \
  || ! defined(LL_VIEWER_VERSION_BUILD)
  #error "Channel or Version information is undefined"
 #endif
@@ -50,8 +52,9 @@
 
 LLVersionInfo::LLVersionInfo():
     short_version(STRINGIZE(LL_VIEWER_VERSION_MAJOR << "."
-                            << LL_VIEWER_VERSION_MINOR << "."
-                            << LL_VIEWER_VERSION_PATCH)),
+                            << LL_VIEWER_VERSION_MINOR << "-"
+                            << LL_VIEWER_VERSION_YEAR << "."
+                            << LL_VIEWER_VERSION_MONTH_STRING)),
     // LL_VIEWER_CHANNEL is a macro defined on the compiler command line. The
     // macro expands to the string name of the channel, but without quotes. We
     // need to turn it into a quoted string. LL_TO_STRING() does that.
@@ -157,11 +160,7 @@ std::string LLVersionInfo::getChannelAndVersionFS() const
     {
         // cache the version string
         std::ostringstream stream;
-        stream << LL_TO_STRING(LL_VIEWER_CHANNEL) << " "
-               << LL_VIEWER_VERSION_MAJOR << "."
-               << LL_VIEWER_VERSION_MINOR << "."
-               << LL_VIEWER_VERSION_PATCH << " ("
-               << LL_VIEWER_VERSION_BUILD << ")";
+        stream << LL_TO_STRING(LL_VIEWER_CHANNEL) << " " << getVersion();
         sVersionChannelFS = stream.str();
     }
 
@@ -187,7 +186,7 @@ LLVersionInfo::ViewerMaturity LLVersionInfo::getViewerMaturity() const
     std::string channel = getChannel();
 
     static const boost::regex is_test_channel("\\bTest\\b");
-    static const boost::regex is_beta_channel("\\b(Beta|Develop)\\b");  // Develop is an alias for Beta
+    static const boost::regex is_beta_channel("\\b(Beta|Develop|Dev)\\b");
     static const boost::regex is_project_channel("\\bProject\\b");
     static const boost::regex is_release_channel("\\bRelease\\b");
 
@@ -227,7 +226,7 @@ LLVersionInfo::FSViewerMaturity LLVersionInfo::getFSViewerMaturity() const
     std::string channel = getChannel();
 
     static const boost::regex is_manual_channel("\\bManual(x64)?\\b");
-    static const boost::regex is_beta_channel("\\bBeta(x64)?\\b");
+    static const boost::regex is_beta_channel("\\b(Beta|Dev)(x64)?\\b");
     static const boost::regex is_alpha_channel("\\bAlpha(x64)?\\b");
     static const boost::regex is_release_channel("\\bRelease(x64)?\\b");
     static const boost::regex is_nightly_channel("\\bNightly(x64)?\\b");

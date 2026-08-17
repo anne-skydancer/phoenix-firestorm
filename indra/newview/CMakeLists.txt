@@ -1955,10 +1955,12 @@ if (LINUX)
 
     # Replace the icons with the appropriate ones for the channel
     # ('test' is the default)
-    set(ICON_PATH "private")
+    set(ICON_PATH "development")
     string(TOLOWER ${VIEWER_CHANNEL} channel_lower)
     if(channel_lower MATCHES "release")
         set(ICON_PATH "release")
+    elseif(channel_lower MATCHES "dev")
+        set(ICON_PATH "development")
     elseif(channel_lower MATCHES "beta")
         set(ICON_PATH "beta")
     elseif(channel_lower MATCHES "project")
@@ -2007,12 +2009,14 @@ if (WINDOWS)
 
     # Replace the icons with the appropriate ones for the channel
     # ('test' is the default)
-    set(ICON_PATH "private")
+    set(ICON_PATH "development")
     #set(VIEWER_MACOSX_PHASE "d") # <FS:Ansariel> Moved to OSX section
     string(TOLOWER ${VIEWER_CHANNEL} channel_lower)
     if(channel_lower MATCHES "release")
         set(ICON_PATH "release")
         #set(VIEWER_MACOSX_PHASE "f") # <FS:Ansariel> Moved to OSX section
+    elseif(channel_lower MATCHES "dev")
+        set(ICON_PATH "development")
     elseif(channel_lower MATCHES "beta")
         set(ICON_PATH "beta")
         #set(VIEWER_MACOSX_PHASE "b") # <FS:Ansariel> Moved to OSX section
@@ -2835,7 +2839,7 @@ if (DARWIN)
   #set(product "${VIEWER_CHANNEL}")
   set(product "Vulkanstorm")
   set(MACOSX_EXECUTABLE_NAME "Vulkanstorm")
-  set(MACOSX_BUNDLE_INFO_STRING "Vulkanstorm: Firestorm on Vulkan")
+  set(MACOSX_BUNDLE_INFO_STRING "Vulkanstorm")
   set(MACOSX_BUNDLE_ICON_FILE "firestorm_icon.icns")
   set(MACOSX_BUNDLE_GUI_IDENTIFIER "org.vulkanstorm.viewer")
   set(MACOSX_BUNDLE_LONG_VERSION_STRING "${VIEWER_CHANNEL} ${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")

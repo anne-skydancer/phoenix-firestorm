@@ -3,15 +3,22 @@ import subprocess
 import tarfile
 
 class FSViewerManifest:
+    def fs_display_version(self):
+        """Return Vulkanstorm's public version from the numeric package tuple."""
+        major, minor, patch, build = self.args['version'][:4]
+        if len(patch) == 4:
+            return f"{major}.{minor}-{patch[:2]}.{patch[2:]}.{build}"
+        return '.'.join(self.args['version'])
+
     def fs_installer_basename(self):
         if self.fs_is_avx2():
             opt_string = "AVX2"
         else:
             opt_string = "LEGACY"
         substitution_strings = {
-            'version' : '.'.join(self.args['version']),
-            'version_short' : '.'.join(self.args['version'][:-1]),
-            'version_dashes' : '-'.join(self.args['version']),
+            'version' : self.fs_display_version(),
+            'version_short' : self.fs_display_version().rsplit('.', 1)[0],
+            'version_dashes' : self.fs_display_version().replace('.', '-'),
             'app_name':self.app_name(),
             'optimized': opt_string,
             'app_name_oneword':self.app_name_oneword()

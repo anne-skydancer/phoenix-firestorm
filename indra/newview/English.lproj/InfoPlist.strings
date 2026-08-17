@@ -3,4 +3,4 @@
 CFBundleName = "Vulkanstorm";
 
 CFBundleShortVersionString = "Vulkanstorm version %%VERSION%%";
-CFBundleGetInfoString = "Vulkanstorm: Firestorm on Vulkan version %%VERSION%%, Copyright 2010-2026 The Phoenix Firestorm Project, Inc.";
+CFBundleGetInfoString = "Vulkanstorm version %%VERSION%%, Copyright 2010-2026 The Phoenix Firestorm Project, Inc.";

@@ -73,7 +73,7 @@ showUsage()
     echo "  --config                 : Generate a new architecture-specific config"
     echo "  --build                  : Build Firestorm"
     echo "  --version                : Update version number"
-    echo "  --chan  [Release|Beta|Private]   : Private is the default, sets channel"
+    echo "  --chan  [Release|Dev]            : Dev is the default, sets channel"
     echo "  --btype [Release|RelWithDebInfo] : Release is default, whether to use symbols"
     echo "  --kdu                    : Build with KDU"
     echo "  --grok                   : Build with Grok J2C (requires GROK_ROOT)"
@@ -400,11 +400,7 @@ fi
 
 CHANNEL_SIMPLE="$CHANNEL"
 if [ -z $CHANNEL ] ; then
-    if [ $TARGET_PLATFORM == "darwin" ] ; then
-        CHANNEL="private-`hostname -s` "
-    else
-        CHANNEL="private-`hostname`"
-    fi
+    CHANNEL="Dev"
 else
     CHANNEL=`echo $CHANNEL | sed -e "s/[^a-zA-Z0-9\-]*//g"` # strip out difficult characters from channel
 fi

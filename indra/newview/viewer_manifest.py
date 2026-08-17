@@ -288,6 +288,8 @@ class ViewerManifest(LLManifest,FSViewerManifest):
             channel_qualifier = channel_qualifier[1:]
         if channel_qualifier.startswith('release'):
             channel_type='release'
+        elif channel_qualifier.startswith('dev'):
+            channel_type='dev'
         elif channel_qualifier.startswith('beta'):
             channel_type='beta'
         elif channel_qualifier.startswith('alpha'):
@@ -387,7 +389,9 @@ class ViewerManifest(LLManifest,FSViewerManifest):
     def icon_path(self):
         # <FS:ND> Add -os for oss builds
         chan = self.channel_type()
-        if chan in ['alpha', 'nightly','manual', 'profiling']:
+        if chan == 'dev':
+            chan = 'development'
+        elif chan in ['alpha', 'nightly','manual', 'profiling']:
             chan = 'test'
 
         if self.fs_is_opensim():

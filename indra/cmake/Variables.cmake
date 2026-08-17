@@ -178,7 +178,7 @@ endif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 # Default deploy grid
 set(GRID agni CACHE STRING "Target Grid")
 
-#set(VIEWER_CHANNEL "Second Life Test" CACHE STRING "Viewer Channel Name")
+set(VIEWER_CHANNEL "Vulkanstorm-Dev" CACHE STRING "Viewer Channel Name")
 
 # Flickr API keys.
 set(FLICKR_API_KEY "daaabff93a967e0f37fa18863bb43b29")

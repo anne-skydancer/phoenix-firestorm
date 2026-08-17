@@ -163,10 +163,7 @@ void LLTranslationAPIHandler::verifyKeyCoro(LLTranslate::EService service, LLSD 
 
     std::string user_agent = stringize(
         LLVersionInfo::instance().getChannel(), ' ',
-        LLVersionInfo::instance().getMajor(), '.',
-        LLVersionInfo::instance().getMinor(), '.',
-        LLVersionInfo::instance().getPatch(), " (",
-        LLVersionInfo::instance().getBuild(), ')');
+        LLVersionInfo::instance().getVersion());
 
     initHttpHeader(httpHeaders, user_agent, key);
 
@@ -218,10 +215,7 @@ void LLTranslationAPIHandler::translateMessageCoro(LanguagePair_t fromTo, std::s
 
     std::string user_agent = stringize(
         LLVersionInfo::instance().getChannel(), ' ',
-        LLVersionInfo::instance().getMajor(), '.',
-        LLVersionInfo::instance().getMinor(), '.',
-        LLVersionInfo::instance().getPatch(), " (",
-        LLVersionInfo::instance().getBuild(), ')');
+        LLVersionInfo::instance().getVersion());
 
     initHttpHeader(httpHeaders, user_agent);
     httpOpts->setSSLVerifyPeer(false);

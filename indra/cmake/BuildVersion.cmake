@@ -7,10 +7,23 @@ if (NOT DEFINED VIEWER_SHORT_VERSION) # will be true in indra/, false in indra/n
     set(VIEWER_VERSION_BASE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/newview/VIEWER_VERSION_FS.txt")
 
     if ( EXISTS ${VIEWER_VERSION_BASE_FILE} )
-        file(STRINGS ${VIEWER_VERSION_BASE_FILE} VIEWER_SHORT_VERSION REGEX "^[0-9]+\\.[0-9]+\\.[0-9]+")
-        string(REGEX REPLACE "^([0-9]+)\\.[0-9]+\\.[0-9]+" "\\1" VIEWER_VERSION_MAJOR ${VIEWER_SHORT_VERSION})
-        string(REGEX REPLACE "^[0-9]+\\.([0-9]+)\\.[0-9]+" "\\1" VIEWER_VERSION_MINOR ${VIEWER_SHORT_VERSION})
-        string(REGEX REPLACE "^[0-9]+\\.[0-9]+\\.([0-9]+)" "\\1" VIEWER_VERSION_PATCH ${VIEWER_SHORT_VERSION})
+        file(STRINGS ${VIEWER_VERSION_BASE_FILE} VULKANSTORM_VERSION_BASE
+             REGEX "^[0-9]+\\.[0-9]+-[0-9]+\\.[0-9]+")
+        string(REGEX REPLACE "^([0-9]+)\\.[0-9]+-[0-9]+\\.[0-9]+" "\\1"
+               VIEWER_VERSION_MAJOR ${VULKANSTORM_VERSION_BASE})
+        string(REGEX REPLACE "^[0-9]+\\.([0-9]+)-[0-9]+\\.[0-9]+" "\\1"
+               VIEWER_VERSION_MINOR ${VULKANSTORM_VERSION_BASE})
+        string(REGEX REPLACE "^[0-9]+\\.[0-9]+-([0-9]+)\\.[0-9]+" "\\1"
+               VIEWER_VERSION_YEAR ${VULKANSTORM_VERSION_BASE})
+        string(REGEX REPLACE "^[0-9]+\\.[0-9]+-[0-9]+\\.([0-9]+)" "\\1"
+               VIEWER_VERSION_MONTH ${VULKANSTORM_VERSION_BASE})
+        # Keep a conventional four-integer version for platform metadata,
+        # updater comparison, and simulator protocol fields.
+        set(VIEWER_VERSION_PATCH "${VIEWER_VERSION_YEAR}${VIEWER_VERSION_MONTH}")
+        set(VIEWER_SHORT_VERSION
+            "${VIEWER_VERSION_MAJOR}.${VIEWER_VERSION_MINOR}.${VIEWER_VERSION_PATCH}")
+        set(VIEWER_DISPLAY_VERSION
+            "${VIEWER_VERSION_MAJOR}.${VIEWER_VERSION_MINOR}-${VIEWER_VERSION_YEAR}.${VIEWER_VERSION_MONTH}")
         if (DEFINED ENV{revision})
            set(VIEWER_VERSION_REVISION $ENV{revision})
            message(STATUS "Revision (from environment): ${VIEWER_VERSION_REVISION}")
@@ -38,7 +51,7 @@ if (NOT DEFINED VIEWER_SHORT_VERSION) # will be true in indra/, false in indra/n
                 set(VIEWER_VERSION_REVISION 0)
             endif (DEFINED GIT)
         endif (DEFINED ENV{revision})
-        message(STATUS "Building '${VIEWER_CHANNEL}' Version ${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
+        message(STATUS "Building '${VIEWER_CHANNEL}' Version ${VIEWER_DISPLAY_VERSION}.${VIEWER_VERSION_REVISION}")
     else ( EXISTS ${VIEWER_VERSION_BASE_FILE} )
         message(SEND_ERROR "Cannot get viewer version from '${VIEWER_VERSION_BASE_FILE}'") 
     endif ( EXISTS ${VIEWER_VERSION_BASE_FILE} )

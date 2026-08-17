@@ -235,8 +235,7 @@ LLXMLRPCTransaction::Impl::Impl
     httpHeaders->append(HTTP_OUT_HEADER_CONTENT_TYPE, HTTP_CONTENT_TEXT_XML);
 
     const LLVersionInfo& vi(LLVersionInfo::instance());
-    std::string user_agent = vi.getChannel() + llformat(" %d.%d.%d (%llu)",
-        vi.getMajor(), vi.getMinor(), vi.getPatch(), vi.getBuild());
+    std::string user_agent = vi.getChannel() + " " + vi.getVersion();
 
     httpHeaders->append(HTTP_OUT_HEADER_USER_AGENT, user_agent);
 

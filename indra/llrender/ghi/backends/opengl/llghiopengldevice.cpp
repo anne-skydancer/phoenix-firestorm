@@ -363,7 +363,7 @@ const ShaderPackageDesc::CodeArtifact* findOpenGLArtifact(
     };
     if (prefer46)
     {
-        if (const auto* artifact = find(ShaderPackageDesc::TargetProfile::OpenGL46))
+        if (const auto* artifact = find(ShaderPackageDesc::TargetProfile::OpenGL44))
             return artifact;
     }
     return find(ShaderPackageDesc::TargetProfile::OpenGL41);
@@ -682,7 +682,7 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     }
     mCapabilities.storageImageAtomics =
         major > 4 || (major == 4 && minor >= 2);
-    mCapabilities.advancedGraphicsPipeline = major > 4 || (major == 4 && minor >= 6);
+    mCapabilities.advancedGraphicsPipeline = major > 4 || (major == 4 && minor >= 4);
     glGenFramebuffers(1, &mFramebuffer);
 }
 

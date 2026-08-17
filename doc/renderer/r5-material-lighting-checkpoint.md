@@ -67,7 +67,7 @@ The shared 64 x 64 fixture draws a skinned indexed quad and exercises:
 - reverse-Z depth and the established base-color, ORM, normal, and emissive
   G-buffer targets.
 
-Native OpenGL 4.6, the OpenGL 4.1 fallback, and Vulkan 1.3 produce 2,304 shaded
+Packaged OpenGL 4.4, the OpenGL 4.1 fallback, and Vulkan 1.3 produce 2,304 shaded
 pixels and bit-exact hashes for every target:
 
 1. base color: `b1c0a0fdf973dac4aebb8eac51dac984cf46b4b3727fc843033f94e81ab07b03`;
@@ -181,7 +181,7 @@ three independent RGBA8 targets in one deterministic execution:
   water normal and Fresnel treatment, water-line classification, and an
   underwater override.
 
-OpenGL 4.6, the OpenGL 4.1 fallback, and Vulkan 1.3 with Khronos validation
+OpenGL 4.4, the OpenGL 4.1 fallback, and Vulkan 1.3 with Khronos validation
 produce 2,304 shaded pixels and bit-exact hashes for every target:
 
 1. terrain: `a5cf6a0b67b9227adaa765a0560512cfe3c559a7bcedd8461915c873c04b2cd2`;

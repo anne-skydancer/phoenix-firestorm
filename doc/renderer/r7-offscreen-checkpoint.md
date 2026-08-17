@@ -73,12 +73,12 @@ The `r7_offscreen` fixture performs one representative frame:
    plus both updated 2D textures, into a 64x64 result; and
 6. read back and hash the exact RGBA8 result.
 
-Vulkan 1.3 with Khronos synchronization validation, OpenGL 4.6, and the
+Vulkan 1.3 with Khronos synchronization validation, OpenGL 4.4, and the
 OpenGL 4.1 shader fallback all produce 4,096 shaded pixels and SHA-256:
 
 `a7672b031451f5ccb87aaa7ad8f5d1cfee57fea0ff9f75302a60720551377bf5`
 
-The shader package is built offline for Vulkan GLSL, OpenGL 4.6, and OpenGL
+The shader package is built offline for Vulkan GLSL, OpenGL 4.4, and OpenGL
 4.1 and participates in the byte-determinism and reflection-rejection gate.
 Its three reflected resources are the probe cube array, dynamic texture, and
 media texture.
@@ -88,7 +88,7 @@ media texture.
 - GHI contract suite: **28/28 pass**.
 - Vulkan R7 fixture: PASS with Khronos validation and synchronization
   validation enabled; only loader duplicate-layer notices were reported.
-- OpenGL R7 fixture: PASS through both OpenGL 4.6 and OpenGL 4.1 package
+- OpenGL R7 fixture: PASS through both OpenGL 4.4 and OpenGL 4.1 package
   artifacts with the same exact hash.
 - Shader package: deterministic and reflection mismatch rejection PASS.
 - `llrender` Release build: PASS.

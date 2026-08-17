@@ -105,14 +105,14 @@ int main()
                 std::cerr << result.message << '\n';
                 exitCode = 6;
             }
-            else report(result, "OpenGL46");
+            else report(result, "OpenGL44");
 
             LL::GHI::ShaderPackageDesc fallback = package;
             for (auto& stage : fallback.stages)
                 std::erase_if(stage.artifacts, [](const auto& artifact)
                 {
                     return artifact.target ==
-                        LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL46;
+                        LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL44;
                 });
             if (!exitCode)
             {

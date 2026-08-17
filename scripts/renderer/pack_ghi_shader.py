@@ -244,7 +244,7 @@ def main() -> int:
             if not suffix:
                 fail(f"unsupported shader stage: {stage}")
             artifacts = []
-            for key, target in (("opengl_41", "opengl_41"), ("opengl_46", "opengl_46")):
+            for key, target in (("opengl_41", "opengl_41"), ("opengl_44", "opengl_44")):
                 source_path = root / stage_desc[key]
                 source = normalized_text(source_path)
                 semantic_files[stage_desc[key]] = sha256(source)
@@ -312,7 +312,7 @@ def main() -> int:
         "schema_version": manifest["schema_version"],
         "name": manifest["name"],
         "stages": [{key: stage[key] for key in
-                    ("stage", "entry_point", "opengl_41", "opengl_46", "vulkan")}
+                    ("stage", "entry_point", "opengl_41", "opengl_44", "vulkan")}
                    for stage in manifest["stages"]],
         "files": semantic_files,
         "expected": expected,

@@ -107,7 +107,7 @@ int main()
             }
             else
             {
-                std::cout << fixture.message << " profile=OpenGL46 depth-stencil="
+                std::cout << fixture.message << " profile=OpenGL44 depth-stencil="
                           << static_cast<int>(fixture.depthStencilFormat)
                           << " color-sha256=" << fixture.colorSha256
                           << " cache-id=" << fixture.pipelineCacheIdentity
@@ -116,16 +116,16 @@ int main()
                 const auto warm = LL::GHI::Test::runDrawFixture(
                     *creation.device, shaderPackage,
                     {LL::GHI::Format::RGBA8UNorm, true,
-                     LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL46});
+                     LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL44});
                 if (!warm.passed || warm.colorSha256 != fixture.colorSha256 ||
                     warm.pipelineCacheIdentity != fixture.pipelineCacheIdentity)
                 {
-                    std::cerr << "OpenGL 4.6 warm run: " << warm.message << '\n';
+                    std::cerr << "OpenGL 4.4 warm run: " << warm.message << '\n';
                     result = 9;
                 }
                 else
                 {
-                    std::cout << warm.message << " profile=OpenGL46 cache=warm"
+                    std::cout << warm.message << " profile=OpenGL44 cache=warm"
                               << " color-sha256=" << warm.colorSha256
                               << " cache-id=" << warm.pipelineCacheIdentity
                               << " shader-us=" << warm.shaderCreateMicroseconds
@@ -137,7 +137,7 @@ int main()
                     std::erase_if(stage.artifacts, [](const auto& artifact)
                     {
                         return artifact.target ==
-                            LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL46;
+                            LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL44;
                     });
                 }
                 const auto fallback = LL::GHI::Test::runDrawFixture(
@@ -168,7 +168,7 @@ int main()
                     }
                     else
                     {
-                        std::cout << srgb.message << " profile=OpenGL46 color=sRGB"
+                        std::cout << srgb.message << " profile=OpenGL44 color=sRGB"
                                   << " color-sha256=" << srgb.colorSha256 << '\n';
                         const auto fallbackSrgb = LL::GHI::Test::runDrawFixture(
                             *creation.device, fallbackPackage,

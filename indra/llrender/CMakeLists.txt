@@ -87,6 +87,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghidescriptors.h
     ghi/include/llghidevice.h
     ghi/include/llghipresentation.h
+    ghi/include/llghiproductioncontract.h
     ghi/include/llghimaterialscenepacket.h
     ghi/include/llghiopaquescenepacket.h
     ghi/include/llghirendererinfo.h
@@ -128,8 +129,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R3_SHADER_ROOT}/package.json"
       "${GHI_R3_SHADER_ROOT}/opengl41/diagnostic.vert.glsl"
       "${GHI_R3_SHADER_ROOT}/opengl41/diagnostic.frag.glsl"
-      "${GHI_R3_SHADER_ROOT}/opengl46/diagnostic.vert.glsl"
-      "${GHI_R3_SHADER_ROOT}/opengl46/diagnostic.frag.glsl"
+      "${GHI_R3_SHADER_ROOT}/opengl44/diagnostic.vert.glsl"
+      "${GHI_R3_SHADER_ROOT}/opengl44/diagnostic.frag.glsl"
       "${GHI_R3_SHADER_ROOT}/vulkan/diagnostic.vert.glsl"
       "${GHI_R3_SHADER_ROOT}/vulkan/diagnostic.frag.glsl"
       "${GHI_R3_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -156,8 +157,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R4_SHADER_ROOT}/package.json"
       "${GHI_R4_SHADER_ROOT}/opengl41/opaque.vert.glsl"
       "${GHI_R4_SHADER_ROOT}/opengl41/opaque.frag.glsl"
-      "${GHI_R4_SHADER_ROOT}/opengl46/opaque.vert.glsl"
-      "${GHI_R4_SHADER_ROOT}/opengl46/opaque.frag.glsl"
+      "${GHI_R4_SHADER_ROOT}/opengl44/opaque.vert.glsl"
+      "${GHI_R4_SHADER_ROOT}/opengl44/opaque.frag.glsl"
       "${GHI_R4_SHADER_ROOT}/vulkan/opaque.vert.glsl"
       "${GHI_R4_SHADER_ROOT}/vulkan/opaque.frag.glsl"
       "${GHI_R4_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -184,8 +185,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R4C_SHADER_ROOT}/package.json"
       "${GHI_R4C_SHADER_ROOT}/opengl41/visibility.vert.glsl"
       "${GHI_R4C_SHADER_ROOT}/opengl41/visibility.frag.glsl"
-      "${GHI_R4C_SHADER_ROOT}/opengl46/visibility.vert.glsl"
-      "${GHI_R4C_SHADER_ROOT}/opengl46/visibility.frag.glsl"
+      "${GHI_R4C_SHADER_ROOT}/opengl44/visibility.vert.glsl"
+      "${GHI_R4C_SHADER_ROOT}/opengl44/visibility.frag.glsl"
       "${GHI_R4C_SHADER_ROOT}/vulkan/visibility.vert.glsl"
       "${GHI_R4C_SHADER_ROOT}/vulkan/visibility.frag.glsl"
       "${GHI_R4C_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -212,8 +213,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R5A_SHADER_ROOT}/package.json"
       "${GHI_R5A_SHADER_ROOT}/opengl41/material_skin.vert.glsl"
       "${GHI_R5A_SHADER_ROOT}/opengl41/material_skin.frag.glsl"
-      "${GHI_R5A_SHADER_ROOT}/opengl46/material_skin.vert.glsl"
-      "${GHI_R5A_SHADER_ROOT}/opengl46/material_skin.frag.glsl"
+      "${GHI_R5A_SHADER_ROOT}/opengl44/material_skin.vert.glsl"
+      "${GHI_R5A_SHADER_ROOT}/opengl44/material_skin.frag.glsl"
       "${GHI_R5A_SHADER_ROOT}/vulkan/material_skin.vert.glsl"
       "${GHI_R5A_SHADER_ROOT}/vulkan/material_skin.frag.glsl"
       "${GHI_R5A_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -240,8 +241,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R5_WORLD_SHADER_ROOT}/package.json"
       "${GHI_R5_WORLD_SHADER_ROOT}/opengl41/world.vert.glsl"
       "${GHI_R5_WORLD_SHADER_ROOT}/opengl41/world.frag.glsl"
-      "${GHI_R5_WORLD_SHADER_ROOT}/opengl46/world.vert.glsl"
-      "${GHI_R5_WORLD_SHADER_ROOT}/opengl46/world.frag.glsl"
+      "${GHI_R5_WORLD_SHADER_ROOT}/opengl44/world.vert.glsl"
+      "${GHI_R5_WORLD_SHADER_ROOT}/opengl44/world.frag.glsl"
       "${GHI_R5_WORLD_SHADER_ROOT}/vulkan/world.vert.glsl"
       "${GHI_R5_WORLD_SHADER_ROOT}/vulkan/world.frag.glsl"
       "${GHI_R5_WORLD_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -268,8 +269,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R6_PPLL_SHADER_ROOT}/package.json"
       "${GHI_R6_PPLL_SHADER_ROOT}/opengl41/ppll.vert.glsl"
       "${GHI_R6_PPLL_SHADER_ROOT}/opengl41/ppll.frag.glsl"
-      "${GHI_R6_PPLL_SHADER_ROOT}/opengl46/ppll.vert.glsl"
-      "${GHI_R6_PPLL_SHADER_ROOT}/opengl46/ppll.frag.glsl"
+      "${GHI_R6_PPLL_SHADER_ROOT}/opengl44/ppll.vert.glsl"
+      "${GHI_R6_PPLL_SHADER_ROOT}/opengl44/ppll.frag.glsl"
       "${GHI_R6_PPLL_SHADER_ROOT}/vulkan/ppll.vert.glsl"
       "${GHI_R6_PPLL_SHADER_ROOT}/vulkan/ppll.frag.glsl"
       "${GHI_R6_PPLL_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -296,8 +297,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R6_PEEL_SHADER_ROOT}/package.json"
       "${GHI_R6_PEEL_SHADER_ROOT}/opengl41/depth_peel.vert.glsl"
       "${GHI_R6_PEEL_SHADER_ROOT}/opengl41/depth_peel.frag.glsl"
-      "${GHI_R6_PEEL_SHADER_ROOT}/opengl46/depth_peel.vert.glsl"
-      "${GHI_R6_PEEL_SHADER_ROOT}/opengl46/depth_peel.frag.glsl"
+      "${GHI_R6_PEEL_SHADER_ROOT}/opengl44/depth_peel.vert.glsl"
+      "${GHI_R6_PEEL_SHADER_ROOT}/opengl44/depth_peel.frag.glsl"
       "${GHI_R6_PEEL_SHADER_ROOT}/vulkan/depth_peel.vert.glsl"
       "${GHI_R6_PEEL_SHADER_ROOT}/vulkan/depth_peel.frag.glsl"
       "${GHI_R6_PEEL_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -324,8 +325,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R6_LEGACY_SHADER_ROOT}/package.json"
       "${GHI_R6_LEGACY_SHADER_ROOT}/opengl41/legacy_alpha.vert.glsl"
       "${GHI_R6_LEGACY_SHADER_ROOT}/opengl41/legacy_alpha.frag.glsl"
-      "${GHI_R6_LEGACY_SHADER_ROOT}/opengl46/legacy_alpha.vert.glsl"
-      "${GHI_R6_LEGACY_SHADER_ROOT}/opengl46/legacy_alpha.frag.glsl"
+      "${GHI_R6_LEGACY_SHADER_ROOT}/opengl44/legacy_alpha.vert.glsl"
+      "${GHI_R6_LEGACY_SHADER_ROOT}/opengl44/legacy_alpha.frag.glsl"
       "${GHI_R6_LEGACY_SHADER_ROOT}/vulkan/legacy_alpha.vert.glsl"
       "${GHI_R6_LEGACY_SHADER_ROOT}/vulkan/legacy_alpha.frag.glsl"
       "${GHI_R6_LEGACY_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -351,8 +352,8 @@ if (USE_VULKAN_GHI)
       "${GHI_R7_OFFSCREEN_SHADER_ROOT}/package.json"
       "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl41/offscreen.vert.glsl"
       "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl41/offscreen.frag.glsl"
-      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl46/offscreen.vert.glsl"
-      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl46/offscreen.frag.glsl"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl44/offscreen.vert.glsl"
+      "${GHI_R7_OFFSCREEN_SHADER_ROOT}/opengl44/offscreen.frag.glsl"
       "${GHI_R7_OFFSCREEN_SHADER_ROOT}/vulkan/offscreen.vert.glsl"
       "${GHI_R7_OFFSCREEN_SHADER_ROOT}/vulkan/offscreen.frag.glsl"
       "${GHI_R7_OFFSCREEN_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
@@ -372,6 +373,33 @@ if (USE_VULKAN_GHI)
       COMMENT "Building deterministic R7 offscreen GHI shader package"
       VERBATIM
       )
+  set(GHI_R8_INTERACTION_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r8_interaction")
+  set(GHI_R8_INTERACTION_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r8_interaction.llghisp")
+  set(GHI_R8_INTERACTION_SHADER_SOURCES
+      "${GHI_R8_INTERACTION_SHADER_ROOT}/package.json"
+      "${GHI_R8_INTERACTION_SHADER_ROOT}/opengl41/interaction.vert.glsl"
+      "${GHI_R8_INTERACTION_SHADER_ROOT}/opengl41/interaction.frag.glsl"
+      "${GHI_R8_INTERACTION_SHADER_ROOT}/opengl44/interaction.vert.glsl"
+      "${GHI_R8_INTERACTION_SHADER_ROOT}/opengl44/interaction.frag.glsl"
+      "${GHI_R8_INTERACTION_SHADER_ROOT}/vulkan/interaction.vert.glsl"
+      "${GHI_R8_INTERACTION_SHADER_ROOT}/vulkan/interaction.frag.glsl"
+      "${GHI_R8_INTERACTION_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl"
+      )
+  add_custom_command(
+      OUTPUT "${GHI_R8_INTERACTION_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_R8_INTERACTION_SHADER_ROOT}/package.json"
+              --output "${GHI_R8_INTERACTION_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_R8_INTERACTION_SHADER_SOURCES}
+      COMMENT "Building deterministic R8 interaction GHI shader package"
+      VERBATIM
+      )
   add_custom_target(llrender_ghi_shaders DEPENDS
       "${GHI_R3_SHADER_PACKAGE}"
       "${GHI_R4_SHADER_PACKAGE}"
@@ -382,6 +410,7 @@ if (USE_VULKAN_GHI)
       "${GHI_R6_PEEL_SHADER_PACKAGE}"
       "${GHI_R6_LEGACY_SHADER_PACKAGE}"
       "${GHI_R7_OFFSCREEN_SHADER_PACKAGE}"
+      "${GHI_R8_INTERACTION_SHADER_PACKAGE}"
       )
   if (LL_TESTS)
     add_custom_target(
@@ -450,6 +479,17 @@ if (USE_VULKAN_GHI)
                 --spirv-val "${GHI_SPIRV_VAL}"
                 --spirv-opt "${GHI_SPIRV_OPT}"
                 --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        DEPENDS
+                llrender_ghi_shaders
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+        COMMENT "Testing deterministic GHI shader packaging and reflection rejection"
+        VERBATIM
+        )
+    # Keep the newest packages in separate commands. On Visual Studio the
+    # aggregate custom-command line otherwise reaches the generator limit and
+    # silently omits the tail commands.
+    add_custom_target(
+        llrender_ghi_r7_shader_packager_test
         COMMAND "${PYTHON_EXECUTABLE}"
                 "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
                 --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
@@ -458,12 +498,24 @@ if (USE_VULKAN_GHI)
                 --spirv-val "${GHI_SPIRV_VAL}"
                 --spirv-opt "${GHI_SPIRV_OPT}"
                 --spirv-reflect "${GHI_SPIRV_REFLECT}"
-        DEPENDS
-                llrender_ghi_shaders
+        DEPENDS llrender_ghi_shaders
                 "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
-        COMMENT "Testing deterministic GHI shader packaging and reflection rejection"
-        VERBATIM
-        )
+        COMMENT "Testing deterministic R7 GHI shader packaging"
+        VERBATIM)
+    add_custom_target(
+        llrender_ghi_r8_shader_packager_test
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_R8_INTERACTION_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        DEPENDS llrender_ghi_shaders
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+        COMMENT "Testing deterministic R8 GHI shader packaging"
+        VERBATIM)
   endif ()
 
   list(APPEND llrender_SOURCE_FILES
@@ -680,6 +732,15 @@ if (USE_VULKAN_GHI)
       LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE="${GHI_R7_OFFSCREEN_SHADER_PACKAGE}")
   target_link_libraries(llrender_vulkan_offscreen_harness llrender Vulkan::Vulkan)
   add_dependencies(llrender_vulkan_offscreen_harness llrender_ghi_shaders)
+
+  add_executable(llrender_vulkan_interaction_harness
+      ghi/backends/vulkan/llghivulkaninteractionharness.cpp)
+  target_include_directories(llrender_vulkan_interaction_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+  target_compile_definitions(llrender_vulkan_interaction_harness PRIVATE
+      LL_GHI_R8_INTERACTION_SHADER_PACKAGE="${GHI_R8_INTERACTION_SHADER_PACKAGE}")
+  target_link_libraries(llrender_vulkan_interaction_harness llrender Vulkan::Vulkan)
+  add_dependencies(llrender_vulkan_interaction_harness llrender_ghi_shaders)
 endif ()
 
 if (WINDOWS)
@@ -834,6 +895,15 @@ if (WINDOWS)
         LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE="${GHI_R7_OFFSCREEN_SHADER_PACKAGE}")
     target_link_libraries(llrender_opengl_offscreen_harness llrender OpenGL::GL)
     add_dependencies(llrender_opengl_offscreen_harness llrender_ghi_shaders)
+
+    add_executable(llrender_opengl_interaction_harness
+        ghi/backends/opengl/llghiopenglinteractionharness.cpp)
+    target_include_directories(llrender_opengl_interaction_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+    target_compile_definitions(llrender_opengl_interaction_harness PRIVATE
+        LL_GHI_R8_INTERACTION_SHADER_PACKAGE="${GHI_R8_INTERACTION_SHADER_PACKAGE}")
+    target_link_libraries(llrender_opengl_interaction_harness llrender OpenGL::GL)
+    add_dependencies(llrender_opengl_interaction_harness llrender_ghi_shaders)
   endif ()
 endif ()
 
@@ -872,8 +942,12 @@ if (LL_TESTS)
         LL_GHI_R6_PEEL_SHADER_PACKAGE="${GHI_R6_PEEL_SHADER_PACKAGE}"
         LL_GHI_R6_LEGACY_SHADER_PACKAGE="${GHI_R6_LEGACY_SHADER_PACKAGE}"
         LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE="${GHI_R7_OFFSCREEN_SHADER_PACKAGE}"
+        LL_GHI_R8_INTERACTION_SHADER_PACKAGE="${GHI_R8_INTERACTION_SHADER_PACKAGE}"
         )
-    add_dependencies(llrender_ghi_contract_test llrender_ghi_shader_packager_test)
+    add_dependencies(llrender_ghi_contract_test
+        llrender_ghi_shader_packager_test
+        llrender_ghi_r7_shader_packager_test
+        llrender_ghi_r8_shader_packager_test)
   endif ()
   target_link_libraries(llrender_ghi_contract_test
       llcommon

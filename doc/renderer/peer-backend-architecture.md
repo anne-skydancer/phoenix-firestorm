@@ -219,7 +219,7 @@ OpenGL compiles the OpenGL variant. Vulkan compiles the Vulkan variant to
 SPIR-V and validates reflected bindings against a generated manifest. Raw GL
 uniform locations and implicit texture-unit allocation are not part of GHI.
 
-R3 refines this into distinct target profiles: packaged OpenGL 4.6 GLSL for
+R3 refines this into distinct target profiles: packaged OpenGL 4.4 GLSL for
 Windows/Linux, OpenGL 4.1 GLSL for macOS and an explicit compatibility
 fallback, and Vulkan-specific GLSL compiled offline to SPIR-V for the Vulkan
 peer. Shared algorithm includes are used only where semantics truly match.
@@ -486,6 +486,12 @@ peer; it does not automatically change defaults or remove Mesa + Zink. Mesa +
 Zink retirement requires its own release checkpoint confirming that the Vulkan
 peer covers the correctness-workaround population and that native OpenGL
 remains a tested recovery choice.
+
+The R8 implementation records local peer-fixture success separately from
+production eligibility. Missing ledger, platform, hardware, performance,
+device-loss, or live region-entry evidence remains pending; it cannot be
+substituted by a synthetic fixture. Even complete evidence requires explicit
+production approval before the selector may expose Vulkan.
 
 ## Branch discipline
 

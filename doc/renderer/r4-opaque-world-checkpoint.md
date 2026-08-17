@@ -66,7 +66,7 @@ them to `GL_RGB10_A2` and `GL_RGBA16`; Vulkan maps them to
 - Native OpenGL and Vulkan resource fixtures accept the appended
   `RGB10A2UNorm` and `RGBA16UNorm` formats; Vulkan passes with Khronos
   validation enabled.
-- Native OpenGL 4.6 and 4.1 fallback retain the exact R3 linear and sRGB image
+- Packaged OpenGL 4.4 and 4.1 fallback retain the exact R3 linear and sRGB image
   hashes.
 - Native Vulkan 1.3 with Khronos validation retains the exact R3 linear and
   sRGB image hashes; no API, synchronization, layout, descriptor, or lifetime
@@ -112,7 +112,7 @@ above the backend boundary.
 
 ## R4b verification
 
-- Native OpenGL 4.6, the packaged OpenGL 4.1 fallback, and Vulkan 1.3 produce
+- Packaged OpenGL 4.4, the packaged OpenGL 4.1 fallback, and Vulkan 1.3 produce
   bit-exact results for every target:
   - target 0: `4976657fd6e31431fd86dbd9d96624938294208ade4bb9a4a7da04ee816e3c64`;
   - target 1: `24fd8e8c34e313665797af0b0b5ade49486a0f71dc3e58cceba14d0f7efd3ce6`;
@@ -176,7 +176,7 @@ explicit capability; it must not become a vendor branch.
 
 ## R4c verification
 
-- Native OpenGL 4.6, the packaged OpenGL 4.1 fallback, and Vulkan 1.3 produce
+- Packaged OpenGL 4.4, the packaged OpenGL 4.1 fallback, and Vulkan 1.3 produce
   bit-exact two-frame results:
   - frame 0: `0b5cd61f5abad7022d68402f74b34ae539a2fb25fec6755a2864745d3bb150ae`;
   - frame 1: `bec88ce09217d8c9456bdd6a656f5b53e0391efd37f17a60ab05c1df1a2df504`.
@@ -262,7 +262,7 @@ passed:
 The largest difference is five edge pixels out of 262,144 pixels, about
 0.0019%. Arbitrary live triangles therefore use this bounded raster-edge rule;
 the synthetic R4b fixture remains the bit-exact storage, depth-selection, and
-target-state oracle. Its four reference hashes remain unchanged on OpenGL 4.6,
+target-state oracle. Its four reference hashes remain unchanged on OpenGL 4.4,
 the OpenGL 4.1 fallback, and Vulkan 1.3.
 
 The accepted R01/R02 Native OpenGL and Mesa+Zink captures remain the external

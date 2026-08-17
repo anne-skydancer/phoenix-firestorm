@@ -355,7 +355,7 @@ RendererSnapshot queryOpenGLRendererSnapshot()
     device_caps.storageImageAtomics = gGLManager.mGLVersion >= 4.2f;
     device_caps.depthClamp = gGLManager.mGLVersion >= 3.2f;
     device_caps.baselineGraphicsPipeline = gGLManager.mGLVersion >= 3.f;
-    device_caps.advancedGraphicsPipeline = gGLManager.mGLVersion >= 3.99f;
+    device_caps.advancedGraphicsPipeline = gGLManager.mGLVersion >= 4.4f;
     device_caps.independentBlend = glEnablei && glDisablei &&
         glBlendFuncSeparatei && glBlendEquationSeparatei && glColorMaski;
     device_caps.cubeMapArrays = gGLManager.mGLVersion >= 4.f;

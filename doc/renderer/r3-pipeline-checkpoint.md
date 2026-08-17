@@ -18,7 +18,7 @@ OpenGL and Vulkan GHI peers.
 - Vulkan-specific GLSL is the production source language for the Vulkan peer.
 - A pinned offline glslang toolchain produces packaged SPIR-V. Normal viewer
   execution does not compile or translate Vulkan GLSL.
-- Packaged OpenGL 4.6 GLSL is the primary Windows/Linux OpenGL artifact.
+- Packaged OpenGL 4.4 GLSL is the primary Windows/Linux OpenGL artifact.
 - Packaged OpenGL 4.1 GLSL is the macOS artifact and an explicit compatibility
   fallback for supported older Windows/Linux devices; it is not the universal
   OpenGL feature ceiling.
@@ -68,7 +68,7 @@ de facto contract.
   `spirv-opt -O` recipe, and reflects the optimized module.
 - Reflected stage interfaces, descriptor groups/bindings/types/names, vertex
   inputs, and entry points are checked against the reviewed source manifest.
-- Every stage packages OpenGL 4.1 GLSL, OpenGL 4.6 GLSL, and Vulkan 1.3 SPIR-V
+- Every stage packages OpenGL 4.1 GLSL, OpenGL 4.4 GLSL, and Vulkan 1.3 SPIR-V
   as distinct target-profile artifacts. Runtime profile choice does not alter
   the package's semantic identity.
 - Canonical JSON serialization makes `.llghisp` output byte deterministic.
@@ -113,7 +113,7 @@ de facto contract.
 
 ## R3d OpenGL execution peer
 
-- The OpenGL peer selects packaged GLSL 4.6 on capable Windows/Linux contexts
+- The OpenGL peer selects packaged GLSL 4.4 on capable Windows/Linux contexts
   and keeps packaged GLSL 4.1 as the compatibility/macOS artifact. Shader
   compilation and linking occur inside the OpenGL backend; source symbols are
   mapped to reflected GHI groups and bindings without exposing uniform-block
@@ -129,7 +129,7 @@ de facto contract.
   by the validation peer. It does not initialize the viewer, log in, present a
   swapchain image, or alter production world/UI rendering.
 - R3d acceptance on the AMD Radeon RX 9070 XT native OpenGL 4.6 driver
-  26.7.1: shader-package load, GLSL 4.6 primary and GLSL 4.1 fallback
+  26.7.1: shader-package load, GLSL 4.4 primary and GLSL 4.1 fallback
   compile/link, reflected binding, offscreen reverse-Z indexed draw, teardown,
   and `waitIdle()` all pass without a GL error. Fixed-pixel comparison remains
   deliberately assigned to R3f.
@@ -182,10 +182,10 @@ de facto contract.
   reflected uniform/texture bindings, nearest texture sampling, and reverse-Z
   `GreaterEqual` drawing against a zero depth clear. A failure in any of those
   rules leaves the target clear, changes coverage, or changes the hash.
-- Linear RGBA8 output is bit-exact across native OpenGL 4.6, packaged OpenGL
+- Linear RGBA8 output is bit-exact across packaged OpenGL 4.4, packaged OpenGL
   4.1 fallback, and Vulkan 1.3:
   `f126a216776f58450335bc39732b8b1df604329cee2adc11e0bd9c8ec686937f`.
-- sRGB RGBA8 output is also bit-exact across OpenGL 4.6, OpenGL 4.1 fallback,
+- sRGB RGBA8 output is also bit-exact across OpenGL 4.4, OpenGL 4.1 fallback,
   and Vulkan 1.3:
   `15f2cdf81d3b51469bb4082df1453ba60fccd40f043c7ff1e11a7ac211a4c53a`.
   The OpenGL peer now selects `GL_FRAMEBUFFER_SRGB` from the active attachment
@@ -201,7 +201,7 @@ de facto contract.
   driver changes each invalidate it. This defines safe future native-cache
   storage; R3 does not add a persistent disk cache.
 - One acceptance sample on this machine recorded native creation evidence for
-  identical cold/warm fixture runs. OpenGL 4.6 shader creation changed from
+  identical cold/warm fixture runs. OpenGL 4.4 shader creation changed from
   42,466 microseconds to 27 microseconds and pipeline creation from 25 to 1
   microseconds. Vulkan shader creation changed from 325 to 94 microseconds and
   pipeline creation from 202 to 90 microseconds. These figures demonstrate the

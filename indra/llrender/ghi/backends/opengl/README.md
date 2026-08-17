@@ -17,5 +17,5 @@ depth peeling as its only non-legacy alpha-sort option.
 R7 adds cube-compatible arrays, explicit cube-array and single-face views,
 layered framebuffer attachments, complete mip-chain sampling, and synchronized
 dynamic/media uploads. The offscreen peer fixture produces the same exact
-probe/dynamic-image result through OpenGL 4.6 and the OpenGL 4.1 shader
+probe/dynamic-image result through OpenGL 4.4 and the OpenGL 4.1 shader
 fallback. Production offscreen rendering remains on the existing OpenGL path.

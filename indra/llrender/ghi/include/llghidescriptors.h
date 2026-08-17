@@ -272,7 +272,7 @@ struct ShaderPackageDesc
     enum class TargetProfile : std::uint8_t
     {
         OpenGL41,
-        OpenGL46,
+        OpenGL44,
         VulkanSpirV13,
     };
 

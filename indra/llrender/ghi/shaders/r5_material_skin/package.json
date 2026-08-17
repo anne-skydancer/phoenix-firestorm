@@ -42,14 +42,14 @@
       "stage": "vertex",
       "entry_point": "main",
       "opengl_41": "opengl41/material_skin.vert.glsl",
-      "opengl_46": "opengl46/material_skin.vert.glsl",
+      "opengl_44": "opengl44/material_skin.vert.glsl",
       "vulkan": "vulkan/material_skin.vert.glsl"
     },
     {
       "stage": "fragment",
       "entry_point": "main",
       "opengl_41": "opengl41/material_skin.frag.glsl",
-      "opengl_46": "opengl46/material_skin.frag.glsl",
+      "opengl_44": "opengl44/material_skin.frag.glsl",
       "vulkan": "vulkan/material_skin.frag.glsl"
     }
   ]

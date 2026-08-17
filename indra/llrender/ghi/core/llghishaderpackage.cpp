@@ -157,7 +157,7 @@ ShaderPackageDesc::Stage decodeStage(std::string_view value)
 ShaderPackageDesc::TargetProfile decodeTarget(std::string_view value)
 {
     if (value == "opengl_41") return ShaderPackageDesc::TargetProfile::OpenGL41;
-    if (value == "opengl_46") return ShaderPackageDesc::TargetProfile::OpenGL46;
+    if (value == "opengl_44") return ShaderPackageDesc::TargetProfile::OpenGL44;
     if (value == "vulkan_spirv_1_3") return ShaderPackageDesc::TargetProfile::VulkanSpirV13;
     throw std::runtime_error("unknown shader target profile");
 }

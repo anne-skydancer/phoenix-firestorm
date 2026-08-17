@@ -100,7 +100,7 @@ int main()
                     std::erase_if(stage.artifacts, [](const auto& artifact)
                     {
                         return artifact.target ==
-                            LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL46;
+                            LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL44;
                     });
                 }
                 const auto fallback = LL::GHI::Test::runVisibilityFixture(

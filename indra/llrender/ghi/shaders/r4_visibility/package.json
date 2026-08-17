@@ -28,14 +28,14 @@
       "stage": "vertex",
       "entry_point": "main",
       "opengl_41": "opengl41/visibility.vert.glsl",
-      "opengl_46": "opengl46/visibility.vert.glsl",
+      "opengl_44": "opengl44/visibility.vert.glsl",
       "vulkan": "vulkan/visibility.vert.glsl"
     },
     {
       "stage": "fragment",
       "entry_point": "main",
       "opengl_41": "opengl41/visibility.frag.glsl",
-      "opengl_46": "opengl46/visibility.frag.glsl",
+      "opengl_44": "opengl44/visibility.frag.glsl",
       "vulkan": "vulkan/visibility.frag.glsl"
     }
   ]

@@ -565,14 +565,14 @@ void LLGHIValidationObject::test<14>()
     vertex.stage = ShaderPackageDesc::Stage::Vertex;
     vertex.artifacts = {
         {ShaderPackageDesc::TargetProfile::OpenGL41, "vertex41", {}, {}},
-        {ShaderPackageDesc::TargetProfile::OpenGL46, "vertex46", {}, {}},
+        {ShaderPackageDesc::TargetProfile::OpenGL44, "vertex44", {}, {}},
         {ShaderPackageDesc::TargetProfile::VulkanSpirV13, "", {0x07230203u}, {}},
     };
     ShaderPackageDesc::StageArtifact fragment;
     fragment.stage = ShaderPackageDesc::Stage::Fragment;
     fragment.artifacts = {
         {ShaderPackageDesc::TargetProfile::OpenGL41, "fragment41", {}, {}},
-        {ShaderPackageDesc::TargetProfile::OpenGL46, "fragment46", {}, {}},
+        {ShaderPackageDesc::TargetProfile::OpenGL44, "fragment44", {}, {}},
         {ShaderPackageDesc::TargetProfile::VulkanSpirV13, "", {0x07230203u}, {}},
     };
     package.stages = {vertex, fragment};
@@ -781,11 +781,11 @@ void LLGHIValidationObject::test<18>()
     };
     const PipelineCacheDomain domain{"device-a", "driver-a"};
     const auto identity = pipelineCacheIdentity(
-        package, pipeline, ShaderPackageDesc::TargetProfile::OpenGL46,
+        package, pipeline, ShaderPackageDesc::TargetProfile::OpenGL44,
         Backend::OpenGL, domain);
     ensure_equals("pipeline cache identity is deterministic", identity,
         pipelineCacheIdentity(package, pipeline,
-            ShaderPackageDesc::TargetProfile::OpenGL46,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
             Backend::OpenGL, domain));
     ensure_equals("pipeline cache identity is SHA-256", identity.size(), std::size_t{64});
 
@@ -793,20 +793,20 @@ void LLGHIValidationObject::test<18>()
     changedPackage.semanticHash[0] ^= 1;
     ensure("semantic source change invalidates pipeline cache",
         identity != pipelineCacheIdentity(changedPackage, pipeline,
-            ShaderPackageDesc::TargetProfile::OpenGL46,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
             Backend::OpenGL, domain));
     changedPackage = package;
     changedPackage.toolchainHash[0] ^= 1;
     ensure("toolchain change invalidates pipeline cache",
         identity != pipelineCacheIdentity(changedPackage, pipeline,
-            ShaderPackageDesc::TargetProfile::OpenGL46,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
             Backend::OpenGL, domain));
 
     PipelineDesc changedPipeline = pipeline;
     changedPipeline.colorFormats = {Format::RGBA8SRGB};
     ensure("pipeline state change invalidates pipeline cache",
         identity != pipelineCacheIdentity(package, changedPipeline,
-            ShaderPackageDesc::TargetProfile::OpenGL46,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
             Backend::OpenGL, domain));
     ensure("target profile change invalidates pipeline cache",
         identity != pipelineCacheIdentity(package, pipeline,
@@ -818,11 +818,11 @@ void LLGHIValidationObject::test<18>()
             Backend::Vulkan, domain));
     ensure("device change invalidates pipeline cache",
         identity != pipelineCacheIdentity(package, pipeline,
-            ShaderPackageDesc::TargetProfile::OpenGL46,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
             Backend::OpenGL, {"device-b", "driver-a"}));
     ensure("driver change invalidates pipeline cache",
         identity != pipelineCacheIdentity(package, pipeline,
-            ShaderPackageDesc::TargetProfile::OpenGL46,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
             Backend::OpenGL, {"device-a", "driver-b"}));
 }
 
@@ -1587,6 +1587,94 @@ void LLGHIValidationObject::test<28>()
     ensure("R7 media binding is sampled",
         package.bindings[2].type ==
             ShaderPackageDesc::BindingType::CombinedImageSampler);
+#endif
+}
+
+template<> template<>
+void LLGHIValidationObject::test<29>()
+{
+    using namespace LL::GHI;
+
+    const DeviceFaultReport lost = makeDeviceFaultReport(
+        Backend::Vulkan, "present", Status::failure(
+            StatusCode::DeviceLost, "VK_ERROR_DEVICE_LOST"), 73);
+    ensure("R8 device loss requires device recreation",
+        lost.severity == DeviceFaultSeverity::DeviceRecreationRequired);
+    ensure_equals("R8 device fault retains frame serial", lost.frameSerial,
+                  std::uint64_t{73});
+    const DeviceFaultReport pending = makeDeviceFaultReport(
+        Backend::OpenGL, "snapshot", Status::failure(
+            StatusCode::NotReady, "readback pending"), 74);
+    ensure("R8 not-ready remains retryable",
+        pending.severity == DeviceFaultSeverity::Retryable);
+    const DeviceFaultReport backendFailure = makeDeviceFaultReport(
+        Backend::OpenGL, "draw", Status::failure(
+            StatusCode::BackendError, "GL error"), 75);
+    ensure("R8 backend failure is reported as fatal",
+        backendFailure.severity == DeviceFaultSeverity::Fatal);
+
+    ProductionEligibilityEvidence evidence;
+    auto eligibility = evaluateProductionEligibility(evidence);
+    ensure("R8 incomplete evidence is not complete", !eligibility.evidenceComplete);
+    ensure("R8 incomplete evidence cannot select production Vulkan",
+        !eligibility.productionSelectable);
+    ensure_equals("R8 all evidence gates start pending", eligibility.pending.size(),
+        static_cast<std::size_t>(ProductionGate::Count));
+    evidence.gates.fill(ProductionGateState::Pass);
+    eligibility = evaluateProductionEligibility(evidence);
+    ensure("R8 passing evidence is complete", eligibility.evidenceComplete);
+    ensure("R8 evidence alone cannot approve production selection",
+        !eligibility.productionSelectable);
+    evidence.explicitProductionApproval = true;
+    eligibility = evaluateProductionEligibility(evidence);
+    ensure("R8 explicit approval after complete evidence permits selection",
+        eligibility.productionSelectable);
+    evidence.gates[static_cast<std::size_t>(
+        ProductionGate::LinuxHardwareCoverage)] = ProductionGateState::Fail;
+    eligibility = evaluateProductionEligibility(evidence);
+    ensure("R8 failed hardware coverage revokes eligibility",
+        !eligibility.evidenceComplete && !eligibility.productionSelectable);
+    ensure_equals("R8 failed gate is identified", eligibility.failed.size(),
+                  std::size_t{1});
+
+    const AlphaRoutingState ppll{AlphaMethod::PPLL, true, true, false};
+    ensure("R8 HUD alpha stays on the legacy path",
+        routeAlphaSubmission({AlphaViewPhase::HUD,
+                              AlphaSubmissionClass::StandardBlend}, ppll).route ==
+            AlphaRoute::LegacySorted);
+
+#if defined(LL_GHI_R8_INTERACTION_SHADER_PACKAGE)
+    ShaderPackageDesc package;
+    Status status = loadShaderPackage(
+        LL_GHI_R8_INTERACTION_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    ensure_equals("R8 interaction reflected binding count",
+                  package.bindings.size(), std::size_t{1});
+    ensure_equals("R8 interaction reflected output count",
+                  package.fragmentOutputs.size(), std::size_t{3});
+    ensure("R8 selection ID output is unsigned integer",
+        package.fragmentOutputs[1].type == ShaderValueType::UInt);
+    ensure("R8 pick-depth output is floating point",
+        package.fragmentOutputs[2].type == ShaderValueType::Float);
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("R8 validation device", created.status.ok() && device);
+    ShaderPackageHandle shader = device->createShaderPackage(package, status);
+    PipelineDesc pipeline;
+    pipeline.shader = shader;
+    pipeline.cullMode = CullMode::None;
+    pipeline.depthTest = false;
+    pipeline.depthWrite = false;
+    pipeline.colorFormats = {
+        Format::RGBA8UNorm, Format::R32UInt, Format::R32Float};
+    pipeline.blendStates.resize(3);
+    pipeline.blendStates[0].enabled = true;
+    pipeline.blendStates[0].sourceColor = BlendFactor::SourceAlpha;
+    pipeline.blendStates[0].destinationColor = BlendFactor::OneMinusSourceAlpha;
+    PipelineHandle interactionPipeline = device->createPipeline(pipeline, status);
+    ensure("R8 UI color plus ID/depth pipeline accepted",
+           status.ok() && interactionPipeline);
 #endif
 }
 

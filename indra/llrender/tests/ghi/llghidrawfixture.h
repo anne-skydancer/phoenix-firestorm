@@ -34,7 +34,7 @@ struct DrawFixtureOptions
     Format colorFormat = Format::RGBA8UNorm;
     bool captureColor = false;
     ShaderPackageDesc::TargetProfile targetProfile =
-        ShaderPackageDesc::TargetProfile::OpenGL46;
+        ShaderPackageDesc::TargetProfile::OpenGL44;
 };
 
 struct DrawFixtureResult

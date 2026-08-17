@@ -22,13 +22,13 @@
     {
       "stage": "vertex", "entry_point": "main",
       "opengl_41": "opengl41/offscreen.vert.glsl",
-      "opengl_46": "opengl46/offscreen.vert.glsl",
+      "opengl_44": "opengl44/offscreen.vert.glsl",
       "vulkan": "vulkan/offscreen.vert.glsl"
     },
     {
       "stage": "fragment", "entry_point": "main",
       "opengl_41": "opengl41/offscreen.frag.glsl",
-      "opengl_46": "opengl46/offscreen.frag.glsl",
+      "opengl_44": "opengl44/offscreen.frag.glsl",
       "vulkan": "vulkan/offscreen.frag.glsl"
     }
   ]

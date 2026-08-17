@@ -26,13 +26,13 @@
     {
       "stage": "vertex", "entry_point": "main",
       "opengl_41": "opengl41/ppll.vert.glsl",
-      "opengl_46": "opengl46/ppll.vert.glsl",
+      "opengl_44": "opengl44/ppll.vert.glsl",
       "vulkan": "vulkan/ppll.vert.glsl"
     },
     {
       "stage": "fragment", "entry_point": "main",
       "opengl_41": "opengl41/ppll.frag.glsl",
-      "opengl_46": "opengl46/ppll.frag.glsl",
+      "opengl_44": "opengl44/ppll.frag.glsl",
       "vulkan": "vulkan/ppll.frag.glsl"
     }
   ]

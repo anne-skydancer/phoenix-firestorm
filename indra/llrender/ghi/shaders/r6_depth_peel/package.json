@@ -24,13 +24,13 @@
     {
       "stage": "vertex", "entry_point": "main",
       "opengl_41": "opengl41/depth_peel.vert.glsl",
-      "opengl_46": "opengl46/depth_peel.vert.glsl",
+      "opengl_44": "opengl44/depth_peel.vert.glsl",
       "vulkan": "vulkan/depth_peel.vert.glsl"
     },
     {
       "stage": "fragment", "entry_point": "main",
       "opengl_41": "opengl41/depth_peel.frag.glsl",
-      "opengl_46": "opengl46/depth_peel.frag.glsl",
+      "opengl_44": "opengl44/depth_peel.frag.glsl",
       "vulkan": "vulkan/depth_peel.frag.glsl"
     }
   ]

@@ -232,7 +232,7 @@ struct RendererCapabilities
 
     // Semantic viewer feature levels. Backends derive these from their own
     // native requirements so policy consumers never compare unrelated API
-    // version numbers (for example Vulkan 1.4 and OpenGL 4.6).
+    // version numbers (for example Vulkan 1.4 and OpenGL 4.4).
     bool baselineGraphicsPipeline = false;
     bool advancedGraphicsPipeline = false;
 

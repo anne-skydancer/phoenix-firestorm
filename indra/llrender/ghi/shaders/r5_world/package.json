@@ -37,14 +37,14 @@
       "stage": "vertex",
       "entry_point": "main",
       "opengl_41": "opengl41/world.vert.glsl",
-      "opengl_46": "opengl46/world.vert.glsl",
+      "opengl_44": "opengl44/world.vert.glsl",
       "vulkan": "vulkan/world.vert.glsl"
     },
     {
       "stage": "fragment",
       "entry_point": "main",
       "opengl_41": "opengl41/world.frag.glsl",
-      "opengl_46": "opengl46/world.frag.glsl",
+      "opengl_44": "opengl44/world.frag.glsl",
       "vulkan": "vulkan/world.frag.glsl"
     }
   ]

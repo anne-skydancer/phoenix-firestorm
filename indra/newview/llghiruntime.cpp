@@ -10,10 +10,13 @@
 #include "lldir.h"
 #include "llviewercontrol.h"
 #include "ghi/core/llghishaderpackage.h"
+#include "ghi/core/llghihash.h"
 #include "ghi/include/llghidevice.h"
 #include "ghi/include/llghiopaqueoffscreenprobe.h"
 #include "ghi/include/llghiopaquepacketconsumer.h"
 #include "ghi/include/llghimaterialoffscreenprobe.h"
+#include "ghi/include/llghiterrainscenepacket.h"
+#include "ghi/include/llghiterrainoffscreenprobe.h"
 
 #include <algorithm>
 #include <memory>
@@ -24,6 +27,7 @@ namespace
 std::unique_ptr<LL::GHI::Device> sVulkanDevice;
 std::unique_ptr<LL::GHI::OpaqueOffscreenProbe> sOffscreenProbe;
 std::unique_ptr<LL::GHI::MaterialOffscreenProbe> sMaterialProbe;
+std::unique_ptr<LL::GHI::TerrainOffscreenProbe> sTerrainProbe;
 std::uint64_t sNextLivePacketFrame = 0;
 std::uint32_t sLivePacketAttempts = 0;
 std::uint32_t sLivePacketSamples = 0;
@@ -36,6 +40,12 @@ std::uint32_t sMaterialSamples = 0;
 bool sMaterialCaptureClaimed = false;
 bool sMaterialDisabled = false;
 bool sPendingMaterialBudgetLimited = false;
+std::uint64_t sNextTerrainFrame = 0;
+std::uint32_t sTerrainAttempts = 0;
+std::uint32_t sTerrainSamples = 0;
+bool sTerrainCaptureClaimed = false;
+bool sTerrainDisabled = false;
+bool sPendingTerrainBudgetLimited = false;
 
 bool offscreenProbeRequested()
 {
@@ -173,6 +183,54 @@ void pollMaterialProbe()
         << LL_ENDL;
     sPendingMaterialBudgetLimited = false;
 }
+
+void pollTerrainProbe()
+{
+    if (!sTerrainProbe || !sTerrainProbe->pending()) return;
+    LL::GHI::TerrainOffscreenProbeResult result;
+    const LL::GHI::Status status = sTerrainProbe->poll(result);
+    if (!status)
+    {
+        if (status.code() != LL::GHI::StatusCode::NotReady)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I6 live terrain offscreen poll failed: "
+                << status.message() << LL_ENDL;
+            sTerrainDisabled = true;
+        }
+        return;
+    }
+    if (!std::all_of(result.nonClearPixels.begin(), result.nonClearPixels.end(),
+                     [](std::uint64_t pixels) { return pixels != 0; }))
+    {
+        LL_INFOS("GHIIntegration")
+            << "I6 terrain sample completed without four-target coverage; retrying. frame="
+            << result.frameId << " draws=" << result.draws
+            << " non-clear-pixels=" << result.nonClearPixels[0] << ','
+            << result.nonClearPixels[1] << ',' << result.nonClearPixels[2]
+            << ',' << result.nonClearPixels[3] << LL_ENDL;
+        sPendingTerrainBudgetLimited = false;
+        return;
+    }
+    ++sTerrainSamples;
+    LL_INFOS("GHIIntegration")
+        << "I6 live production terrain Vulkan offscreen PASS: sample="
+        << sTerrainSamples << '/' << livePacketMaximum() << " frame="
+        << result.frameId << " scene-epoch=" << result.sceneEpoch
+        << " resource-epoch=" << result.resourceEpoch
+        << " draws=" << result.draws << " regions="
+        << result.regions << " pbr-draws=" << result.pbrDraws
+        << " triplanar-draws=" << result.triplanarDraws << " vertices="
+        << result.vertices << " indices=" << result.indices
+        << " packet-sha256=" << result.packetSha256 << " color-sha256="
+        << result.colorSha256[0] << ',' << result.colorSha256[1] << ','
+        << result.colorSha256[2] << ',' << result.colorSha256[3]
+        << " capture-budget-limited="
+        << (sPendingTerrainBudgetLimited ? "yes" : "no")
+        << ". No Vulkan surface, swapchain, or presentation path was used; visible rendering remains OpenGL."
+        << LL_ENDL;
+    sPendingTerrainBudgetLimited = false;
+}
 }
 
 namespace LLGHIRuntime
@@ -284,6 +342,30 @@ void initialize()
         }
     }
 
+    if (gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe"))
+    {
+        const std::string packagePath = gDirUtilp->getExpandedFilename(
+            LL_PATH_APP_SETTINGS, "ghi_shaders", "i6_terrain.llghisp");
+        LL::GHI::ShaderPackageDesc package;
+        const LL::GHI::Status status =
+            LL::GHI::loadShaderPackage(packagePath, package);
+        if (!status)
+            LL_WARNS("GHIIntegration")
+                << "I6 terrain shader package was not loaded from "
+                << packagePath << ": " << status.message() << LL_ENDL;
+        else
+        {
+            sTerrainProbe = std::make_unique<LL::GHI::TerrainOffscreenProbe>(
+                *sVulkanDevice, std::move(package));
+            LL_INFOS("GHIIntegration")
+                << "I6 production terrain Vulkan offscreen probe armed; interval="
+                << livePacketInterval() << " frames max-samples="
+                << livePacketMaximum()
+                << ". The probe owns no surface, swapchain, or presentation path."
+                << LL_ENDL;
+        }
+    }
+
     if (sOffscreenProbe ||
         gSavedSettings.getBOOL("RenderVulkanLivePacketProbe"))
     {
@@ -328,6 +410,15 @@ void shutdown()
                 << probeStatus.message() << LL_ENDL;
         sMaterialProbe.reset();
     }
+    if (sTerrainProbe)
+    {
+        const LL::GHI::Status probeStatus = sTerrainProbe->shutdown();
+        if (!probeStatus)
+            LL_WARNS("GHIIntegration")
+                << "I6 terrain offscreen resources did not retire cleanly: "
+                << probeStatus.message() << LL_ENDL;
+        sTerrainProbe.reset();
+    }
     const LL::GHI::Status status = sVulkanDevice->waitIdle();
     if (!status)
     {
@@ -348,6 +439,12 @@ void shutdown()
     sMaterialCaptureClaimed = false;
     sMaterialDisabled = false;
     sPendingMaterialBudgetLimited = false;
+    sNextTerrainFrame = 0;
+    sTerrainAttempts = 0;
+    sTerrainSamples = 0;
+    sTerrainCaptureClaimed = false;
+    sTerrainDisabled = false;
+    sPendingTerrainBudgetLimited = false;
     LL_INFOS("GHIIntegration")
         << "Native Vulkan coexistence device shut down."
         << LL_ENDL;
@@ -503,6 +600,73 @@ void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
         << " vertices=" << packet.vertices.size() << " indices="
         << packet.indices.size()
         << ". Completion will be polled on later OpenGL frames." << LL_ENDL;
+}
+
+bool terrainCaptureRequested()
+{
+    return sVulkanDevice && sTerrainProbe && !sTerrainDisabled &&
+           gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe");
+}
+
+bool shouldCaptureLiveTerrainPacket(std::uint64_t frame_id)
+{
+    pollTerrainProbe();
+    if (!terrainCaptureRequested() || sTerrainCaptureClaimed ||
+        sTerrainProbe->pending()) return false;
+    const std::uint32_t maximum = livePacketMaximum();
+    if (!maximum || sTerrainSamples >= maximum ||
+        static_cast<std::uint64_t>(sTerrainAttempts) >=
+            static_cast<std::uint64_t>(maximum) * 8ull)
+        return false;
+    if (!sNextTerrainFrame)
+    {
+        sNextTerrainFrame = frame_id + livePacketInterval();
+        return false;
+    }
+    if (frame_id < sNextTerrainFrame) return false;
+    sTerrainCaptureClaimed = true;
+    return true;
+}
+
+void consumeLiveTerrainPacket(const LL::GHI::TerrainScenePacket& packet,
+                              bool budget_limited)
+{
+    if (!sTerrainCaptureClaimed || !sVulkanDevice) return;
+    sTerrainCaptureClaimed = false;
+    ++sTerrainAttempts;
+    sNextTerrainFrame = packet.frameId + livePacketInterval();
+    if (packet.draws.empty())
+    {
+        LL_INFOS("GHIIntegration")
+            << "I6 terrain capture contained no executable production faces; retrying. frame="
+            << packet.frameId << LL_ENDL;
+        return;
+    }
+    const LL::GHI::TerrainOffscreenProbeLimits limits;
+    const LL::GHI::Status status = sTerrainProbe->submit(packet, limits);
+    if (!status)
+    {
+        LL_WARNS("GHIIntegration")
+            << "I6 live terrain Vulkan offscreen submission rejected at frame " << packet.frameId
+            << ": " << status.message() << LL_ENDL;
+        if (status.code() == LL::GHI::StatusCode::DeviceLost)
+        {
+            sTerrainDisabled = true;
+            LL_WARNS("GHIIntegration")
+                << "I6 terrain probe disabled after device loss. The production OpenGL renderer remains active."
+                << LL_ENDL;
+        }
+        return;
+    }
+    sPendingTerrainBudgetLimited = budget_limited;
+    LL_INFOS("GHIIntegration")
+        << "I6 live production terrain submitted asynchronously: frame="
+        << packet.frameId << " draws=" << packet.draws.size()
+        << " regions=" << packet.regions.size() << " vertices="
+        << packet.vertices.size() << " indices=" << packet.indices.size()
+        << " textures=" << packet.textures.size()
+        << ". Completion will be polled on later OpenGL frames."
+        << LL_ENDL;
 }
 
 } // namespace LLGHIRuntime

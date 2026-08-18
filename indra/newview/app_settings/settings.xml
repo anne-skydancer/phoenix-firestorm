@@ -12689,6 +12689,19 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderVulkanTerrainOffscreenProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: capture bounded production terrain geometry, four-layer legacy or PBR state, composition map, and transforms for isolated native Vulkan verification. Main world, UI, and presentation remain OpenGL. Requires RenderVulkanDeveloperProbe and restart.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

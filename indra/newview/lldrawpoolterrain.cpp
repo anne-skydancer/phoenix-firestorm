@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lldrawpoolterrain.h"
+#include "llghiterraincapture.h"
 
 #include "llfasttimer.h"
 
@@ -313,6 +314,12 @@ void LLDrawPoolTerrain::renderFullShaderTextures()
     gGL.getTexUnit(alpha_ramp)->bind(m2DAlphaRampImagep);
     gGL.getTexUnit(alpha_ramp)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
 
+    if (LLGHITerrainCapture::active())
+        LLGHITerrainCapture::instance().record(
+            mDrawFace, *regionp, *compp, m2DAlphaRampImagep.get(), false,
+            TERRAIN_PAINT_TYPE_HEIGHTMAP_WITH_NOISE, TERRAIN_PBR_DETAIL_BASE_COLOR,
+            sDetailScale);
+
     // GL_BLEND disabled by default
     drawLoop();
 
@@ -510,8 +517,10 @@ void LLDrawPoolTerrain::renderFullShaderPBR(bool use_local_materials)
     //
     S32 alpha_ramp = -1;
     S32 paint_map = -1;
+    LLViewerTexture* composition_texture = nullptr;
     if (paint_type == TERRAIN_PAINT_TYPE_HEIGHTMAP_WITH_NOISE)
     {
+        composition_texture = m2DAlphaRampImagep.get();
         alpha_ramp = sShader->enableTexture(LLViewerShaderMgr::TERRAIN_ALPHARAMP);
         gGL.getTexUnit(alpha_ramp)->bind(m2DAlphaRampImagep);
         gGL.getTexUnit(alpha_ramp)->setTextureAddressMode(LLTexUnit::TAM_CLAMP);
@@ -522,6 +531,7 @@ void LLDrawPoolTerrain::renderFullShaderPBR(bool use_local_materials)
         LLViewerTexture* tex_paint_map = use_local_materials ? gLocalTerrainMaterials.getPaintMap() : compp->getPaintMap();
         // If no paintmap is available, fall back to rendering just material slot 1 (by binding the appropriate image)
         if (!tex_paint_map) { tex_paint_map = LLViewerTexture::sBlackImagep.get(); }
+        composition_texture = tex_paint_map;
         // This is a paint map for four materials, but we save a channel by
         // storing the paintmap as the "difference" between slot 1 and the
         // other 3 slots.
@@ -573,6 +583,15 @@ void LLDrawPoolTerrain::renderFullShaderPBR(bool use_local_materials)
         shader->uniform3fv(LLShaderMgr::TERRAIN_EMISSIVE_COLORS, terrain_material_count, (F32*)emissive_colors);
     }
     shader->uniform4f(LLShaderMgr::TERRAIN_MINIMUM_ALPHAS, minimum_alphas[0], minimum_alphas[1], minimum_alphas[2], minimum_alphas[3]);
+
+    if (LLGHITerrainCapture::active())
+    {
+        LLTerrainMaterials& capture_materials = use_local_materials
+            ? gLocalTerrainMaterials : static_cast<LLTerrainMaterials&>(*compp);
+        LLGHITerrainCapture::instance().record(
+            mDrawFace, *regionp, capture_materials, composition_texture, true,
+            paint_type, sPBRDetailMode, sPBRDetailScale);
+    }
 
     // GL_BLEND disabled by default
     drawLoop();

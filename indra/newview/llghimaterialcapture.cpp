@@ -14,6 +14,7 @@
 #include "llmodel.h"
 #include "llspatialpartition.h"
 #include "llviewertexture.h"
+#include "llviewercontrol.h"
 #include "llvoavatar.h"
 #include "llvertexbuffer.h"
 #include "llrender.h"
@@ -180,8 +181,17 @@ public:
                  std::int32_t discardLevel)
     {
         configure();
+        // Command-line/session settings are loaded before the viewer preloads
+        // system textures, while the native Vulkan coexistence device is
+        // intentionally created later. Key observation to the opt-in setting
+        // rather than device lifetime so early resources such as the terrain
+        // alpha ramp are not lost before I6 begins.
+        const bool materialConfigured =
+            gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe");
+        const bool terrainConfigured =
+            gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe");
         if ((mState == State::Disabled &&
-             !LLGHIRuntime::materialCaptureRequested()) ||
+             !materialConfigured && !terrainConfigured) ||
             mState == State::Complete || mState == State::Failed ||
             !image.getData() || image.getDataSize() <= 0)
             return;
@@ -198,7 +208,8 @@ public:
         // for login-time avatar and region texture churn.
         constexpr std::size_t MAX_RUNTIME_IMAGE_BYTES = 64ull * 1024ull;
         const bool runtimeObservation =
-            LLGHIRuntime::materialCaptureRequested() && mState == State::Disabled;
+            (materialConfigured || terrainConfigured) &&
+            mState == State::Disabled;
         std::uint32_t observedWidth = sourceWidth;
         std::uint32_t observedHeight = sourceHeight;
         std::uint32_t extraDiscard = 0;
@@ -286,6 +297,20 @@ public:
         observed.serial = ++mObservationSerial;
         mObservedTextureBytes = mObservedTextureBytes - previous + size;
         mObservedTextures[key] = std::move(observed);
+    }
+
+    bool copyObservation(const LLViewerFetchedTexture& texture,
+                         LL::GHI::MaterialTextureResource& output) const
+    {
+        const auto found = mObservedTextures.find(texture.getID().asString());
+        if (found == mObservedTextures.end()) return false;
+        output.width = found->second.width;
+        output.height = found->second.height;
+        output.components = found->second.components;
+        output.discardLevel = found->second.discardLevel;
+        output.contentIdentity = found->second.contentIdentity;
+        output.decodedPixels = found->second.pixels;
+        return true;
     }
 
     void record(LLDrawInfo& draw, std::uint32_t renderType, bool rigged)
@@ -1075,6 +1100,12 @@ void LLGHIMaterialCapture::observeDecodedTexture(
     std::int32_t discard_level)
 {
     mImpl->observe(texture, image, discard_level);
+}
+bool LLGHIMaterialCapture::copyDecodedTexture(
+    const LLViewerFetchedTexture& texture,
+    LL::GHI::MaterialTextureResource& output) const
+{
+    return mImpl->copyObservation(texture, output);
 }
 void LLGHIMaterialCapture::record(LLDrawInfo& draw,
                                   std::uint32_t render_type, bool rigged)

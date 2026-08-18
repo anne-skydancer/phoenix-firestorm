@@ -28,6 +28,7 @@
 
 #include "llghiopaquecapture.h"
 #include "llghimaterialcapture.h"
+#include "llghiterraincapture.h"
 
 #include "pipeline.h"
 
@@ -4285,6 +4286,12 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
             static_cast<U32>(gViewerWindow->getWorldViewWidthRaw()),
             static_cast<U32>(gViewerWindow->getWorldViewHeightRaw()),
             gFrameCount);
+    const bool capture_terrain = &camera == LLViewerCamera::getInstance() &&
+        !gCubeSnapshot && gAgent.getRegion() && gViewerWindow &&
+        LLGHITerrainCapture::instance().beginFrame(
+            static_cast<U32>(gViewerWindow->getWorldViewWidthRaw()),
+            static_cast<U32>(gViewerWindow->getWorldViewHeightRaw()),
+            gFrameCount);
 
     setupHWLights();
 
@@ -4395,6 +4402,8 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
         LLGHIOpaqueCapture::instance().endFrame();
     if (capture_materials)
         LLGHIMaterialCapture::instance().endFrame();
+    if (capture_terrain)
+        LLGHITerrainCapture::instance().endFrame();
 }
 
 // Render all of our geometry that's required after our deferred pass.

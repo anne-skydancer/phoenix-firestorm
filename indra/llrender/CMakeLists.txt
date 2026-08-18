@@ -39,6 +39,8 @@ set(llrender_SOURCE_FILES
     ghi/core/llghidevice.cpp
     ghi/core/llghihash.cpp
     ghi/core/llghimaterialscenepacket.cpp
+    ghi/core/llghiterrainscenepacket.cpp
+    ghi/core/llghiterrainoffscreenprobe.cpp
     ghi/core/llghimaterialoffscreenprobe.cpp
     ghi/core/llghiopaqueoffscreenprobe.cpp
     ghi/core/llghiopaquepacketconsumer.cpp
@@ -95,6 +97,8 @@ set(llrender_HEADER_FILES
     ghi/include/llghipresentation.h
     ghi/include/llghiproductioncontract.h
     ghi/include/llghimaterialscenepacket.h
+    ghi/include/llghiterrainscenepacket.h
+    ghi/include/llghiterrainoffscreenprobe.h
     ghi/include/llghiopaquescenepacket.h
     ghi/include/llghirendererinfo.h
     ghi/include/llghiworldcontract.h
@@ -241,6 +245,31 @@ if (USE_VULKAN_GHI)
       COMMENT "Building deterministic R5a material/skin GHI shader package"
       VERBATIM
       )
+  set(GHI_I6_TERRAIN_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/i6_terrain")
+  set(GHI_I6_TERRAIN_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/i6_terrain.llghisp")
+  set(GHI_I6_TERRAIN_SHADER_SOURCES
+      "${GHI_I6_TERRAIN_SHADER_ROOT}/package.json"
+      "${GHI_I6_TERRAIN_SHADER_ROOT}/opengl41/terrain.vert.glsl"
+      "${GHI_I6_TERRAIN_SHADER_ROOT}/opengl41/terrain.frag.glsl"
+      "${GHI_I6_TERRAIN_SHADER_ROOT}/opengl44/terrain.vert.glsl"
+      "${GHI_I6_TERRAIN_SHADER_ROOT}/opengl44/terrain.frag.glsl"
+      "${GHI_I6_TERRAIN_SHADER_ROOT}/vulkan/terrain.vert.glsl"
+      "${GHI_I6_TERRAIN_SHADER_ROOT}/vulkan/terrain.frag.glsl"
+      "${GHI_I6_TERRAIN_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl")
+  add_custom_command(
+      OUTPUT "${GHI_I6_TERRAIN_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_I6_TERRAIN_SHADER_ROOT}/package.json"
+              --output "${GHI_I6_TERRAIN_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_I6_TERRAIN_SHADER_SOURCES}
+      COMMENT "Building deterministic I6 terrain GHI shader package"
+      VERBATIM)
   set(GHI_R5_WORLD_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r5_world")
   set(GHI_R5_WORLD_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r5_world.llghisp")
   set(GHI_R5_WORLD_SHADER_SOURCES
@@ -411,6 +440,7 @@ if (USE_VULKAN_GHI)
       "${GHI_R4_SHADER_PACKAGE}"
       "${GHI_R4C_SHADER_PACKAGE}"
       "${GHI_R5A_SHADER_PACKAGE}"
+      "${GHI_I6_TERRAIN_SHADER_PACKAGE}"
       "${GHI_R5_WORLD_SHADER_PACKAGE}"
       "${GHI_R6_PPLL_SHADER_PACKAGE}"
       "${GHI_R6_PEEL_SHADER_PACKAGE}"
@@ -918,6 +948,8 @@ if (LL_TESTS)
       ghi/core/llghidevice.cpp
       ghi/core/llghihash.cpp
       ghi/core/llghimaterialscenepacket.cpp
+      ghi/core/llghiterrainscenepacket.cpp
+      ghi/core/llghiterrainoffscreenprobe.cpp
       ghi/core/llghimaterialoffscreenprobe.cpp
       ghi/core/llghiopaqueoffscreenprobe.cpp
       ghi/core/llghiopaquepacketconsumer.cpp
@@ -948,6 +980,7 @@ if (LL_TESTS)
         LL_GHI_R4_SHADER_PACKAGE="${GHI_R4_SHADER_PACKAGE}"
         LL_GHI_R5A_SHADER_PACKAGE="${GHI_R5A_SHADER_PACKAGE}"
         LL_GHI_R5_WORLD_SHADER_PACKAGE="${GHI_R5_WORLD_SHADER_PACKAGE}"
+        LL_GHI_I6_TERRAIN_SHADER_PACKAGE="${GHI_I6_TERRAIN_SHADER_PACKAGE}"
         LL_GHI_R6_PPLL_SHADER_PACKAGE="${GHI_R6_PPLL_SHADER_PACKAGE}"
         LL_GHI_R6_PEEL_SHADER_PACKAGE="${GHI_R6_PEEL_SHADER_PACKAGE}"
         LL_GHI_R6_LEGACY_SHADER_PACKAGE="${GHI_R6_LEGACY_SHADER_PACKAGE}"

@@ -86,6 +86,14 @@ public:
     void setPaintType(U32 paint_type) { mPaintType = paint_type; }
     LLViewerTexture* getPaintMap();
     void setPaintMap(LLViewerTexture* paint_map);
+    LLViewerFetchedTexture* getDetailTexture(S32 asset) const
+    {
+        return asset >= 0 && asset < ASSET_COUNT ? mDetailTextures[asset].get() : nullptr;
+    }
+    LLFetchedGLTFMaterial* getDetailRenderMaterial(S32 asset) const
+    {
+        return asset >= 0 && asset < ASSET_COUNT ? mDetailRenderMaterials[asset].get() : nullptr;
+    }
 
 protected:
     void unboost();

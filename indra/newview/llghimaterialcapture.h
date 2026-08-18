@@ -15,6 +15,11 @@ class LLDrawInfo;
 class LLImageRaw;
 class LLViewerFetchedTexture;
 
+namespace LL::GHI
+{
+struct MaterialTextureResource;
+}
+
 class LLGHIMaterialCapture final : public LLSingleton<LLGHIMaterialCapture>
 {
     LLSINGLETON(LLGHIMaterialCapture);
@@ -28,6 +33,10 @@ public:
                     std::uint64_t frame_id);
     void observeDecodedTexture(const LLViewerFetchedTexture& texture,
                                const LLImageRaw& image, std::int32_t discard_level);
+    // Shared decoder-path observation used by later integration slices. The
+    // caller supplies its own semantic source identity and color space.
+    bool copyDecodedTexture(const LLViewerFetchedTexture& texture,
+                            LL::GHI::MaterialTextureResource& output) const;
     void record(LLDrawInfo& draw, std::uint32_t render_type, bool rigged);
     void endFrame();
 

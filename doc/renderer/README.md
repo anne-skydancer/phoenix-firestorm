@@ -16,6 +16,8 @@ supported peer and recovery path.
   seam, ownership rules, implementation increments, and acceptance gates.
 - [GL coupling baseline](gl-coupling-baseline.json) anchors the source-level
   API-boundary ratchet.
+- [I6 production terrain integration checkpoint](i6-production-terrain-integration-checkpoint.md)
+  records the private native Vulkan terrain contract and live gate.
 - [R1 lifecycle checkpoint](r1-lifecycle-checkpoint.md) records the gated
   native-Vulkan presentation slice and its validation evidence.
 - [R2 resource checkpoint](r2-resource-checkpoint.md) records the neutral

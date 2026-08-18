@@ -17,6 +17,8 @@
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghimaterialscenepacket.h"
+#include "ghi/include/llghiterrainscenepacket.h"
+#include "ghi/include/llghiterrainoffscreenprobe.h"
 #include "ghi/include/llghialphacontract.h"
 #include "ghi/include/llghioffscreencontract.h"
 #include "ghi/include/llghiopaqueoffscreenprobe.h"
@@ -1976,6 +1978,156 @@ void LLGHIValidationObject::test<32>()
     packet.draws[0].indexCount = 2;
     ensure("R5b2 rejects an out-of-range draw span",
            encodeMaterialScenePacket(packet, encoded).code() ==
+               StatusCode::InvalidArgument);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<33>()
+{
+    using namespace LL::GHI;
+
+    auto digest = [](std::uint8_t seed)
+    {
+        ResourceDigest value{};
+        for (std::size_t index = 0; index < value.size(); ++index)
+            value[index] = static_cast<std::byte>(seed + index);
+        return value;
+    };
+
+    TerrainScenePacket source;
+    source.frameId = 81423;
+    source.sceneEpoch = 4;
+    source.resourceEpoch = 2;
+    source.sourceWidth = 2560;
+    source.sourceHeight = 1369;
+    for (std::uint8_t textureIndex = 0; textureIndex < 6; ++textureIndex)
+    {
+        MaterialTextureResource texture;
+        texture.sourceIdentity = digest(static_cast<std::uint8_t>(1 + textureIndex));
+        texture.contentIdentity = digest(static_cast<std::uint8_t>(33 + textureIndex));
+        texture.colorSpace = textureIndex == 0 || textureIndex == 5
+            ? TextureColorSpace::Linear : TextureColorSpace::SRGB;
+        texture.width = texture.height = 1;
+        texture.components = 4;
+        texture.decodedPixels = {
+            static_cast<std::byte>(32 + textureIndex),
+            static_cast<std::byte>(64 + textureIndex),
+            static_cast<std::byte>(96 + textureIndex), std::byte{255}};
+        source.textures.push_back(std::move(texture));
+    }
+
+    TerrainRegionResource region;
+    region.identity = digest(65);
+    region.model = MaterialModel::MetallicRoughness;
+    region.paintMode = TerrainPaintMode::PBRPaintMap;
+    region.projection = TerrainProjection::Triplanar;
+    region.detailMode = TerrainDetailMode::Normal;
+    region.regionScale = 256.f;
+    region.detailScale = 0.125f;
+    region.compositionTexture = 0;
+    for (std::size_t layerIndex = 0; layerIndex < region.layers.size(); ++layerIndex)
+    {
+        auto& layer = region.layers[layerIndex];
+        layer.identity = digest(static_cast<std::uint8_t>(97 + layerIndex));
+        layer.model = MaterialModel::MetallicRoughness;
+        layer.baseColor = {{0.25f * static_cast<float>(layerIndex + 1),
+                            0.5f, 0.75f, 1.f}};
+        layer.emissive = {{0.01f * static_cast<float>(layerIndex), 0.02f, 0.03f}};
+        layer.metallic = 0.1f * static_cast<float>(layerIndex);
+        layer.roughness = 0.9f - 0.1f * static_cast<float>(layerIndex);
+        layer.alphaCutoff = 0.25f;
+        layer.transform = {{0.1f * static_cast<float>(layerIndex), -0.25f,
+                            2.f, 2.f, 0.125f}};
+        layer.baseColorTexture = static_cast<std::uint32_t>(layerIndex + 1);
+        layer.normalTexture = 5;
+    }
+    source.regions.push_back(region);
+
+    TerrainSceneVertex vertex;
+    vertex.position = {{0.f, 0.f, 2.f}};
+    vertex.compositionCoord = {{0.5f, 0.25f}};
+    source.vertices.push_back(vertex);
+    vertex.position = {{16.f, 0.f, 3.f}};
+    vertex.compositionCoord = {{1.5f, 0.25f}};
+    source.vertices.push_back(vertex);
+    vertex.position = {{0.f, 16.f, 4.f}};
+    vertex.compositionCoord = {{0.5f, 1.25f}};
+    source.vertices.push_back(vertex);
+    source.indices = {0, 1, 2};
+    TerrainSceneDraw draw;
+    draw.semanticId = 0x49365f544552524eull; // "I6_TERRN"
+    draw.region = 0;
+    draw.indexCount = 3;
+    draw.viewProjection[12] = 0.125f;
+    draw.modelTransform[12] = 1024.f;
+    draw.modelTransform[13] = 768.f;
+    source.draws.push_back(draw);
+
+    std::vector<std::byte> first;
+    std::vector<std::byte> second;
+    Status status = encodeTerrainScenePacket(source, first);
+    ensure(status.message(), status.ok());
+    ensure("I6 terrain encoding is deterministic",
+           encodeTerrainScenePacket(source, second).ok() && first == second);
+    TerrainScenePacket decoded;
+    status = decodeTerrainScenePacket(first, decoded);
+    ensure(status.message(), status.ok());
+    ensure("I6 terrain packet round trips exactly", decoded == source);
+    ensure_equals("I6 canonical terrain vertex size",
+                  sizeof(TerrainSceneVertex), std::size_t{48});
+    ensure("I6 terrain packet has a deterministic identity",
+           !terrainScenePacketSha256(source).empty());
+
+#if defined(LL_GHI_I6_TERRAIN_SHADER_PACKAGE)
+    ShaderPackageDesc package;
+    status = loadShaderPackage(LL_GHI_I6_TERRAIN_SHADER_PACKAGE, package);
+    ensure(status.message(), status.ok());
+    ensure_equals("I6 reflected terrain binding count",
+                  package.bindings.size(), std::size_t{6});
+    ensure_equals("I6 reflected canonical terrain input count",
+                  package.vertexInputs.size(), std::size_t{3});
+    ensure_equals("I6 reflected terrain output count",
+                  package.fragmentOutputs.size(), std::size_t{4});
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    ensure("I6 validation device", created.status.ok() && created.device);
+    {
+        TerrainOffscreenProbe probe(*created.device, std::move(package));
+        TerrainOffscreenProbeLimits limits;
+        status = probe.submit(source, limits);
+        ensure(status.message(), status.ok());
+        ensure("I6 asynchronous terrain sample is pending", probe.pending());
+        TerrainOffscreenProbeResult result;
+        status = probe.poll(result);
+        ensure(status.message(), status.ok());
+        ensure_equals("I6 executed terrain draw count", result.draws,
+                      std::uint32_t{1});
+        ensure_equals("I6 executed PBR terrain draw count", result.pbrDraws,
+                      std::uint32_t{1});
+        ensure_equals("I6 executed triplanar terrain draw count",
+                      result.triplanarDraws, std::uint32_t{1});
+        ensure("I6 terrain probe shuts down", probe.shutdown().ok());
+    }
+    ensure("I6 deferred resources drain", created.device->waitIdle().ok());
+#endif
+
+    source.indices[2] = 3;
+    ensure("I6 rejects an out-of-range terrain index",
+           encodeTerrainScenePacket(source, first).code() ==
+               StatusCode::InvalidArgument);
+    source.indices[2] = 2;
+    source.regions[0].compositionTexture = NO_RESOURCE;
+    ensure("I6 requires an explicit composition resource",
+           encodeTerrainScenePacket(source, first).code() ==
+               StatusCode::InvalidArgument);
+    source.regions[0].compositionTexture = 0;
+    source.regions[0].model = MaterialModel::Legacy;
+    ensure("I6 rejects mixed legacy and PBR terrain state",
+           encodeTerrainScenePacket(source, first).code() ==
+               StatusCode::InvalidArgument);
+    source.regions[0].model = MaterialModel::MetallicRoughness;
+    first.pop_back();
+    ensure("I6 rejects a truncated terrain packet",
+           decodeTerrainScenePacket(first, decoded).code() ==
                StatusCode::InvalidArgument);
 }
 

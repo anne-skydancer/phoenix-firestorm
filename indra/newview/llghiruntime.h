@@ -16,6 +16,7 @@ namespace LL::GHI
 {
 struct OpaqueScenePacket;
 struct MaterialScenePacket;
+struct TerrainScenePacket;
 }
 
 namespace LLGHIRuntime
@@ -31,6 +32,10 @@ bool materialCaptureRequested();
 bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id);
 void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
                                bool budget_limited);
+bool terrainCaptureRequested();
+bool shouldCaptureLiveTerrainPacket(std::uint64_t frame_id);
+void consumeLiveTerrainPacket(const LL::GHI::TerrainScenePacket& packet,
+                              bool budget_limited);
 
 } // namespace LLGHIRuntime
 

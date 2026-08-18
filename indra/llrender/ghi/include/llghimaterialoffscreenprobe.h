@@ -1,6 +1,6 @@
 /**
  * @file llghimaterialoffscreenprobe.h
- * @brief Asynchronous, non-presenting replay of transform-correct rigid opaque PBR draws.
+ * @brief Asynchronous, non-presenting replay of rigid and rigged opaque PBR draws.
  */
 
 #ifndef LL_LLGHIMATERIALOFFSCREENPROBE_H
@@ -35,6 +35,8 @@ struct MaterialOffscreenProbeResult
     std::uint32_t vertices = 0;
     std::uint32_t indices = 0;
     std::uint32_t draws = 0;
+    std::uint32_t riggedDraws = 0;
+    std::uint32_t maxJointCount = 0;
     std::uint32_t textureTransformedDraws = 0;
     std::uint32_t textures = 0;
     std::string packetSha256;

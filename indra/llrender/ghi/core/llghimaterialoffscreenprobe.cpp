@@ -1,6 +1,6 @@
 /**
  * @file llghimaterialoffscreenprobe.cpp
- * @brief Asynchronous, non-presenting replay of live rigid opaque PBR draws.
+ * @brief Asynchronous, non-presenting replay of live rigid and rigged opaque PBR draws.
  */
 
 #include "linden_common.h"
@@ -30,15 +30,7 @@ constexpr std::array<Format, 4> COLOR_FORMATS{{
     Format::RGBA8UNorm, Format::RGBA8UNorm,
     Format::RGBA16UNorm, Format::RGBA16Float}};
 constexpr std::array<std::uint32_t, 4> COLOR_BYTES{{4, 4, 8, 8}};
-constexpr std::array<float, 64> IDENTITY_SKIN{{
-    1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
-    0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f,
-    1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
-    0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f,
-    1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
-    0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f,
-    1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
-    0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+using SkinData = std::array<float, MATERIAL_SKIN_FLOATS>;
 
 Status invalid(const char* message)
 {
@@ -72,16 +64,73 @@ std::array<double, 4> transformPoint(const std::array<float, 16>& matrix,
     return result;
 }
 
+bool validSkin(const SkinResource& skin)
+{
+    return skin.comparability == ResourceComparability::Comparable &&
+           skin.jointCount > 0 && skin.jointCount <= MATERIAL_MAX_JOINTS &&
+           skin.matrixPalette.size() ==
+               static_cast<std::size_t>(skin.jointCount) * 12;
+}
+
+std::array<double, 4> skinPoint(const MaterialSceneVertex& vertex,
+                                const SkinResource* skin)
+{
+    if (!skin)
+        return {{vertex.position[0], vertex.position[1], vertex.position[2], 1.0}};
+    double weightSum = 0.0;
+    for (float weight : vertex.weights)
+        weightSum += std::max(0.0, static_cast<double>(weight));
+    if (!std::isfinite(weightSum) || weightSum <= 1.e-6)
+        return {{0.0, 0.0, 0.0, 1.0}};
+    std::array<double, 4> result{{0.0, 0.0, 0.0, 1.0}};
+    for (std::size_t influence = 0; influence < vertex.weights.size(); ++influence)
+    {
+        const double weight = std::max(0.0,
+            static_cast<double>(vertex.weights[influence])) / weightSum;
+        const std::uint32_t joint = std::min<std::uint32_t>(
+            vertex.joints[influence], skin->jointCount - 1);
+        const float* matrix = skin->matrixPalette.data() + joint * 12;
+        result[0] += weight * (matrix[0] * vertex.position[0] +
+                               matrix[4] * vertex.position[1] +
+                               matrix[8] * vertex.position[2] + matrix[3]);
+        result[1] += weight * (matrix[1] * vertex.position[0] +
+                               matrix[5] * vertex.position[1] +
+                               matrix[9] * vertex.position[2] + matrix[7]);
+        result[2] += weight * (matrix[2] * vertex.position[0] +
+                               matrix[6] * vertex.position[1] +
+                               matrix[10] * vertex.position[2] + matrix[11]);
+    }
+    return result;
+}
+
+SkinData makeSkinData(const SkinResource* skin)
+{
+    SkinData data{};
+    for (std::uint32_t joint = 0; joint < MATERIAL_MAX_JOINTS; ++joint)
+    {
+        data[joint * 12] = 1.f;
+        data[joint * 12 + 5] = 1.f;
+        data[joint * 12 + 10] = 1.f;
+    }
+    const std::uint32_t jointCount = skin ? skin->jointCount : 1u;
+    if (skin)
+        std::copy(skin->matrixPalette.begin(), skin->matrixPalette.end(), data.begin());
+    const std::array<std::uint32_t, 4> meta{{jointCount, 0, 0, 0}};
+    std::memcpy(data.data() + MATERIAL_MAX_JOINTS * 12,
+                meta.data(), sizeof(meta));
+    return data;
+}
+
 bool potentiallyVisible(const MaterialScenePacket& packet,
-                        const MaterialSceneDraw& draw)
+                        const MaterialSceneDraw& draw,
+                        const SkinResource* skin)
 {
     std::array<bool, 6> allOutside{{true, true, true, true, true, true}};
     for (std::uint32_t item = 0; item < draw.indexCount; ++item)
     {
         const MaterialSceneVertex& vertex =
             packet.vertices[packet.indices[draw.firstIndex + item]];
-        const std::array<double, 4> local{{
-            vertex.position[0], vertex.position[1], vertex.position[2], 1.0}};
+        const std::array<double, 4> local = skinPoint(vertex, skin);
         const auto world = transformPoint(draw.modelTransform, local);
         const auto clip = transformPoint(draw.transform, world);
         if (!std::all_of(clip.begin(), clip.end(),
@@ -241,6 +290,8 @@ public:
         std::vector<std::size_t> selected;
         std::size_t geometryDraws = 0;
         std::size_t rigidDraws = 0;
+        std::size_t riggedDraws = 0;
+        std::size_t validSkinDraws = 0;
         std::size_t comparableDraws = 0;
         std::size_t opaquePbrDraws = 0;
         std::size_t uv0Draws = 0;
@@ -259,16 +310,26 @@ public:
         constexpr std::array<TextureSemantic, 4> diagnosticSemantics{{
             TextureSemantic::BaseColor, TextureSemantic::Normal,
             TextureSemantic::MetallicRoughness, TextureSemantic::Emissive}};
-        for (std::size_t index = 0; index < packet.draws.size() &&
-             selected.size() < limits.maxDraws; ++index)
+        for (std::size_t index = 0; index < packet.draws.size(); ++index)
         {
             const MaterialSceneDraw& draw = packet.draws[index];
             if (!draw.indexCount) continue;
             ++geometryDraws;
-            if (draw.skin != NO_RESOURCE ||
-                draw.material >= packet.materials.size())
-                continue;
-            ++rigidDraws;
+            if (draw.material >= packet.materials.size()) continue;
+            const SkinResource* skin = nullptr;
+            if (draw.skin == NO_RESOURCE)
+            {
+                ++rigidDraws;
+            }
+            else
+            {
+                ++riggedDraws;
+                if (draw.skin >= packet.skins.size() ||
+                    !validSkin(packet.skins[draw.skin]))
+                    continue;
+                skin = &packet.skins[draw.skin];
+                ++validSkinDraws;
+            }
             const MaterialResource& material = packet.materials[draw.material];
             if (material.model != MaterialModel::MetallicRoughness ||
                 material.alphaMode != MaterialAlphaMode::Opaque)
@@ -317,22 +378,30 @@ public:
                 material.comparability != ResourceComparability::Comparable)
                 continue;
             ++comparableDraws;
-            if (!potentiallyVisible(packet, draw)) continue;
+            if (!potentiallyVisible(packet, draw, skin)) continue;
             ++potentiallyVisibleDraws;
             selected.push_back(index);
-            if (selected.size() * 4 > limits.maxTextures)
-            {
-                selected.pop_back();
-                break;
-            }
         }
+        // Capture reserves room for rigged draws and the consumer gives those
+        // draws first claim on its smaller executable budget. Rigid draws keep
+        // their original order within the remaining capacity.
+        std::stable_sort(selected.begin(), selected.end(),
+            [&packet](std::size_t lhs, std::size_t rhs)
+            {
+                return (packet.draws[lhs].skin != NO_RESOURCE) >
+                       (packet.draws[rhs].skin != NO_RESOURCE);
+            });
+        const std::size_t executableLimit = std::min<std::size_t>(
+            limits.maxDraws, limits.maxTextures / 4);
+        if (selected.size() > executableLimit) selected.resize(executableLimit);
         if (selected.empty())
         {
             std::ostringstream message;
-            message << "live material packet has no executable rigid opaque PBR draws"
-                    << " (packet/geometry/rigid/pbr/uv0/comparable/visible="
+            message << "live material packet has no executable rigid or rigged opaque PBR draws"
+                    << " (packet/geometry/rigid/rigged/valid-skin/pbr/uv0/comparable/visible="
                     << packet.draws.size() << '/' << geometryDraws << '/'
-                    << rigidDraws << '/' << opaquePbrDraws << '/'
+                    << rigidDraws << '/' << riggedDraws << '/'
+                    << validSkinDraws << '/' << opaquePbrDraws << '/'
                     << uv0Draws << '/' << comparableDraws << '/'
                     << potentiallyVisibleDraws
                     << "; causes=missing/fetching/skin/alpha/layout="
@@ -377,7 +446,7 @@ public:
         const std::uint64_t objectStride = align(OBJECT_FLOATS * sizeof(float));
         const std::uint64_t skinOffset = align(
             objectOffset + objectStride * selected.size());
-        const std::uint64_t skinStride = align(sizeof(IDENTITY_SKIN));
+        const std::uint64_t skinStride = align(MATERIAL_SKIN_BYTES);
         const std::uint64_t materialOffset = align(
             skinOffset + skinStride * selected.size());
         constexpr std::size_t MATERIAL_FLOATS = 44;
@@ -466,8 +535,11 @@ public:
                 return invalid("material draw has a singular model transform");
             std::memcpy(uploadData.data() + objectOffset + objectStride * item,
                         objectData.data(), sizeof(objectData));
+            const SkinResource* drawSkin = draw.skin == NO_RESOURCE
+                ? nullptr : &packet.skins[draw.skin];
+            const SkinData skinData = makeSkinData(drawSkin);
             std::memcpy(uploadData.data() + skinOffset + skinStride * item,
-                        IDENTITY_SKIN.data(), sizeof(IDENTITY_SKIN));
+                        skinData.data(), MATERIAL_SKIN_BYTES);
             std::array<float, MATERIAL_FLOATS> factors{{
                 material.baseColor[0], material.baseColor[1],
                 material.baseColor[2], material.baseColor[3],
@@ -552,7 +624,7 @@ public:
                 {0, 0, ShaderPackageDesc::BindingType::UniformBuffer, objects,
                  objectStride * item, OBJECT_FLOATS * sizeof(float), {}, {}},
                 {1, 0, ShaderPackageDesc::BindingType::UniformBuffer, skin,
-                 skinStride * item, sizeof(IDENTITY_SKIN), {}, {}}}};
+                 skinStride * item, MATERIAL_SKIN_BYTES, {}, {}}}};
             if (status) draws[item].skinSet =
                 mDevice.createBindingSet(skinDesc, status);
             BindingSetDesc materialDesc;
@@ -613,7 +685,7 @@ public:
             }
 
         RenderingInfo rendering;
-        rendering.semanticId = 0x49345f4d41544cull; // "I4_MATL"
+        rendering.semanticId = 0x49355f4d41544cull; // "I5_MATL"
         rendering.width = PROBE_WIDTH; rendering.height = PROBE_HEIGHT;
         for (std::size_t target = 0; target < 4; ++target)
             rendering.colors.push_back({mColorViews[target], COLOR_FORMATS[target],
@@ -671,6 +743,14 @@ public:
         mPendingResult.vertices = static_cast<std::uint32_t>(packet.vertices.size());
         mPendingResult.indices = static_cast<std::uint32_t>(packet.indices.size());
         mPendingResult.draws = static_cast<std::uint32_t>(draws.size());
+        for (const DrawResources& resources : draws)
+        {
+            const MaterialSceneDraw& draw = packet.draws[resources.sourceDraw];
+            if (draw.skin == NO_RESOURCE) continue;
+            ++mPendingResult.riggedDraws;
+            mPendingResult.maxJointCount = std::max(
+                mPendingResult.maxJointCount, packet.skins[draw.skin].jointCount);
+        }
         mPendingResult.textureTransformedDraws = static_cast<std::uint32_t>(
             std::count_if(draws.begin(), draws.end(),
                 [](const DrawResources& draw) { return draw.textureTransformed; }));
@@ -749,7 +829,7 @@ private:
             capabilities.maxTexture2DSize < PROBE_WIDTH ||
             capabilities.preferredDepthStencilFormat == Format::Undefined)
             return Status::failure(StatusCode::Unsupported,
-                                   "device lacks I4 material target capabilities");
+                                   "device lacks I5 material target capabilities");
         Status status = Status::success();
         for (std::size_t target = 0; target < 4; ++target)
         {

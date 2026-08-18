@@ -12679,7 +12679,7 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>RenderVulkanMaterialOffscreenProbe</key>
     <map>
       <key>Comment</key>
-      <string>Developer only: execute bounded transform-correct live rigid opaque PBR packets, including per-map UV transforms, into isolated native Vulkan attachments and poll hashes asynchronously. Alpha, rigged, HUD, mirror, cube snapshot, and presentation paths remain excluded. Requires RenderVulkanDeveloperProbe and restart.</string>
+      <string>Developer only: execute bounded transform-correct live rigid and rigged opaque PBR packets, including production skin palettes and per-map UV transforms, into isolated native Vulkan attachments and poll hashes asynchronously. Alpha, HUD, mirror, cube snapshot, and presentation paths remain excluded. Requires RenderVulkanDeveloperProbe and restart.</string>
       <key>Persist</key>
       <integer>1</integer>
       <key>Type</key>

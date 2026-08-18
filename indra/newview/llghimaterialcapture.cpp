@@ -29,12 +29,14 @@
 #include <limits>
 #include <map>
 #include <numeric>
-#include <set>
 #include <sstream>
 
 #include <glm/gtc/type_ptr.hpp>
 
 using namespace std::chrono_literals;
+
+static_assert(LL::GHI::MATERIAL_MAX_JOINTS == LL_MAX_JOINTS_PER_MESH_OBJECT,
+              "GHI skin capacity must track Firestorm's rigged-mesh ceiling");
 
 namespace
 {
@@ -92,6 +94,22 @@ class LLGHIMaterialCapture::Impl
 {
 public:
     enum class State { Disabled, Warming, Recording, Complete, Failed };
+    enum class GeometryReject : std::size_t
+    {
+        None,
+        InvalidPrimitive,
+        MissingAttributes,
+        MissingWeights,
+        MissingCpuData,
+        InvalidRange,
+        IndexStride,
+        Budget,
+        NonFiniteWeights,
+        ZeroWeights,
+        IndexRange,
+        ClipVolume,
+        Count
+    };
     struct ObservedTexture
     {
         std::uint32_t width = 0;
@@ -145,6 +163,14 @@ public:
         mMaterialIndices.clear();
         mSkinIndices.clear();
         mRuntimeBudgetLimited = false;
+        mRuntimeRigidDraws = 0;
+        mRuntimeRiggedDraws = 0;
+        mRuntimeRiggedCalls = 0;
+        mRuntimeRiggedOpaqueCalls = 0;
+        mRuntimeRiggedMaskCalls = 0;
+        mRuntimeRiggedMissingSkin = 0;
+        mRuntimeRiggedGeometryRejected = 0;
+        mRuntimeRiggedRejectReasons.fill(0);
         mRuntimeTextureBytes = 0;
         mInFrame = true;
         return true;
@@ -164,7 +190,13 @@ public:
         const std::uint32_t components = llmax(0, image.getComponents());
         if (!sourceWidth || !sourceHeight || !components || components > 4)
             return;
-        constexpr std::size_t MAX_RUNTIME_IMAGE_BYTES = 1ull * 1024ull * 1024ull;
+        // Viewer texture assets are capped at 2048x2048. The verification
+        // packet does not need their full 16 MiB RGBA representation: retain
+        // at most a 64 KiB sample (normally 128x128 RGBA) from the normal
+        // decoder path. The same reduced pixels are supplied to every peer
+        // backend, while the bounded observation window remains large enough
+        // for login-time avatar and region texture churn.
+        constexpr std::size_t MAX_RUNTIME_IMAGE_BYTES = 64ull * 1024ull;
         const bool runtimeObservation =
             LLGHIRuntime::materialCaptureRequested() && mState == State::Disabled;
         std::uint32_t observedWidth = sourceWidth;
@@ -190,7 +222,6 @@ public:
         const std::uint32_t effectiveDiscard =
             static_cast<std::uint32_t>(llmax(0, discardLevel)) + extraDiscard;
         const std::string key = texture.getID().asString();
-        mRequestedRawTextures.erase(key);
         auto existing = mObservedTextures.find(key);
         if (existing != mObservedTextures.end() &&
             existing->second.discardLevel <= effectiveDiscard)
@@ -260,16 +291,66 @@ public:
     void record(LLDrawInfo& draw, std::uint32_t renderType, bool rigged)
     {
         if (!mInFrame) return;
-        const bool runtimeGeometry = !rigged && !draw.mSkinInfo && !draw.mAvatar &&
-            renderType == LLRenderPass::PASS_GLTF_PBR &&
+        const bool needsSkin = rigged || draw.mSkinInfo || draw.mAvatar;
+        if (mCaptureRuntime && rigged)
+        {
+            ++mRuntimeRiggedCalls;
+            if (renderType == LLRenderPass::PASS_GLTF_PBR_RIGGED)
+                ++mRuntimeRiggedOpaqueCalls;
+            else if (renderType == LLRenderPass::PASS_GLTF_PBR_ALPHA_MASK_RIGGED)
+                ++mRuntimeRiggedMaskCalls;
+        }
+        const bool opaquePbrPass = renderType == LLRenderPass::PASS_GLTF_PBR ||
+            renderType == LLRenderPass::PASS_GLTF_PBR_RIGGED;
+        const bool runtimeGeometry = opaquePbrPass &&
             draw.mGLTFMaterial.notNull() &&
             alphaMode(draw.mGLTFMaterial->mAlphaMode) ==
                 LL::GHI::MaterialAlphaMode::Opaque;
         if (mCaptureRuntime && !mCaptureFile && !runtimeGeometry) return;
+
+        // A live I5 sample is useful only when its production skin path is
+        // executable. Render traversal normally reaches rigid PBR first; if
+        // those resources consume the bounded texture packet, merely sorting
+        // rigged draws in the consumer is too late. Let the first rigged draw
+        // preempt the provisional rigid-only sample so its geometry, palette,
+        // and texture set receive first claim on the same fixed budgets.
+        if (mCaptureRuntime && !mCaptureFile && rigged && runtimeGeometry &&
+            !mRuntimeRiggedDraws && mRuntimeRigidDraws)
+        {
+            mPacket.vertices.clear();
+            mPacket.indices.clear();
+            mPacket.draws.clear();
+            mPacket.textures.clear();
+            mPacket.materials.clear();
+            mPacket.skins.clear();
+            mTextureIndices.clear();
+            mMaterialIndices.clear();
+            mSkinIndices.clear();
+            mRuntimeRigidDraws = 0;
+            mRuntimeTextureBytes = 0;
+            mRuntimeBudgetLimited = false;
+        }
         LL::GHI::MaterialSceneDraw output;
         output.semanticId = 0x5235620000000000ull |
             static_cast<std::uint64_t>(mPacket.draws.size() & 0xffffffffull);
-        if (runtimeGeometry && !captureGeometry(draw, output))
+        if (needsSkin)
+            output.skin = skin(draw);
+        const LL::GHI::SkinResource* capturedSkin =
+            output.skin == LL::GHI::NO_RESOURCE
+                ? nullptr : &mPacket.skins[output.skin];
+        const bool missingSkin = needsSkin && !capturedSkin;
+        if (mCaptureRuntime && rigged && missingSkin)
+            ++mRuntimeRiggedMissingSkin;
+        GeometryReject geometryReject = GeometryReject::None;
+        const bool geometryCaptured = !runtimeGeometry ||
+            (!missingSkin && captureGeometry(
+                draw, output, capturedSkin, geometryReject));
+        if (mCaptureRuntime && rigged && runtimeGeometry && !geometryCaptured)
+        {
+            ++mRuntimeRiggedGeometryRejected;
+            ++mRuntimeRiggedRejectReasons[static_cast<std::size_t>(geometryReject)];
+        }
+        if (runtimeGeometry && !geometryCaptured)
         {
             // Runtime packets contain executable geometry only. Archival R5
             // capture keeps the semantic-only records below.
@@ -277,10 +358,7 @@ public:
             output.comparability = output.comparability |
                 LL::GHI::ResourceComparability::UnsupportedVertexLayout;
         }
-        output.material = material(draw, renderType);
-        const bool needsSkin = rigged || draw.mSkinInfo || draw.mAvatar;
-        if (needsSkin)
-            output.skin = skin(draw);
+        output.material = material(draw, renderType, capturedSkin != nullptr);
         if (output.material != LL::GHI::NO_RESOURCE)
             output.comparability = output.comparability |
                 mPacket.materials[output.material].comparability;
@@ -301,11 +379,34 @@ public:
         const bool captureRuntime = mCaptureRuntime;
         mCaptureFile = false;
         mCaptureRuntime = false;
+        const auto logRuntimeRouting = [this]()
+        {
+            std::ostringstream reasons;
+            for (std::size_t reason = 1;
+                 reason < static_cast<std::size_t>(GeometryReject::Count);
+                 ++reason)
+            {
+                if (reason != 1) reasons << '/';
+                reasons << mRuntimeRiggedRejectReasons[reason];
+            }
+            LL_INFOS("GHIIntegration")
+                << "I5 capture routing diagnostic: rigged-calls="
+                << mRuntimeRiggedCalls << " opaque-rigged-calls="
+                << mRuntimeRiggedOpaqueCalls << " mask-rigged-calls="
+                << mRuntimeRiggedMaskCalls << " missing-skin="
+                << mRuntimeRiggedMissingSkin << " geometry-rejected="
+                << mRuntimeRiggedGeometryRejected
+                << " reject-reasons(primitive/attributes/weights/cpu/range/stride/budget/nonfinite/zero-weight/index/clip)="
+                << reasons.str() << LL_ENDL;
+        };
         if (mPacket.draws.empty())
         {
             if (captureRuntime)
+            {
+                logRuntimeRouting();
                 LLGHIRuntime::consumeLiveMaterialPacket(
                     mPacket, mRuntimeBudgetLimited);
+            }
             return;
         }
 
@@ -337,7 +438,11 @@ public:
         mPacket.resourceEpoch = mResourceEpoch;
 
         if (captureRuntime)
+        {
+            if (!mRuntimeRiggedDraws)
+                logRuntimeRouting();
             LLGHIRuntime::consumeLiveMaterialPacket(mPacket, mRuntimeBudgetLimited);
+        }
         if (!captureFile) return;
 
         std::vector<std::byte> bytes;
@@ -368,33 +473,72 @@ public:
 
 private:
     bool captureGeometry(const LLDrawInfo& source,
-                         LL::GHI::MaterialSceneDraw& output)
+                         LL::GHI::MaterialSceneDraw& output,
+                         const LL::GHI::SkinResource* skinResource,
+                         GeometryReject& reject)
     {
         const LLVertexBuffer* buffer = source.mVertexBuffer.get();
         constexpr std::uint32_t required = LLVertexBuffer::MAP_VERTEX |
             LLVertexBuffer::MAP_NORMAL | LLVertexBuffer::MAP_TANGENT |
             LLVertexBuffer::MAP_TEXCOORD0;
-        if (!buffer || !source.mCount || source.mCount % 3 != 0 ||
-            (buffer->getTypeMask() & required) != required ||
-            !buffer->getMappedData() || !buffer->getMappedIndices() ||
-            source.mStart > source.mEnd || source.mEnd >= buffer->getNumVerts() ||
+        const bool skinned = skinResource != nullptr;
+        reject = GeometryReject::None;
+        if (!buffer || !source.mCount || source.mCount % 3 != 0)
+        { reject = GeometryReject::InvalidPrimitive; return false; }
+        if ((buffer->getTypeMask() & required) != required)
+        { reject = GeometryReject::MissingAttributes; return false; }
+        if (skinned && !buffer->hasDataType(LLVertexBuffer::TYPE_WEIGHT4))
+        { reject = GeometryReject::MissingWeights; return false; }
+        if (!buffer->getMappedData() || !buffer->getMappedIndices())
+        { reject = GeometryReject::MissingCpuData; return false; }
+        if (source.mStart > source.mEnd || source.mEnd >= buffer->getNumVerts() ||
             source.mOffset > buffer->getNumIndices() ||
-            source.mCount > buffer->getNumIndices() - source.mOffset ||
-            (buffer->getIndexStride() != 2 && buffer->getIndexStride() != 4))
+            source.mCount > buffer->getNumIndices() - source.mOffset)
+        { reject = GeometryReject::InvalidRange; return false; }
+        if (buffer->getIndexStride() != 2 && buffer->getIndexStride() != 4)
+        { reject = GeometryReject::IndexStride; return false; }
+
+        const std::uint8_t* rawIndices = buffer->getMappedIndices();
+        const std::size_t vertexRange = source.mEnd - source.mStart + 1;
+        std::vector<bool> referenced(vertexRange, false);
+        for (std::uint32_t item = 0; item < source.mCount; ++item)
+        {
+            const std::size_t sourceIndex = source.mOffset + item;
+            const std::uint32_t value = buffer->getIndexStride() == 2
+                ? reinterpret_cast<const std::uint16_t*>(rawIndices)[sourceIndex]
+                : reinterpret_cast<const std::uint32_t*>(rawIndices)[sourceIndex];
+            if (value < source.mStart || value > source.mEnd)
+            {
+                reject = GeometryReject::IndexRange;
+                return false;
+            }
+            referenced[value - source.mStart] = true;
+        }
+
+        const std::size_t vertexCount = static_cast<std::size_t>(
+            std::count(referenced.begin(), referenced.end(), true));
+        if (!vertexCount)
+        {
+            reject = GeometryReject::InvalidPrimitive;
             return false;
+        }
 
         constexpr std::size_t maxDraws = 32;
+        constexpr std::size_t maxRigidDraws = 24;
         constexpr std::size_t maxVertices = 65536;
         constexpr std::size_t maxIndices = 196608;
-        const std::size_t vertexCount = source.mEnd - source.mStart + 1;
+        const std::size_t runtimeDraws =
+            mRuntimeRigidDraws + mRuntimeRiggedDraws;
         if (mCaptureRuntime &&
-            (mPacket.draws.size() >= maxDraws ||
+            (runtimeDraws >= maxDraws ||
+             (!skinned && mRuntimeRigidDraws >= maxRigidDraws) ||
              mPacket.vertices.size() > maxVertices ||
              vertexCount > maxVertices - mPacket.vertices.size() ||
              mPacket.indices.size() > maxIndices ||
              source.mCount > maxIndices - mPacket.indices.size()))
         {
             mRuntimeBudgetLimited = true;
+            reject = GeometryReject::Budget;
             return false;
         }
 
@@ -412,9 +556,23 @@ private:
         const LLColor4U* colors = buffer->hasDataType(LLVertexBuffer::TYPE_COLOR)
             ? reinterpret_cast<const LLColor4U*>(
                 data + buffer->getOffset(LLVertexBuffer::TYPE_COLOR)) : nullptr;
+        const float* packedWeights = skinned
+            ? reinterpret_cast<const float*>(
+                data + buffer->getOffset(LLVertexBuffer::TYPE_WEIGHT4)) : nullptr;
+        const std::uint16_t* separateJoints = skinned &&
+            buffer->hasDataType(LLVertexBuffer::TYPE_JOINT)
+                ? reinterpret_cast<const std::uint16_t*>(
+                    data + buffer->getOffset(LLVertexBuffer::TYPE_JOINT)) : nullptr;
+        std::vector<std::uint32_t> vertexMap(
+            vertexRange, std::numeric_limits<std::uint32_t>::max());
         mPacket.vertices.reserve(mPacket.vertices.size() + vertexCount);
-        for (std::uint32_t index = source.mStart; index <= source.mEnd; ++index)
+        for (std::size_t localIndex = 0; localIndex < vertexRange; ++localIndex)
         {
+            if (!referenced[localIndex]) continue;
+            const std::uint32_t index = source.mStart +
+                static_cast<std::uint32_t>(localIndex);
+            vertexMap[localIndex] =
+                static_cast<std::uint32_t>(mPacket.vertices.size());
             LL::GHI::MaterialSceneVertex vertex;
             std::copy_n(positions + static_cast<std::size_t>(index) * 4, 3,
                         vertex.position.begin());
@@ -425,12 +583,49 @@ private:
             std::copy_n(texcoords + static_cast<std::size_t>(index) * 2, 2,
                         vertex.texCoord.begin());
             if (colors) std::copy_n(colors[index].mV, 4, vertex.color.begin());
+            if (skinned)
+            {
+                float weightSum = 0.f;
+                for (std::size_t influence = 0; influence < 4; ++influence)
+                {
+                    const float packed = packedWeights[
+                        static_cast<std::size_t>(index) * 4 + influence];
+                    if (!std::isfinite(packed))
+                    {
+                        mPacket.vertices.resize(baseVertex);
+                        reject = GeometryReject::NonFiniteWeights;
+                        return false;
+                    }
+                    if (separateJoints)
+                    {
+                        vertex.joints[influence] = separateJoints[
+                            static_cast<std::size_t>(index) * 4 + influence];
+                        vertex.weights[influence] = llmax(0.f, packed);
+                    }
+                    else
+                    {
+                        const float integral = std::floor(packed);
+                        const auto joint = static_cast<std::uint32_t>(
+                            llclamp(integral, 0.f,
+                                static_cast<float>(skinResource->jointCount - 1)));
+                        vertex.joints[influence] =
+                            static_cast<std::uint16_t>(joint);
+                        vertex.weights[influence] = packed - integral;
+                    }
+                    weightSum += vertex.weights[influence];
+                }
+                if (!std::isfinite(weightSum) || weightSum <= 1.e-6f)
+                {
+                    mPacket.vertices.resize(baseVertex);
+                    reject = GeometryReject::ZeroWeights;
+                    return false;
+                }
+            }
             mPacket.vertices.push_back(vertex);
         }
 
         const std::uint32_t firstIndex =
             static_cast<std::uint32_t>(mPacket.indices.size());
-        const std::uint8_t* rawIndices = buffer->getMappedIndices();
         mPacket.indices.reserve(mPacket.indices.size() + source.mCount);
         for (std::uint32_t item = 0; item < source.mCount; ++item)
         {
@@ -438,13 +633,7 @@ private:
             const std::uint32_t value = buffer->getIndexStride() == 2
                 ? reinterpret_cast<const std::uint16_t*>(rawIndices)[sourceIndex]
                 : reinterpret_cast<const std::uint32_t*>(rawIndices)[sourceIndex];
-            if (value < source.mStart || value > source.mEnd)
-            {
-                mPacket.vertices.resize(baseVertex);
-                mPacket.indices.resize(firstIndex);
-                return false;
-            }
-            mPacket.indices.push_back(baseVertex + value - source.mStart);
+            mPacket.indices.push_back(vertexMap[value - source.mStart]);
         }
         output.firstIndex = firstIndex;
         output.indexCount = source.mCount;
@@ -466,8 +655,35 @@ private:
                  item < firstIndex + source.mCount; ++item)
             {
                 const auto& vertex = mPacket.vertices[mPacket.indices[item]];
-                const glm::vec4 clip = clipTransform * glm::vec4(
-                    vertex.position[0], vertex.position[1], vertex.position[2], 1.f);
+                glm::vec4 local(vertex.position[0], vertex.position[1],
+                                vertex.position[2], 1.f);
+                if (skinResource)
+                {
+                    float weightSum = 0.f;
+                    for (float weight : vertex.weights)
+                        weightSum += llmax(0.f, weight);
+                    glm::vec3 skinnedPosition(0.f);
+                    for (std::size_t influence = 0; influence < 4; ++influence)
+                    {
+                        const float weight = llmax(0.f, vertex.weights[influence]) /
+                                             llmax(weightSum, 1.e-6f);
+                        const std::uint32_t joint = llmin<std::uint32_t>(
+                            vertex.joints[influence], skinResource->jointCount - 1);
+                        const float* matrix =
+                            skinResource->matrixPalette.data() + joint * 12;
+                        skinnedPosition.x += weight *
+                            (matrix[0] * local.x + matrix[4] * local.y +
+                             matrix[8] * local.z + matrix[3]);
+                        skinnedPosition.y += weight *
+                            (matrix[1] * local.x + matrix[5] * local.y +
+                             matrix[9] * local.z + matrix[7]);
+                        skinnedPosition.z += weight *
+                            (matrix[2] * local.x + matrix[6] * local.y +
+                             matrix[10] * local.z + matrix[11]);
+                    }
+                    local = glm::vec4(skinnedPosition, 1.f);
+                }
+                const glm::vec4 clip = clipTransform * local;
                 if (!std::isfinite(clip.x) || !std::isfinite(clip.y) ||
                     !std::isfinite(clip.z) || !std::isfinite(clip.w))
                     continue;
@@ -483,11 +699,17 @@ private:
             {
                 mPacket.vertices.resize(baseVertex);
                 mPacket.indices.resize(firstIndex);
+                reject = GeometryReject::ClipVolume;
                 return false;
             }
         }
         std::copy_n(glm::value_ptr(transform), 16, output.transform.begin());
         std::copy_n(glm::value_ptr(model), 16, output.modelTransform.begin());
+        if (mCaptureRuntime)
+        {
+            if (skinned) ++mRuntimeRiggedDraws;
+            else ++mRuntimeRigidDraws;
+        }
         return true;
     }
 
@@ -549,7 +771,8 @@ private:
     }
 
     std::uint32_t texture(LLViewerTexture* source, LL::GHI::TextureSemantic semantic,
-                          LL::GHI::TextureColorSpace colorSpace)
+                          LL::GHI::TextureColorSpace colorSpace,
+                          bool priority)
     {
         if (!source) return LL::GHI::NO_RESOURCE;
         const std::string sourceKey = source->getID().asString() + ":" +
@@ -568,7 +791,7 @@ private:
         resource.components = llmax<S32>(0, source->getComponents());
         resource.discardLevel = llmax<S32>(0, source->getDiscardLevel());
         auto* fetched = dynamic_cast<LLViewerFetchedTexture*>(source);
-        const auto observed = mObservedTextures.find(source->getID().asString());
+        const std::string assetKey = source->getID().asString();
         const auto runtimePixelsAllowed = [&](std::size_t bytes)
         {
             constexpr std::size_t maxImage = 4ull * 1024ull * 1024ull;
@@ -577,9 +800,14 @@ private:
                 (bytes <= maxImage && mRuntimeTextureBytes <= maxPacket &&
                  bytes <= maxPacket - mRuntimeTextureBytes);
         };
-        if (observed != mObservedTextures.end() &&
-            runtimePixelsAllowed(observed->second.pixels.size()))
+        const auto useObserved = [&]()
         {
+            auto observed = mObservedTextures.find(assetKey);
+            if (observed == mObservedTextures.end() ||
+                !runtimePixelsAllowed(observed->second.pixels.size()))
+                return false;
+            if (priority)
+                observed->second.serial = ++mObservationSerial;
             resource.width = observed->second.width;
             resource.height = observed->second.height;
             resource.components = observed->second.components;
@@ -588,8 +816,22 @@ private:
             resource.contentIdentity = observed->second.contentIdentity;
             if (mCaptureRuntime)
                 mRuntimeTextureBytes += resource.decodedPixels.size();
-        }
+            return true;
+        };
+        useObserved();
         LLPointer<LLImageRaw> saved = fetched ? fetched->getSavedRawImage() : nullptr;
+        if (resource.decodedPixels.empty() && saved.notNull())
+        {
+            // Saved/raw decoder buffers are transient. Retain the bounded
+            // backend-neutral observation before the viewer releases them so
+            // a teleport can replay the same material without a refetch or an
+            // OpenGL texture readback.
+            if (mCaptureRuntime)
+            {
+                observe(*fetched, *saved, fetched->getSavedRawImageLevel());
+                useObserved();
+            }
+        }
         if (resource.decodedPixels.empty() && saved.notNull())
         {
             LLImageDataSharedLock lock(saved);
@@ -614,6 +856,15 @@ private:
         if (resource.decodedPixels.empty() && fetched &&
             fetched->isRawImageValid() && raw.notNull())
         {
+            if (mCaptureRuntime)
+            {
+                observe(*fetched, *raw, fetched->getRawImageLevel());
+                useObserved();
+            }
+        }
+        if (resource.decodedPixels.empty() && fetched &&
+            fetched->isRawImageValid() && raw.notNull())
+        {
             LLImageDataSharedLock lock(raw);
             const std::size_t size = static_cast<std::size_t>(llmax(0, raw->getDataSize()));
             if (raw->getData() && size && runtimePixelsAllowed(size))
@@ -635,34 +886,6 @@ private:
             if (fetched && fetched->isFetching())
                 resource.comparability = resource.comparability |
                     LL::GHI::ResourceComparability::TextureStillFetching;
-            if (mCaptureRuntime && fetched)
-            {
-                const std::string assetKey = fetched->getID().asString();
-                constexpr std::size_t MAX_RAW_REQUESTS = 64;
-                constexpr std::uint64_t MAX_REQUESTED_IMAGE_BYTES =
-                    1ull * 1024ull * 1024ull;
-                if (mRequestedRawTextures.contains(assetKey) ||
-                    mRequestedRawTextures.size() < MAX_RAW_REQUESTS)
-                {
-                    std::uint32_t width = std::max(1, fetched->getFullWidth());
-                    std::uint32_t height = std::max(1, fetched->getFullHeight());
-                    const std::uint32_t components = static_cast<std::uint32_t>(
-                        std::clamp(static_cast<std::int32_t>(
-                                       fetched->getComponents()),
-                                   1, 4));
-                    std::int32_t desiredDiscard = 0;
-                    while (static_cast<std::uint64_t>(width) * height * components >
-                               MAX_REQUESTED_IMAGE_BYTES &&
-                           (width > 1 || height > 1))
-                    {
-                        width = std::max(1u, width / 2);
-                        height = std::max(1u, height / 2);
-                        ++desiredDiscard;
-                    }
-                    fetched->forceToSaveRawImage(desiredDiscard, 30.f);
-                    mRequestedRawTextures.insert(assetKey);
-                }
-            }
         }
         const std::uint32_t index = static_cast<std::uint32_t>(mPacket.textures.size());
         mPacket.textures.push_back(std::move(resource));
@@ -673,16 +896,24 @@ private:
     void bindTexture(LL::GHI::MaterialResource& resource, LLViewerTexture* source,
                      LL::GHI::TextureSemantic semantic,
                      LL::GHI::TextureColorSpace colorSpace,
+                     bool priority,
                      std::array<float, 5> transform = {{0.f, 0.f, 1.f, 1.f, 0.f}})
     {
-        const std::uint32_t index = texture(source, semantic, colorSpace);
+        // The selected viewer renderer has already retired this declared
+        // asset to its semantic fallback. Preserve that executable state in
+        // the backend-neutral packet by omitting the binding; the consumer
+        // supplies the glTF fallback for the semantic. A valid, merely
+        // in-flight texture still remains non-comparable until decoded.
+        if (source && source->isMissingAsset()) return;
+        const std::uint32_t index = texture(source, semantic, colorSpace, priority);
         if (index == LL::GHI::NO_RESOURCE) return;
         resource.textures.push_back({semantic, index, 0, transform});
         resource.comparability = resource.comparability |
             mPacket.textures[index].comparability;
     }
 
-    std::uint32_t material(LLDrawInfo& draw, std::uint32_t renderType)
+    std::uint32_t material(LLDrawInfo& draw, std::uint32_t renderType,
+                           bool priority)
     {
         LL::GHI::MaterialResource resource;
         std::ostringstream identity;
@@ -718,6 +949,7 @@ private:
                 bindTexture(resource, textures[i], semantics[i],
                     i == 0 || i == 3 ? LL::GHI::TextureColorSpace::SRGB
                                      : LL::GHI::TextureColorSpace::Linear,
+                    priority,
                     {{t.mOffset.mV[0], t.mOffset.mV[1], t.mScale.mV[0],
                       t.mScale.mV[1], t.mRotation}});
             }
@@ -731,12 +963,12 @@ private:
             resource.alphaCutoff = draw.mAlphaMaskCutoff;
             resource.fullbright = draw.mFullbright;
             bindTexture(resource, draw.mTexture.get(), LL::GHI::TextureSemantic::BaseColor,
-                        LL::GHI::TextureColorSpace::SRGB);
+                        LL::GHI::TextureColorSpace::SRGB, priority);
             bindTexture(resource, draw.mNormalMap.get(), LL::GHI::TextureSemantic::Normal,
-                        LL::GHI::TextureColorSpace::Linear);
+                        LL::GHI::TextureColorSpace::Linear, priority);
             bindTexture(resource, draw.mSpecularMap.get(),
                         LL::GHI::TextureSemantic::LegacySpecular,
-                        LL::GHI::TextureColorSpace::SRGB);
+                        LL::GHI::TextureColorSpace::SRGB, priority);
         }
         if (resource.alphaMode == LL::GHI::MaterialAlphaMode::Blend)
             resource.comparability = resource.comparability |
@@ -761,6 +993,9 @@ private:
     {
         if (!draw.mSkinInfo || !draw.mAvatar) return LL::GHI::NO_RESOURCE;
         const auto& palette = draw.mAvatar->updateSkinInfoMatrixPalette(draw.mSkinInfo);
+        if (palette.mGLMp.empty() || palette.mGLMp.size() % 12 != 0 ||
+            palette.mGLMp.size() / 12 > LL::GHI::MATERIAL_MAX_JOINTS)
+            return LL::GHI::NO_RESOURCE;
         std::ostringstream source;
         source << draw.mSkinInfo->mMeshID.asString() << ':' << draw.mSkinInfo->mHash;
         if (!palette.mGLMp.empty())
@@ -776,9 +1011,6 @@ private:
             return found->second;
         resource.jointCount = static_cast<std::uint32_t>(palette.mGLMp.size() / 12);
         resource.matrixPalette = palette.mGLMp;
-        if (resource.matrixPalette.empty())
-            resource.comparability =
-                LL::GHI::ResourceComparability::MissingSkinPalette;
         const std::uint32_t index = static_cast<std::uint32_t>(mPacket.skins.size());
         mPacket.skins.push_back(std::move(resource));
         mSkinIndices.emplace(key, index);
@@ -796,6 +1028,15 @@ private:
     bool mCaptureFile = false;
     bool mCaptureRuntime = false;
     bool mRuntimeBudgetLimited = false;
+    std::size_t mRuntimeRigidDraws = 0;
+    std::size_t mRuntimeRiggedDraws = 0;
+    std::size_t mRuntimeRiggedCalls = 0;
+    std::size_t mRuntimeRiggedOpaqueCalls = 0;
+    std::size_t mRuntimeRiggedMaskCalls = 0;
+    std::size_t mRuntimeRiggedMissingSkin = 0;
+    std::size_t mRuntimeRiggedGeometryRejected = 0;
+    std::array<std::size_t, static_cast<std::size_t>(GeometryReject::Count)>
+        mRuntimeRiggedRejectReasons{};
     std::size_t mRuntimeTextureBytes = 0;
     State mState = State::Disabled;
     std::filesystem::path mOutput;
@@ -807,13 +1048,15 @@ private:
     std::map<std::string, std::uint32_t> mTextureIndices;
     std::map<std::string, std::uint32_t> mMaterialIndices;
     std::map<std::string, std::uint32_t> mSkinIndices;
-    static constexpr std::size_t MAX_OBSERVED_TEXTURE_BYTES = 64ull * 1024ull * 1024ull;
+    // Development-probe retention only. Runtime observations are already
+    // reduced from the viewer's 2048x2048 source ceiling to at most 64 KiB per
+    // decoded image; this window retains roughly 4096 RGBA observations for
+    // production avatar and region texture churn
+    // without reading pixels back from the selected OpenGL provider.
+    static constexpr std::size_t MAX_OBSERVED_TEXTURE_BYTES = 256ull * 1024ull * 1024ull;
     std::size_t mObservedTextureBytes = 0;
     std::uint64_t mObservationSerial = 0;
     std::map<std::string, ObservedTexture> mObservedTextures;
-    // Requests are bounded and removed as soon as the normal decoder path
-    // supplies pixels. No production OpenGL texture readback is used.
-    std::set<std::string> mRequestedRawTextures;
     LL::GHI::MaterialScenePacket mPacket;
 };
 

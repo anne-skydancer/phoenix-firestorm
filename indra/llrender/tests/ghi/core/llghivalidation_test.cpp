@@ -1101,7 +1101,7 @@ void LLGHIValidationObject::test<23>()
     ShaderPackageDesc package;
     Status status = loadShaderPackage(LL_GHI_R5A_SHADER_PACKAGE, package);
     ensure(status.message(), status.ok());
-    ensure_equals("I4 reflected binding count", package.bindings.size(), std::size_t{8});
+    ensure_equals("I5 reflected binding count", package.bindings.size(), std::size_t{8});
     ensure_equals("R5a reflected vertex input count",
                   package.vertexInputs.size(), std::size_t{7});
     ensure_equals("R5a reflected deferred output count",
@@ -1115,7 +1115,7 @@ void LLGHIValidationObject::test<23>()
     BufferHandle object = device->createBuffer(
         {128, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
     BufferHandle skin = device->createBuffer(
-        {256, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
+        {MATERIAL_SKIN_BYTES, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
     BufferHandle material = device->createBuffer(
         {176, ResourceUsage::Uniform, MemoryClass::DeviceLocal}, status);
     ImageHandle image = device->createImage(
@@ -1123,7 +1123,7 @@ void LLGHIValidationObject::test<23>()
     ImageViewHandle view = device->createImageView(
         {image, Format::RGBA8UNorm, {ImageAspect::Color, 0, 1, 0, 1}}, status);
     SamplerHandle sampler = device->createSampler({}, status);
-    ensure("I4 object, skin and material resources",
+    ensure("I5 object, production skin and material resources",
            status.ok() && object && skin && material && image && view && sampler);
 
     BindingSetDesc objectSet;
@@ -1133,13 +1133,13 @@ void LLGHIValidationObject::test<23>()
         {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
          object, 0, 128, {}, {}});
     BindingSetHandle missingSkin = device->createBindingSet(objectSet, status);
-    ensure("I4 object binding without the separate skin binding is rejected",
+    ensure("I5 object binding without the separate skin binding is rejected",
            !missingSkin && status.code() == StatusCode::InvalidArgument);
     objectSet.resources.push_back(
         {1, 0, ShaderPackageDesc::BindingType::UniformBuffer,
-         skin, 0, 256, {}, {}});
+         skin, 0, MATERIAL_SKIN_BYTES, {}, {}});
     BindingSetHandle completeObject = device->createBindingSet(objectSet, status);
-    ensure("I4 separate object and skin bindings are accepted",
+    ensure("I5 separate object and production skin bindings are accepted",
            status.ok() && completeObject);
 
     BindingSetDesc materialSet;
@@ -1256,6 +1256,20 @@ void LLGHIValidationObject::test<24>()
     ensure_equals("material scene packet has a stable schema hash",
                   materialScenePacketSha256(source),
                   std::string{"976419b26a480a9e3bf16ea017498181047720af6a5441e121929cc95eab9b14"});
+
+    source.skins[0].jointCount = MATERIAL_MAX_JOINTS + 1;
+    source.skins[0].matrixPalette.resize(
+        static_cast<std::size_t>(source.skins[0].jointCount) * 12);
+    ensure("material packet rejects palettes above the production joint ceiling",
+           encodeMaterialScenePacket(source, first).code() ==
+               StatusCode::InvalidArgument);
+    source.skins[0] = skin;
+    source.skins[0].jointCount = 0;
+    source.skins[0].matrixPalette.clear();
+    ensure("material packet rejects an empty referenced skin palette",
+           encodeMaterialScenePacket(source, first).code() ==
+               StatusCode::InvalidArgument);
+    source.skins[0] = skin;
 
     first.pop_back();
     ensure("truncated material scene packet rejected",
@@ -1878,6 +1892,26 @@ void LLGHIValidationObject::test<32>()
     draw.modelTransform[13] = -0.25f;
     packet.draws.push_back(draw);
 
+    SkinResource productionSkin;
+    for (std::size_t index = 0; index < productionSkin.identity.size(); ++index)
+        productionSkin.identity[index] = static_cast<std::byte>(index + 97);
+    productionSkin.jointCount = MATERIAL_MAX_JOINTS;
+    productionSkin.matrixPalette.resize(MATERIAL_MAX_JOINTS * 12);
+    for (std::uint32_t joint = 0; joint < MATERIAL_MAX_JOINTS; ++joint)
+    {
+        productionSkin.matrixPalette[joint * 12] = 1.f;
+        productionSkin.matrixPalette[joint * 12 + 5] = 1.f;
+        productionSkin.matrixPalette[joint * 12 + 10] = 1.f;
+    }
+    productionSkin.matrixPalette[(MATERIAL_MAX_JOINTS - 1) * 12 + 3] = .125f;
+    packet.skins.push_back(productionSkin);
+    for (auto& capturedVertex : packet.vertices)
+        capturedVertex.joints[0] = MATERIAL_MAX_JOINTS - 1;
+    MaterialSceneDraw riggedDraw = draw;
+    riggedDraw.semanticId = 0x49355f5249474744ull; // "I5_RIGGD"
+    riggedDraw.skin = 0;
+    packet.draws.push_back(riggedDraw);
+
     std::vector<std::byte> encoded;
     Status status = encodeMaterialScenePacket(packet, encoded);
     ensure(status.message(), status.ok());
@@ -1905,12 +1939,24 @@ void LLGHIValidationObject::test<32>()
         MaterialOffscreenProbeResult result;
         status = probe.poll(result);
         ensure(status.message(), status.ok());
-        ensure_equals("R5b2 executed draw count", result.draws,
+        ensure_equals("I5 executed rigid plus rigged draw count", result.draws,
+                      std::uint32_t{2});
+        ensure_equals("I5 executed rigged draw count", result.riggedDraws,
                       std::uint32_t{1});
+        ensure_equals("I5 retained production palette size", result.maxJointCount,
+                      MATERIAL_MAX_JOINTS);
         ensure_equals("R5b2 retained vertex count", result.vertices,
                       std::uint32_t{3});
         ensure_equals("R5b2 retained index count", result.indices,
                       std::uint32_t{3});
+        limits.maxDraws = 1;
+        status = probe.submit(packet, limits);
+        ensure(status.message(), status.ok());
+        status = probe.poll(result);
+        ensure(status.message(), status.ok());
+        ensure_equals("I5 rigged draw has priority under a one-draw budget",
+                      result.riggedDraws, std::uint32_t{1});
+        limits.maxDraws = 32;
         packet.draws[0].modelTransform[0] = 0.f;
         status = probe.submit(packet, limits);
         ensure("I4 rejects a singular live model transform",

@@ -45,6 +45,9 @@ supported peer and recovery path.
 - [I4 material-transform integration checkpoint](i4-material-transform-integration-checkpoint.md)
   separates object and skin transforms, applies inverse-transpose normals and
   executes independent per-map UV transforms on the live rigid PBR path.
+- [I5 production skin integration checkpoint](i5-production-skin-integration-checkpoint.md)
+  carries live variable-size palettes and canonical rigged geometry through
+  the same private Vulkan material execution path.
 - The accepted Windows renderer evidence is tagged
   `renderer-baseline-windows-r00-r14` on the test harness branch. The harness
   remains outside this production-renderer branch.

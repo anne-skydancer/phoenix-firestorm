@@ -20,6 +20,11 @@ namespace LL::GHI
 
 inline constexpr std::uint32_t MATERIAL_SCENE_PACKET_VERSION = 2;
 inline constexpr std::uint32_t NO_RESOURCE = 0xffffffffu;
+// Firestorm's production rigged-mesh ceiling. The packet remains variable-size;
+// backends use this value only to select a portable fixed shader capacity.
+inline constexpr std::uint32_t MATERIAL_MAX_JOINTS = 110;
+inline constexpr std::uint32_t MATERIAL_SKIN_FLOATS = MATERIAL_MAX_JOINTS * 12 + 4;
+inline constexpr std::uint32_t MATERIAL_SKIN_BYTES = MATERIAL_SKIN_FLOATS * sizeof(float);
 using ResourceDigest = std::array<std::byte, 32>;
 
 enum class ResourceComparability : std::uint32_t

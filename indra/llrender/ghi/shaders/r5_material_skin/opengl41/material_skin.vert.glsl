@@ -13,7 +13,8 @@ layout(std140) uniform ObjectData
 
 layout(std140) uniform SkinData
 {
-    mat4 jointTransforms[4];
+    mat3x4 jointTransforms[110];
+    uvec4 skinMeta;
 };
 
 layout(location = 0) in vec3 inPosition;
@@ -31,13 +32,21 @@ layout(location = 3) out vec4 worldTangent;
 
 void main()
 {
-    vec4 weights = inWeights / max(dot(inWeights, vec4(1.0)), 0.000001);
-    mat4 skin = jointTransforms[min(inJoints.x, 3u)] * weights.x
-              + jointTransforms[min(inJoints.y, 3u)] * weights.y
-              + jointTransforms[min(inJoints.z, 3u)] * weights.z
-              + jointTransforms[min(inJoints.w, 3u)] * weights.w;
+    vec4 weights = max(inWeights, vec4(0.0));
+    weights /= max(dot(weights, vec4(1.0)), 0.000001);
+    uint lastJoint = max(skinMeta.x, 1u) - 1u;
+    uvec4 joints = min(inJoints, uvec4(lastJoint));
+    mat3x4 packedSkin = jointTransforms[joints.x] * weights.x
+                      + jointTransforms[joints.y] * weights.y
+                      + jointTransforms[joints.z] * weights.z
+                      + jointTransforms[joints.w] * weights.w;
+    mat3 skinLinear = mat3(packedSkin);
+    vec3 skinTranslation = vec3(packedSkin[0].w, packedSkin[1].w,
+                                packedSkin[2].w);
+    mat4 skin = mat4(vec4(skinLinear[0], 0.0), vec4(skinLinear[1], 0.0),
+                     vec4(skinLinear[2], 0.0), vec4(skinTranslation, 1.0));
     gl_Position = viewProjection * modelTransform * skin * vec4(inPosition, 1.0);
-    mat3 skinNormal = mat3(skin);
+    mat3 skinNormal = skinLinear;
     vec3 normal = normalize(mat3(normalTransform) * skinNormal * inNormal);
     vec3 tangent = mat3(modelTransform) * skinNormal * inTangent.xyz;
     tangent = normalize(tangent - normal * dot(normal, tangent));

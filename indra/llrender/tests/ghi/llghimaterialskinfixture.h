@@ -60,16 +60,16 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
     constexpr std::array<Vertex, 4> vertices{{
         {{-0.75f, -0.75f, 0.75f}, {.4472136f, 0.f, .8944272f},
          {.8944272f, 0.f, -.4472136f, 1.f},
-         {-0.25f, -0.25f}, {255, 224, 192, 255}, {0, 1, 2, 3}, {.5f, .5f, 0.f, 0.f}},
+         {-0.25f, -0.25f}, {255, 224, 192, 255}, {0, 109, 0, 0}, {.5f, .5f, 0.f, 0.f}},
         {{ 0.75f, -0.75f, 0.75f}, {.4472136f, 0.f, .8944272f},
          {.8944272f, 0.f, -.4472136f, 1.f},
-         { 1.25f, -0.25f}, {224, 255, 192, 255}, {0, 1, 2, 3}, {.5f, .5f, 0.f, 0.f}},
+         { 1.25f, -0.25f}, {224, 255, 192, 255}, {0, 109, 0, 0}, {.5f, .5f, 0.f, 0.f}},
         {{ 0.75f,  0.75f, 0.75f}, {.4472136f, 0.f, .8944272f},
          {.8944272f, 0.f, -.4472136f, 1.f},
-         { 1.25f,  1.25f}, {192, 224, 255, 255}, {0, 1, 2, 3}, {.5f, .5f, 0.f, 0.f}},
+         { 1.25f,  1.25f}, {192, 224, 255, 255}, {0, 109, 0, 0}, {.5f, .5f, 0.f, 0.f}},
         {{-0.75f,  0.75f, 0.75f}, {.4472136f, 0.f, .8944272f},
          {.8944272f, 0.f, -.4472136f, 1.f},
-         {-0.25f,  1.25f}, {255, 255, 255, 255}, {0, 1, 2, 3}, {.5f, .5f, 0.f, 0.f}},
+         {-0.25f,  1.25f}, {255, 255, 255, 255}, {0, 109, 0, 0}, {.5f, .5f, 0.f, 0.f}},
     }};
     constexpr std::array<std::uint16_t, 6> indices{{0, 1, 2, 2, 3, 0}};
     constexpr std::array<float, 16> frame{{
@@ -80,15 +80,21 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
         0.f, 0.f, .5f, 0.f, .125f, -.0625f, 0.f, 1.f,
         1.333333333f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
         0.f, 0.f, 2.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
-    constexpr std::array<float, 64> skin{{
-        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
-        0.f, 0.f, 1.f, 0.f, -.25f, 0.f, 0.f, 1.f,
-        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
-        0.f, 0.f, 1.f, 0.f,  .25f, 0.f, 0.f, 1.f,
-        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
-        0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f,
-        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
-        0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+    struct SkinFixtureData
+    {
+        std::array<float, MATERIAL_MAX_JOINTS * 12> joints{};
+        std::array<std::uint32_t, 4> meta{{MATERIAL_MAX_JOINTS, 0, 0, 0}};
+    };
+    static_assert(sizeof(SkinFixtureData) == MATERIAL_SKIN_BYTES);
+    SkinFixtureData skin;
+    for (std::uint32_t joint = 0; joint < MATERIAL_MAX_JOINTS; ++joint)
+    {
+        skin.joints[joint * 12] = 1.f;
+        skin.joints[joint * 12 + 5] = 1.f;
+        skin.joints[joint * 12 + 10] = 1.f;
+    }
+    skin.joints[3] = -.25f;
+    skin.joints[(MATERIAL_MAX_JOINTS - 1) * 12 + 3] = .25f;
     constexpr std::array<float, 44> material{{
         .75f, .875f, 1.f, 1.f,
         .5f, .75f, 1.f, .625f,
@@ -172,7 +178,7 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
     std::memcpy(uploadData.data() + indexOffset, indices.data(), sizeof(indices));
     std::memcpy(uploadData.data() + frameOffset, frame.data(), sizeof(frame));
     std::memcpy(uploadData.data() + objectOffset, object.data(), sizeof(object));
-    std::memcpy(uploadData.data() + skinOffset, skin.data(), sizeof(skin));
+    std::memcpy(uploadData.data() + skinOffset, &skin, sizeof(skin));
     std::memcpy(uploadData.data() + materialOffset, material.data(), sizeof(material));
     std::memcpy(uploadData.data() + textureOffset, texels.data(), sizeof(texels));
     if (!(status = device.writeBuffer(upload, 0, uploadData)))
@@ -400,7 +406,7 @@ inline MaterialSkinFixtureResult runMaterialSkinFixture(
     }
     if (!(status = device.waitIdle())) return fail("wait for R5a retirement", status);
     result.passed = true;
-    result.message = "I4 material transform fixture PASS";
+    result.message = "I5 production-scale skin palette fixture PASS";
     return result;
 }
 

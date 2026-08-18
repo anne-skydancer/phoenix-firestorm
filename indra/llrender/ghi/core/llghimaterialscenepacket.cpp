@@ -124,6 +124,7 @@ bool validPacket(const MaterialScenePacket& packet, bool allowLegacy = false)
     }
     for (const auto& skin : packet.skins)
         if (zeroDigest(skin.identity) ||
+            !skin.jointCount || skin.jointCount > MATERIAL_MAX_JOINTS ||
             skin.matrixPalette.size() != static_cast<std::size_t>(skin.jointCount) * 12)
             return false;
     for (const auto& draw : packet.draws)
@@ -326,7 +327,8 @@ Status decodeMaterialScenePacket(std::span<const std::byte> encoded,
     {
         std::uint32_t comparable = 0;
         if (!reader.bytes(skin.identity) || !reader.u32(comparable) ||
-            !reader.u32(skin.jointCount) || skin.jointCount > MAX_RESOURCES)
+            !reader.u32(skin.jointCount) || !skin.jointCount ||
+            skin.jointCount > MATERIAL_MAX_JOINTS)
             return invalid("truncated or invalid skin resource");
         skin.comparability = static_cast<ResourceComparability>(comparable);
         skin.matrixPalette.resize(static_cast<std::size_t>(skin.jointCount) * 12);

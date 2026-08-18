@@ -267,7 +267,8 @@ public:
         const bool frameAssemblyConfigured =
             gSavedSettings.getBOOL("RenderVulkanFrameAssemblyProbe") ||
             gSavedSettings.getBOOL("RenderVulkanTextureResidencyProbe") ||
-            gSavedSettings.getBOOL("RenderVulkanFrameGraphProbe");
+            gSavedSettings.getBOOL("RenderVulkanFrameGraphProbe") ||
+            gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe");
         if ((mState == State::Disabled &&
              !materialConfigured && !lightingConfigured &&
              !terrainConfigured && !terrainLightingConfigured &&

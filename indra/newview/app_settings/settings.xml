@@ -12806,6 +12806,19 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderVulkanGBufferExecutionProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: execute coherent production material and terrain geometry into the shared private native Vulkan G-buffer using retained decoded texture bindings, with asynchronous verification readback. Creates no surface, swapchain, window, or presentation path; visible world and UI remain OpenGL. Requires RenderVulkanDeveloperProbe and restart. Supersedes RenderVulkanFrameGraphProbe, RenderVulkanTextureResidencyProbe, and RenderVulkanFrameAssemblyProbe.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

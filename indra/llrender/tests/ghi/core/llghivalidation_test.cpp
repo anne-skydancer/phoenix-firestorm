@@ -22,6 +22,7 @@
 #include "ghi/include/llghiproductionframeconsumer.h"
 #include "ghi/include/llghiproductionframepacket.h"
 #include "ghi/include/llghiproductionframetargets.h"
+#include "ghi/include/llghiproductiongbufferexecutor.h"
 #include "ghi/include/llghiproductiontextureresidency.h"
 #include "ghi/include/llghilightingscenepacket.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
@@ -2698,12 +2699,26 @@ void LLGHIValidationObject::test<36>()
     frame.materials.vertices.push_back(materialVertex);
     materialVertex.position = {{0.f, 0.5f, 0.5f}};
     frame.materials.vertices.push_back(materialVertex);
-    frame.materials.indices = {0, 1, 2};
+    // Identity clip transforms need clockwise source order because the
+    // Vulkan shader prelude flips clip-space Y before canonical CCW culling.
+    frame.materials.indices = {0, 2, 1};
     MaterialSceneDraw materialDraw;
     materialDraw.semanticId = 0x4938615f4d41544cull; // "I8a_MATL"
     materialDraw.material = 0;
     materialDraw.indexCount = 3;
     frame.materials.draws.push_back(materialDraw);
+    SkinResource productionSkin;
+    productionSkin.identity[0] = std::byte{0x12};
+    productionSkin.jointCount = 1;
+    productionSkin.matrixPalette = {
+        1.f, 0.f, 0.f, 0.f,
+        0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f};
+    frame.materials.skins.push_back(productionSkin);
+    MaterialSceneDraw riggedMaterialDraw = materialDraw;
+    riggedMaterialDraw.semanticId = 0x493863325f524947ull; // "I8c2_RIG"
+    riggedMaterialDraw.skin = 0;
+    frame.materials.draws.push_back(riggedMaterialDraw);
 
     frame.terrain.frameId = frameId;
     frame.terrain.sceneEpoch = 12;
@@ -2721,11 +2736,13 @@ void LLGHIValidationObject::test<36>()
     frame.terrain.textures.push_back(terrainTexture);
     TerrainRegionResource region;
     region.identity[0] = std::byte{0x31};
+    region.model = MaterialModel::MetallicRoughness;
     region.compositionTexture = 0;
     for (std::size_t layer = 0; layer < region.layers.size(); ++layer)
     {
         region.layers[layer].identity[0] =
             static_cast<std::byte>(0x40 + layer);
+        region.layers[layer].model = MaterialModel::MetallicRoughness;
         region.layers[layer].baseColorTexture = 0;
     }
     frame.terrain.regions.push_back(region);
@@ -2736,7 +2753,7 @@ void LLGHIValidationObject::test<36>()
     frame.terrain.vertices.push_back(terrainVertex);
     terrainVertex.position = {{0.f, 0.75f, 0.5f}};
     frame.terrain.vertices.push_back(terrainVertex);
-    frame.terrain.indices = {0, 1, 2};
+    frame.terrain.indices = {0, 2, 1};
     TerrainSceneDraw terrainDraw;
     terrainDraw.semanticId = 0x4938615f54455252ull; // "I8a_TERR"
     terrainDraw.region = 0;
@@ -2756,11 +2773,11 @@ void LLGHIValidationObject::test<36>()
     ensure(status.message(), status.ok());
     ensure_equals("I8a summarizes both draw streams",
                   summary.materialDraws + summary.terrainDraws,
-                  std::uint32_t{2});
+                  std::uint32_t{3});
     ensure_equals("I8a summarizes combined geometry", summary.vertices,
                   std::uint32_t{6});
     ensure_equals("I8a builds a typed unique resource inventory",
-                  summary.uniqueResources, std::uint32_t{7});
+                  summary.uniqueResources, std::uint32_t{8});
     ensure_equals("I8a accounts decoded texture bytes",
                   summary.decodedTextureBytes, std::uint64_t{4});
 
@@ -2852,9 +2869,6 @@ void LLGHIValidationObject::test<36>()
     ensure("I8b replaces the native image handle",
            changedBinding->image != firstBinding->image);
 
-    ensure("I8b destroys retained resources explicitly",
-           residency.shutdown().ok());
-
     ProductionFrameTargets targets(*created.device);
     ProductionFrameTargetLimits targetLimits;
     targetLimits.maxWidth = targetLimits.maxHeight = 32;
@@ -2884,8 +2898,48 @@ void LLGHIValidationObject::test<36>()
            !targetResult.reused);
     ensure("I8c1 advances target generation on replacement",
            targetResult.targetGeneration > firstTargetGeneration);
+#if defined(LL_GHI_R5A_SHADER_PACKAGE) && \
+    defined(LL_GHI_I6_TERRAIN_SHADER_PACKAGE)
+    ShaderPackageDesc productionMaterialPackage;
+    status = loadShaderPackage(
+        LL_GHI_R5A_SHADER_PACKAGE, productionMaterialPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc productionTerrainPackage;
+    status = loadShaderPackage(
+        LL_GHI_I6_TERRAIN_SHADER_PACKAGE, productionTerrainPackage);
+    ensure(status.message(), status.ok());
+    ProductionGBufferExecutor executor(
+        *created.device, std::move(productionMaterialPackage),
+        std::move(productionTerrainPackage));
+    ProductionGBufferLimits executionLimits;
+    status = executor.submit(
+        frame, targets.targets(), residency, executionLimits);
+    ensure(status.message(), status.ok());
+    ensure("I8c2 shared G-buffer execution is asynchronous",
+           executor.pending());
+    ProductionGBufferResult executionResult;
+    status = executor.poll(executionResult);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8c2 executes the material stream",
+                  executionResult.materialDraws, std::uint32_t{2});
+    ensure_equals("I8c2 executes a rigged material draw",
+                  executionResult.riggedMaterialDraws, std::uint32_t{1});
+    ensure_equals("I8c2 executes the terrain stream",
+                  executionResult.terrainDraws, std::uint32_t{1});
+    ensure_equals("I8c2 retains PBR terrain execution",
+                  executionResult.pbrTerrainDraws, std::uint32_t{1});
+    for (const std::string& targetHash : executionResult.colorSha256)
+        ensure("I8c2 completes each shared-target verification readback",
+               !targetHash.empty());
+    ensure("I8c2 records a combined production-frame identity",
+           !executionResult.frameSha256.empty());
+    ensure("I8c2 destroys execution resources explicitly",
+           executor.shutdown().ok());
+#endif
     ensure("I8c1 destroys shared targets explicitly",
            targets.shutdown().ok());
+    ensure("I8b destroys retained resources explicitly",
+           residency.shutdown().ok());
     ensure("I8b deferred residency resources drain",
            created.device->waitIdle().ok());
 }

@@ -42,6 +42,7 @@ set(llrender_SOURCE_FILES
     ghi/core/llghilightingpacketconsumer.cpp
     ghi/core/llghimaterialscenepacket.cpp
     ghi/core/llghiproductionframeconsumer.cpp
+    ghi/core/llghiproductiongbufferexecutor.cpp
     ghi/core/llghiproductionframepacket.cpp
     ghi/core/llghiproductionframetargets.cpp
     ghi/core/llghiproductiontextureresidency.cpp
@@ -105,6 +106,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghipresentation.h
     ghi/include/llghiproductioncontract.h
     ghi/include/llghiproductionframeconsumer.h
+    ghi/include/llghiproductiongbufferexecutor.h
     ghi/include/llghiproductionframepacket.h
     ghi/include/llghiproductionframetargets.h
     ghi/include/llghiproductiontextureresidency.h
@@ -1081,6 +1083,7 @@ if (LL_TESTS)
       ghi/core/llghilightingpacketconsumer.cpp
       ghi/core/llghimaterialscenepacket.cpp
       ghi/core/llghiproductionframeconsumer.cpp
+      ghi/core/llghiproductiongbufferexecutor.cpp
       ghi/core/llghiproductionframepacket.cpp
       ghi/core/llghiproductionframetargets.cpp
       ghi/core/llghiproductiontextureresidency.cpp

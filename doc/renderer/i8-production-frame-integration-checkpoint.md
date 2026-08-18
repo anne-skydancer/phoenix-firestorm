@@ -202,6 +202,64 @@ These results close I8c1. They prove production-frame attachment ownership and
 lifetime, not native rendering into those images; material and terrain G-buffer
 execution begins in I8c2.
 
+## I8c2 — shared-target material and terrain execution
+
+I8c2 consumes the same coherent production frame after I8b residency and I8c1
+target validation. One bounded GHI submission uploads transient material and
+terrain geometry, indices, transforms, skin palettes, and uniform state. It
+resolves immutable material and terrain images from the retained cache by
+domain-qualified source identity; absent optional material maps use four
+persistent semantic fallbacks, while draws with unresolved required resources
+are explicitly deferred rather than rendered with stale data.
+
+The existing Vulkan GLSL `r5_material_skin` and `i6_terrain` packages execute in
+one shared render scope. Four G-buffer targets and reverse-Z depth are cleared
+once, then rigid/rigged opaque PBR material draws and production terrain draws
+write the same attachment set. The submission is bounded to 256 material draws,
+128 terrain draws, and 64 MiB of transient upload data. All native resource and
+descriptor lifetimes remain behind GHI.
+
+Verification copies the four private attachments to executor-owned readback
+buffers without waiting. A later OpenGL frame polls completion and records
+SHA-256 identities and non-clear coverage. The validation backend checks both
+draw streams, descriptors, target compatibility, readback completion, and clean
+retirement but deliberately does not software-rasterize indexed draws; the live
+native Vulkan gate therefore owns the stronger pixel-coverage criterion.
+
+`RenderVulkanGBufferExecutionProbe` enables I8c2 and supersedes the earlier I8
+developer gates. Lighting, shadows, sky, water, alpha, recursive/offscreen
+views, HUD/UI, picking, surfaces, swapchains, and presentation remain excluded.
+Visible production world and UI rendering remain on the selected OpenGL
+provider.
+
+The deterministic GHI suite remains **36/36 pass**. The isolated Windows live
+gate also passed with Vulkan validation enabled beside both production OpenGL
+providers. Every older Vulkan packet and offscreen probe was explicitly
+disabled, visible rendering remained OpenGL, and both viewers shut down cleanly
+without validation errors or device loss.
+
+- System OpenGL first completed 5/5 general-scene samples, then completed a
+  separate 6/6 rigged-PBR coverage run after the attachment was added. Every
+  coverage sample executed two material draws, both rigged, together with 39
+  to 64 PBR-terrain draws and no deferred work. All four G-buffer attachments
+  contained rendered pixels; settled samples reached approximately 76,500
+  non-clear pixels per attachment and were not capture-budget-limited. The
+  first coverage sample uploaded 17 immutable images / 1,052,672 bytes;
+  subsequent samples reused all 17 with zero image uploads.
+- Mesa + Zink was positively identified as Mesa 26.3 Zink and completed 6/6
+  samples after a rigged PBR attachment was added. Every sample executed two
+  material draws, both rigged, together with 45 to 64 PBR-terrain draws and no
+  deferred work. All four attachments contained rendered pixels; settled
+  samples reached approximately 75,700 non-clear pixels per attachment and
+  were not capture-budget-limited. The first sample uploaded 17 immutable
+  images / 1,052,672 bytes; subsequent samples reused all 17 with zero image
+  uploads.
+
+These results close I8c2. They prove that rigid and rigged opaque-PBR material
+and PBR-terrain draw streams can share the production frame's persistent native
+G-buffer and depth targets. They do not yet prove lighting, shadows, surface
+ownership, presentation, or visible Vulkan parity.
+
 ## Remaining I8 work
 
 After I8a, the assembled packet becomes the sole input to a private native

@@ -16,6 +16,7 @@
 #include "ghi/include/llghiopaquepacketconsumer.h"
 #include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghiproductionframeconsumer.h"
+#include "ghi/include/llghiproductiongbufferexecutor.h"
 #include "ghi/include/llghiproductionframetargets.h"
 #include "ghi/include/llghiproductiontextureresidency.h"
 #include "ghi/include/llghiterrainscenepacket.h"
@@ -35,6 +36,10 @@ std::unique_ptr<LL::GHI::MaterialOffscreenProbe> sMaterialProbe;
 std::unique_ptr<LL::GHI::TerrainOffscreenProbe> sTerrainProbe;
 std::unique_ptr<LL::GHI::ProductionTextureResidency> sTextureResidency;
 std::unique_ptr<LL::GHI::ProductionFrameTargets> sFrameTargets;
+std::unique_ptr<LL::GHI::ProductionGBufferExecutor> sGBufferExecutor;
+std::optional<LL::GHI::ProductionTextureResidencyResult>
+    sPendingProductionResidency;
+bool sPendingProductionBudgetLimited = false;
 std::uint64_t sNextLivePacketFrame = 0;
 std::uint32_t sLivePacketAttempts = 0;
 std::uint32_t sLivePacketSamples = 0;
@@ -70,9 +75,15 @@ bool sLightingDisabled = false;
 
 bool shadowOffscreenRequestedInternal();
 
+bool gBufferExecutionRequested()
+{
+    return gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe");
+}
+
 bool frameGraphRequested()
 {
-    return gSavedSettings.getBOOL("RenderVulkanFrameGraphProbe");
+    return gSavedSettings.getBOOL("RenderVulkanFrameGraphProbe") ||
+           gBufferExecutionRequested();
 }
 
 bool textureResidencyRequested()
@@ -425,6 +436,72 @@ void pollTerrainProbe()
         << LL_ENDL;
     sPendingTerrainBudgetLimited = false;
 }
+
+void pollProductionGBuffer()
+{
+    if (!sGBufferExecutor || !sGBufferExecutor->pending()) return;
+    LL::GHI::ProductionGBufferResult result;
+    const LL::GHI::Status status = sGBufferExecutor->poll(result);
+    if (!status)
+    {
+        if (status.code() != LL::GHI::StatusCode::NotReady)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I8c2 production G-buffer verification failed: "
+                << status.message() << LL_ENDL;
+            sFrameAssemblyDisabled = true;
+        }
+        return;
+    }
+    const bool completeCoverage = std::all_of(
+        result.nonClearPixels.begin(), result.nonClearPixels.end(),
+        [](std::uint64_t pixels) { return pixels != 0; });
+    if (!result.materialDraws || !result.terrainDraws ||
+        !result.pbrTerrainDraws || !completeCoverage)
+    {
+        LL_INFOS("GHIIntegration")
+            << "I8c2 completed without full material/PBR-terrain/four-target coverage; retrying. frame="
+            << result.frameId << " draws(material/rigged/terrain/pbr)="
+            << result.materialDraws << '/' << result.riggedMaterialDraws
+            << '/' << result.terrainDraws << '/' << result.pbrTerrainDraws
+            << " non-clear-pixels=" << result.nonClearPixels[0] << ','
+            << result.nonClearPixels[1] << ',' << result.nonClearPixels[2]
+            << ',' << result.nonClearPixels[3] << LL_ENDL;
+        sPendingProductionResidency.reset();
+        sPendingProductionBudgetLimited = false;
+        return;
+    }
+    ++sFrameAssemblySamples;
+    LL_INFOS("GHIIntegration")
+        << "I8c2 shared-target material and terrain G-buffer PASS: sample="
+        << sFrameAssemblySamples << '/' << livePacketMaximum()
+        << " frame=" << result.frameId << " assembly-epoch="
+        << result.assemblyEpoch << " target-generation/extent="
+        << result.targetGeneration << '/' << result.width << 'x'
+        << result.height << " draws(material/rigged/terrain/pbr/deferred-material/deferred-terrain)="
+        << result.materialDraws << '/' << result.riggedMaterialDraws << '/'
+        << result.terrainDraws << '/' << result.pbrTerrainDraws << '/'
+        << result.deferredMaterialDraws << '/' << result.deferredTerrainDraws
+        << " upload-bytes=" << result.uploadBytes;
+    if (sPendingProductionResidency)
+        LL_CONT << " residency(hits/uploads/entries/bytes)="
+                << sPendingProductionResidency->cacheHits << '/'
+                << sPendingProductionResidency->uploads << '/'
+                << sPendingProductionResidency->residentEntries << '/'
+                << sPendingProductionResidency->residentBytes;
+    LL_CONT << " frame-sha256=" << result.frameSha256
+            << " gbuffer-sha256=" << result.colorSha256[0] << ','
+            << result.colorSha256[1] << ',' << result.colorSha256[2] << ','
+            << result.colorSha256[3] << " non-clear-pixels="
+            << result.nonClearPixels[0] << ',' << result.nonClearPixels[1]
+            << ',' << result.nonClearPixels[2] << ','
+            << result.nonClearPixels[3] << " capture-budget-limited="
+            << (sPendingProductionBudgetLimited ? "yes" : "no")
+            << ". Shared native attachments remain private; lighting, surfaces, swapchains, presentation, and visible output remain excluded."
+            << LL_ENDL;
+    sPendingProductionResidency.reset();
+    sPendingProductionBudgetLimited = false;
+}
 }
 
 namespace LLGHIRuntime
@@ -489,9 +566,43 @@ void initialize()
                 sFrameTargets =
                     std::make_unique<LL::GHI::ProductionFrameTargets>(
                         *sVulkanDevice);
+            if (gBufferExecutionRequested())
+            {
+                const std::string materialPath =
+                    gDirUtilp->getExpandedFilename(
+                        LL_PATH_APP_SETTINGS, "ghi_shaders",
+                        "r5_material_skin.llghisp");
+                const std::string terrainPath =
+                    gDirUtilp->getExpandedFilename(
+                        LL_PATH_APP_SETTINGS, "ghi_shaders",
+                        "i6_terrain.llghisp");
+                LL::GHI::ShaderPackageDesc materialPackage;
+                LL::GHI::ShaderPackageDesc terrainPackage;
+                const LL::GHI::Status materialStatus =
+                    LL::GHI::loadShaderPackage(materialPath, materialPackage);
+                const LL::GHI::Status terrainStatus =
+                    LL::GHI::loadShaderPackage(terrainPath, terrainPackage);
+                if (!materialStatus || !terrainStatus)
+                {
+                    LL_WARNS("GHIIntegration")
+                        << "I8c2 production G-buffer shader packages were not loaded: material="
+                        << materialStatus.message() << " terrain="
+                        << terrainStatus.message()
+                        << ". Visible rendering remains OpenGL." << LL_ENDL;
+                }
+                else
+                {
+                    sGBufferExecutor = std::make_unique<
+                        LL::GHI::ProductionGBufferExecutor>(
+                            *sVulkanDevice, std::move(materialPackage),
+                            std::move(terrainPackage));
+                }
+            }
             const LL::GHI::ProductionTextureResidencyLimits limits;
             LL_INFOS("GHIIntegration")
-                << (frameGraphRequested()
+                << (gBufferExecutionRequested()
+                    ? "I8c2 shared-target material and terrain G-buffer execution armed; interval="
+                    : frameGraphRequested()
                     ? "I8c1 shared production frame targets and retained texture residency armed; interval="
                     : "I8b retained production texture residency armed; interval=")
                 << livePacketInterval() << " frames max-samples="
@@ -501,7 +612,9 @@ void initialize()
                 << limits.maxResidentBytes << '/'
                 << limits.maxUploadBytesPerFrame << '/'
                 << limits.staleAfterAssemblyEpochs
-                << ". Immutable decoded images are deduplicated by content while logical source generations remain explicit; no draw or presentation is recorded."
+                << (gBufferExecutionRequested()
+                    ? ". Immutable decoded images are retained by content; material and terrain draws execute only into private shared attachments with asynchronous verification and no presentation."
+                    : ". Immutable decoded images are deduplicated by content while logical source generations remain explicit; no draw or presentation is recorded.")
                 << LL_ENDL;
         }
         else
@@ -820,6 +933,15 @@ void shutdown()
                 << probeStatus.message() << LL_ENDL;
         sTerrainProbe.reset();
     }
+    if (sGBufferExecutor)
+    {
+        const LL::GHI::Status executionStatus = sGBufferExecutor->shutdown();
+        if (!executionStatus)
+            LL_WARNS("GHIIntegration")
+                << "I8c2 production G-buffer executor did not retire cleanly: "
+                << executionStatus.message() << LL_ENDL;
+        sGBufferExecutor.reset();
+    }
     if (sFrameTargets)
     {
         const LL::GHI::Status targetStatus = sFrameTargets->shutdown();
@@ -846,6 +968,8 @@ void shutdown()
             << status.message() << LL_ENDL;
     }
     sVulkanDevice.reset();
+    sPendingProductionResidency.reset();
+    sPendingProductionBudgetLimited = false;
     sNextLivePacketFrame = 0;
     sLivePacketAttempts = 0;
     sLivePacketSamples = 0;
@@ -991,9 +1115,11 @@ bool shadowOffscreenRequested()
 
 bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id)
 {
+    pollProductionGBuffer();
     pollMaterialProbe();
     if (!materialCaptureRequested() || sMaterialCaptureClaimed ||
         (sMaterialProbe && sMaterialProbe->pending()) ||
+        (sGBufferExecutor && sGBufferExecutor->pending()) ||
         sPendingLightingMaterial)
         return false;
     if (frameAssemblyRequested())
@@ -1115,9 +1241,11 @@ bool terrainCaptureRequested()
 
 bool shouldCaptureLiveTerrainPacket(std::uint64_t frame_id)
 {
+    pollProductionGBuffer();
     pollTerrainProbe();
     if (!terrainCaptureRequested() || sTerrainCaptureClaimed ||
         (sTerrainProbe && sTerrainProbe->pending()) ||
+        (sGBufferExecutor && sGBufferExecutor->pending()) ||
         sPendingLightingTerrain) return false;
     if (frameAssemblyRequested())
     {
@@ -1226,7 +1354,9 @@ bool lightingCaptureRequested()
 
 bool shouldCaptureLiveLightingPacket(std::uint64_t frame_id)
 {
+    pollProductionGBuffer();
     if (!lightingCaptureRequested() || sLightingCaptureClaimed) return false;
+    if (sGBufferExecutor && sGBufferExecutor->pending()) return false;
     if (frameAssemblyRequested())
     {
         const std::uint32_t maximum = livePacketMaximum();
@@ -1403,6 +1533,47 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
                         sFrameAssemblyDisabled = true;
                     return;
                 }
+            }
+            if (gBufferExecutionRequested())
+            {
+                if (!sGBufferExecutor || !sFrameTargets)
+                {
+                    LL_WARNS("GHIIntegration")
+                        << "I8c2 G-buffer execution was requested without an active executor and target owner."
+                        << LL_ENDL;
+                    sFrameAssemblyDisabled = true;
+                    return;
+                }
+                const LL::GHI::ProductionGBufferLimits executionLimits;
+                const LL::GHI::Status executionStatus =
+                    sGBufferExecutor->submit(
+                        frame, sFrameTargets->targets(),
+                        *sTextureResidency, executionLimits);
+                if (!executionStatus)
+                {
+                    LL_WARNS("GHIIntegration")
+                        << "I8c2 production G-buffer submission rejected frame "
+                        << packet.frameId << ": "
+                        << executionStatus.message() << " attempt="
+                        << sFrameAssemblyAttempts << LL_ENDL;
+                    if (executionStatus.code() ==
+                        LL::GHI::StatusCode::DeviceLost)
+                        sFrameAssemblyDisabled = true;
+                    return;
+                }
+                sPendingProductionResidency = result;
+                sPendingProductionBudgetLimited = captureBudgetLimited;
+                LL_INFOS("GHIIntegration")
+                    << "I8c2 shared-target material and terrain G-buffer submitted asynchronously: frame="
+                    << packet.frameId << " assembly-epoch="
+                    << frame.assemblyEpoch << " target-generation/extent="
+                    << targetResult.targetGeneration << '/'
+                    << targetResult.width << 'x' << targetResult.height
+                    << " resident-entries/bytes=" << result.residentEntries
+                    << '/' << result.residentBytes
+                    << ". Completion will be polled on later OpenGL frames; visible rendering remains OpenGL."
+                    << LL_ENDL;
+                return;
             }
             ++sFrameAssemblySamples;
             const bool frameGraph = frameGraphRequested();

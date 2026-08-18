@@ -13,10 +13,12 @@
 #include "lltut.h"
 
 #include "ghi/core/llghihandlepool.h"
+#include "ghi/core/llghihash.h"
 #include "ghi/core/llghipipelinecache.h"
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghimaterialscenepacket.h"
+#include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghilightingscenepacket.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
 #include "ghi/include/llghiterrainscenepacket.h"
@@ -2184,7 +2186,7 @@ void LLGHIValidationObject::test<34>()
     projector.semanticId = source.shadows.projectorLightIds[0];
     projector.kind = LocalLightKind::Projector;
     projector.comparability =
-        LightingComparability::ProjectorImageDeferred;
+        LightingComparability::Comparable;
     projector.position = {{136.f, 72.f, 40.f}};
     projector.radius = 24.f;
     projector.color = {{0.2f, 0.5f, 1.f}};
@@ -2195,6 +2197,29 @@ void LLGHIValidationObject::test<34>()
     projector.shadowSlot = 0;
     projector.shadowFade = 0.875f;
     source.localLights.push_back(projector);
+    ProjectorTextureResource projectorTexture;
+    projectorTexture.sourceIdentity = projector.projectorTextureIdentity;
+    projectorTexture.width = projectorTexture.height = 2;
+    projectorTexture.components = 4;
+    projectorTexture.decodedPixels = {
+        std::byte{255}, std::byte{64}, std::byte{32}, std::byte{255},
+        std::byte{32}, std::byte{255}, std::byte{64}, std::byte{255},
+        std::byte{64}, std::byte{32}, std::byte{255}, std::byte{255},
+        std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+    const std::string projectorDigest = sha256(
+        projectorTexture.decodedPixels);
+    const auto nibble = [](char value) -> std::uint8_t
+    {
+        if (value >= '0' && value <= '9') return value - '0';
+        if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+        return value - 'A' + 10;
+    };
+    for (std::size_t index = 0;
+         index < projectorTexture.contentIdentity.size(); ++index)
+        projectorTexture.contentIdentity[index] = static_cast<std::byte>(
+            (nibble(projectorDigest[index * 2]) << 4) |
+             nibble(projectorDigest[index * 2 + 1]));
+    source.projectorTextures.push_back(projectorTexture);
 
     std::vector<std::byte> first;
     std::vector<std::byte> second;
@@ -2208,6 +2233,17 @@ void LLGHIValidationObject::test<34>()
     ensure("I7a lighting packet round trips exactly", decoded == source);
     ensure("I7a lighting packet has deterministic identity",
            !lightingScenePacketSha256(source).empty());
+    LightingScenePacket missingProjectorImage = source;
+    missingProjectorImage.projectorTextures.clear();
+    ensure("I7c comparable projector requires its decoded image",
+           encodeLightingScenePacket(missingProjectorImage, second).code() ==
+               StatusCode::InvalidArgument);
+    LightingScenePacket corruptProjectorImage = source;
+    corruptProjectorImage.projectorTextures[0].decodedPixels[0] ^=
+        std::byte{1};
+    ensure("I7c rejects decoded projector bytes that do not match their hash",
+           encodeLightingScenePacket(corruptProjectorImage, second).code() ==
+               StatusCode::InvalidArgument);
 
     DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
     ensure("I7a validation device", created.status.ok() && created.device);
@@ -2238,6 +2274,392 @@ void LLGHIValidationObject::test<34>()
     ensure("I7a rejects a truncated lighting packet",
            decodeLightingScenePacket(first, decoded).code() ==
                StatusCode::InvalidArgument);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<35>()
+{
+    using namespace LL::GHI;
+
+#if defined(LL_GHI_R5A_SHADER_PACKAGE) && \
+    defined(LL_GHI_I7_LIGHTING_SHADER_PACKAGE)
+    ShaderPackageDesc materialPackage;
+    Status status = loadShaderPackage(
+        LL_GHI_R5A_SHADER_PACKAGE, materialPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc lightingPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_LIGHTING_SHADER_PACKAGE, lightingPackage);
+    ensure(status.message(), status.ok());
+    ensure_equals("I7b reflected lighting bindings",
+                  lightingPackage.bindings.size(), std::size_t{10});
+    ensure_equals("I7b fullscreen shader has no vertex inputs",
+                  lightingPackage.vertexInputs.size(), std::size_t{0});
+    ensure_equals("I7b reflected lighting output",
+                  lightingPackage.fragmentOutputs.size(), std::size_t{1});
+
+    MaterialScenePacket material;
+    material.frameId = 81427;
+    material.sceneEpoch = 11;
+    material.resourceEpoch = 5;
+    material.sourceWidth = 1280;
+    material.sourceHeight = 720;
+    MaterialResource pbr;
+    pbr.model = MaterialModel::MetallicRoughness;
+    pbr.alphaMode = MaterialAlphaMode::Opaque;
+    pbr.baseColor = {{0.8f, 0.6f, 0.4f, 1.f}};
+    pbr.emissive = {{0.01f, 0.02f, 0.03f}};
+    pbr.metallic = 0.25f;
+    pbr.roughness = 0.625f;
+    material.materials.push_back(pbr);
+    MaterialSceneVertex vertex;
+    vertex.position = {{-0.75f, -0.75f, 0.5f}};
+    material.vertices.push_back(vertex);
+    vertex.position = {{0.75f, -0.75f, 0.5f}};
+    material.vertices.push_back(vertex);
+    vertex.position = {{0.f, 0.75f, 0.5f}};
+    material.vertices.push_back(vertex);
+    material.indices = {0, 1, 2};
+    MaterialSceneDraw draw;
+    draw.semanticId = 0x4937625f47425546ull; // "I7b_GBUF"
+    draw.material = 0;
+    draw.indexCount = 3;
+    material.draws.push_back(draw);
+
+    LightingScenePacket lighting;
+    lighting.frameId = material.frameId;
+    lighting.sceneEpoch = material.sceneEpoch;
+    lighting.resourceEpoch = material.resourceEpoch;
+    lighting.sourceWidth = material.sourceWidth;
+    lighting.sourceHeight = material.sourceHeight;
+    for (std::size_t diagonal = 0; diagonal < 4; ++diagonal)
+    {
+        lighting.viewMatrix[diagonal * 5] = 1.f;
+        lighting.projectionMatrix[diagonal * 5] = 1.f;
+    }
+    lighting.cameraOrigin = {{0.f, 0.f, 2.f}};
+    lighting.ambientColor = {{0.05f, 0.075f, 0.1f}};
+    lighting.sun.active = true;
+    lighting.sun.direction = {{0.f, 0.f, -1.f}};
+    lighting.sun.color = {{1.f, 0.9f, 0.8f}};
+    LocalLightRecord point;
+    point.semanticId = 0x4937625f504f494eull; // "I7b_POIN"
+    point.position = {{0.f, 0.f, 1.f}};
+    point.radius = 4.f;
+    point.color = {{0.2f, 0.5f, 1.f}};
+    point.falloff = 0.5f;
+    lighting.localLights.push_back(point);
+    LocalLightRecord deferredProjector = point;
+    deferredProjector.semanticId = 0x4937625f50524f4aull;
+    deferredProjector.kind = LocalLightKind::Projector;
+    deferredProjector.comparability =
+        LightingComparability::ProjectorImageDeferred;
+    deferredProjector.projectorTextureIdentity[0] = 1;
+    lighting.localLights.push_back(deferredProjector);
+
+    DeviceCreationResult created = createDevice(
+        {Backend::Validation, 0, 2, true});
+    ensure("I7b validation device", created.status.ok() && created.device);
+    {
+        MaterialOffscreenProbe probe(*created.device,
+            std::move(materialPackage), std::move(lightingPackage));
+        MaterialOffscreenProbeLimits limits;
+        LightingScenePacket mismatched = lighting;
+        ++mismatched.frameId;
+        ensure("I7b rejects mismatched frame pairing",
+            probe.submit(material, mismatched, limits).code() ==
+                StatusCode::InvalidArgument);
+        status = probe.submit(material, lighting, limits);
+        ensure(status.message(), status.ok());
+        ensure("I7b composite sample is asynchronous", probe.pending());
+        MaterialOffscreenProbeResult result;
+        status = probe.poll(result);
+        ensure(status.message(), status.ok());
+        ensure("I7b executed the deferred-lighting pass",
+               result.lightingExecuted);
+        ensure_equals("I7b executed one directional light",
+                      result.directionalLights, std::uint32_t{1});
+        ensure_equals("I7b executes point lights but defers projectors",
+                      result.pointLights, std::uint32_t{1});
+        ensure("I7b records the lighting packet identity",
+               !result.lightingPacketSha256.empty());
+        ensure("I7b records the lit target identity",
+               !result.litColorSha256.empty());
+        ensure("I7b composite probe shuts down", probe.shutdown().ok());
+    }
+#if defined(LL_GHI_I7_PROJECTOR_SHADER_PACKAGE)
+    ShaderPackageDesc projectorMaterialPackage;
+    status = loadShaderPackage(
+        LL_GHI_R5A_SHADER_PACKAGE, projectorMaterialPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc projectorBaseLightingPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_LIGHTING_SHADER_PACKAGE, projectorBaseLightingPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc projectorPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_PROJECTOR_SHADER_PACKAGE, projectorPackage);
+    ensure(status.message(), status.ok());
+    ensure_equals("I7c reflected projector bindings",
+                  projectorPackage.bindings.size(), std::size_t{7});
+    ensure_equals("I7c fullscreen shader has no vertex inputs",
+                  projectorPackage.vertexInputs.size(), std::size_t{0});
+
+    LightingScenePacket projectorLighting = lighting;
+    LocalLightRecord& executableProjector =
+        projectorLighting.localLights.back();
+    executableProjector.comparability =
+        LightingComparability::Comparable;
+    executableProjector.position = {{0.f, 0.f, 1.f}};
+    executableProjector.radius = 4.f;
+    executableProjector.scale = {{2.f, 2.f, 1.f}};
+    executableProjector.projectorParams = {{1.f, 0.25f, 0.1f}};
+    LocalLightRecord volumeProjector = executableProjector;
+    ++volumeProjector.semanticId;
+    volumeProjector.position = {{0.f, 0.f, 0.f}};
+    volumeProjector.radius = 1.f;
+    projectorLighting.localLights.push_back(volumeProjector);
+    ProjectorTextureResource image;
+    image.sourceIdentity = executableProjector.projectorTextureIdentity;
+    image.width = image.height = 2;
+    image.components = 4;
+    image.decodedPixels = {
+        std::byte{255}, std::byte{128}, std::byte{32}, std::byte{255},
+        std::byte{32}, std::byte{255}, std::byte{128}, std::byte{255},
+        std::byte{128}, std::byte{32}, std::byte{255}, std::byte{255},
+        std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+    const std::string imageDigest = sha256(image.decodedPixels);
+    const auto hexNibble = [](char value) -> std::uint8_t
+    {
+        if (value >= '0' && value <= '9') return value - '0';
+        if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+        return value - 'A' + 10;
+    };
+    for (std::size_t index = 0; index < image.contentIdentity.size(); ++index)
+        image.contentIdentity[index] = static_cast<std::byte>(
+            (hexNibble(imageDigest[index * 2]) << 4) |
+             hexNibble(imageDigest[index * 2 + 1]));
+    projectorLighting.projectorTextures.push_back(image);
+
+    DeviceCreationResult projectorCreated = createDevice(
+        {Backend::Validation, 0, 2, true});
+    ensure("I7c validation device",
+           projectorCreated.status.ok() && projectorCreated.device);
+    {
+        MaterialOffscreenProbe probe(*projectorCreated.device,
+            std::move(projectorMaterialPackage),
+            std::move(projectorBaseLightingPackage),
+            std::move(projectorPackage));
+        MaterialOffscreenProbeLimits limits;
+        status = probe.submit(material, projectorLighting, limits);
+        ensure(status.message(), status.ok());
+        MaterialOffscreenProbeResult result;
+        status = probe.poll(result);
+        ensure(status.message(), status.ok());
+        ensure_equals("I7c executes both projector draw paths",
+                      result.projectorLights, std::uint32_t{2});
+        ensure_equals("I7c deduplicates a shared projector texture",
+                      result.projectorTextures, std::uint32_t{1});
+        ensure_equals("I7c camera-inside projector uses fullscreen path",
+                      result.projectorFullscreenLights, std::uint32_t{1});
+        ensure_equals("I7c outside projector uses volume path",
+                      result.projectorVolumeLights, std::uint32_t{1});
+        ensure("I7c composite probe shuts down", probe.shutdown().ok());
+    }
+    ensure("I7c deferred resources drain",
+           projectorCreated.device->waitIdle().ok());
+#if defined(LL_GHI_I7_SHADOW_SHADER_PACKAGE)
+    MaterialScenePacket shadowMaterial = material;
+    MaterialTextureResource alphaTexture;
+    alphaTexture.sourceIdentity[0] = std::byte{0x7d};
+    alphaTexture.contentIdentity = image.contentIdentity;
+    alphaTexture.colorSpace = TextureColorSpace::SRGB;
+    alphaTexture.width = image.width;
+    alphaTexture.height = image.height;
+    alphaTexture.components = image.components;
+    alphaTexture.decodedPixels = image.decodedPixels;
+    shadowMaterial.textures.push_back(alphaTexture);
+    MaterialResource masked = pbr;
+    masked.alphaMode = MaterialAlphaMode::Mask;
+    masked.alphaCutoff = 0.5f;
+    masked.doubleSided = true;
+    MaterialTextureBinding alphaBinding;
+    alphaBinding.semantic = TextureSemantic::BaseColor;
+    alphaBinding.texture = 0;
+    masked.textures.push_back(alphaBinding);
+    shadowMaterial.materials.push_back(masked);
+    SkinResource skin;
+    skin.identity[0] = std::byte{0x51};
+    skin.jointCount = 1;
+    skin.matrixPalette.resize(12);
+    skin.matrixPalette[0] = skin.matrixPalette[5] =
+        skin.matrixPalette[10] = 1.f;
+    shadowMaterial.skins.push_back(skin);
+    MaterialSceneDraw maskedDraw = draw;
+    ++maskedDraw.semanticId;
+    maskedDraw.material = 1;
+    maskedDraw.skin = 0;
+    shadowMaterial.draws.push_back(maskedDraw);
+
+    LightingScenePacket shadowLighting = projectorLighting;
+    shadowLighting.shadows.enabled = true;
+    shadowLighting.shadows.directionalCascadeCount = 4;
+    shadowLighting.shadows.projectorShadowCount = 1;
+    shadowLighting.shadows.comparability =
+        LightingComparability::ShadowImagesDeferred;
+    shadowLighting.shadows.clipPlanes = {{1.f, 2.f, 4.f, 8.f}};
+    shadowLighting.shadows.directionalBias = 0.001f;
+    shadowLighting.shadows.spotShadowOffset = 0.001f;
+    shadowLighting.shadows.spotShadowBias = 0.001f;
+    for (auto& matrix : shadowLighting.shadows.matrices)
+        for (std::size_t diagonal = 0; diagonal < 4; ++diagonal)
+            matrix[diagonal * 5] = 1.f;
+    shadowLighting.localLights[1].shadowSlot = 0;
+    shadowLighting.localLights[1].shadowFade = 0.f;
+    shadowLighting.shadows.projectorLightIds[0] =
+        shadowLighting.localLights[1].semanticId;
+
+    ShaderPackageDesc shadowMaterialPackage;
+    status = loadShaderPackage(
+        LL_GHI_R5A_SHADER_PACKAGE, shadowMaterialPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc shadowLightingPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_LIGHTING_SHADER_PACKAGE, shadowLightingPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc shadowProjectorPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_PROJECTOR_SHADER_PACKAGE, shadowProjectorPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc shadowPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_SHADOW_SHADER_PACKAGE, shadowPackage);
+    ensure(status.message(), status.ok());
+    ensure_equals("I7d reflected shadow bindings",
+                  shadowPackage.bindings.size(), std::size_t{5});
+    ensure_equals("I7d reflected shadow vertex inputs",
+                  shadowPackage.vertexInputs.size(), std::size_t{5});
+    ensure_equals("I7d depth-only shader has no color outputs",
+                  shadowPackage.fragmentOutputs.size(), std::size_t{0});
+
+    DeviceCreationResult shadowCreated = createDevice(
+        {Backend::Validation, 0, 2, true});
+    ensure("I7d validation device",
+           shadowCreated.status.ok() && shadowCreated.device);
+    {
+        MaterialOffscreenProbe probe(*shadowCreated.device,
+            std::move(shadowMaterialPackage),
+            std::move(shadowLightingPackage),
+            std::move(shadowProjectorPackage),
+            std::move(shadowPackage));
+        MaterialOffscreenProbeLimits limits;
+        status = probe.submit(shadowMaterial, shadowLighting, limits);
+        ensure(status.message(), status.ok());
+        MaterialOffscreenProbeResult result;
+        status = probe.poll(result);
+        ensure(status.message(), status.ok());
+        ensure("I7d executes native shadow production", result.shadowsExecuted);
+        ensure_equals("I7d produces four cascades and one projector map",
+                      result.shadowMaps, std::uint32_t{5});
+        ensure_equals("I7d produces four directional cascades",
+                      result.directionalShadowMaps, std::uint32_t{4});
+        ensure_equals("I7d produces one projector shadow map",
+                      result.projectorShadowMaps, std::uint32_t{1});
+        ensure_equals("I7d replays both bounded casters",
+                      result.shadowCasterDraws, std::uint32_t{2});
+        ensure_equals("I7d includes one rigged caster",
+                      result.shadowRiggedDraws, std::uint32_t{1});
+        ensure_equals("I7d includes one alpha-masked caster",
+                      result.shadowMaskedDraws, std::uint32_t{1});
+        ensure("I7d composite probe shuts down", probe.shutdown().ok());
+    }
+    ensure("I7d deferred resources drain",
+           shadowCreated.device->waitIdle().ok());
+#endif
+#endif
+#if defined(LL_GHI_I6_TERRAIN_SHADER_PACKAGE)
+    ShaderPackageDesc terrainPackage;
+    status = loadShaderPackage(
+        LL_GHI_I6_TERRAIN_SHADER_PACKAGE, terrainPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc terrainLightingPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_LIGHTING_SHADER_PACKAGE, terrainLightingPackage);
+    ensure(status.message(), status.ok());
+    TerrainScenePacket terrain;
+    terrain.frameId = material.frameId + 1;
+    terrain.sceneEpoch = material.sceneEpoch + 1;
+    terrain.resourceEpoch = material.resourceEpoch;
+    terrain.sourceWidth = material.sourceWidth;
+    terrain.sourceHeight = material.sourceHeight;
+    for (std::uint8_t textureIndex = 0; textureIndex < 5; ++textureIndex)
+    {
+        MaterialTextureResource texture;
+        texture.width = texture.height = 1;
+        texture.components = 4;
+        texture.colorSpace = textureIndex ? TextureColorSpace::SRGB
+                                          : TextureColorSpace::Linear;
+        texture.decodedPixels = {
+            static_cast<std::byte>(48 + textureIndex),
+            static_cast<std::byte>(96 + textureIndex),
+            static_cast<std::byte>(144 + textureIndex), std::byte{255}};
+        terrain.textures.push_back(std::move(texture));
+    }
+    TerrainRegionResource terrainRegion;
+    terrainRegion.model = MaterialModel::MetallicRoughness;
+    terrainRegion.paintMode = TerrainPaintMode::PBRPaintMap;
+    terrainRegion.projection = TerrainProjection::Triplanar;
+    terrainRegion.compositionTexture = 0;
+    for (std::size_t layer = 0; layer < terrainRegion.layers.size(); ++layer)
+    {
+        terrainRegion.layers[layer].model = MaterialModel::MetallicRoughness;
+        terrainRegion.layers[layer].baseColorTexture =
+            static_cast<std::uint32_t>(layer + 1);
+        terrainRegion.layers[layer].roughness = 0.75f;
+    }
+    terrain.regions.push_back(terrainRegion);
+    TerrainSceneVertex terrainVertex;
+    terrainVertex.position = {{-0.75f, -0.75f, 0.5f}};
+    terrain.vertices.push_back(terrainVertex);
+    terrainVertex.position = {{0.75f, -0.75f, 0.5f}};
+    terrain.vertices.push_back(terrainVertex);
+    terrainVertex.position = {{0.f, 0.75f, 0.5f}};
+    terrain.vertices.push_back(terrainVertex);
+    terrain.indices = {0, 1, 2};
+    TerrainSceneDraw terrainDraw;
+    terrainDraw.semanticId = 0x4937625f54455252ull; // "I7b_TERR"
+    terrainDraw.region = 0;
+    terrainDraw.indexCount = 3;
+    terrain.draws.push_back(terrainDraw);
+    lighting.frameId = terrain.frameId;
+    lighting.sceneEpoch = terrain.sceneEpoch;
+    {
+        TerrainOffscreenProbe probe(*created.device,
+            std::move(terrainPackage), std::move(terrainLightingPackage));
+        TerrainOffscreenProbeLimits limits;
+        LightingScenePacket mismatched = lighting;
+        ++mismatched.frameId;
+        ensure("I7b terrain rejects mismatched frame pairing",
+            probe.submit(terrain, mismatched, limits).code() ==
+                StatusCode::InvalidArgument);
+        status = probe.submit(terrain, lighting, limits);
+        ensure(status.message(), status.ok());
+        TerrainOffscreenProbeResult result;
+        status = probe.poll(result);
+        ensure(status.message(), status.ok());
+        ensure("I7b terrain executed the deferred-lighting pass",
+               result.lightingExecuted);
+        ensure_equals("I7b terrain executed one directional light",
+                      result.directionalLights, std::uint32_t{1});
+        ensure_equals("I7b terrain executes points but defers projectors",
+                      result.pointLights, std::uint32_t{1});
+        ensure_equals("I7b terrain executed one PBR draw",
+                      result.pbrDraws, std::uint32_t{1});
+        ensure("I7b terrain probe shuts down", probe.shutdown().ok());
+    }
+#endif
+    ensure("I7b deferred resources drain", created.device->waitIdle().ok());
+#endif
 }
 
 } // namespace tut

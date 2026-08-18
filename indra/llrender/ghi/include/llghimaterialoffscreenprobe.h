@@ -7,6 +7,7 @@
 #define LL_LLGHIMATERIALOFFSCREENPROBE_H
 
 #include "llghimaterialscenepacket.h"
+#include "llghilightingscenepacket.h"
 #include "llghidescriptors.h"
 
 #include <array>
@@ -27,6 +28,10 @@ struct MaterialOffscreenProbeLimits
     std::uint32_t maxTextures = 64;
     std::uint64_t maxUploadBytes = 16ull * 1024ull * 1024ull;
     std::uint64_t maxTextureBytes = 4ull * 1024ull * 1024ull;
+    std::uint32_t maxPointLights = 64;
+    std::uint32_t maxProjectorLights = 8;
+    std::uint64_t maxProjectorTextureBytes = 512ull * 1024ull;
+    std::uint32_t maxShadowDraws = 32;
 };
 
 struct MaterialOffscreenProbeResult
@@ -42,6 +47,25 @@ struct MaterialOffscreenProbeResult
     std::string packetSha256;
     std::array<std::string, 4> colorSha256;
     std::array<std::uint64_t, 4> nonClearPixels{};
+    bool lightingExecuted = false;
+    std::uint32_t directionalLights = 0;
+    std::uint32_t pointLights = 0;
+    std::uint32_t projectorLights = 0;
+    std::uint32_t projectorTextures = 0;
+    std::uint32_t projectorVolumeLights = 0;
+    std::uint32_t projectorFullscreenLights = 0;
+    bool shadowsExecuted = false;
+    std::uint32_t shadowMaps = 0;
+    std::uint32_t directionalShadowMaps = 0;
+    std::uint32_t projectorShadowMaps = 0;
+    std::uint32_t shadowCasterDraws = 0;
+    std::uint32_t shadowRiggedDraws = 0;
+    std::uint32_t shadowMaskedDraws = 0;
+    std::array<std::string, 6> shadowDepthSha256;
+    std::array<std::uint64_t, 6> shadowNonClearPixels{};
+    std::string lightingPacketSha256;
+    std::string litColorSha256;
+    std::uint64_t litNonClearPixels = 0;
 };
 
 // submit() records at most one sample and never waits. poll() returns NotReady
@@ -51,12 +75,27 @@ class MaterialOffscreenProbe
 {
 public:
     MaterialOffscreenProbe(Device& device, ShaderPackageDesc shader_package);
+    MaterialOffscreenProbe(Device& device,
+                           ShaderPackageDesc material_shader_package,
+                           ShaderPackageDesc lighting_shader_package);
+    MaterialOffscreenProbe(Device& device,
+                           ShaderPackageDesc material_shader_package,
+                           ShaderPackageDesc lighting_shader_package,
+                           ShaderPackageDesc projector_shader_package);
+    MaterialOffscreenProbe(Device& device,
+                           ShaderPackageDesc material_shader_package,
+                           ShaderPackageDesc lighting_shader_package,
+                           ShaderPackageDesc projector_shader_package,
+                           ShaderPackageDesc shadow_shader_package);
     ~MaterialOffscreenProbe();
 
     MaterialOffscreenProbe(const MaterialOffscreenProbe&) = delete;
     MaterialOffscreenProbe& operator=(const MaterialOffscreenProbe&) = delete;
 
     Status submit(const MaterialScenePacket& packet,
+                  const MaterialOffscreenProbeLimits& limits);
+    Status submit(const MaterialScenePacket& material_packet,
+                  const LightingScenePacket& lighting_packet,
                   const MaterialOffscreenProbeLimits& limits);
     Status poll(MaterialOffscreenProbeResult& result);
     bool pending() const;

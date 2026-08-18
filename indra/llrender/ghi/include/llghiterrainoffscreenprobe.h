@@ -7,6 +7,7 @@
 #define LL_LLGHITERRAINOFFSCREENPROBE_H
 
 #include "llghiterrainscenepacket.h"
+#include "llghilightingscenepacket.h"
 #include "llghidescriptors.h"
 
 #include <array>
@@ -26,6 +27,7 @@ struct TerrainOffscreenProbeLimits
     std::uint32_t maxTextures = 80;
     std::uint64_t maxUploadBytes = 16ull * 1024ull * 1024ull;
     std::uint64_t maxTextureBytes = 4ull * 1024ull * 1024ull;
+    std::uint32_t maxPointLights = 64;
 };
 
 struct TerrainOffscreenProbeResult
@@ -42,17 +44,29 @@ struct TerrainOffscreenProbeResult
     std::string packetSha256;
     std::array<std::string, 4> colorSha256;
     std::array<std::uint64_t, 4> nonClearPixels{};
+    bool lightingExecuted = false;
+    std::uint32_t directionalLights = 0;
+    std::uint32_t pointLights = 0;
+    std::string lightingPacketSha256;
+    std::string litColorSha256;
+    std::uint64_t litNonClearPixels = 0;
 };
 
 class TerrainOffscreenProbe
 {
 public:
     TerrainOffscreenProbe(Device& device, ShaderPackageDesc package);
+    TerrainOffscreenProbe(Device& device,
+                          ShaderPackageDesc terrain_shader_package,
+                          ShaderPackageDesc lighting_shader_package);
     ~TerrainOffscreenProbe();
     TerrainOffscreenProbe(const TerrainOffscreenProbe&) = delete;
     TerrainOffscreenProbe& operator=(const TerrainOffscreenProbe&) = delete;
 
     Status submit(const TerrainScenePacket& packet,
+                  const TerrainOffscreenProbeLimits& limits);
+    Status submit(const TerrainScenePacket& terrain_packet,
+                  const LightingScenePacket& lighting_packet,
                   const TerrainOffscreenProbeLimits& limits);
     Status poll(TerrainOffscreenProbeResult& result);
     bool pending() const;

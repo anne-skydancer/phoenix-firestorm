@@ -274,6 +274,79 @@ if (USE_VULKAN_GHI)
               ${GHI_I6_TERRAIN_SHADER_SOURCES}
       COMMENT "Building deterministic I6 terrain GHI shader package"
       VERBATIM)
+  set(GHI_I7_LIGHTING_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/i7_deferred_lighting")
+  set(GHI_I7_LIGHTING_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/i7_deferred_lighting.llghisp")
+  set(GHI_I7_LIGHTING_SHADER_SOURCES
+      "${GHI_I7_LIGHTING_SHADER_ROOT}/package.json"
+      "${GHI_I7_LIGHTING_SHADER_ROOT}/opengl41/deferred_lighting.vert.glsl"
+      "${GHI_I7_LIGHTING_SHADER_ROOT}/opengl41/deferred_lighting.frag.glsl"
+      "${GHI_I7_LIGHTING_SHADER_ROOT}/opengl44/deferred_lighting.vert.glsl"
+      "${GHI_I7_LIGHTING_SHADER_ROOT}/opengl44/deferred_lighting.frag.glsl"
+      "${GHI_I7_LIGHTING_SHADER_ROOT}/vulkan/deferred_lighting.vert.glsl"
+      "${GHI_I7_LIGHTING_SHADER_ROOT}/vulkan/deferred_lighting.frag.glsl")
+  add_custom_command(
+      OUTPUT "${GHI_I7_LIGHTING_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_I7_LIGHTING_SHADER_ROOT}/package.json"
+              --output "${GHI_I7_LIGHTING_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_I7_LIGHTING_SHADER_SOURCES}
+      COMMENT "Building deterministic I7 deferred-lighting GHI shader package"
+      VERBATIM)
+  set(GHI_I7_PROJECTOR_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/i7_projector_lighting")
+  set(GHI_I7_PROJECTOR_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/i7_projector_lighting.llghisp")
+  set(GHI_I7_PROJECTOR_SHADER_SOURCES
+      "${GHI_I7_PROJECTOR_SHADER_ROOT}/package.json"
+      "${GHI_I7_PROJECTOR_SHADER_ROOT}/opengl41/projector_lighting.vert.glsl"
+      "${GHI_I7_PROJECTOR_SHADER_ROOT}/opengl41/projector_lighting.frag.glsl"
+      "${GHI_I7_PROJECTOR_SHADER_ROOT}/opengl44/projector_lighting.vert.glsl"
+      "${GHI_I7_PROJECTOR_SHADER_ROOT}/opengl44/projector_lighting.frag.glsl"
+      "${GHI_I7_PROJECTOR_SHADER_ROOT}/vulkan/projector_lighting.vert.glsl"
+      "${GHI_I7_PROJECTOR_SHADER_ROOT}/vulkan/projector_lighting.frag.glsl")
+  add_custom_command(
+      OUTPUT "${GHI_I7_PROJECTOR_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_I7_PROJECTOR_SHADER_ROOT}/package.json"
+              --output "${GHI_I7_PROJECTOR_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_I7_PROJECTOR_SHADER_SOURCES}
+      COMMENT "Building deterministic I7c projector-lighting GHI shader package"
+      VERBATIM)
+  set(GHI_I7_SHADOW_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/i7_shadow")
+  set(GHI_I7_SHADOW_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/i7_shadow.llghisp")
+  set(GHI_I7_SHADOW_SHADER_SOURCES
+      "${GHI_I7_SHADOW_SHADER_ROOT}/package.json"
+      "${GHI_I7_SHADOW_SHADER_ROOT}/opengl41/shadow.vert.glsl"
+      "${GHI_I7_SHADOW_SHADER_ROOT}/opengl41/shadow.frag.glsl"
+      "${GHI_I7_SHADOW_SHADER_ROOT}/opengl44/shadow.vert.glsl"
+      "${GHI_I7_SHADOW_SHADER_ROOT}/opengl44/shadow.frag.glsl"
+      "${GHI_I7_SHADOW_SHADER_ROOT}/vulkan/shadow.vert.glsl"
+      "${GHI_I7_SHADOW_SHADER_ROOT}/vulkan/shadow.frag.glsl"
+      "${GHI_I7_SHADOW_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl")
+  add_custom_command(
+      OUTPUT "${GHI_I7_SHADOW_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_I7_SHADOW_SHADER_ROOT}/package.json"
+              --output "${GHI_I7_SHADOW_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_I7_SHADOW_SHADER_SOURCES}
+      COMMENT "Building deterministic I7d shadow GHI shader package"
+      VERBATIM)
   set(GHI_R5_WORLD_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r5_world")
   set(GHI_R5_WORLD_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r5_world.llghisp")
   set(GHI_R5_WORLD_SHADER_SOURCES
@@ -445,6 +518,9 @@ if (USE_VULKAN_GHI)
       "${GHI_R4C_SHADER_PACKAGE}"
       "${GHI_R5A_SHADER_PACKAGE}"
       "${GHI_I6_TERRAIN_SHADER_PACKAGE}"
+      "${GHI_I7_LIGHTING_SHADER_PACKAGE}"
+      "${GHI_I7_PROJECTOR_SHADER_PACKAGE}"
+      "${GHI_I7_SHADOW_SHADER_PACKAGE}"
       "${GHI_R5_WORLD_SHADER_PACKAGE}"
       "${GHI_R6_PPLL_SHADER_PACKAGE}"
       "${GHI_R6_PEEL_SHADER_PACKAGE}"
@@ -555,6 +631,48 @@ if (USE_VULKAN_GHI)
         DEPENDS llrender_ghi_shaders
                 "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
         COMMENT "Testing deterministic R8 GHI shader packaging"
+        VERBATIM)
+    add_custom_target(
+        llrender_ghi_i7_shader_packager_test
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_I7_LIGHTING_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        DEPENDS llrender_ghi_shaders
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+        COMMENT "Testing deterministic I7 deferred-lighting GHI shader packaging"
+        VERBATIM)
+    add_custom_target(
+        llrender_ghi_i7_projector_shader_packager_test
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_I7_PROJECTOR_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        DEPENDS llrender_ghi_shaders
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+        COMMENT "Testing deterministic I7c projector-lighting GHI shader packaging"
+        VERBATIM)
+    add_custom_target(
+        llrender_ghi_i7_shadow_shader_packager_test
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_I7_SHADOW_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        DEPENDS llrender_ghi_shaders
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+        COMMENT "Testing deterministic I7d shadow GHI shader packaging"
         VERBATIM)
   endif ()
 
@@ -987,6 +1105,9 @@ if (LL_TESTS)
         LL_GHI_R5A_SHADER_PACKAGE="${GHI_R5A_SHADER_PACKAGE}"
         LL_GHI_R5_WORLD_SHADER_PACKAGE="${GHI_R5_WORLD_SHADER_PACKAGE}"
         LL_GHI_I6_TERRAIN_SHADER_PACKAGE="${GHI_I6_TERRAIN_SHADER_PACKAGE}"
+        LL_GHI_I7_LIGHTING_SHADER_PACKAGE="${GHI_I7_LIGHTING_SHADER_PACKAGE}"
+        LL_GHI_I7_PROJECTOR_SHADER_PACKAGE="${GHI_I7_PROJECTOR_SHADER_PACKAGE}"
+        LL_GHI_I7_SHADOW_SHADER_PACKAGE="${GHI_I7_SHADOW_SHADER_PACKAGE}"
         LL_GHI_R6_PPLL_SHADER_PACKAGE="${GHI_R6_PPLL_SHADER_PACKAGE}"
         LL_GHI_R6_PEEL_SHADER_PACKAGE="${GHI_R6_PEEL_SHADER_PACKAGE}"
         LL_GHI_R6_LEGACY_SHADER_PACKAGE="${GHI_R6_LEGACY_SHADER_PACKAGE}"
@@ -995,6 +1116,9 @@ if (LL_TESTS)
         )
     add_dependencies(llrender_ghi_contract_test
         llrender_ghi_shader_packager_test
+        llrender_ghi_i7_shader_packager_test
+        llrender_ghi_i7_projector_shader_packager_test
+        llrender_ghi_i7_shadow_shader_packager_test
         llrender_ghi_r7_shader_packager_test
         llrender_ghi_r8_shader_packager_test)
   endif ()

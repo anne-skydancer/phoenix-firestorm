@@ -18,7 +18,7 @@
 namespace LL::GHI
 {
 
-inline constexpr std::uint32_t LIGHTING_SCENE_PACKET_VERSION = 1;
+inline constexpr std::uint32_t LIGHTING_SCENE_PACKET_VERSION = 2;
 inline constexpr std::uint32_t LIGHTING_DIRECTIONAL_SHADOW_CASCADES = 4;
 inline constexpr std::uint32_t LIGHTING_PROJECTOR_SHADOWS = 2;
 
@@ -78,6 +78,23 @@ struct LocalLightRecord
                            const LocalLightRecord&) = default;
 };
 
+// Exact decoder output for one projector asset. Source identity is the SL
+// asset UUID; content identity hashes the bounded decoded bytes. The resource
+// carries no viewer texture object or graphics-API handle.
+struct ProjectorTextureResource
+{
+    std::array<std::uint8_t, 16> sourceIdentity{};
+    std::array<std::byte, 32> contentIdentity{};
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t components = 0;
+    std::uint32_t discardLevel = 0;
+    std::vector<std::byte> decodedPixels;
+
+    friend bool operator==(const ProjectorTextureResource&,
+                           const ProjectorTextureResource&) = default;
+};
+
 struct LightingShadowState
 {
     bool enabled = false;
@@ -116,6 +133,7 @@ struct LightingScenePacket
     DirectionalLightRecord moon;
     LightingShadowState shadows;
     std::vector<LocalLightRecord> localLights;
+    std::vector<ProjectorTextureResource> projectorTextures;
 
     friend bool operator==(const LightingScenePacket&,
                            const LightingScenePacket&) = default;

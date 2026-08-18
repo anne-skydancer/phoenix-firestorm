@@ -1136,7 +1136,9 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc, Status& st
     if (!mShaderPool.isLive(desc.shader) || shader == mShaders.end())
     { status = invalidHandle("pipeline references an invalid shader package"); return {}; }
     const VkSampleCountFlagBits samples = translateSamples(desc.samples);
-    if (!samples || desc.colorFormats.empty() || desc.colorFormats.size() != desc.blendStates.size())
+    if (!samples ||
+        (desc.colorFormats.empty() && !desc.depthStencilFormat.has_value()) ||
+        desc.colorFormats.size() != desc.blendStates.size())
     { status = invalidArgument("invalid Vulkan graphics pipeline descriptor"); return {}; }
     if (desc.depthClamp && !mCapabilities.depthClamp)
     { status = unsupported("Vulkan depth clamp is unavailable"); return {}; }
@@ -1238,7 +1240,8 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc, Status& st
     for (Format format : desc.colorFormats) colorFormats.push_back(translateFormat(format).format);
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = static_cast<std::uint32_t>(colorFormats.size());
-    rendering.pColorAttachmentFormats = colorFormats.data();
+    rendering.pColorAttachmentFormats = colorFormats.empty()
+        ? nullptr : colorFormats.data();
     if (desc.depthStencilFormat)
     {
         const auto format = translateFormat(*desc.depthStencilFormat);
@@ -1567,8 +1570,9 @@ Status VulkanDevice::copyImageToBuffer(ImageHandle source, BufferHandle destinat
     auto src = mImages.find(handleKey(source)); auto dst = mBuffers.find(handleKey(destination));
     if (!mImagePool.isLive(source) || !mBufferPool.isLive(destination) || src == mImages.end() || dst == mBuffers.end()) return invalidHandle("image-to-buffer copy received an invalid resource");
     if (!hasUsage(src->second.desc.usage, ResourceUsage::TransferSource) || !hasUsage(dst->second.desc.usage, ResourceUsage::TransferDestination) || regions.empty()) return invalidArgument("image-to-buffer usage or regions are invalid");
-    if (src->second.format.aspect != VK_IMAGE_ASPECT_COLOR_BIT)
-        return unsupported("Vulkan R2 image-to-buffer copies currently support color images only");
+    if (src->second.format.aspect != VK_IMAGE_ASPECT_COLOR_BIT &&
+        src->second.format.aspect != VK_IMAGE_ASPECT_DEPTH_BIT)
+        return unsupported("Vulkan image-to-buffer copies require a single color or depth aspect");
     std::vector<VkBufferImageCopy> copies; copies.reserve(regions.size());
     for (const auto& region : regions)
     {
@@ -1696,7 +1700,8 @@ Status VulkanDevice::beginRendering(const RenderingInfo& info)
 {
     if (!mCommands.frameActive()) return invalidState("beginRendering requires an active frame");
     if (mCommands.renderingActive()) return invalidState("a rendering scope is already active");
-    if (!info.width || !info.height || info.colors.empty() ||
+    if (!info.width || !info.height ||
+        (info.colors.empty() && !info.depthStencil.has_value()) ||
         info.colors.size() > mCapabilities.maxColorAttachments)
         return invalidArgument("invalid Vulkan rendering scope");
 
@@ -1777,7 +1782,7 @@ Status VulkanDevice::beginRendering(const RenderingInfo& info)
     rendering.renderArea.extent = {info.width, info.height};
     rendering.layerCount = 1;
     rendering.colorAttachmentCount = static_cast<std::uint32_t>(colors.size());
-    rendering.pColorAttachments = colors.data();
+    rendering.pColorAttachments = colors.empty() ? nullptr : colors.data();
     rendering.pDepthAttachment = info.depthStencil ? &depth : nullptr;
     rendering.pStencilAttachment = info.depthStencil && hasStencil ? &depth : nullptr;
     vkCmdBeginRendering(commands(), &rendering);

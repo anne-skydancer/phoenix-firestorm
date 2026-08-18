@@ -30,6 +30,7 @@ bool shouldCaptureLiveOpaquePacket(std::uint64_t frame_id);
 void consumeLiveOpaquePacket(const LL::GHI::OpaqueScenePacket& packet,
                              bool budget_limited);
 bool materialCaptureRequested();
+bool shadowOffscreenRequested();
 bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id);
 void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
                                bool budget_limited);

@@ -89,6 +89,68 @@ LL::GHI::MaterialAlphaMode alphaMode(std::uint32_t mode)
     return LL::GHI::MaterialAlphaMode::Opaque;
 }
 
+bool shadowMaskPass(std::uint32_t type)
+{
+    switch (type)
+    {
+    case LLRenderPass::PASS_ALPHA_MASK:
+    case LLRenderPass::PASS_ALPHA_MASK_RIGGED:
+    case LLRenderPass::PASS_FULLBRIGHT_ALPHA_MASK:
+    case LLRenderPass::PASS_FULLBRIGHT_ALPHA_MASK_RIGGED:
+    case LLRenderPass::PASS_MATERIAL_ALPHA_MASK:
+    case LLRenderPass::PASS_MATERIAL_ALPHA_MASK_RIGGED:
+    case LLRenderPass::PASS_SPECMAP_MASK:
+    case LLRenderPass::PASS_SPECMAP_MASK_RIGGED:
+    case LLRenderPass::PASS_NORMMAP_MASK:
+    case LLRenderPass::PASS_NORMMAP_MASK_RIGGED:
+    case LLRenderPass::PASS_NORMSPEC_MASK:
+    case LLRenderPass::PASS_NORMSPEC_MASK_RIGGED:
+    case LLRenderPass::PASS_GLTF_PBR_ALPHA_MASK:
+    case LLRenderPass::PASS_GLTF_PBR_ALPHA_MASK_RIGGED:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool shadowOpaquePass(std::uint32_t type)
+{
+    switch (type)
+    {
+    case LLRenderPass::PASS_SIMPLE:
+    case LLRenderPass::PASS_SIMPLE_RIGGED:
+    case LLRenderPass::PASS_FULLBRIGHT:
+    case LLRenderPass::PASS_FULLBRIGHT_RIGGED:
+    case LLRenderPass::PASS_SHINY:
+    case LLRenderPass::PASS_SHINY_RIGGED:
+    case LLRenderPass::PASS_BUMP:
+    case LLRenderPass::PASS_BUMP_RIGGED:
+    case LLRenderPass::PASS_FULLBRIGHT_SHINY:
+    case LLRenderPass::PASS_FULLBRIGHT_SHINY_RIGGED:
+    case LLRenderPass::PASS_MATERIAL:
+    case LLRenderPass::PASS_MATERIAL_RIGGED:
+    case LLRenderPass::PASS_MATERIAL_ALPHA_EMISSIVE:
+    case LLRenderPass::PASS_MATERIAL_ALPHA_EMISSIVE_RIGGED:
+    case LLRenderPass::PASS_SPECMAP:
+    case LLRenderPass::PASS_SPECMAP_RIGGED:
+    case LLRenderPass::PASS_SPECMAP_EMISSIVE:
+    case LLRenderPass::PASS_SPECMAP_EMISSIVE_RIGGED:
+    case LLRenderPass::PASS_NORMMAP:
+    case LLRenderPass::PASS_NORMMAP_RIGGED:
+    case LLRenderPass::PASS_NORMMAP_EMISSIVE:
+    case LLRenderPass::PASS_NORMMAP_EMISSIVE_RIGGED:
+    case LLRenderPass::PASS_NORMSPEC:
+    case LLRenderPass::PASS_NORMSPEC_RIGGED:
+    case LLRenderPass::PASS_NORMSPEC_EMISSIVE:
+    case LLRenderPass::PASS_NORMSPEC_EMISSIVE_RIGGED:
+    case LLRenderPass::PASS_GLTF_PBR:
+    case LLRenderPass::PASS_GLTF_PBR_RIGGED:
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // namespace
 
 class LLGHIMaterialCapture::Impl
@@ -154,6 +216,8 @@ public:
             mState = State::Recording;
         mCaptureFile = mState == State::Recording;
         mCaptureRuntime = LLGHIRuntime::shouldCaptureLiveMaterialPacket(frameId);
+        mCaptureShadowRuntime = mCaptureRuntime &&
+            LLGHIRuntime::shadowOffscreenRequested();
         if (!mCaptureFile && !mCaptureRuntime) return false;
         mPacket = {};
         mPacket.frameId = frameId;
@@ -166,6 +230,8 @@ public:
         mRuntimeBudgetLimited = false;
         mRuntimeRigidDraws = 0;
         mRuntimeRiggedDraws = 0;
+        mRuntimeLightingReceiverDraws = 0;
+        mRuntimeShadowOpaqueRigidDraws = 0;
         mRuntimeRiggedCalls = 0;
         mRuntimeRiggedOpaqueCalls = 0;
         mRuntimeRiggedMaskCalls = 0;
@@ -188,10 +254,20 @@ public:
         // alpha ramp are not lost before I6 begins.
         const bool materialConfigured =
             gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe");
+        const bool lightingConfigured =
+            gSavedSettings.getBOOL("RenderVulkanLightingOffscreenProbe");
         const bool terrainConfigured =
             gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe");
+        const bool terrainLightingConfigured =
+            gSavedSettings.getBOOL("RenderVulkanTerrainLightingOffscreenProbe");
+        const bool projectorLightingConfigured =
+            gSavedSettings.getBOOL("RenderVulkanProjectorLightingOffscreenProbe");
+        const bool shadowConfigured =
+            gSavedSettings.getBOOL("RenderVulkanShadowOffscreenProbe");
         if ((mState == State::Disabled &&
-             !materialConfigured && !terrainConfigured) ||
+             !materialConfigured && !lightingConfigured &&
+             !terrainConfigured && !terrainLightingConfigured &&
+             !projectorLightingConfigured && !shadowConfigured) ||
             mState == State::Complete || mState == State::Failed ||
             !image.getData() || image.getDataSize() <= 0)
             return;
@@ -208,7 +284,9 @@ public:
         // for login-time avatar and region texture churn.
         constexpr std::size_t MAX_RUNTIME_IMAGE_BYTES = 64ull * 1024ull;
         const bool runtimeObservation =
-            (materialConfigured || terrainConfigured) &&
+            (materialConfigured || lightingConfigured || terrainConfigured ||
+             terrainLightingConfigured || projectorLightingConfigured ||
+             shadowConfigured) &&
             mState == State::Disabled;
         std::uint32_t observedWidth = sourceWidth;
         std::uint32_t observedHeight = sourceHeight;
@@ -327,10 +405,13 @@ public:
         }
         const bool opaquePbrPass = renderType == LLRenderPass::PASS_GLTF_PBR ||
             renderType == LLRenderPass::PASS_GLTF_PBR_RIGGED;
-        const bool runtimeGeometry = opaquePbrPass &&
+        const bool shadowPass = mCaptureShadowRuntime &&
+            (shadowOpaquePass(renderType) || shadowMaskPass(renderType));
+        const bool lightingReceiver = opaquePbrPass &&
             draw.mGLTFMaterial.notNull() &&
             alphaMode(draw.mGLTFMaterial->mAlphaMode) ==
                 LL::GHI::MaterialAlphaMode::Opaque;
+        const bool runtimeGeometry = lightingReceiver || shadowPass;
         if (mCaptureRuntime && !mCaptureFile && !runtimeGeometry) return;
 
         // A live I5 sample is useful only when its production skin path is
@@ -339,7 +420,8 @@ public:
         // rigged draws in the consumer is too late. Let the first rigged draw
         // preempt the provisional rigid-only sample so its geometry, palette,
         // and texture set receive first claim on the same fixed budgets.
-        if (mCaptureRuntime && !mCaptureFile && rigged && runtimeGeometry &&
+        if (mCaptureRuntime && !mCaptureFile && !mCaptureShadowRuntime &&
+            rigged && lightingReceiver &&
             !mRuntimeRiggedDraws && mRuntimeRigidDraws)
         {
             mPacket.vertices.clear();
@@ -352,6 +434,8 @@ public:
             mMaterialIndices.clear();
             mSkinIndices.clear();
             mRuntimeRigidDraws = 0;
+            mRuntimeLightingReceiverDraws = 0;
+            mRuntimeShadowOpaqueRigidDraws = 0;
             mRuntimeTextureBytes = 0;
             mRuntimeBudgetLimited = false;
         }
@@ -367,9 +451,12 @@ public:
         if (mCaptureRuntime && rigged && missingSkin)
             ++mRuntimeRiggedMissingSkin;
         GeometryReject geometryReject = GeometryReject::None;
+        const bool shadowOnly = mCaptureShadowRuntime && !mCaptureFile &&
+            shadowPass && !lightingReceiver;
         const bool geometryCaptured = !runtimeGeometry ||
             (!missingSkin && captureGeometry(
-                draw, output, capturedSkin, geometryReject));
+                draw, output, capturedSkin, shadowMaskPass(renderType),
+                shadowOnly, geometryReject));
         if (mCaptureRuntime && rigged && runtimeGeometry && !geometryCaptured)
         {
             ++mRuntimeRiggedGeometryRejected;
@@ -383,7 +470,11 @@ public:
             output.comparability = output.comparability |
                 LL::GHI::ResourceComparability::UnsupportedVertexLayout;
         }
-        output.material = material(draw, renderType, capturedSkin != nullptr);
+        if (mCaptureRuntime && geometryCaptured && lightingReceiver)
+            ++mRuntimeLightingReceiverDraws;
+        output.material = material(draw, renderType, capturedSkin != nullptr,
+                                   shadowOnly,
+                                   shadowMaskPass(renderType));
         if (output.material != LL::GHI::NO_RESOURCE)
             output.comparability = output.comparability |
                 mPacket.materials[output.material].comparability;
@@ -404,6 +495,7 @@ public:
         const bool captureRuntime = mCaptureRuntime;
         mCaptureFile = false;
         mCaptureRuntime = false;
+        mCaptureShadowRuntime = false;
         const auto logRuntimeRouting = [this]()
         {
             std::ostringstream reasons;
@@ -500,12 +592,16 @@ private:
     bool captureGeometry(const LLDrawInfo& source,
                          LL::GHI::MaterialSceneDraw& output,
                          const LL::GHI::SkinResource* skinResource,
+                         bool alphaMasked,
+                         bool shadowOnly,
                          GeometryReject& reject)
     {
         const LLVertexBuffer* buffer = source.mVertexBuffer.get();
-        constexpr std::uint32_t required = LLVertexBuffer::MAP_VERTEX |
-            LLVertexBuffer::MAP_NORMAL | LLVertexBuffer::MAP_TANGENT |
-            LLVertexBuffer::MAP_TEXCOORD0;
+        const std::uint32_t required = mCaptureShadowRuntime
+            ? LLVertexBuffer::MAP_VERTEX |
+                (alphaMasked ? LLVertexBuffer::MAP_TEXCOORD0 : 0u)
+            : LLVertexBuffer::MAP_VERTEX | LLVertexBuffer::MAP_NORMAL |
+                LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD0;
         const bool skinned = skinResource != nullptr;
         reject = GeometryReject::None;
         if (!buffer || !source.mCount || source.mCount % 3 != 0)
@@ -548,19 +644,35 @@ private:
             return false;
         }
 
-        constexpr std::size_t maxDraws = 32;
-        constexpr std::size_t maxRigidDraws = 24;
+        const std::size_t maxDraws = mCaptureShadowRuntime ? 64 : 32;
+        const std::size_t maxRigidDraws = mCaptureShadowRuntime ? 48 : 24;
         constexpr std::size_t maxVertices = 65536;
         constexpr std::size_t maxIndices = 196608;
+        constexpr std::size_t receiverDrawReserve = 4;
+        constexpr std::size_t receiverVertexReserve = 8192;
+        constexpr std::size_t receiverIndexReserve = 32768;
+        constexpr std::size_t maxShadowOpaqueRigidDraws = 16;
         const std::size_t runtimeDraws =
             mRuntimeRigidDraws + mRuntimeRiggedDraws;
+        const bool reserveReceiver = shadowOnly &&
+            !mRuntimeLightingReceiverDraws;
+        const std::size_t effectiveMaxDraws = maxDraws -
+            (reserveReceiver ? receiverDrawReserve : 0);
+        const std::size_t effectiveMaxRigidDraws = maxRigidDraws -
+            (reserveReceiver ? receiverDrawReserve : 0);
+        const std::size_t effectiveMaxVertices = maxVertices -
+            (reserveReceiver ? receiverVertexReserve : 0);
+        const std::size_t effectiveMaxIndices = maxIndices -
+            (reserveReceiver ? receiverIndexReserve : 0);
         if (mCaptureRuntime &&
-            (runtimeDraws >= maxDraws ||
-             (!skinned && mRuntimeRigidDraws >= maxRigidDraws) ||
-             mPacket.vertices.size() > maxVertices ||
-             vertexCount > maxVertices - mPacket.vertices.size() ||
-             mPacket.indices.size() > maxIndices ||
-             source.mCount > maxIndices - mPacket.indices.size()))
+            (runtimeDraws >= effectiveMaxDraws ||
+             (!skinned && mRuntimeRigidDraws >= effectiveMaxRigidDraws) ||
+             (shadowOnly && !skinned && !alphaMasked &&
+              mRuntimeShadowOpaqueRigidDraws >= maxShadowOpaqueRigidDraws) ||
+             mPacket.vertices.size() > effectiveMaxVertices ||
+             vertexCount > effectiveMaxVertices - mPacket.vertices.size() ||
+             mPacket.indices.size() > effectiveMaxIndices ||
+             source.mCount > effectiveMaxIndices - mPacket.indices.size()))
         {
             mRuntimeBudgetLimited = true;
             reject = GeometryReject::Budget;
@@ -572,12 +684,15 @@ private:
         const auto* data = buffer->getMappedData();
         const auto* positions = reinterpret_cast<const float*>(
             data + buffer->getOffset(LLVertexBuffer::TYPE_VERTEX));
-        const auto* normals = reinterpret_cast<const float*>(
-            data + buffer->getOffset(LLVertexBuffer::TYPE_NORMAL));
-        const auto* tangents = reinterpret_cast<const float*>(
-            data + buffer->getOffset(LLVertexBuffer::TYPE_TANGENT));
-        const auto* texcoords = reinterpret_cast<const float*>(
-            data + buffer->getOffset(LLVertexBuffer::TYPE_TEXCOORD0));
+        const auto* normals = buffer->hasDataType(LLVertexBuffer::TYPE_NORMAL)
+            ? reinterpret_cast<const float*>(
+                data + buffer->getOffset(LLVertexBuffer::TYPE_NORMAL)) : nullptr;
+        const auto* tangents = buffer->hasDataType(LLVertexBuffer::TYPE_TANGENT)
+            ? reinterpret_cast<const float*>(
+                data + buffer->getOffset(LLVertexBuffer::TYPE_TANGENT)) : nullptr;
+        const auto* texcoords = buffer->hasDataType(LLVertexBuffer::TYPE_TEXCOORD0)
+            ? reinterpret_cast<const float*>(
+                data + buffer->getOffset(LLVertexBuffer::TYPE_TEXCOORD0)) : nullptr;
         const LLColor4U* colors = buffer->hasDataType(LLVertexBuffer::TYPE_COLOR)
             ? reinterpret_cast<const LLColor4U*>(
                 data + buffer->getOffset(LLVertexBuffer::TYPE_COLOR)) : nullptr;
@@ -601,12 +716,15 @@ private:
             LL::GHI::MaterialSceneVertex vertex;
             std::copy_n(positions + static_cast<std::size_t>(index) * 4, 3,
                         vertex.position.begin());
-            std::copy_n(normals + static_cast<std::size_t>(index) * 4, 3,
-                        vertex.normal.begin());
-            std::copy_n(tangents + static_cast<std::size_t>(index) * 4, 4,
-                        vertex.tangent.begin());
-            std::copy_n(texcoords + static_cast<std::size_t>(index) * 2, 2,
-                        vertex.texCoord.begin());
+            if (normals)
+                std::copy_n(normals + static_cast<std::size_t>(index) * 4, 3,
+                            vertex.normal.begin());
+            if (tangents)
+                std::copy_n(tangents + static_cast<std::size_t>(index) * 4, 4,
+                            vertex.tangent.begin());
+            if (texcoords)
+                std::copy_n(texcoords + static_cast<std::size_t>(index) * 2, 2,
+                            vertex.texCoord.begin());
             if (colors) std::copy_n(colors[index].mV, 4, vertex.color.begin());
             if (skinned)
             {
@@ -734,6 +852,8 @@ private:
         {
             if (skinned) ++mRuntimeRiggedDraws;
             else ++mRuntimeRigidDraws;
+            if (shadowOnly && !skinned && !alphaMasked)
+                ++mRuntimeShadowOpaqueRigidDraws;
         }
         return true;
     }
@@ -938,7 +1058,8 @@ private:
     }
 
     std::uint32_t material(LLDrawInfo& draw, std::uint32_t renderType,
-                           bool priority)
+                           bool priority, bool shadowOnly,
+                           bool alphaMasked)
     {
         LL::GHI::MaterialResource resource;
         std::ostringstream identity;
@@ -968,7 +1089,9 @@ private:
                 LL::GHI::TextureSemantic::BaseColor, LL::GHI::TextureSemantic::Normal,
                 LL::GHI::TextureSemantic::MetallicRoughness,
                 LL::GHI::TextureSemantic::Emissive};
-            for (std::size_t i = 0; i < 4; ++i)
+            const std::size_t textureCount = shadowOnly
+                ? (alphaMasked ? 1u : 0u) : 4u;
+            for (std::size_t i = 0; i < textureCount; ++i)
             {
                 const auto& t = material.mTextureTransform[i];
                 bindTexture(resource, textures[i], semantics[i],
@@ -987,13 +1110,19 @@ private:
             resource.environmentIntensity = draw.mEnvIntensity;
             resource.alphaCutoff = draw.mAlphaMaskCutoff;
             resource.fullbright = draw.mFullbright;
-            bindTexture(resource, draw.mTexture.get(), LL::GHI::TextureSemantic::BaseColor,
-                        LL::GHI::TextureColorSpace::SRGB, priority);
-            bindTexture(resource, draw.mNormalMap.get(), LL::GHI::TextureSemantic::Normal,
-                        LL::GHI::TextureColorSpace::Linear, priority);
-            bindTexture(resource, draw.mSpecularMap.get(),
-                        LL::GHI::TextureSemantic::LegacySpecular,
-                        LL::GHI::TextureColorSpace::SRGB, priority);
+            if (!shadowOnly || alphaMasked)
+                bindTexture(resource, draw.mTexture.get(),
+                            LL::GHI::TextureSemantic::BaseColor,
+                            LL::GHI::TextureColorSpace::SRGB, priority);
+            if (!shadowOnly)
+            {
+                bindTexture(resource, draw.mNormalMap.get(),
+                            LL::GHI::TextureSemantic::Normal,
+                            LL::GHI::TextureColorSpace::Linear, priority);
+                bindTexture(resource, draw.mSpecularMap.get(),
+                            LL::GHI::TextureSemantic::LegacySpecular,
+                            LL::GHI::TextureColorSpace::SRGB, priority);
+            }
         }
         if (resource.alphaMode == LL::GHI::MaterialAlphaMode::Blend)
             resource.comparability = resource.comparability |
@@ -1052,9 +1181,12 @@ private:
     bool mInFrame = false;
     bool mCaptureFile = false;
     bool mCaptureRuntime = false;
+    bool mCaptureShadowRuntime = false;
     bool mRuntimeBudgetLimited = false;
     std::size_t mRuntimeRigidDraws = 0;
     std::size_t mRuntimeRiggedDraws = 0;
+    std::size_t mRuntimeLightingReceiverDraws = 0;
+    std::size_t mRuntimeShadowOpaqueRigidDraws = 0;
     std::size_t mRuntimeRiggedCalls = 0;
     std::size_t mRuntimeRiggedOpaqueCalls = 0;
     std::size_t mRuntimeRiggedMaskCalls = 0;

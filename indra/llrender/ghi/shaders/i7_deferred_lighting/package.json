@@ -1,0 +1,46 @@
+{
+  "name": "i7_deferred_lighting",
+  "schema_version": 3,
+  "toolchain": {
+    "glslang_version": "11:16.2.0",
+    "spirv_tools_version": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
+    "vulkan_target": "vulkan1.3",
+    "optimization": "spirv-opt -O"
+  },
+  "dependencies": [],
+  "expected": {
+    "bindings": [
+      {"group": 0, "binding": 0, "type": "uniform_buffer", "name": "LightingData", "stages": ["fragment"]},
+      {"group": 0, "binding": 1, "type": "combined_image_sampler", "name": "baseColorMap", "stages": ["fragment"]},
+      {"group": 0, "binding": 2, "type": "combined_image_sampler", "name": "ormMap", "stages": ["fragment"]},
+      {"group": 0, "binding": 3, "type": "combined_image_sampler", "name": "normalMap", "stages": ["fragment"]},
+      {"group": 0, "binding": 4, "type": "combined_image_sampler", "name": "emissiveMap", "stages": ["fragment"]},
+      {"group": 0, "binding": 5, "type": "combined_image_sampler", "name": "depthMap", "stages": ["fragment"]}
+      ,{"group": 0, "binding": 6, "type": "combined_image_sampler", "name": "shadowMap0", "stages": ["fragment"]}
+      ,{"group": 0, "binding": 7, "type": "combined_image_sampler", "name": "shadowMap1", "stages": ["fragment"]}
+      ,{"group": 0, "binding": 8, "type": "combined_image_sampler", "name": "shadowMap2", "stages": ["fragment"]}
+      ,{"group": 0, "binding": 9, "type": "combined_image_sampler", "name": "shadowMap3", "stages": ["fragment"]}
+    ],
+    "vertex_inputs": [],
+    "fragment_outputs": [
+      {"location": 0, "type": "float4"}
+    ],
+    "push_constant_bytes": 0
+  },
+  "stages": [
+    {
+      "stage": "vertex",
+      "entry_point": "main",
+      "opengl_41": "opengl41/deferred_lighting.vert.glsl",
+      "opengl_44": "opengl44/deferred_lighting.vert.glsl",
+      "vulkan": "vulkan/deferred_lighting.vert.glsl"
+    },
+    {
+      "stage": "fragment",
+      "entry_point": "main",
+      "opengl_41": "opengl41/deferred_lighting.frag.glsl",
+      "opengl_44": "opengl44/deferred_lighting.frag.glsl",
+      "vulkan": "vulkan/deferred_lighting.frag.glsl"
+    }
+  ]
+}

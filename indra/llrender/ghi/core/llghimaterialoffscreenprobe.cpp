@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <utility>
@@ -30,11 +31,121 @@ constexpr std::array<Format, 4> COLOR_FORMATS{{
     Format::RGBA8UNorm, Format::RGBA8UNorm,
     Format::RGBA16UNorm, Format::RGBA16Float}};
 constexpr std::array<std::uint32_t, 4> COLOR_BYTES{{4, 4, 8, 8}};
+constexpr Format LIGHTING_FORMAT = Format::RGBA16Float;
+constexpr std::uint32_t LIGHTING_BYTES = 8;
+constexpr std::size_t SHADOW_MAP_COUNT =
+    LIGHTING_DIRECTIONAL_SHADOW_CASCADES + LIGHTING_PROJECTOR_SHADOWS;
+constexpr Format SHADOW_FORMAT = Format::Depth32Float;
+constexpr std::uint32_t SHADOW_BYTES = 4;
+constexpr std::size_t MAX_LIGHTING_POINT_LIGHTS = 64;
+constexpr std::size_t LIGHTING_HEADER_FLOATS = 16 * 2 + 4 * 6;
+constexpr std::size_t LIGHTING_POINT_DATA_FLOATS =
+    LIGHTING_HEADER_FLOATS + MAX_LIGHTING_POINT_LIGHTS * 8;
+constexpr std::size_t LIGHTING_DATA_FLOATS = LIGHTING_POINT_DATA_FLOATS +
+    LIGHTING_DIRECTIONAL_SHADOW_CASCADES * 16 + 8;
+using LightingData = std::array<float, LIGHTING_DATA_FLOATS>;
+constexpr std::size_t PROJECTOR_DATA_FLOATS = 76;
+using ProjectorData = std::array<float, PROJECTOR_DATA_FLOATS>;
 using SkinData = std::array<float, MATERIAL_SKIN_FLOATS>;
+using ShadowMaterialData = std::array<float, 12>;
 
 Status invalid(const char* message)
 {
     return Status::failure(StatusCode::InvalidArgument, message);
+}
+
+LightingData makeLightingData(const LightingScenePacket& packet,
+                              std::uint32_t max_point_lights,
+                              bool native_shadows,
+                              std::uint32_t& directional_lights,
+                              std::uint32_t& point_lights)
+{
+    LightingData data{};
+    std::copy(packet.viewMatrix.begin(), packet.viewMatrix.end(), data.begin());
+    std::copy(packet.projectionMatrix.begin(), packet.projectionMatrix.end(),
+              data.begin() + 16);
+    std::copy(packet.cameraOrigin.begin(), packet.cameraOrigin.end(),
+              data.begin() + 32);
+    std::copy(packet.ambientColor.begin(), packet.ambientColor.end(),
+              data.begin() + 36);
+
+    auto copyDirectional = [&data, &directional_lights](
+        const DirectionalLightRecord& light, std::size_t offset)
+    {
+        std::copy(light.direction.begin(), light.direction.end(),
+                  data.begin() + static_cast<std::ptrdiff_t>(offset));
+        data[offset + 3] = light.active ? 1.f : 0.f;
+        std::copy(light.color.begin(), light.color.end(),
+                  data.begin() + static_cast<std::ptrdiff_t>(offset + 4));
+        data[offset + 7] = light.intensity;
+        if (light.active) ++directional_lights;
+    };
+    copyDirectional(packet.sun, 40);
+    copyDirectional(packet.moon, 48);
+
+    const std::uint32_t limit = std::min<std::uint32_t>(
+        max_point_lights, static_cast<std::uint32_t>(MAX_LIGHTING_POINT_LIGHTS));
+    for (const LocalLightRecord& light : packet.localLights)
+    {
+        if (light.kind != LocalLightKind::Point || point_lights == limit) continue;
+        const std::size_t position = LIGHTING_HEADER_FLOATS + point_lights * 4;
+        const std::size_t color = LIGHTING_HEADER_FLOATS +
+                                  MAX_LIGHTING_POINT_LIGHTS * 4 +
+                                  point_lights * 4;
+        std::copy(light.position.begin(), light.position.end(),
+                  data.begin() + static_cast<std::ptrdiff_t>(position));
+        data[position + 3] = light.radius;
+        std::copy(light.color.begin(), light.color.end(),
+                  data.begin() + static_cast<std::ptrdiff_t>(color));
+        data[color + 3] = light.falloff;
+        ++point_lights;
+    }
+    data[35] = static_cast<float>(point_lights);
+    const std::size_t shadowMatrices = LIGHTING_POINT_DATA_FLOATS;
+    for (std::size_t cascade = 0;
+         cascade < LIGHTING_DIRECTIONAL_SHADOW_CASCADES; ++cascade)
+        std::copy(packet.shadows.matrices[cascade].begin(),
+                  packet.shadows.matrices[cascade].end(),
+                  data.begin() + static_cast<std::ptrdiff_t>(
+                      shadowMatrices + cascade * 16));
+    const std::size_t shadowClip = shadowMatrices +
+        LIGHTING_DIRECTIONAL_SHADOW_CASCADES * 16;
+    std::copy(packet.shadows.clipPlanes.begin(),
+              packet.shadows.clipPlanes.end(),
+              data.begin() + static_cast<std::ptrdiff_t>(shadowClip));
+    data[shadowClip + 4] = packet.shadows.directionalBias;
+    data[shadowClip + 5] = native_shadows && packet.shadows.enabled &&
+        packet.shadows.directionalCascadeCount ? 1.f : 0.f;
+    data[shadowClip + 6] = static_cast<float>(
+        std::min<std::uint32_t>(packet.shadows.directionalCascadeCount,
+            LIGHTING_DIRECTIONAL_SHADOW_CASCADES));
+    return data;
+}
+
+std::array<float, 16> multiplyMatrix(const std::array<float, 16>& lhs,
+                                     const std::array<float, 16>& rhs)
+{
+    std::array<float, 16> output{};
+    for (std::size_t column = 0; column < 4; ++column)
+        for (std::size_t row = 0; row < 4; ++row)
+            for (std::size_t inner = 0; inner < 4; ++inner)
+                output[column * 4 + row] +=
+                    lhs[inner * 4 + row] * rhs[column * 4 + inner];
+    return output;
+}
+
+std::array<float, 16> shadowClipMatrix(const LightingScenePacket& packet,
+                                       std::size_t shadow)
+{
+    // Lighting matrices map main-camera view space to [0,1] shadow texture
+    // coordinates. Remove that scale/bias and restore the main view transform
+    // to obtain the backend-neutral world-to-shadow clip matrix used to
+    // produce the native depth map.
+    constexpr std::array<float, 16> textureToClip{{
+        2.f, 0.f, 0.f, 0.f, 0.f, 2.f, 0.f, 0.f,
+        0.f, 0.f, 2.f, 0.f, -1.f, -1.f, -1.f, 1.f}};
+    return multiplyMatrix(textureToClip,
+        multiplyMatrix(packet.shadows.matrices[shadow], packet.viewMatrix));
 }
 
 bool supportedTextureCoordinates(const MaterialResource& material)
@@ -201,6 +312,27 @@ const MaterialTextureBinding* findBinding(const MaterialResource& material,
     return found == material.textures.end() ? nullptr : &*found;
 }
 
+ShadowMaterialData makeShadowMaterialData(const MaterialResource& material)
+{
+    ShadowMaterialData data{};
+    data[0] = material.alphaCutoff;
+    data[1] = material.baseColor[3];
+    data[2] = material.alphaMode == MaterialAlphaMode::Mask ? 1.f : 0.f;
+    data[6] = data[7] = 1.f;
+    data[8] = 1.f;
+    if (const MaterialTextureBinding* base =
+            findBinding(material, TextureSemantic::BaseColor))
+    {
+        data[4] = base->transform[0];
+        data[5] = base->transform[1];
+        data[6] = base->transform[2];
+        data[7] = base->transform[3];
+        data[8] = std::cos(base->transform[4]);
+        data[9] = std::sin(base->transform[4]);
+    }
+    return data;
+}
+
 std::vector<std::byte> rgbaPixels(const MaterialScenePacket& packet,
                                   const MaterialResource& material,
                                   TextureSemantic semantic,
@@ -261,25 +393,195 @@ std::vector<std::byte> rgbaPixels(const MaterialScenePacket& packet,
     }
     return pixels;
 }
+
+std::vector<std::byte> projectorRgbaPixels(
+    const ProjectorTextureResource& texture,
+    const MaterialOffscreenProbeLimits& limits, Status& status)
+{
+    const std::uint64_t rgbaBytes = static_cast<std::uint64_t>(texture.width) *
+                                    texture.height * 4;
+    if (!texture.width || !texture.height || texture.components < 1 ||
+        texture.components > 4 || texture.decodedPixels.empty() ||
+        rgbaBytes > limits.maxProjectorTextureBytes ||
+        rgbaBytes > std::numeric_limits<std::size_t>::max())
+    {
+        status = invalid("projector texture exceeds the executable image limit");
+        return {};
+    }
+    std::vector<std::byte> pixels(static_cast<std::size_t>(rgbaBytes));
+    for (std::uint64_t pixel = 0;
+         pixel < static_cast<std::uint64_t>(texture.width) * texture.height;
+         ++pixel)
+    {
+        const std::size_t source = static_cast<std::size_t>(pixel) *
+                                   texture.components;
+        const std::size_t target = static_cast<std::size_t>(pixel) * 4;
+        const std::byte luminance = texture.decodedPixels[source];
+        pixels[target] = texture.components < 3
+            ? luminance : texture.decodedPixels[source];
+        pixels[target + 1] = texture.components < 3
+            ? luminance : texture.decodedPixels[source + 1];
+        pixels[target + 2] = texture.components < 3
+            ? luminance : texture.decodedPixels[source + 2];
+        pixels[target + 3] = texture.components == 2
+            ? texture.decodedPixels[source + 1]
+            : texture.components == 4 ? texture.decodedPixels[source + 3]
+                                      : std::byte{255};
+    }
+    return pixels;
+}
+
+std::uint32_t mipLevels(std::uint32_t width, std::uint32_t height)
+{
+    std::uint32_t levels = 1;
+    for (std::uint32_t size = std::max(width, height); size > 1; size >>= 1)
+        ++levels;
+    return levels;
+}
+
+ProjectorData makeProjectorData(const LightingScenePacket& packet,
+                                const LocalLightRecord& light,
+                                std::uint32_t levels,
+                                bool native_shadows)
+{
+    ProjectorData data{};
+    std::copy(packet.viewMatrix.begin(), packet.viewMatrix.end(), data.begin());
+    std::copy(packet.projectionMatrix.begin(), packet.projectionMatrix.end(),
+              data.begin() + 16);
+    std::copy(packet.cameraOrigin.begin(), packet.cameraOrigin.end(),
+              data.begin() + 32);
+    std::copy(light.position.begin(), light.position.end(), data.begin() + 36);
+    data[39] = light.radius;
+    std::copy(light.color.begin(), light.color.end(), data.begin() + 40);
+    data[43] = light.falloff;
+    std::copy(light.rotation.begin(), light.rotation.end(), data.begin() + 44);
+    std::copy(light.scale.begin(), light.scale.end(), data.begin() + 48);
+    std::copy(light.projectorParams.begin(), light.projectorParams.end(),
+              data.begin() + 52);
+    data[55] = static_cast<float>(levels);
+    const bool shadowed = native_shadows && packet.shadows.enabled &&
+        light.shadowSlot >= 0 &&
+        light.shadowSlot < static_cast<std::int32_t>(
+            LIGHTING_PROJECTOR_SHADOWS);
+    if (shadowed)
+    {
+        const std::size_t matrix = LIGHTING_DIRECTIONAL_SHADOW_CASCADES +
+            static_cast<std::size_t>(light.shadowSlot);
+        std::copy(packet.shadows.matrices[matrix].begin(),
+                  packet.shadows.matrices[matrix].end(), data.begin() + 56);
+    }
+    data[72] = packet.shadows.spotShadowBias;
+    data[73] = packet.shadows.spotShadowOffset;
+    data[74] = light.shadowFade;
+    data[75] = shadowed ? 1.f : 0.f;
+    return data;
+}
+
+ScissorRect projectorScissor(const LightingScenePacket& packet,
+                             const LocalLightRecord& light,
+                             bool& fullscreen)
+{
+    const double dx = packet.cameraOrigin[0] - light.position[0];
+    const double dy = packet.cameraOrigin[1] - light.position[1];
+    const double dz = packet.cameraOrigin[2] - light.position[2];
+    fullscreen = dx * dx + dy * dy + dz * dz <
+                 static_cast<double>(light.radius) * light.radius;
+    if (fullscreen) return {0, 0, PROBE_WIDTH, PROBE_HEIGHT};
+
+    double minX = 1.0, minY = 1.0, maxX = -1.0, maxY = -1.0;
+    for (int z = -1; z <= 1; z += 2)
+        for (int y = -1; y <= 1; y += 2)
+            for (int x = -1; x <= 1; x += 2)
+            {
+                const std::array<double, 4> world{{
+                    light.position[0] + x * light.radius,
+                    light.position[1] + y * light.radius,
+                    light.position[2] + z * light.radius, 1.0}};
+                const auto view = transformPoint(packet.viewMatrix, world);
+                const auto clip = transformPoint(packet.projectionMatrix, view);
+                if (!std::isfinite(clip[3]) || clip[3] <= 1.e-6)
+                {
+                    fullscreen = true;
+                    return {0, 0, PROBE_WIDTH, PROBE_HEIGHT};
+                }
+                minX = std::min(minX, clip[0] / clip[3]);
+                maxX = std::max(maxX, clip[0] / clip[3]);
+                minY = std::min(minY, clip[1] / clip[3]);
+                maxY = std::max(maxY, clip[1] / clip[3]);
+            }
+    minX = std::clamp(minX, -1.0, 1.0);
+    maxX = std::clamp(maxX, -1.0, 1.0);
+    minY = std::clamp(minY, -1.0, 1.0);
+    maxY = std::clamp(maxY, -1.0, 1.0);
+    if (maxX <= minX || maxY <= minY) return {};
+    const auto left = static_cast<std::int32_t>(std::floor(
+        (minX * .5 + .5) * PROBE_WIDTH));
+    const auto right = static_cast<std::int32_t>(std::ceil(
+        (maxX * .5 + .5) * PROBE_WIDTH));
+    const auto top = static_cast<std::int32_t>(std::floor(
+        (.5 - maxY * .5) * PROBE_HEIGHT));
+    const auto bottom = static_cast<std::int32_t>(std::ceil(
+        (.5 - minY * .5) * PROBE_HEIGHT));
+    return {left, top, static_cast<std::uint32_t>(std::max(0, right - left)),
+            static_cast<std::uint32_t>(std::max(0, bottom - top))};
+}
 } // namespace
 
 class MaterialOffscreenProbe::Impl
 {
 public:
-    Impl(Device& device, ShaderPackageDesc package) :
-        mDevice(device), mShaderPackage(std::move(package)) {}
+    Impl(Device& device, ShaderPackageDesc package,
+         std::optional<ShaderPackageDesc> lighting_package = std::nullopt,
+         std::optional<ShaderPackageDesc> projector_package = std::nullopt,
+         std::optional<ShaderPackageDesc> shadow_package = std::nullopt) :
+        mDevice(device), mShaderPackage(std::move(package)),
+        mLightingShaderPackage(std::move(lighting_package)),
+        mProjectorShaderPackage(std::move(projector_package)),
+        mShadowShaderPackage(std::move(shadow_package)) {}
     ~Impl() { shutdown(); }
 
     Status submit(const MaterialScenePacket& packet,
                   const MaterialOffscreenProbeLimits& limits)
+    {
+        return submitImpl(packet, nullptr, limits);
+    }
+
+    Status submit(const MaterialScenePacket& material_packet,
+                  const LightingScenePacket& lighting_packet,
+                  const MaterialOffscreenProbeLimits& limits)
+    {
+        return submitImpl(material_packet, &lighting_packet, limits);
+    }
+
+private:
+    Status submitImpl(const MaterialScenePacket& packet,
+                      const LightingScenePacket* lighting_packet,
+                      const MaterialOffscreenProbeLimits& limits)
     {
         if (mPending)
             return Status::failure(StatusCode::NotReady,
                                    "material offscreen probe is still pending");
         if (!limits.maxDraws || !limits.maxVertices || !limits.maxIndices ||
             !limits.maxTextures || !limits.maxUploadBytes ||
-            !limits.maxTextureBytes)
+            !limits.maxTextureBytes || !limits.maxPointLights ||
+            !limits.maxProjectorLights || !limits.maxProjectorTextureBytes ||
+            !limits.maxShadowDraws)
             return invalid("material offscreen limits must be nonzero");
+        if (lighting_packet)
+        {
+            if (!mLightingShaderPackage)
+                return Status::failure(StatusCode::InvalidState,
+                    "material probe was not configured for deferred lighting");
+            if (lighting_packet->frameId != packet.frameId)
+                return invalid("material and lighting packets are not from the same frame");
+            if (lighting_packet->sourceWidth != packet.sourceWidth ||
+                lighting_packet->sourceHeight != packet.sourceHeight)
+                return invalid("material and lighting packet extents do not match");
+            std::vector<std::byte> encodedLighting;
+            const Status lightingStatus =
+                encodeLightingScenePacket(*lighting_packet, encodedLighting);
+            if (!lightingStatus) return lightingStatus;
+        }
         if (packet.vertices.empty() || packet.indices.empty() ||
             packet.draws.empty())
             return invalid("live material packet contains no drawable geometry");
@@ -394,6 +696,59 @@ public:
         const std::size_t executableLimit = std::min<std::size_t>(
             limits.maxDraws, limits.maxTextures / 4);
         if (selected.size() > executableLimit) selected.resize(executableLimit);
+
+        std::vector<std::size_t> shadowSelected;
+        if (mShadowShaderPackage)
+        {
+            for (std::size_t index = 0; index < packet.draws.size(); ++index)
+            {
+                const MaterialSceneDraw& draw = packet.draws[index];
+                if (!draw.indexCount || draw.material >= packet.materials.size())
+                    continue;
+                const MaterialResource& material = packet.materials[draw.material];
+                if (material.alphaMode == MaterialAlphaMode::Blend) continue;
+                const SkinResource* skin = nullptr;
+                if (draw.skin != NO_RESOURCE)
+                {
+                    if (draw.skin >= packet.skins.size() ||
+                        !validSkin(packet.skins[draw.skin])) continue;
+                    skin = &packet.skins[draw.skin];
+                }
+                if (hasComparability(draw.comparability,
+                        ResourceComparability::UnsupportedVertexLayout) ||
+                    hasComparability(draw.comparability,
+                        ResourceComparability::MissingSkinPalette) ||
+                    !potentiallyVisible(packet, draw, skin)) continue;
+                if (material.alphaMode == MaterialAlphaMode::Mask)
+                {
+                    if (!supportedTextureCoordinates(material)) continue;
+                    const MaterialTextureBinding* base = findBinding(
+                        material, TextureSemantic::BaseColor);
+                    if (!base || base->texture >= packet.textures.size() ||
+                        packet.textures[base->texture].comparability !=
+                            ResourceComparability::Comparable ||
+                        packet.textures[base->texture].decodedPixels.empty())
+                        continue;
+                }
+                shadowSelected.push_back(index);
+            }
+            std::stable_sort(shadowSelected.begin(), shadowSelected.end(),
+                [&packet](std::size_t lhs, std::size_t rhs)
+                {
+                    const MaterialSceneDraw& a = packet.draws[lhs];
+                    const MaterialSceneDraw& b = packet.draws[rhs];
+                    const bool aMask = packet.materials[a.material].alphaMode ==
+                        MaterialAlphaMode::Mask;
+                    const bool bMask = packet.materials[b.material].alphaMode ==
+                        MaterialAlphaMode::Mask;
+                    if (aMask != bMask) return aMask > bMask;
+                    return (a.skin != NO_RESOURCE) > (b.skin != NO_RESOURCE);
+                });
+            if (shadowSelected.size() > limits.maxShadowDraws)
+                shadowSelected.resize(limits.maxShadowDraws);
+            if (shadowSelected.empty())
+                return invalid("live material packet contains no executable native shadow casters");
+        }
         if (selected.empty())
         {
             std::ostringstream message;
@@ -514,7 +869,199 @@ public:
             }
             draws.push_back(std::move(candidate));
         }
-        const std::uint64_t uploadBytes = textureOffset;
+        std::uint32_t directionalLights = 0;
+        std::uint32_t pointLights = 0;
+        LightingData lightingData{};
+        struct ProjectorImageResources
+        {
+            std::array<std::uint8_t, 16> sourceIdentity{};
+            std::uint32_t width = 0;
+            std::uint32_t height = 0;
+            std::uint32_t levels = 1;
+            std::vector<std::byte> pixels;
+            std::uint64_t textureOffset = 0;
+            ImageHandle image;
+            ImageViewHandle view;
+        };
+        struct ProjectorResources
+        {
+            std::size_t sourceLight = 0;
+            std::size_t image = 0;
+            bool fullscreen = false;
+            ScissorRect scissor;
+            ProjectorData data{};
+            std::uint64_t uniformOffset = 0;
+            BufferHandle uniform;
+            BindingSetHandle set;
+        };
+        std::vector<ProjectorImageResources> projectorImages;
+        std::vector<ProjectorResources> projectors;
+        struct ShadowPassResources
+        {
+            bool active = false;
+            std::array<float, 16> matrix{};
+            std::uint64_t uniformOffset = 0;
+            BufferHandle uniform;
+            BindingSetHandle set;
+        };
+        struct ShadowDrawResources
+        {
+            std::size_t sourceDraw = 0;
+            bool masked = false;
+            ShadowMaterialData materialData{};
+            std::array<float, 32> objectData{};
+            SkinData skinData{};
+            std::uint32_t width = 1;
+            std::uint32_t height = 1;
+            std::vector<std::byte> pixels;
+            std::uint64_t objectOffset = 0;
+            std::uint64_t skinOffset = 0;
+            std::uint64_t materialOffset = 0;
+            std::uint64_t textureOffset = 0;
+            BufferHandle object;
+            BufferHandle skin;
+            BufferHandle material;
+            ImageHandle image;
+            ImageViewHandle view;
+            BindingSetHandle objectSet;
+            BindingSetHandle materialSet;
+        };
+        std::array<ShadowPassResources, SHADOW_MAP_COUNT> shadowPasses{};
+        std::vector<ShadowDrawResources> shadowDraws;
+        std::uint64_t projectorTextureBytes = 0;
+        if (lighting_packet && mProjectorShaderPackage)
+        {
+            for (std::size_t lightIndex = 0;
+                 lightIndex < lighting_packet->localLights.size() &&
+                 projectors.size() < limits.maxProjectorLights;
+                 ++lightIndex)
+            {
+                const LocalLightRecord& light =
+                    lighting_packet->localLights[lightIndex];
+                if (light.kind != LocalLightKind::Projector ||
+                    light.comparability != LightingComparability::Comparable)
+                    continue;
+                const auto resource = std::find_if(
+                    lighting_packet->projectorTextures.begin(),
+                    lighting_packet->projectorTextures.end(),
+                    [&light](const ProjectorTextureResource& candidate)
+                    {
+                        return candidate.sourceIdentity ==
+                            light.projectorTextureIdentity;
+                    });
+                if (resource == lighting_packet->projectorTextures.end())
+                    continue;
+                ProjectorResources candidate;
+                candidate.sourceLight = lightIndex;
+                candidate.scissor = projectorScissor(
+                    *lighting_packet, light, candidate.fullscreen);
+                if (!candidate.scissor.width || !candidate.scissor.height)
+                    continue;
+                const auto existingImage = std::find_if(
+                    projectorImages.begin(), projectorImages.end(),
+                    [&resource](const ProjectorImageResources& image)
+                    { return image.sourceIdentity == resource->sourceIdentity; });
+                if (existingImage == projectorImages.end())
+                {
+                    ProjectorImageResources image;
+                    image.sourceIdentity = resource->sourceIdentity;
+                    image.width = resource->width;
+                    image.height = resource->height;
+                    image.levels = mipLevels(resource->width, resource->height);
+                    image.pixels = projectorRgbaPixels(
+                        *resource, limits, status);
+                    if (!status) return status;
+                    if (image.pixels.size() >
+                        limits.maxProjectorTextureBytes - projectorTextureBytes)
+                        continue;
+                    projectorTextureBytes += image.pixels.size();
+                    candidate.image = projectorImages.size();
+                    projectorImages.push_back(std::move(image));
+                }
+                else
+                {
+                    candidate.image = static_cast<std::size_t>(
+                        existingImage - projectorImages.begin());
+                }
+                candidate.data = makeProjectorData(
+                    *lighting_packet, light,
+                    projectorImages[candidate.image].levels,
+                    mShadowShaderPackage.has_value());
+                projectors.push_back(std::move(candidate));
+            }
+        }
+        const std::uint64_t lightingOffset = align(textureOffset);
+        if (lighting_packet)
+            lightingData = makeLightingData(*lighting_packet,
+                limits.maxPointLights, mShadowShaderPackage.has_value(),
+                directionalLights, pointLights);
+        std::uint64_t uploadBytes = lighting_packet
+            ? align(lightingOffset + sizeof(lightingData)) : textureOffset;
+        for (ProjectorResources& projector : projectors)
+        {
+            projector.uniformOffset = uploadBytes;
+            uploadBytes = align(uploadBytes + sizeof(projector.data));
+        }
+        for (ProjectorImageResources& image : projectorImages)
+        {
+            image.textureOffset = uploadBytes;
+            uploadBytes = align(uploadBytes + image.pixels.size());
+        }
+        if (lighting_packet && mShadowShaderPackage)
+        {
+            const std::uint32_t cascades = std::min<std::uint32_t>(
+                lighting_packet->shadows.directionalCascadeCount,
+                LIGHTING_DIRECTIONAL_SHADOW_CASCADES);
+            for (std::size_t shadow = 0; shadow < SHADOW_MAP_COUNT; ++shadow)
+            {
+                shadowPasses[shadow].active = lighting_packet->shadows.enabled &&
+                    (shadow < cascades ||
+                     (shadow >= LIGHTING_DIRECTIONAL_SHADOW_CASCADES &&
+                      lighting_packet->shadows.projectorLightIds[
+                        shadow - LIGHTING_DIRECTIONAL_SHADOW_CASCADES] != 0));
+                if (!shadowPasses[shadow].active) continue;
+                shadowPasses[shadow].matrix = shadowClipMatrix(
+                    *lighting_packet, shadow);
+                shadowPasses[shadow].uniformOffset = uploadBytes;
+                uploadBytes = align(uploadBytes + sizeof(
+                    shadowPasses[shadow].matrix));
+            }
+            shadowDraws.reserve(shadowSelected.size());
+            for (std::size_t selectedDraw : shadowSelected)
+            {
+                ShadowDrawResources resources;
+                resources.sourceDraw = selectedDraw;
+                const MaterialSceneDraw& draw = packet.draws[selectedDraw];
+                const MaterialResource& material = packet.materials[draw.material];
+                resources.masked = material.alphaMode == MaterialAlphaMode::Mask;
+                resources.materialData = makeShadowMaterialData(material);
+                if (!makeObjectData(draw, resources.objectData))
+                    return invalid("shadow caster has a singular model transform");
+                resources.skinData = makeSkinData(draw.skin == NO_RESOURCE
+                    ? nullptr : &packet.skins[draw.skin]);
+                if (resources.masked)
+                {
+                    resources.pixels = rgbaPixels(packet, material,
+                        TextureSemantic::BaseColor, {{255, 255, 255, 255}},
+                        resources.width, resources.height, limits, status);
+                    if (!status) return status;
+                }
+                else
+                {
+                    resources.pixels = {std::byte{255}, std::byte{255},
+                                       std::byte{255}, std::byte{255}};
+                }
+                resources.objectOffset = uploadBytes;
+                uploadBytes = align(uploadBytes + sizeof(resources.objectData));
+                resources.skinOffset = uploadBytes;
+                uploadBytes = align(uploadBytes + sizeof(resources.skinData));
+                resources.materialOffset = uploadBytes;
+                uploadBytes = align(uploadBytes + sizeof(resources.materialData));
+                resources.textureOffset = uploadBytes;
+                uploadBytes = align(uploadBytes + resources.pixels.size());
+                shadowDraws.push_back(std::move(resources));
+            }
+        }
         if (uploadBytes > limits.maxUploadBytes ||
             uploadBytes > mDevice.capabilities().maxBufferSize)
             return invalid("material offscreen sample exceeds upload byte limit");
@@ -568,8 +1115,34 @@ public:
                             draws[item].pixels[texture].data(),
                             draws[item].pixels[texture].size());
         }
+        if (lighting_packet)
+            std::memcpy(uploadData.data() + lightingOffset,
+                        lightingData.data(), sizeof(lightingData));
+        for (const ProjectorResources& projector : projectors)
+            std::memcpy(uploadData.data() + projector.uniformOffset,
+                        projector.data.data(), sizeof(projector.data));
+        for (const ProjectorImageResources& image : projectorImages)
+            std::memcpy(uploadData.data() + image.textureOffset,
+                        image.pixels.data(), image.pixels.size());
+        for (const ShadowPassResources& shadow : shadowPasses)
+            if (shadow.active)
+                std::memcpy(uploadData.data() + shadow.uniformOffset,
+                            shadow.matrix.data(), sizeof(shadow.matrix));
+        for (const ShadowDrawResources& shadow : shadowDraws)
+        {
+            std::memcpy(uploadData.data() + shadow.objectOffset,
+                        shadow.objectData.data(), sizeof(shadow.objectData));
+            std::memcpy(uploadData.data() + shadow.skinOffset,
+                        shadow.skinData.data(), sizeof(shadow.skinData));
+            std::memcpy(uploadData.data() + shadow.materialOffset,
+                        shadow.materialData.data(), sizeof(shadow.materialData));
+            std::memcpy(uploadData.data() + shadow.textureOffset,
+                        shadow.pixels.data(), shadow.pixels.size());
+        }
 
-        BufferHandle upload, vertices, indices, frames, objects, skin, materials;
+        BufferHandle upload, vertices, indices, frames, objects, skin, materials,
+                     lightingBuffer;
+        BindingSetHandle lightingSet;
         auto cleanup = [&]()
         {
             Status first = Status::success();
@@ -584,9 +1157,35 @@ public:
                     destroy(draw.images[texture], first);
                 }
             }
+            for (auto& projector : projectors)
+            {
+                destroy(projector.set, first);
+                destroy(projector.uniform, first);
+            }
+            for (auto& image : projectorImages)
+            {
+                destroy(image.view, first);
+                destroy(image.image, first);
+            }
+            for (auto& shadow : shadowPasses)
+            {
+                destroy(shadow.set, first);
+                destroy(shadow.uniform, first);
+            }
+            for (auto& shadow : shadowDraws)
+            {
+                destroy(shadow.objectSet, first);
+                destroy(shadow.materialSet, first);
+                destroy(shadow.view, first);
+                destroy(shadow.image, first);
+                destroy(shadow.object, first);
+                destroy(shadow.skin, first);
+                destroy(shadow.material, first);
+            }
             destroy(upload, first); destroy(vertices, first); destroy(indices, first);
             destroy(frames, first); destroy(objects, first); destroy(skin, first);
-            destroy(materials, first);
+            destroy(materials, first); destroy(lightingSet, first);
+            destroy(lightingBuffer, first);
             return first;
         };
         upload = mDevice.createBuffer(
@@ -609,6 +1208,56 @@ public:
         if (status) materials = mDevice.createBuffer(
             {materialStride * selected.size(), ResourceUsage::Uniform |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
+        if (status && lighting_packet) lightingBuffer = mDevice.createBuffer(
+            {sizeof(lightingData), ResourceUsage::Uniform |
+             ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
+        for (auto& projector : projectors)
+        {
+            if (status) projector.uniform = mDevice.createBuffer(
+                {sizeof(projector.data), ResourceUsage::Uniform |
+                 ResourceUsage::TransferDestination, MemoryClass::DeviceLocal},
+                status);
+        }
+        for (auto& image : projectorImages)
+        {
+            if (status) image.image = mDevice.createImage(
+                {{image.width, image.height, 1}, Format::RGBA8SRGB,
+                 ResourceUsage::Sampled | ResourceUsage::TransferDestination |
+                     ResourceUsage::TransferSource,
+                 static_cast<std::uint16_t>(image.levels), 1, 1}, status);
+            if (status) image.view = mDevice.createImageView(
+                {image.image, Format::RGBA8SRGB,
+                 {ImageAspect::Color, 0,
+                  static_cast<std::uint16_t>(image.levels), 0, 1}}, status);
+        }
+        for (auto& shadow : shadowPasses)
+            if (status && shadow.active)
+                shadow.uniform = mDevice.createBuffer(
+                    {sizeof(shadow.matrix), ResourceUsage::Uniform |
+                     ResourceUsage::TransferDestination,
+                     MemoryClass::DeviceLocal}, status);
+        for (auto& shadow : shadowDraws)
+        {
+            if (status) shadow.object = mDevice.createBuffer(
+                {sizeof(shadow.objectData), ResourceUsage::Uniform |
+                 ResourceUsage::TransferDestination,
+                 MemoryClass::DeviceLocal}, status);
+            if (status) shadow.skin = mDevice.createBuffer(
+                {sizeof(shadow.skinData), ResourceUsage::Uniform |
+                 ResourceUsage::TransferDestination,
+                 MemoryClass::DeviceLocal}, status);
+            if (status) shadow.material = mDevice.createBuffer(
+                {sizeof(shadow.materialData), ResourceUsage::Uniform |
+                 ResourceUsage::TransferDestination,
+                 MemoryClass::DeviceLocal}, status);
+            if (status) shadow.image = mDevice.createImage(
+                {{shadow.width, shadow.height, 1}, Format::RGBA8SRGB,
+                 ResourceUsage::Sampled | ResourceUsage::TransferDestination,
+                 1, 1, 1}, status);
+            if (status) shadow.view = mDevice.createImageView(
+                {shadow.image, Format::RGBA8SRGB,
+                 {ImageAspect::Color, 0, 1, 0, 1}}, status);
+        }
         if (!status || !(status = mDevice.writeBuffer(upload, 0, uploadData)))
         {
             cleanup(); return status;
@@ -652,6 +1301,89 @@ public:
             if (status) draws[item].materialSet =
                 mDevice.createBindingSet(materialDesc, status);
         }
+        for (auto& shadow : shadowPasses)
+        {
+            if (!status || !shadow.active) continue;
+            BindingSetDesc frameDesc{mShadowShader, 0, {{
+                0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                shadow.uniform, 0, sizeof(shadow.matrix), {}, {}}}};
+            shadow.set = mDevice.createBindingSet(frameDesc, status);
+        }
+        for (auto& shadow : shadowDraws)
+        {
+            if (!status) break;
+            BindingSetDesc objectDesc{mShadowShader, 1, {
+                {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                 shadow.object, 0, sizeof(shadow.objectData), {}, {}},
+                {1, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                 shadow.skin, 0, sizeof(shadow.skinData), {}, {}}}};
+            shadow.objectSet = mDevice.createBindingSet(objectDesc, status);
+            BindingSetDesc materialDesc{mShadowShader, 2, {
+                {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                 shadow.material, 0, sizeof(shadow.materialData), {}, {}},
+                {1, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+                 {}, 0, 0, shadow.view, mRepeatSampler}}};
+            if (status) shadow.materialSet =
+                mDevice.createBindingSet(materialDesc, status);
+        }
+        if (status && lighting_packet)
+        {
+            BindingSetDesc lightingDesc;
+            lightingDesc.shader = mLightingShader;
+            lightingDesc.group = 0;
+            lightingDesc.resources.push_back({
+                0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                lightingBuffer, 0, sizeof(lightingData), {}, {}});
+            for (std::size_t target = 0; target < 4; ++target)
+                lightingDesc.resources.push_back({
+                    static_cast<std::uint16_t>(target + 1), 0,
+                    ShaderPackageDesc::BindingType::CombinedImageSampler,
+                    {}, 0, 0, mColorViews[target], mClampSampler});
+            lightingDesc.resources.push_back({
+                5, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+                {}, 0, 0, mDepthSampleView, mClampSampler});
+            for (std::size_t shadow = 0;
+                 shadow < LIGHTING_DIRECTIONAL_SHADOW_CASCADES; ++shadow)
+                lightingDesc.resources.push_back({
+                    static_cast<std::uint16_t>(6 + shadow), 0,
+                    ShaderPackageDesc::BindingType::CombinedImageSampler,
+                    {}, 0, 0, mShadowViews[shadow], mShadowSampler});
+            lightingSet = mDevice.createBindingSet(lightingDesc, status);
+        }
+        for (auto& projector : projectors)
+        {
+            if (!status) break;
+            BindingSetDesc projectorDesc;
+            projectorDesc.shader = mProjectorShader;
+            projectorDesc.group = 0;
+            projectorDesc.resources.push_back({
+                0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                projector.uniform, 0, sizeof(projector.data), {}, {}});
+            for (std::size_t target = 0; target < 3; ++target)
+                projectorDesc.resources.push_back({
+                    static_cast<std::uint16_t>(target + 1), 0,
+                    ShaderPackageDesc::BindingType::CombinedImageSampler,
+                    {}, 0, 0, mColorViews[target], mClampSampler});
+            projectorDesc.resources.push_back({
+                5, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+                {}, 0, 0, mDepthSampleView, mClampSampler});
+            projectorDesc.resources.push_back({
+                6, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+                {}, 0, 0, projectorImages[projector.image].view,
+                mProjectorSampler});
+            const LocalLightRecord& light =
+                lighting_packet->localLights[projector.sourceLight];
+            const std::size_t shadow = light.shadowSlot >= 0 &&
+                light.shadowSlot < static_cast<std::int32_t>(
+                    LIGHTING_PROJECTOR_SHADOWS)
+                ? LIGHTING_DIRECTIONAL_SHADOW_CASCADES +
+                    static_cast<std::size_t>(light.shadowSlot)
+                : LIGHTING_DIRECTIONAL_SHADOW_CASCADES;
+            projectorDesc.resources.push_back({
+                7, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+                {}, 0, 0, mShadowViews[shadow], mShadowSampler});
+            projector.set = mDevice.createBindingSet(projectorDesc, status);
+        }
         if (!status) { cleanup(); return status; }
 
         CommandContext& commands = mDevice.commandContext();
@@ -667,12 +1399,44 @@ public:
             {skinOffset, 0, skinStride * selected.size()}}};
         const std::array<BufferCopyRegion, 1> materialCopy{{
             {materialOffset, 0, materialStride * selected.size()}}};
+        const std::array<BufferCopyRegion, 1> lightingCopy{{
+            {lightingOffset, 0, sizeof(lightingData)}}};
         if (status) status = commands.copyBuffer(upload, vertices, vertexCopy);
         if (status) status = commands.copyBuffer(upload, indices, indexCopy);
         if (status) status = commands.copyBuffer(upload, frames, frameCopy);
         if (status) status = commands.copyBuffer(upload, objects, objectCopy);
         if (status) status = commands.copyBuffer(upload, skin, skinCopy);
         if (status) status = commands.copyBuffer(upload, materials, materialCopy);
+        if (status && lighting_packet)
+            status = commands.copyBuffer(upload, lightingBuffer, lightingCopy);
+        for (auto& projector : projectors)
+        {
+            if (status)
+            {
+                const std::array<BufferCopyRegion, 1> uniformCopy{{
+                    {projector.uniformOffset, 0, sizeof(projector.data)}}};
+                status = commands.copyBuffer(
+                    upload, projector.uniform, uniformCopy);
+            }
+        }
+        for (auto& image : projectorImages)
+        {
+            if (status)
+            {
+                BufferImageCopyRegion copy;
+                copy.bufferOffset = image.textureOffset;
+                copy.imageSubresource = {ImageAspect::Color, 0, 0, 1};
+                copy.imageExtent = {image.width, image.height, 1};
+                const std::array<BufferImageCopyRegion, 1> copies{{copy}};
+                status = commands.copyBufferToImage(
+                    upload, image.image, copies);
+            }
+            if (status && image.levels > 1)
+                status = commands.generateMipmaps(
+                    image.image,
+                    {ImageAspect::Color, 0,
+                     static_cast<std::uint16_t>(image.levels), 0, 1});
+        }
         for (auto& draw : draws)
             for (std::size_t texture = 0; status && texture < 4; ++texture)
             {
@@ -683,6 +1447,132 @@ public:
                 const std::array<BufferImageCopyRegion, 1> copies{{copy}};
                 status = commands.copyBufferToImage(upload, draw.images[texture], copies);
             }
+        for (auto& shadow : shadowPasses)
+        {
+            if (!status || !shadow.active) continue;
+            const std::array<BufferCopyRegion, 1> copy{{
+                {shadow.uniformOffset, 0, sizeof(shadow.matrix)}}};
+            status = commands.copyBuffer(upload, shadow.uniform, copy);
+        }
+        for (auto& shadow : shadowDraws)
+        {
+            if (!status) break;
+            const std::array<BufferCopyRegion, 1> objectUniform{{
+                {shadow.objectOffset, 0, sizeof(shadow.objectData)}}};
+            const std::array<BufferCopyRegion, 1> skinUniform{{
+                {shadow.skinOffset, 0, sizeof(shadow.skinData)}}};
+            const std::array<BufferCopyRegion, 1> materialUniform{{
+                {shadow.materialOffset, 0, sizeof(shadow.materialData)}}};
+            status = commands.copyBuffer(upload, shadow.object, objectUniform);
+            if (status) status = commands.copyBuffer(
+                upload, shadow.skin, skinUniform);
+            if (status) status = commands.copyBuffer(
+                upload, shadow.material, materialUniform);
+            if (status)
+            {
+                BufferImageCopyRegion imageCopy;
+                imageCopy.bufferOffset = shadow.textureOffset;
+                imageCopy.imageSubresource = {ImageAspect::Color, 0, 0, 1};
+                imageCopy.imageExtent = {shadow.width, shadow.height, 1};
+                const std::array<BufferImageCopyRegion, 1> copies{{imageCopy}};
+                status = commands.copyBufferToImage(
+                    upload, shadow.image, copies);
+            }
+        }
+
+        if (status && mShadowShaderPackage)
+        {
+            bool renderedShadow = false;
+            for (std::size_t shadow = 0;
+                 status && shadow < shadowPasses.size(); ++shadow)
+            {
+                if (!shadowPasses[shadow].active) continue;
+                RenderingInfo shadowRendering;
+                shadowRendering.semanticId = 0x4937645f53484457ull + shadow;
+                shadowRendering.width = PROBE_WIDTH;
+                shadowRendering.height = PROBE_HEIGHT;
+                shadowRendering.depthStencil = AttachmentDesc{
+                    mShadowViews[shadow], SHADOW_FORMAT,
+                    LoadOp::Clear, StoreOp::Store,
+                    {{0.f, 0.f, 0.f, 0.f}, 1.f, 0}};
+                bool begun = false;
+                status = commands.beginRendering(shadowRendering);
+                begun = status.ok();
+                if (status) status = commands.setViewport(
+                    {0.f, 0.f, static_cast<float>(PROBE_WIDTH),
+                     static_cast<float>(PROBE_HEIGHT), 0.f, 1.f});
+                if (status) status = commands.setScissor(
+                    {0, 0, PROBE_WIDTH, PROBE_HEIGHT});
+                bool geometryBound = false;
+                bool frameSetBound = false;
+                for (const ShadowDrawResources& caster : shadowDraws)
+                {
+                    if (!status) break;
+                    const MaterialSceneDraw& draw =
+                        packet.draws[caster.sourceDraw];
+                    const MaterialResource& material =
+                        packet.materials[draw.material];
+                    status = commands.bindPipeline(material.doubleSided
+                        ? mShadowDoubleSidedPipeline : mShadowCulledPipeline);
+                    if (status && !frameSetBound)
+                    {
+                        status = commands.bindBindingSet(
+                            0, shadowPasses[shadow].set);
+                        frameSetBound = status.ok();
+                    }
+                    if (status && !geometryBound)
+                    {
+                        status = commands.bindVertexBuffer(0, vertices, 0);
+                        if (status) status = commands.bindIndexBuffer(
+                            indices, 0, IndexType::UInt32);
+                        geometryBound = status.ok();
+                    }
+                    if (status) status = commands.bindBindingSet(
+                        1, caster.objectSet);
+                    if (status) status = commands.bindBindingSet(
+                        2, caster.materialSet);
+                    if (status) status = commands.drawIndexed(
+                        {draw.indexCount, 1, draw.firstIndex, 0, 0});
+                }
+                if (begun)
+                {
+                    const Status ended = commands.endRendering();
+                    if (status && !ended) status = ended;
+                }
+                renderedShadow = renderedShadow || status.ok();
+            }
+            if (status && renderedShadow)
+                status = commands.resourceBarrier(
+                    ResourceBarrier::DepthAttachmentWriteToSampledRead);
+        }
+        else if (status && lighting_packet)
+        {
+            // The I7b/I7c packages share the I7d-capable descriptor contract.
+            // Clear and transition inert maps so validation never observes an
+            // undefined sampled image while the shadow-enable uniform is off.
+            for (std::size_t shadow = 0;
+                 status && shadow < SHADOW_MAP_COUNT; ++shadow)
+            {
+                RenderingInfo clearShadow;
+                clearShadow.semanticId = 0x4937645f434c4541ull + shadow;
+                clearShadow.width = PROBE_WIDTH;
+                clearShadow.height = PROBE_HEIGHT;
+                clearShadow.depthStencil = AttachmentDesc{
+                    mShadowViews[shadow], SHADOW_FORMAT,
+                    LoadOp::Clear, StoreOp::Store,
+                    {{0.f, 0.f, 0.f, 0.f}, 1.f, 0}};
+                bool begun = false;
+                status = commands.beginRendering(clearShadow);
+                begun = status.ok();
+                if (begun)
+                {
+                    const Status ended = commands.endRendering();
+                    if (status && !ended) status = ended;
+                }
+            }
+            if (status) status = commands.resourceBarrier(
+                ResourceBarrier::DepthAttachmentWriteToSampledRead);
+        }
 
         RenderingInfo rendering;
         rendering.semanticId = 0x49355f4d41544cull; // "I5_MATL"
@@ -719,6 +1609,90 @@ public:
             const Status ended = commands.endRendering();
             if (status && !ended) status = ended;
         }
+        if (status && lighting_packet)
+        {
+            status = commands.resourceBarrier(
+                ResourceBarrier::ColorAttachmentWriteToSampledRead);
+            if (status) status = commands.resourceBarrier(
+                ResourceBarrier::DepthAttachmentWriteToSampledRead);
+            RenderingInfo lightingRendering;
+            lightingRendering.semanticId = 0x4937625f4c495447ull; // "I7b_LITG"
+            lightingRendering.width = PROBE_WIDTH;
+            lightingRendering.height = PROBE_HEIGHT;
+            lightingRendering.colors.push_back({
+                mLightingView, LIGHTING_FORMAT, LoadOp::Clear, StoreOp::Store,
+                {{0.f, 0.f, 0.f, 0.f}, 0.f, 0}});
+            bool lightingBegun = false;
+            if (status)
+            {
+                status = commands.beginRendering(lightingRendering);
+                lightingBegun = status.ok();
+            }
+            if (status) status = commands.setViewport(
+                {0.f, 0.f, static_cast<float>(PROBE_WIDTH),
+                 static_cast<float>(PROBE_HEIGHT), 0.f, 1.f});
+            if (status) status = commands.setScissor(
+                {0, 0, PROBE_WIDTH, PROBE_HEIGHT});
+            if (status) status = commands.bindPipeline(mLightingPipeline);
+            if (status) status = commands.bindBindingSet(0, lightingSet);
+            if (status) status = commands.draw({3, 1, 0, 0});
+            if (lightingBegun)
+            {
+                const Status ended = commands.endRendering();
+                if (status && !ended) status = ended;
+            }
+            if (status && !projectors.empty())
+            {
+                RenderingInfo projectorRendering;
+                projectorRendering.semanticId =
+                    0x4937635f50524f4aull; // "I7c_PROJ"
+                projectorRendering.width = PROBE_WIDTH;
+                projectorRendering.height = PROBE_HEIGHT;
+                projectorRendering.colors.push_back({
+                    mLightingView, LIGHTING_FORMAT, LoadOp::Load,
+                    StoreOp::Store, {{0.f, 0.f, 0.f, 0.f}, 0.f, 0}});
+                bool projectorBegun = false;
+                status = commands.beginRendering(projectorRendering);
+                projectorBegun = status.ok();
+                if (status) status = commands.setViewport(
+                    {0.f, 0.f, static_cast<float>(PROBE_WIDTH),
+                     static_cast<float>(PROBE_HEIGHT), 0.f, 1.f});
+                if (status) status = commands.bindPipeline(mProjectorPipeline);
+                for (const ProjectorResources& projector : projectors)
+                {
+                    if (status) status = commands.setScissor(projector.scissor);
+                    if (status) status = commands.bindBindingSet(
+                        0, projector.set);
+                    if (status) status = commands.draw({3, 1, 0, 0});
+                }
+                if (projectorBegun)
+                {
+                    const Status ended = commands.endRendering();
+                    if (status && !ended) status = ended;
+                }
+            }
+            if (status)
+            {
+                BufferImageCopyRegion copy;
+                copy.imageSubresource = {ImageAspect::Color, 0, 0, 1};
+                copy.imageExtent = {PROBE_WIDTH, PROBE_HEIGHT, 1};
+                const std::array<BufferImageCopyRegion, 1> copies{{copy}};
+                status = commands.copyImageToBuffer(
+                    mLightingColor, mLightingReadback, copies);
+            }
+        }
+        if (status && mShadowShaderPackage)
+            for (std::size_t shadow = 0;
+                 status && shadow < shadowPasses.size(); ++shadow)
+            {
+                if (!shadowPasses[shadow].active) continue;
+                BufferImageCopyRegion copy;
+                copy.imageSubresource = {ImageAspect::Depth, 0, 0, 1};
+                copy.imageExtent = {PROBE_WIDTH, PROBE_HEIGHT, 1};
+                const std::array<BufferImageCopyRegion, 1> copies{{copy}};
+                status = commands.copyImageToBuffer(
+                    mShadowImages[shadow], mShadowReadbacks[shadow], copies);
+            }
         if (status)
             for (std::size_t target = 0; status && target < 4; ++target)
             {
@@ -756,9 +1730,54 @@ public:
                 [](const DrawResources& draw) { return draw.textureTransformed; }));
         mPendingResult.textures = static_cast<std::uint32_t>(draws.size() * 4);
         mPendingResult.packetSha256 = materialScenePacketSha256(packet);
+        if (lighting_packet)
+        {
+            mPendingResult.lightingExecuted = true;
+            mPendingResult.directionalLights = directionalLights;
+            mPendingResult.pointLights = pointLights;
+            mPendingResult.projectorLights =
+                static_cast<std::uint32_t>(projectors.size());
+            mPendingResult.projectorTextures =
+                static_cast<std::uint32_t>(projectorImages.size());
+            mPendingResult.projectorFullscreenLights =
+                static_cast<std::uint32_t>(std::count_if(
+                    projectors.begin(), projectors.end(),
+                    [](const ProjectorResources& projector)
+                    { return projector.fullscreen; }));
+            mPendingResult.projectorVolumeLights =
+                mPendingResult.projectorLights -
+                mPendingResult.projectorFullscreenLights;
+            mPendingResult.lightingPacketSha256 =
+                lightingScenePacketSha256(*lighting_packet);
+        }
+        if (mShadowShaderPackage)
+        {
+            mPendingResult.shadowsExecuted = true;
+            mPendingResult.shadowCasterDraws =
+                static_cast<std::uint32_t>(shadowDraws.size());
+            for (const ShadowDrawResources& caster : shadowDraws)
+            {
+                const MaterialSceneDraw& draw = packet.draws[caster.sourceDraw];
+                if (draw.skin != NO_RESOURCE)
+                    ++mPendingResult.shadowRiggedDraws;
+                if (caster.masked) ++mPendingResult.shadowMaskedDraws;
+            }
+            for (std::size_t shadow = 0;
+                 shadow < shadowPasses.size(); ++shadow)
+            {
+                mPendingShadowActive[shadow] = shadowPasses[shadow].active;
+                if (!shadowPasses[shadow].active) continue;
+                ++mPendingResult.shadowMaps;
+                if (shadow < LIGHTING_DIRECTIONAL_SHADOW_CASCADES)
+                    ++mPendingResult.directionalShadowMaps;
+                else
+                    ++mPendingResult.projectorShadowMaps;
+            }
+        }
         return Status::success();
     }
 
+public:
     Status poll(MaterialOffscreenProbeResult& result)
     {
         result = {};
@@ -784,8 +1803,50 @@ public:
                     ++mPendingResult.nonClearPixels[target];
             }
         }
+        if (mPendingResult.lightingExecuted)
+        {
+            const Status status = mDevice.readBuffer(
+                mLightingReadback, 0, mLightingPixels);
+            if (!status) return status;
+            mPendingResult.litColorSha256 = sha256(mLightingPixels);
+            for (std::size_t pixel = 0; pixel <
+                 static_cast<std::size_t>(PROBE_WIDTH) * PROBE_HEIGHT; ++pixel)
+            {
+                const auto begin = mLightingPixels.begin() +
+                    static_cast<std::ptrdiff_t>(pixel * LIGHTING_BYTES);
+                if (std::any_of(begin, begin + LIGHTING_BYTES,
+                    [](std::byte value) { return value != std::byte{0}; }))
+                    ++mPendingResult.litNonClearPixels;
+            }
+        }
+        if (mPendingResult.shadowsExecuted)
+        {
+            for (std::size_t shadow = 0;
+                 shadow < mPendingShadowActive.size(); ++shadow)
+            {
+                if (!mPendingShadowActive[shadow]) continue;
+                const Status status = mDevice.readBuffer(
+                    mShadowReadbacks[shadow], 0, mShadowPixels[shadow]);
+                if (!status) return status;
+                mPendingResult.shadowDepthSha256[shadow] =
+                    sha256(mShadowPixels[shadow]);
+                for (std::size_t pixel = 0;
+                     pixel < static_cast<std::size_t>(PROBE_WIDTH) *
+                         PROBE_HEIGHT; ++pixel)
+                {
+                    float depth = 1.f;
+                    std::memcpy(&depth,
+                        mShadowPixels[shadow].data() +
+                            static_cast<std::ptrdiff_t>(pixel * SHADOW_BYTES),
+                        sizeof(depth));
+                    if (std::isfinite(depth) && depth < 0.999999f)
+                        ++mPendingResult.shadowNonClearPixels[shadow];
+                }
+            }
+        }
         result = std::move(mPendingResult);
         mPendingResult = {};
+        mPendingShadowActive.fill(false);
         mPending = false;
         return Status::success();
     }
@@ -797,9 +1858,25 @@ public:
         if (mShutdown) return Status::success();
         mShutdown = true; mPending = false;
         Status first = Status::success();
+        destroy(mShadowDoubleSidedPipeline, first);
+        destroy(mShadowCulledPipeline, first);
+        destroy(mShadowShader, first);
+        destroy(mProjectorPipeline, first); destroy(mProjectorShader, first);
+        destroy(mLightingPipeline, first); destroy(mLightingShader, first);
         destroy(mCulledPipeline, first); destroy(mDoubleSidedPipeline, first);
         destroy(mShader, first); destroy(mRepeatSampler, first);
-        destroy(mDepthView, first); destroy(mDepth, first);
+        destroy(mClampSampler, first); destroy(mProjectorSampler, first);
+        destroy(mShadowSampler, first);
+        destroy(mLightingView, first); destroy(mLightingColor, first);
+        destroy(mLightingReadback, first);
+        destroy(mDepthSampleView, first); destroy(mDepthView, first);
+        destroy(mDepth, first);
+        for (std::size_t shadow = 0; shadow < SHADOW_MAP_COUNT; ++shadow)
+        {
+            destroy(mShadowViews[shadow], first);
+            destroy(mShadowImages[shadow], first);
+            destroy(mShadowReadbacks[shadow], first);
+        }
         for (std::size_t target = 0; target < 4; ++target)
         {
             destroy(mColorViews[target], first); destroy(mColors[target], first);
@@ -827,7 +1904,9 @@ private:
         const RendererCapabilities& capabilities = mDevice.capabilities();
         if (capabilities.maxColorAttachments < 4 ||
             capabilities.maxTexture2DSize < PROBE_WIDTH ||
-            capabilities.preferredDepthStencilFormat == Format::Undefined)
+            capabilities.preferredDepthStencilFormat == Format::Undefined ||
+            (mLightingShaderPackage &&
+             capabilities.maxSampledImagesPerStage < 10u))
             return Status::failure(StatusCode::Unsupported,
                                    "device lacks I5 material target capabilities");
         Status status = Status::success();
@@ -835,7 +1914,8 @@ private:
         {
             mColors[target] = mDevice.createImage(
                 {{PROBE_WIDTH, PROBE_HEIGHT, 1}, COLOR_FORMATS[target],
-                 ResourceUsage::ColorAttachment | ResourceUsage::TransferSource,
+                 ResourceUsage::ColorAttachment | ResourceUsage::TransferSource |
+                     ResourceUsage::Sampled,
                  1, 1, 1}, status);
             if (status) mColorViews[target] = mDevice.createImageView(
                 {mColors[target], COLOR_FORMATS[target],
@@ -851,15 +1931,77 @@ private:
         mDepthFormat = capabilities.preferredDepthStencilFormat;
         if (status) mDepth = mDevice.createImage(
             {{PROBE_WIDTH, PROBE_HEIGHT, 1}, mDepthFormat,
-             ResourceUsage::DepthStencilAttachment, 1, 1, 1}, status);
+             ResourceUsage::DepthStencilAttachment | ResourceUsage::Sampled,
+             1, 1, 1}, status);
         if (status) mDepthView = mDevice.createImageView(
             {mDepth, mDepthFormat,
              {ImageAspect::DepthStencil, 0, 1, 0, 1}}, status);
+        if (status && mLightingShaderPackage)
+            mDepthSampleView = mDevice.createImageView(
+                {mDepth, mDepthFormat,
+                 {ImageAspect::Depth, 0, 1, 0, 1}}, status);
         if (status) mShader = mDevice.createShaderPackage(mShaderPackage, status);
         SamplerDesc sampler;
         sampler.minFilter = sampler.magFilter = sampler.mipFilter = Filter::Linear;
         sampler.addressU = sampler.addressV = AddressMode::Repeat;
         if (status) mRepeatSampler = mDevice.createSampler(sampler, status);
+        if (status && mLightingShaderPackage)
+        {
+            sampler.minFilter = sampler.magFilter = sampler.mipFilter = Filter::Nearest;
+            sampler.addressU = sampler.addressV = sampler.addressW =
+                AddressMode::ClampToEdge;
+            mClampSampler = mDevice.createSampler(sampler, status);
+            if (status) mShadowSampler = mDevice.createSampler(sampler, status);
+            for (std::size_t shadow = 0;
+                 status && shadow < SHADOW_MAP_COUNT; ++shadow)
+            {
+                mShadowImages[shadow] = mDevice.createImage(
+                    {{PROBE_WIDTH, PROBE_HEIGHT, 1}, SHADOW_FORMAT,
+                     ResourceUsage::DepthStencilAttachment |
+                         ResourceUsage::Sampled | ResourceUsage::TransferSource,
+                     1, 1, 1}, status);
+                if (status) mShadowViews[shadow] = mDevice.createImageView(
+                    {mShadowImages[shadow], SHADOW_FORMAT,
+                     {ImageAspect::Depth, 0, 1, 0, 1}}, status);
+                if (status) mShadowReadbacks[shadow] = mDevice.createBuffer(
+                    {static_cast<std::uint64_t>(PROBE_WIDTH) * PROBE_HEIGHT *
+                         SHADOW_BYTES,
+                     ResourceUsage::TransferDestination,
+                     MemoryClass::Readback}, status);
+                mShadowPixels[shadow].resize(
+                    static_cast<std::size_t>(PROBE_WIDTH) * PROBE_HEIGHT *
+                    SHADOW_BYTES);
+            }
+            if (status) mLightingColor = mDevice.createImage(
+                {{PROBE_WIDTH, PROBE_HEIGHT, 1}, LIGHTING_FORMAT,
+                 ResourceUsage::ColorAttachment | ResourceUsage::TransferSource,
+                 1, 1, 1}, status);
+            if (status) mLightingView = mDevice.createImageView(
+                {mLightingColor, LIGHTING_FORMAT,
+                 {ImageAspect::Color, 0, 1, 0, 1}}, status);
+            if (status) mLightingReadback = mDevice.createBuffer(
+                {static_cast<std::uint64_t>(PROBE_WIDTH) * PROBE_HEIGHT *
+                     LIGHTING_BYTES,
+                 ResourceUsage::TransferDestination, MemoryClass::Readback},
+                status);
+            mLightingPixels.resize(static_cast<std::size_t>(PROBE_WIDTH) *
+                                   PROBE_HEIGHT * LIGHTING_BYTES);
+            if (status) mLightingShader = mDevice.createShaderPackage(
+                *mLightingShaderPackage, status);
+            if (status && mProjectorShaderPackage)
+            {
+                sampler.minFilter = sampler.magFilter =
+                    sampler.mipFilter = Filter::Linear;
+                sampler.addressU = sampler.addressV = sampler.addressW =
+                    AddressMode::ClampToEdge;
+                mProjectorSampler = mDevice.createSampler(sampler, status);
+                if (status) mProjectorShader = mDevice.createShaderPackage(
+                    *mProjectorShaderPackage, status);
+            }
+            if (status && mShadowShaderPackage)
+                mShadowShader = mDevice.createShaderPackage(
+                    *mShadowShaderPackage, status);
+        }
         if (status)
         {
             PipelineDesc pipeline;
@@ -886,6 +2028,63 @@ private:
                 pipeline.cullMode = CullMode::None;
                 mDoubleSidedPipeline = mDevice.createPipeline(pipeline, status);
             }
+            if (status && mLightingShaderPackage)
+            {
+                PipelineDesc lightingPipeline;
+                lightingPipeline.shader = mLightingShader;
+                lightingPipeline.cullMode = CullMode::None;
+                lightingPipeline.depthTest = false;
+                lightingPipeline.depthWrite = false;
+                lightingPipeline.colorFormats = {LIGHTING_FORMAT};
+                lightingPipeline.blendStates = {BlendState{}};
+                mLightingPipeline = mDevice.createPipeline(
+                    lightingPipeline, status);
+                if (status && mProjectorShaderPackage)
+                {
+                    lightingPipeline.shader = mProjectorShader;
+                    BlendState additive;
+                    additive.enabled = true;
+                    additive.sourceColor = BlendFactor::One;
+                    additive.destinationColor = BlendFactor::One;
+                    additive.sourceAlpha = BlendFactor::One;
+                    additive.destinationAlpha = BlendFactor::One;
+                    lightingPipeline.blendStates = {additive};
+                    mProjectorPipeline = mDevice.createPipeline(
+                        lightingPipeline, status);
+                }
+                if (status && mShadowShaderPackage)
+                {
+                    PipelineDesc shadowPipeline;
+                    shadowPipeline.shader = mShadowShader;
+                    shadowPipeline.cullMode = CullMode::Back;
+                    shadowPipeline.depthTest = true;
+                    shadowPipeline.depthWrite = true;
+                    shadowPipeline.depthCompare = CompareOp::Less;
+                    shadowPipeline.depthStencilFormat = SHADOW_FORMAT;
+                    shadowPipeline.vertexBuffers = {{
+                        0, sizeof(MaterialSceneVertex),
+                        VertexInputRate::PerVertex}};
+                    shadowPipeline.vertexAttributes = {
+                        {0, 0, VertexFormat::Float32x3,
+                         offsetof(MaterialSceneVertex, position)},
+                        {3, 0, VertexFormat::Float32x2,
+                         offsetof(MaterialSceneVertex, texCoord)},
+                        {4, 0, VertexFormat::UNorm8x4,
+                         offsetof(MaterialSceneVertex, color)},
+                        {5, 0, VertexFormat::UInt16x4,
+                         offsetof(MaterialSceneVertex, joints)},
+                        {6, 0, VertexFormat::Float32x4,
+                         offsetof(MaterialSceneVertex, weights)}};
+                    mShadowCulledPipeline = mDevice.createPipeline(
+                        shadowPipeline, status);
+                    if (status)
+                    {
+                        shadowPipeline.cullMode = CullMode::None;
+                        mShadowDoubleSidedPipeline = mDevice.createPipeline(
+                            shadowPipeline, status);
+                    }
+                }
+            }
         }
         if (!status)
         {
@@ -898,15 +2097,31 @@ private:
 
     Device& mDevice;
     ShaderPackageDesc mShaderPackage;
+    std::optional<ShaderPackageDesc> mLightingShaderPackage;
+    std::optional<ShaderPackageDesc> mProjectorShaderPackage;
+    std::optional<ShaderPackageDesc> mShadowShaderPackage;
     std::array<ImageHandle, 4> mColors{};
     std::array<ImageViewHandle, 4> mColorViews{};
     std::array<BufferHandle, 4> mReadbacks{};
     std::array<std::vector<std::byte>, 4> mPixels;
-    ImageHandle mDepth; ImageViewHandle mDepthView;
+    ImageHandle mDepth; ImageViewHandle mDepthView, mDepthSampleView;
     Format mDepthFormat = Format::Undefined;
-    ShaderPackageHandle mShader;
-    SamplerHandle mRepeatSampler;
-    PipelineHandle mCulledPipeline, mDoubleSidedPipeline;
+    ShaderPackageHandle mShader, mLightingShader, mProjectorShader,
+                        mShadowShader;
+    SamplerHandle mRepeatSampler, mClampSampler, mProjectorSampler,
+                  mShadowSampler;
+    PipelineHandle mCulledPipeline, mDoubleSidedPipeline, mLightingPipeline,
+                   mProjectorPipeline, mShadowCulledPipeline,
+                   mShadowDoubleSidedPipeline;
+    std::array<ImageHandle, SHADOW_MAP_COUNT> mShadowImages{};
+    std::array<ImageViewHandle, SHADOW_MAP_COUNT> mShadowViews{};
+    std::array<BufferHandle, SHADOW_MAP_COUNT> mShadowReadbacks{};
+    std::array<std::vector<std::byte>, SHADOW_MAP_COUNT> mShadowPixels;
+    std::array<bool, SHADOW_MAP_COUNT> mPendingShadowActive{};
+    ImageHandle mLightingColor;
+    ImageViewHandle mLightingView;
+    BufferHandle mLightingReadback;
+    std::vector<std::byte> mLightingPixels;
     MaterialOffscreenProbeResult mPendingResult;
     bool mPending = false;
     bool mShutdown = false;
@@ -915,10 +2130,34 @@ private:
 MaterialOffscreenProbe::MaterialOffscreenProbe(
     Device& device, ShaderPackageDesc package) :
     mImpl(std::make_unique<Impl>(device, std::move(package))) {}
+MaterialOffscreenProbe::MaterialOffscreenProbe(
+    Device& device, ShaderPackageDesc material_package,
+    ShaderPackageDesc lighting_package) :
+    mImpl(std::make_unique<Impl>(device, std::move(material_package),
+                                std::move(lighting_package))) {}
+MaterialOffscreenProbe::MaterialOffscreenProbe(
+    Device& device, ShaderPackageDesc material_package,
+    ShaderPackageDesc lighting_package, ShaderPackageDesc projector_package) :
+    mImpl(std::make_unique<Impl>(device, std::move(material_package),
+                                std::move(lighting_package),
+                                std::move(projector_package))) {}
+MaterialOffscreenProbe::MaterialOffscreenProbe(
+    Device& device, ShaderPackageDesc material_package,
+    ShaderPackageDesc lighting_package, ShaderPackageDesc projector_package,
+    ShaderPackageDesc shadow_package) :
+    mImpl(std::make_unique<Impl>(device, std::move(material_package),
+                                std::move(lighting_package),
+                                std::move(projector_package),
+                                std::move(shadow_package))) {}
 MaterialOffscreenProbe::~MaterialOffscreenProbe() = default;
 Status MaterialOffscreenProbe::submit(
     const MaterialScenePacket& packet, const MaterialOffscreenProbeLimits& limits)
 { return mImpl->submit(packet, limits); }
+Status MaterialOffscreenProbe::submit(
+    const MaterialScenePacket& material_packet,
+    const LightingScenePacket& lighting_packet,
+    const MaterialOffscreenProbeLimits& limits)
+{ return mImpl->submit(material_packet, lighting_packet, limits); }
 Status MaterialOffscreenProbe::poll(MaterialOffscreenProbeResult& result)
 { return mImpl->poll(result); }
 bool MaterialOffscreenProbe::pending() const { return mImpl->pending(); }

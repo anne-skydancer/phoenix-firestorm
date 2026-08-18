@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace
@@ -41,6 +42,8 @@ std::uint32_t sMaterialSamples = 0;
 bool sMaterialCaptureClaimed = false;
 bool sMaterialDisabled = false;
 bool sPendingMaterialBudgetLimited = false;
+std::optional<LL::GHI::MaterialScenePacket> sPendingLightingMaterial;
+std::optional<LL::GHI::TerrainScenePacket> sPendingLightingTerrain;
 std::uint64_t sNextTerrainFrame = 0;
 std::uint32_t sTerrainAttempts = 0;
 std::uint32_t sTerrainSamples = 0;
@@ -52,6 +55,33 @@ std::uint32_t sLightingAttempts = 0;
 std::uint32_t sLightingSamples = 0;
 bool sLightingCaptureClaimed = false;
 bool sLightingDisabled = false;
+
+bool shadowOffscreenRequestedInternal();
+
+bool projectorLightingOffscreenRequested()
+{
+    return gSavedSettings.getBOOL(
+        "RenderVulkanProjectorLightingOffscreenProbe") ||
+        shadowOffscreenRequestedInternal();
+}
+
+bool shadowOffscreenRequestedInternal()
+{
+    return gSavedSettings.getBOOL("RenderVulkanShadowOffscreenProbe");
+}
+
+bool lightingOffscreenRequested()
+{
+    return gSavedSettings.getBOOL("RenderVulkanLightingOffscreenProbe") ||
+           projectorLightingOffscreenRequested() ||
+           shadowOffscreenRequestedInternal();
+}
+
+bool terrainLightingOffscreenRequested()
+{
+    return gSavedSettings.getBOOL("RenderVulkanTerrainLightingOffscreenProbe") &&
+           !lightingOffscreenRequested();
+}
 
 bool offscreenProbeRequested()
 {
@@ -155,6 +185,98 @@ void pollMaterialProbe()
         sPendingMaterialBudgetLimited = false;
         return;
     }
+    if (result.lightingExecuted)
+    {
+        const std::uint32_t nonClearShadowMaps =
+            static_cast<std::uint32_t>(std::count_if(
+                result.shadowNonClearPixels.begin(),
+                result.shadowNonClearPixels.end(),
+                [](std::uint64_t pixels) { return pixels != 0; }));
+        const bool directionalShadowCoverage = std::any_of(
+            result.shadowNonClearPixels.begin(),
+            result.shadowNonClearPixels.begin() + 4,
+            [](std::uint64_t pixels) { return pixels != 0; });
+        const bool projectorShadowCoverage = std::any_of(
+            result.shadowNonClearPixels.begin() + 4,
+            result.shadowNonClearPixels.end(),
+            [](std::uint64_t pixels) { return pixels != 0; });
+        const bool completeShadows = !shadowOffscreenRequestedInternal() ||
+            (result.shadowsExecuted && result.shadowMaps &&
+             result.directionalShadowMaps && result.projectorShadowMaps &&
+             result.shadowCasterDraws && result.shadowRiggedDraws &&
+             result.shadowMaskedDraws && directionalShadowCoverage &&
+             projectorShadowCoverage);
+        if (!result.litNonClearPixels || !result.directionalLights ||
+            !result.pointLights ||
+            (projectorLightingOffscreenRequested() &&
+             (!result.projectorLights || !result.projectorTextures)) ||
+            !completeShadows)
+        {
+            LL_INFOS("GHIIntegration")
+                << (shadowOffscreenRequestedInternal()
+                    ? "I7d shadow sample lacked complete directional/projector maps or opaque/masked/rigged caster coverage; retrying. frame="
+                    : projectorLightingOffscreenRequested()
+                    ? "I7c projector-lighting sample lacked complete directional/point/projector coverage; retrying. frame="
+                    : "I7b deferred-lighting sample lacked complete directional/point coverage; retrying. frame=")
+                << result.frameId << " directional="
+                << result.directionalLights << " points=" << result.pointLights
+                << " projectors/textures=" << result.projectorLights << '/'
+                << result.projectorTextures
+                << " shadow-maps(directional/projector/non-clear)="
+                << result.shadowMaps << '(' << result.directionalShadowMaps
+                << '/' << result.projectorShadowMaps << '/'
+                << nonClearShadowMaps << ") casters(rigged/masked)="
+                << result.shadowCasterDraws << '(' << result.shadowRiggedDraws
+                << '/' << result.shadowMaskedDraws << ") lit-pixels="
+                << result.litNonClearPixels << LL_ENDL;
+            sPendingMaterialBudgetLimited = false;
+            return;
+        }
+        ++sMaterialSamples;
+        ++sLightingSamples;
+        LL_INFOS("GHIIntegration")
+            << (shadowOffscreenRequestedInternal()
+                ? "I7d live same-frame native shadow production/sampling PASS: sample="
+                : projectorLightingOffscreenRequested()
+                ? "I7c live same-frame native projector lighting PASS: sample="
+                : "I7b live same-frame native deferred lighting PASS: sample=")
+            << sLightingSamples << '/' << livePacketMaximum() << " frame="
+            << result.frameId << " draws=" << result.draws
+            << " vertices=" << result.vertices << " indices="
+            << result.indices << " directional=" << result.directionalLights
+            << " points=" << result.pointLights << " projectors/textures/volume/fullscreen="
+            << result.projectorLights << '/' << result.projectorTextures << '/'
+            << result.projectorVolumeLights << '/'
+            << result.projectorFullscreenLights
+            << " shadow-maps(directional/projector)=" << result.shadowMaps
+            << '(' << result.directionalShadowMaps << '/'
+            << result.projectorShadowMaps << ") shadow-casters(rigged/masked)="
+            << result.shadowCasterDraws << '(' << result.shadowRiggedDraws
+            << '/' << result.shadowMaskedDraws << ") shadow-non-clear-pixels=";
+        for (std::size_t shadow = 0;
+             shadow < result.shadowNonClearPixels.size(); ++shadow)
+        {
+            if (shadow) LL_CONT << ',';
+            LL_CONT << result.shadowNonClearPixels[shadow];
+        }
+        LL_CONT << " material-sha256="
+            << result.packetSha256 << " lighting-sha256="
+            << result.lightingPacketSha256 << " gbuffer-sha256="
+            << result.colorSha256[0] << ',' << result.colorSha256[1] << ','
+            << result.colorSha256[2] << ',' << result.colorSha256[3]
+            << " lit-sha256=" << result.litColorSha256
+            << " lit-non-clear-pixels=" << result.litNonClearPixels
+            << " capture-budget-limited="
+            << (sPendingMaterialBudgetLimited ? "yes" : "no")
+            << (shadowOffscreenRequestedInternal()
+                ? ". Native directional/projector depth maps are private; surfaces, swapchains, and presentation remain excluded; visible rendering remains OpenGL."
+                : projectorLightingOffscreenRequested()
+                ? ". Projector shadows, surfaces, swapchains, and presentation remain excluded; visible rendering remains OpenGL."
+                : ". Projector images, shadows, surfaces, swapchains, and presentation remain excluded; visible rendering remains OpenGL.")
+            << LL_ENDL;
+        sPendingMaterialBudgetLimited = false;
+        return;
+    }
     if (!result.riggedDraws || !result.maxJointCount)
     {
         LL_INFOS("GHIIntegration")
@@ -215,6 +337,43 @@ void pollTerrainProbe()
             << " non-clear-pixels=" << result.nonClearPixels[0] << ','
             << result.nonClearPixels[1] << ',' << result.nonClearPixels[2]
             << ',' << result.nonClearPixels[3] << LL_ENDL;
+        sPendingTerrainBudgetLimited = false;
+        return;
+    }
+    if (result.lightingExecuted)
+    {
+        if (!result.pbrDraws || !result.litNonClearPixels ||
+            !result.directionalLights || !result.pointLights)
+        {
+            LL_INFOS("GHIIntegration")
+                << "I7b terrain-lighting sample lacked complete PBR/directional/point coverage; retrying. frame="
+                << result.frameId << " pbr-draws=" << result.pbrDraws
+                << " directional=" << result.directionalLights
+                << " points=" << result.pointLights << " lit-pixels="
+                << result.litNonClearPixels << LL_ENDL;
+            sPendingTerrainBudgetLimited = false;
+            return;
+        }
+        ++sTerrainSamples;
+        ++sLightingSamples;
+        LL_INFOS("GHIIntegration")
+            << "I7b live same-frame native terrain deferred lighting PASS: sample="
+            << sLightingSamples << '/' << livePacketMaximum() << " frame="
+            << result.frameId << " draws=" << result.draws
+            << " regions=" << result.regions << " pbr-draws="
+            << result.pbrDraws << " triplanar-draws="
+            << result.triplanarDraws << " directional="
+            << result.directionalLights << " points=" << result.pointLights
+            << " terrain-sha256=" << result.packetSha256
+            << " lighting-sha256=" << result.lightingPacketSha256
+            << " gbuffer-sha256=" << result.colorSha256[0] << ','
+            << result.colorSha256[1] << ',' << result.colorSha256[2] << ','
+            << result.colorSha256[3] << " lit-sha256="
+            << result.litColorSha256 << " lit-non-clear-pixels="
+            << result.litNonClearPixels << " capture-budget-limited="
+            << (sPendingTerrainBudgetLimited ? "yes" : "no")
+            << ". Projector images, shadows, surfaces, swapchains, and presentation remain excluded; visible rendering remains OpenGL."
+            << LL_ENDL;
         sPendingTerrainBudgetLimited = false;
         return;
     }
@@ -317,7 +476,8 @@ void initialize()
         }
     }
 
-    if (gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe"))
+    if (gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe") ||
+        lightingOffscreenRequested())
     {
         const std::string packagePath = gDirUtilp->getExpandedFilename(
             LL_PATH_APP_SETTINGS, "ghi_shaders", "r5_material_skin.llghisp");
@@ -333,11 +493,117 @@ void initialize()
         }
         else
         {
-            sMaterialProbe =
-                std::make_unique<LL::GHI::MaterialOffscreenProbe>(
-                    *sVulkanDevice, std::move(shaderPackage));
+            if (lightingOffscreenRequested())
+            {
+                const std::string lightingPath = gDirUtilp->getExpandedFilename(
+                    LL_PATH_APP_SETTINGS, "ghi_shaders",
+                    "i7_deferred_lighting.llghisp");
+                LL::GHI::ShaderPackageDesc lightingPackage;
+                const LL::GHI::Status lightingStatus =
+                    LL::GHI::loadShaderPackage(lightingPath, lightingPackage);
+                if (!lightingStatus)
+                {
+                    LL_WARNS("GHIIntegration")
+                        << "I7b deferred-lighting shader package was not loaded from "
+                        << lightingPath << ": " << lightingStatus.message()
+                        << LL_ENDL;
+                }
+                else
+                {
+                    if (projectorLightingOffscreenRequested())
+                    {
+                        const std::string projectorPath =
+                            gDirUtilp->getExpandedFilename(
+                                LL_PATH_APP_SETTINGS, "ghi_shaders",
+                                "i7_projector_lighting.llghisp");
+                        LL::GHI::ShaderPackageDesc projectorPackage;
+                        const LL::GHI::Status projectorStatus =
+                            LL::GHI::loadShaderPackage(
+                                projectorPath, projectorPackage);
+                        if (!projectorStatus)
+                        {
+                            LL_WARNS("GHIIntegration")
+                                << "I7c projector-lighting shader package was not loaded from "
+                                << projectorPath << ": "
+                                << projectorStatus.message() << LL_ENDL;
+                        }
+                        else
+                        {
+                            if (shadowOffscreenRequestedInternal())
+                            {
+                                const std::string shadowPath =
+                                    gDirUtilp->getExpandedFilename(
+                                        LL_PATH_APP_SETTINGS, "ghi_shaders",
+                                        "i7_shadow.llghisp");
+                                LL::GHI::ShaderPackageDesc shadowPackage;
+                                const LL::GHI::Status shadowStatus =
+                                    LL::GHI::loadShaderPackage(
+                                        shadowPath, shadowPackage);
+                                if (!shadowStatus)
+                                {
+                                    LL_WARNS("GHIIntegration")
+                                        << "I7d shadow shader package was not loaded from "
+                                        << shadowPath << ": "
+                                        << shadowStatus.message() << LL_ENDL;
+                                }
+                                else
+                                {
+                                    sMaterialProbe = std::make_unique<
+                                        LL::GHI::MaterialOffscreenProbe>(
+                                            *sVulkanDevice,
+                                            std::move(shaderPackage),
+                                            std::move(lightingPackage),
+                                            std::move(projectorPackage),
+                                            std::move(shadowPackage));
+                                    LL_INFOS("GHIIntegration")
+                                        << "I7d same-frame material G-buffer plus native directional/projector shadow production and sampling probe armed from "
+                                        << packagePath << ", " << lightingPath
+                                        << ", " << projectorPath << ", and "
+                                        << shadowPath
+                                        << "; extent=256x256 shadow-maps=4+2. Visible rendering remains OpenGL."
+                                        << LL_ENDL;
+                                }
+                            }
+                            else
+                            {
+                                sMaterialProbe = std::make_unique<
+                                    LL::GHI::MaterialOffscreenProbe>(
+                                        *sVulkanDevice,
+                                        std::move(shaderPackage),
+                                        std::move(lightingPackage),
+                                        std::move(projectorPackage));
+                                LL_INFOS("GHIIntegration")
+                                    << "I7c same-frame material G-buffer plus directional, point, and decoded-image projector lighting probe armed from "
+                                    << packagePath << ", " << lightingPath
+                                    << ", and " << projectorPath
+                                    << "; extent=256x256. Projector shadows remain deferred."
+                                    << LL_ENDL;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        sMaterialProbe =
+                            std::make_unique<LL::GHI::MaterialOffscreenProbe>(
+                                *sVulkanDevice, std::move(shaderPackage),
+                                std::move(lightingPackage));
+                        LL_INFOS("GHIIntegration")
+                            << "I7b same-frame material G-buffer plus directional/point lighting probe armed from "
+                            << packagePath << " and " << lightingPath
+                            << "; extent=256x256. Projector images and shadows remain deferred."
+                            << LL_ENDL;
+                    }
+                }
+            }
+            else
+            {
+                sMaterialProbe =
+                    std::make_unique<LL::GHI::MaterialOffscreenProbe>(
+                        *sVulkanDevice, std::move(shaderPackage));
+            }
             const LL::GHI::MaterialOffscreenProbeLimits limits;
-            LL_INFOS("GHIIntegration")
+            if (sMaterialProbe && !lightingOffscreenRequested())
+                LL_INFOS("GHIIntegration")
                 << "I5 asynchronous rigid/rigged opaque PBR material probe armed from "
                 << packagePath << "; extent=256x256 limits(draws/vertices/indices/textures/bytes)="
                 << limits.maxDraws << '/' << limits.maxVertices << '/'
@@ -348,7 +614,17 @@ void initialize()
         }
     }
 
-    if (gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe"))
+    const std::uint32_t lightingModes =
+        (gSavedSettings.getBOOL("RenderVulkanLightingOffscreenProbe") ? 1u : 0u) +
+        (gSavedSettings.getBOOL("RenderVulkanTerrainLightingOffscreenProbe") ? 1u : 0u) +
+        (projectorLightingOffscreenRequested() ? 1u : 0u);
+    if (lightingModes > 1)
+        LL_WARNS("GHIIntegration")
+            << "Multiple I7 lighting probes were requested; material/projector precedence applies. Enable only one mode per run."
+            << LL_ENDL;
+
+    if (gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe") ||
+        terrainLightingOffscreenRequested())
     {
         const std::string packagePath = gDirUtilp->getExpandedFilename(
             LL_PATH_APP_SETTINGS, "ghi_shaders", "i6_terrain.llghisp");
@@ -359,6 +635,32 @@ void initialize()
             LL_WARNS("GHIIntegration")
                 << "I6 terrain shader package was not loaded from "
                 << packagePath << ": " << status.message() << LL_ENDL;
+        else if (terrainLightingOffscreenRequested())
+        {
+            const std::string lightingPath = gDirUtilp->getExpandedFilename(
+                LL_PATH_APP_SETTINGS, "ghi_shaders",
+                "i7_deferred_lighting.llghisp");
+            LL::GHI::ShaderPackageDesc lightingPackage;
+            const LL::GHI::Status lightingStatus =
+                LL::GHI::loadShaderPackage(lightingPath, lightingPackage);
+            if (!lightingStatus)
+                LL_WARNS("GHIIntegration")
+                    << "I7b terrain deferred-lighting shader package was not loaded from "
+                    << lightingPath << ": " << lightingStatus.message()
+                    << LL_ENDL;
+            else
+            {
+                sTerrainProbe = std::make_unique<LL::GHI::TerrainOffscreenProbe>(
+                    *sVulkanDevice, std::move(package),
+                    std::move(lightingPackage));
+                LL_INFOS("GHIIntegration")
+                    << "I7b same-frame terrain G-buffer plus directional/point lighting probe armed; interval="
+                    << livePacketInterval() << " frames max-samples="
+                    << livePacketMaximum()
+                    << ". Projector images and shadows remain deferred; the probe owns no surface, swapchain, or presentation path."
+                    << LL_ENDL;
+            }
+        }
         else
         {
             sTerrainProbe = std::make_unique<LL::GHI::TerrainOffscreenProbe>(
@@ -457,6 +759,8 @@ void shutdown()
     sMaterialCaptureClaimed = false;
     sMaterialDisabled = false;
     sPendingMaterialBudgetLimited = false;
+    sPendingLightingMaterial.reset();
+    sPendingLightingTerrain.reset();
     sNextTerrainFrame = 0;
     sTerrainAttempts = 0;
     sTerrainSamples = 0;
@@ -568,14 +872,20 @@ void consumeLiveOpaquePacket(const LL::GHI::OpaqueScenePacket& packet,
 bool materialCaptureRequested()
 {
     return sVulkanDevice && !sMaterialDisabled && sMaterialProbe &&
-           gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe");
+           (gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe") ||
+            lightingOffscreenRequested());
+}
+
+bool shadowOffscreenRequested()
+{
+    return shadowOffscreenRequestedInternal();
 }
 
 bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id)
 {
     pollMaterialProbe();
     if (!materialCaptureRequested() || sMaterialCaptureClaimed ||
-        sMaterialProbe->pending())
+        sMaterialProbe->pending() || sPendingLightingMaterial)
         return false;
     const std::uint32_t maximum = livePacketMaximum();
     if (!maximum || sMaterialSamples >= maximum ||
@@ -599,6 +909,35 @@ void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
     sMaterialCaptureClaimed = false;
     ++sMaterialAttempts;
     sNextMaterialFrame = packet.frameId + livePacketInterval();
+    if (packet.draws.empty())
+    {
+            LL_INFOS("GHIIntegration")
+                << (lightingOffscreenRequested()
+                    ? (shadowOffscreenRequestedInternal()
+                        ? "I7d material capture contained no executable shadow/receiver geometry; retrying. frame="
+                        : projectorLightingOffscreenRequested()
+                        ? "I7c material capture contained no executable opaque PBR geometry; retrying. frame="
+                        : "I7b material capture contained no executable opaque PBR geometry; retrying. frame=")
+                    : "I5 material capture contained no executable opaque PBR geometry; retrying. frame=")
+            << packet.frameId << LL_ENDL;
+        sPendingMaterialBudgetLimited = false;
+        return;
+    }
+    if (lightingOffscreenRequested())
+    {
+        sPendingLightingMaterial = packet;
+        sPendingMaterialBudgetLimited = budget_limited;
+        LL_INFOS("GHIIntegration")
+            << (shadowOffscreenRequestedInternal()
+                ? "I7d captured material packet for same-frame shadow/lighting pair: frame="
+                : projectorLightingOffscreenRequested()
+                ? "I7c captured material packet for same-frame projector-lighting pair: frame="
+                : "I7b captured material packet for same-frame lighting pair: frame=")
+            << packet.frameId << " draws=" << packet.draws.size()
+            << " vertices=" << packet.vertices.size() << " indices="
+            << packet.indices.size() << LL_ENDL;
+        return;
+    }
     const LL::GHI::MaterialOffscreenProbeLimits limits;
     const LL::GHI::Status status = sMaterialProbe->submit(packet, limits);
     if (!status)
@@ -628,14 +967,15 @@ void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
 bool terrainCaptureRequested()
 {
     return sVulkanDevice && sTerrainProbe && !sTerrainDisabled &&
-           gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe");
+           (gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe") ||
+            terrainLightingOffscreenRequested());
 }
 
 bool shouldCaptureLiveTerrainPacket(std::uint64_t frame_id)
 {
     pollTerrainProbe();
     if (!terrainCaptureRequested() || sTerrainCaptureClaimed ||
-        sTerrainProbe->pending()) return false;
+        sTerrainProbe->pending() || sPendingLightingTerrain) return false;
     const std::uint32_t maximum = livePacketMaximum();
     if (!maximum || sTerrainSamples >= maximum ||
         static_cast<std::uint64_t>(sTerrainAttempts) >=
@@ -663,6 +1003,18 @@ void consumeLiveTerrainPacket(const LL::GHI::TerrainScenePacket& packet,
         LL_INFOS("GHIIntegration")
             << "I6 terrain capture contained no executable production faces; retrying. frame="
             << packet.frameId << LL_ENDL;
+        return;
+    }
+    if (terrainLightingOffscreenRequested())
+    {
+        sPendingLightingTerrain = packet;
+        sPendingTerrainBudgetLimited = budget_limited;
+        LL_INFOS("GHIIntegration")
+            << "I7b captured terrain packet for same-frame lighting pair: frame="
+            << packet.frameId << " draws=" << packet.draws.size()
+            << " regions=" << packet.regions.size() << " vertices="
+            << packet.vertices.size() << " indices=" << packet.indices.size()
+            << LL_ENDL;
         return;
     }
     const LL::GHI::TerrainOffscreenProbeLimits limits;
@@ -695,7 +1047,9 @@ void consumeLiveTerrainPacket(const LL::GHI::TerrainScenePacket& packet,
 bool lightingCaptureRequested()
 {
     return sVulkanDevice && !sLightingDisabled &&
-           gSavedSettings.getBOOL("RenderVulkanLightingPacketProbe");
+           (gSavedSettings.getBOOL("RenderVulkanLightingPacketProbe") ||
+            lightingOffscreenRequested() ||
+            terrainLightingOffscreenRequested());
 }
 
 bool shouldCaptureLiveLightingPacket(std::uint64_t frame_id)
@@ -704,8 +1058,32 @@ bool shouldCaptureLiveLightingPacket(std::uint64_t frame_id)
     const std::uint32_t maximum = livePacketMaximum();
     if (!maximum || sLightingSamples >= maximum ||
         static_cast<std::uint64_t>(sLightingAttempts) >=
-            static_cast<std::uint64_t>(maximum) * 4ull)
+        static_cast<std::uint64_t>(maximum) * 4ull)
         return false;
+    if (lightingOffscreenRequested() || terrainLightingOffscreenRequested())
+    {
+        const std::uint64_t pendingFrame = lightingOffscreenRequested()
+            ? (sPendingLightingMaterial ? sPendingLightingMaterial->frameId : 0)
+            : (sPendingLightingTerrain ? sPendingLightingTerrain->frameId : 0);
+        if (!pendingFrame) return false;
+        if (pendingFrame != frame_id)
+        {
+            LL_WARNS("GHIIntegration")
+                << (shadowOffscreenRequestedInternal() ? "I7d" :
+                    projectorLightingOffscreenRequested() ? "I7c" : "I7b")
+                << " discarded an unpaired "
+                << (lightingOffscreenRequested() ? "material" : "terrain")
+                << " packet from frame " << pendingFrame
+                << " at frame " << frame_id << LL_ENDL;
+            sPendingLightingMaterial.reset();
+            sPendingLightingTerrain.reset();
+            sPendingMaterialBudgetLimited = false;
+            sPendingTerrainBudgetLimited = false;
+            return false;
+        }
+        sLightingCaptureClaimed = true;
+        return true;
+    }
     if (!sNextLightingFrame)
     {
         sNextLightingFrame = frame_id + livePacketInterval();
@@ -723,6 +1101,100 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
     sLightingCaptureClaimed = false;
     ++sLightingAttempts;
     sNextLightingFrame = packet.frameId + livePacketInterval();
+    if (lightingOffscreenRequested())
+    {
+        if (!sPendingLightingMaterial || !sMaterialProbe ||
+            sPendingLightingMaterial->frameId != packet.frameId)
+        {
+            LL_WARNS("GHIIntegration")
+                << (shadowOffscreenRequestedInternal()
+                    ? "I7d rejected a lighting packet without its same-frame material/shadow pair: frame="
+                    : projectorLightingOffscreenRequested()
+                    ? "I7c rejected a lighting packet without its same-frame material pair: frame="
+                    : "I7b rejected a lighting packet without its same-frame material pair: frame=")
+                << packet.frameId << LL_ENDL;
+            sPendingLightingMaterial.reset();
+            sPendingMaterialBudgetLimited = false;
+            return;
+        }
+        const LL::GHI::MaterialOffscreenProbeLimits limits;
+        const LL::GHI::Status status = sMaterialProbe->submit(
+            *sPendingLightingMaterial, packet, limits);
+        const std::size_t draws = sPendingLightingMaterial->draws.size();
+        sPendingLightingMaterial.reset();
+        if (!status)
+        {
+            LL_WARNS("GHIIntegration")
+                << (shadowOffscreenRequestedInternal()
+                    ? "I7d same-frame shadow/lighting submission rejected at frame "
+                    : projectorLightingOffscreenRequested()
+                    ? "I7c same-frame projector-lighting submission rejected at frame "
+                    : "I7b same-frame deferred-lighting submission rejected at frame ")
+                << packet.frameId << ": " << status.message() << LL_ENDL;
+            sPendingMaterialBudgetLimited = false;
+            if (status.code() == LL::GHI::StatusCode::DeviceLost)
+            {
+                sMaterialDisabled = true;
+                sLightingDisabled = true;
+            }
+            return;
+        }
+        sPendingMaterialBudgetLimited =
+            sPendingMaterialBudgetLimited || budget_limited;
+        LL_INFOS("GHIIntegration")
+            << (shadowOffscreenRequestedInternal()
+                ? "I7d same-frame native shadow/lighting submitted asynchronously: frame="
+                : projectorLightingOffscreenRequested()
+                ? "I7c same-frame native projector-lighting submitted asynchronously: frame="
+                : "I7b same-frame native deferred-lighting submitted asynchronously: frame=")
+            << packet.frameId << " draws=" << draws << " local-lights="
+            << packet.localLights.size() << " projector-images="
+            << packet.projectorTextures.size()
+            << ". Completion will be polled on later OpenGL frames."
+            << LL_ENDL;
+        return;
+    }
+    if (terrainLightingOffscreenRequested())
+    {
+        if (!sPendingLightingTerrain || !sTerrainProbe ||
+            sPendingLightingTerrain->frameId != packet.frameId)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I7b rejected a lighting packet without its same-frame terrain pair: frame="
+                << packet.frameId << LL_ENDL;
+            sPendingLightingTerrain.reset();
+            sPendingTerrainBudgetLimited = false;
+            return;
+        }
+        const LL::GHI::TerrainOffscreenProbeLimits limits;
+        const LL::GHI::Status status = sTerrainProbe->submit(
+            *sPendingLightingTerrain, packet, limits);
+        const std::size_t draws = sPendingLightingTerrain->draws.size();
+        const std::size_t regions = sPendingLightingTerrain->regions.size();
+        sPendingLightingTerrain.reset();
+        if (!status)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I7b same-frame terrain deferred-lighting submission rejected at frame "
+                << packet.frameId << ": " << status.message() << LL_ENDL;
+            sPendingTerrainBudgetLimited = false;
+            if (status.code() == LL::GHI::StatusCode::DeviceLost)
+            {
+                sTerrainDisabled = true;
+                sLightingDisabled = true;
+            }
+            return;
+        }
+        sPendingTerrainBudgetLimited =
+            sPendingTerrainBudgetLimited || budget_limited;
+        LL_INFOS("GHIIntegration")
+            << "I7b same-frame native terrain deferred-lighting submitted asynchronously: frame="
+            << packet.frameId << " draws=" << draws << " regions="
+            << regions << " local-lights=" << packet.localLights.size()
+            << ". Completion will be polled on later OpenGL frames."
+            << LL_ENDL;
+        return;
+    }
     const LL::GHI::LightingPacketTransferLimits limits;
     LL::GHI::LightingPacketTransferResult result;
     const LL::GHI::Status status = LL::GHI::consumeLightingPacketTransfer(

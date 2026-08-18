@@ -31,6 +31,7 @@
 #include "llghiterraincapture.h"
 #include "llghiruntime.h"
 #include "ghi/include/llghilightingscenepacket.h"
+#include "ghi/include/llghimaterialscenepacket.h"
 
 #include "pipeline.h"
 
@@ -9786,6 +9787,9 @@ void LLPipeline::captureGHILightingState(LLViewerCamera& camera,
         return;
 
     constexpr std::size_t MAX_CAPTURED_LOCAL_LIGHTS = 256;
+    constexpr std::size_t MAX_CAPTURED_PROJECTOR_TEXTURES = 8;
+    constexpr std::size_t MAX_CAPTURED_PROJECTOR_TEXTURE_BYTES =
+        512ull * 1024ull;
     static std::uint64_t sceneEpoch = 0;
     static std::uint64_t resourceEpoch = 0;
     static std::uint64_t previousResourceSignature = 0;
@@ -9850,6 +9854,10 @@ void LLPipeline::captureGHILightingState(LLViewerCamera& camera,
     static LLCachedControl<S32> localLightCount(
         gSavedSettings, "RenderLocalLightCount", 256);
     bool budgetLimited = false;
+    const bool captureProjectorImages =
+        gSavedSettings.getBOOL("RenderVulkanProjectorLightingOffscreenProbe") ||
+        gSavedSettings.getBOOL("RenderVulkanShadowOffscreenProbe");
+    std::size_t projectorTextureBytes = 0;
     S32 considered = 0;
     std::vector<std::uint64_t> resourceKeys;
     for (light_set_t::iterator iterator = mNearbyLights.begin();
@@ -9902,6 +9910,60 @@ void LLPipeline::captureGHILightingState(LLViewerCamera& camera,
             const LLUUID& texture = volume->getLightTextureID();
             std::copy_n(texture.mData, 16,
                         light.projectorTextureIdentity.begin());
+            if (captureProjectorImages && !texture.isNull())
+            {
+                const auto alreadyCaptured = std::find_if(
+                    packet.projectorTextures.begin(),
+                    packet.projectorTextures.end(),
+                    [&light](const LL::GHI::ProjectorTextureResource& resource)
+                    {
+                        return resource.sourceIdentity ==
+                            light.projectorTextureIdentity;
+                    });
+                if (alreadyCaptured != packet.projectorTextures.end())
+                {
+                    light.comparability =
+                        LL::GHI::LightingComparability::Comparable;
+                }
+                else if (LLViewerTexture* source = volume->getLightTexture())
+                {
+                    auto* fetched =
+                        dynamic_cast<LLViewerFetchedTexture*>(source);
+                    LL::GHI::MaterialTextureResource observed;
+                    if (fetched &&
+                        LLGHIMaterialCapture::instance().copyDecodedTexture(
+                            *fetched, observed))
+                    {
+                        const std::size_t bytes =
+                            observed.decodedPixels.size();
+                        if (packet.projectorTextures.size() <
+                                MAX_CAPTURED_PROJECTOR_TEXTURES &&
+                            bytes <= MAX_CAPTURED_PROJECTOR_TEXTURE_BYTES -
+                                projectorTextureBytes)
+                        {
+                            LL::GHI::ProjectorTextureResource resource;
+                            resource.sourceIdentity =
+                                light.projectorTextureIdentity;
+                            resource.contentIdentity = observed.contentIdentity;
+                            resource.width = observed.width;
+                            resource.height = observed.height;
+                            resource.components = observed.components;
+                            resource.discardLevel = observed.discardLevel;
+                            resource.decodedPixels =
+                                std::move(observed.decodedPixels);
+                            projectorTextureBytes += bytes;
+                            packet.projectorTextures.push_back(
+                                std::move(resource));
+                            light.comparability =
+                                LL::GHI::LightingComparability::Comparable;
+                        }
+                        else
+                        {
+                            budgetLimited = true;
+                        }
+                    }
+                }
+            }
             for (std::size_t slot = 0; slot < 2; ++slot)
             {
                 if (mShadowSpotLight[slot] == drawable)
@@ -9938,6 +10000,15 @@ void LLPipeline::captureGHILightingState(LLViewerCamera& camera,
     mix(packet.shadows.enabled ? 1u : 0u);
     mix(packet.shadows.directionalCascadeCount);
     for (std::uint64_t key : resourceKeys) mix(key);
+    for (const LL::GHI::ProjectorTextureResource& texture :
+         packet.projectorTextures)
+    {
+        for (std::byte byte : texture.contentIdentity)
+        {
+            resourceSignature ^= std::to_integer<std::uint8_t>(byte);
+            resourceSignature *= 1099511628211ull;
+        }
+    }
     if (!resourceEpoch || resourceSignature != previousResourceSignature)
     {
         ++resourceEpoch;

@@ -2371,6 +2371,9 @@ if (WINDOWS)
       list(APPEND COPY_INPUT_DEPENDENCIES
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/r4_opaque.llghisp
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/r5_material_skin.llghisp
+           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_deferred_lighting.llghisp
+           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_projector_lighting.llghisp
+           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_shadow.llghisp
           )
     endif ()
 

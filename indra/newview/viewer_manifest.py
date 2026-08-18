@@ -119,6 +119,15 @@ class ViewerManifest(LLManifest,FSViewerManifest):
         if os.path.isfile(os.path.join(ghi_shader_dir, "i6_terrain.llghisp")):
             with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
                 self.path("i6_terrain.llghisp")
+        if os.path.isfile(os.path.join(ghi_shader_dir, "i7_deferred_lighting.llghisp")):
+            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
+                self.path("i7_deferred_lighting.llghisp")
+        if os.path.isfile(os.path.join(ghi_shader_dir, "i7_projector_lighting.llghisp")):
+            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
+                self.path("i7_projector_lighting.llghisp")
+        if os.path.isfile(os.path.join(ghi_shader_dir, "i7_shadow.llghisp")):
+            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
+                self.path("i7_shadow.llghisp")
 
         with self.prefix(src_dst="skins"):
             self.path("*/xui/*/*.xml")

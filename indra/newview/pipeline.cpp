@@ -9860,7 +9860,8 @@ void LLPipeline::captureGHILightingState(LLViewerCamera& camera,
         gSavedSettings.getBOOL("RenderVulkanFrameAssemblyProbe") ||
         gSavedSettings.getBOOL("RenderVulkanTextureResidencyProbe") ||
         gSavedSettings.getBOOL("RenderVulkanFrameGraphProbe") ||
-        gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe");
+        gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe") ||
+        gSavedSettings.getBOOL("RenderVulkanLightingExecutionProbe");
     std::size_t projectorTextureBytes = 0;
     S32 considered = 0;
     std::vector<std::uint64_t> resourceKeys;

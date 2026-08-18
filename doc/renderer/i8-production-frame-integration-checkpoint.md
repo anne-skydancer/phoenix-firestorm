@@ -260,17 +260,67 @@ and PBR-terrain draw streams can share the production frame's persistent native
 G-buffer and depth targets. They do not yet prove lighting, shadows, surface
 ownership, presentation, or visible Vulkan parity.
 
+## I8c3 — shared-target shadow and lighting execution
+
+I8c3 appends a second ordered GHI submission to the I8c2 G-buffer submission
+without changing frame identity or attachment ownership. The executor renders
+bounded opaque and alpha-masked material casters, including rigged casters,
+into the I8c1 directional and projector shadow targets. It then samples the
+shared G-buffer, reverse-Z depth, retained projector images, and native shadow
+maps to execute deferred and additive projector lighting into the shared
+lighting target. It creates no private duplicate G-buffer, depth, shadow, or
+lighting images.
+
+Directional and projector shadow images retain fixed semantic array slots.
+Inactive shader bindings use a persistent cleared fallback depth image, so a
+projector-only or partially populated shadow configuration never aliases a
+directional slot or exposes an undefined sampled descriptor. Immutable
+alpha-mask and projector textures resolve through I8b residency; missing
+required images defer the affected work instead of importing OpenGL objects.
+Geometry and uniform uploads remain bounded and transient.
+
+`RenderVulkanLightingExecutionProbe` enables I8c3 and supersedes the earlier
+I8 developer gates. Runtime acceptance requires the I8c2 and I8c3 SHA-256 frame
+identities to match, a populated lighting target, at least one non-clear map in
+the directional-shadow category, and at least one non-clear map in the
+projector-shadow category. It deliberately does not require every cascade to
+contain a caster because a valid camera and scene can leave individual maps
+clear.
+
+The deterministic GHI suite remains **36/36 pass**. Its combined production
+frame executes four directional cascades, one projector shadow, three bounded
+material casters including two rigged and one alpha-masked draw, one projector
+light, and a shared lighting readback. The validation backend verifies target
+semantics, resource bindings, ordered draw streams, frame identity, and clean
+retirement; live native Vulkan owns pixel-coverage verification.
+
+The isolated System OpenGL live gate completed 6/6 samples with Vulkan
+validation enabled. All samples executed one directional light, 36 point
+lights, eight projector lights, four directional maps, two projector maps, and
+non-clear pixels in both shadow categories and the lighting target. The first
+loading sample replayed 24 material casters. Settled samples replayed two
+casters, both rigged, and produced approximately 6,600 lit pixels. Individual
+clear cascades were accepted only because the directional category itself had
+real coverage. Visible world and UI rendering remained System OpenGL; no
+surface, swapchain, or presentation object was created.
+
+Mesa 26.3 + Zink was positively identified and completed the same 6/6 gate.
+Every sample executed one directional light, 36 point lights, eight projector
+lights, all six shadow maps, and two material casters, both rigged. Lighting
+coverage remained approximately 6,600 pixels; directional and projector-shadow
+categories both contained rendered depth. All deferred caster counts remained
+zero. Visible world and UI rendering remained Mesa + Zink OpenGL and the native
+Vulkan target graph remained private.
+
 ## Remaining I8 work
 
 After I8a, the assembled packet becomes the sole input to a private native
 frame graph in incremental gates:
 
-1. execute material and terrain G-buffer passes into shared private targets;
-2. execute native shadow, deferred-lighting, and projector passes from the same
-   graph and frame identity;
-3. add sky, water, alpha, recursive/offscreen views, HUD/UI composition, and
+1. add sky and water execution to the shared private frame graph;
+2. add alpha, recursive/offscreen views, HUD/UI composition, and
    picking in separately testable slices; and
-4. permit selectable visible Vulkan presentation only after parity, recovery,
+3. permit selectable visible Vulkan presentation only after parity, recovery,
    and provider-matrix gates are satisfied.
 
 The architecture remains additive: native OpenGL and Mesa + Zink continue to be

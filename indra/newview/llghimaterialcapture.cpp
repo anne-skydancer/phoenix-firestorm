@@ -268,7 +268,8 @@ public:
             gSavedSettings.getBOOL("RenderVulkanFrameAssemblyProbe") ||
             gSavedSettings.getBOOL("RenderVulkanTextureResidencyProbe") ||
             gSavedSettings.getBOOL("RenderVulkanFrameGraphProbe") ||
-            gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe");
+            gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe") ||
+            gSavedSettings.getBOOL("RenderVulkanLightingExecutionProbe");
         if ((mState == State::Disabled &&
              !materialConfigured && !lightingConfigured &&
              !terrainConfigured && !terrainLightingConfigured &&

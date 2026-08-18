@@ -12819,6 +12819,19 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderVulkanLightingExecutionProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: execute I8c3 native directional and projector shadow maps, deferred lighting, and projector lighting from the same coherent production frame and shared private targets populated by I8c2. Creates no surface, swapchain, window, or presentation path; visible world and UI remain OpenGL. Requires RenderVulkanDeveloperProbe and restart. Supersedes RenderVulkanGBufferExecutionProbe and earlier I8 gates.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

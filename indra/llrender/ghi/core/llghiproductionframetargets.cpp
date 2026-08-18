@@ -145,7 +145,7 @@ public:
         if (status) replacement.lightingView = mDevice.createImageView(
             {replacement.lightingImage, LIGHTING_FORMAT,
              {ImageAspect::Color, 0, 1, 0, 1}}, status);
-        for (std::uint32_t shadow = 0; status && shadow < shadows; ++shadow)
+        auto createShadow = [&](std::size_t shadow)
         {
             replacement.shadowImages[shadow] = mDevice.createImage(
                 {{width, height, 1}, SHADOW_FORMAT,
@@ -156,7 +156,18 @@ public:
                 mDevice.createImageView(
                     {replacement.shadowImages[shadow], SHADOW_FORMAT,
                      {ImageAspect::Depth, 0, 1, 0, 1}}, status);
-        }
+        };
+        if (productionFrameHasPass(frame.passes,
+                                   ProductionFramePass::DirectionalShadow))
+            for (std::size_t shadow = 0;
+                 status && shadow < LIGHTING_DIRECTIONAL_SHADOW_CASCADES;
+                 ++shadow)
+                createShadow(shadow);
+        if (productionFrameHasPass(frame.passes,
+                                   ProductionFramePass::ProjectorShadow))
+            for (std::size_t slot = 0;
+                 status && slot < LIGHTING_PROJECTOR_SHADOWS; ++slot)
+                createShadow(LIGHTING_DIRECTIONAL_SHADOW_CASCADES + slot);
         if (!status)
         {
             destroy(replacement);

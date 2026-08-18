@@ -23,6 +23,7 @@
 #include "ghi/include/llghiproductionframepacket.h"
 #include "ghi/include/llghiproductionframetargets.h"
 #include "ghi/include/llghiproductiongbufferexecutor.h"
+#include "ghi/include/llghiproductionlightingexecutor.h"
 #include "ghi/include/llghiproductiontextureresidency.h"
 #include "ghi/include/llghilightingscenepacket.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
@@ -2933,6 +2934,147 @@ void LLGHIValidationObject::test<36>()
                !targetHash.empty());
     ensure("I8c2 records a combined production-frame identity",
            !executionResult.frameSha256.empty());
+#if defined(LL_GHI_I7_LIGHTING_SHADER_PACKAGE) && \
+    defined(LL_GHI_I7_PROJECTOR_SHADER_PACKAGE) && \
+    defined(LL_GHI_I7_SHADOW_SHADER_PACKAGE)
+    MaterialTextureResource alphaTexture;
+    alphaTexture.sourceIdentity[0] = std::byte{0x61};
+    alphaTexture.contentIdentity[0] = std::byte{0x62};
+    alphaTexture.colorSpace = TextureColorSpace::SRGB;
+    alphaTexture.width = alphaTexture.height = 1;
+    alphaTexture.components = 4;
+    alphaTexture.decodedPixels = {
+        std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+    frame.materials.textures.push_back(alphaTexture);
+    MaterialResource maskedMaterial = material;
+    maskedMaterial.identity[0] = std::byte{0x63};
+    maskedMaterial.alphaMode = MaterialAlphaMode::Mask;
+    maskedMaterial.alphaCutoff = .5f;
+    maskedMaterial.doubleSided = true;
+    MaterialTextureBinding alphaBinding;
+    alphaBinding.semantic = TextureSemantic::BaseColor;
+    alphaBinding.texture = 0;
+    maskedMaterial.textures.push_back(alphaBinding);
+    frame.materials.materials.push_back(maskedMaterial);
+    MaterialSceneDraw maskedDraw = riggedMaterialDraw;
+    maskedDraw.semanticId = 0x493863335f4d4153ull; // "I8c3_MAS"
+    maskedDraw.material = 1;
+    frame.materials.draws.push_back(maskedDraw);
+
+    ProjectorTextureResource projectorTexture;
+    projectorTexture.sourceIdentity[0] = 0x71;
+    projectorTexture.contentIdentity[0] = std::byte{0x72};
+    projectorTexture.width = projectorTexture.height = 1;
+    projectorTexture.components = 4;
+    projectorTexture.decodedPixels = {
+        std::byte{255}, std::byte{192}, std::byte{128}, std::byte{255}};
+    const std::string projectorDigest = sha256(
+        projectorTexture.decodedPixels);
+    auto hexNibble = [](char value) -> std::uint8_t
+    {
+        return value >= 'a' ? static_cast<std::uint8_t>(value - 'a' + 10)
+                            : static_cast<std::uint8_t>(value - '0');
+    };
+    for (std::size_t byte = 0;
+         byte < projectorTexture.contentIdentity.size(); ++byte)
+        projectorTexture.contentIdentity[byte] = static_cast<std::byte>(
+            (hexNibble(projectorDigest[byte * 2]) << 4) |
+             hexNibble(projectorDigest[byte * 2 + 1]));
+    frame.lighting.projectorTextures.push_back(projectorTexture);
+    LocalLightRecord projectorLight;
+    projectorLight.semanticId = 0x493863335f50524aull; // "I8c3_PRJ"
+    projectorLight.kind = LocalLightKind::Projector;
+    projectorLight.position = {{0.f, 0.f, 2.f}};
+    projectorLight.radius = 8.f;
+    projectorLight.projectorTextureIdentity =
+        projectorTexture.sourceIdentity;
+    projectorLight.shadowSlot = 0;
+    frame.lighting.localLights.push_back(projectorLight);
+    frame.lighting.shadows.enabled = true;
+    frame.lighting.shadows.directionalCascadeCount = 4;
+    frame.lighting.shadows.projectorShadowCount = 1;
+    frame.lighting.shadows.comparability =
+        LightingComparability::ShadowImagesDeferred;
+    frame.lighting.shadows.clipPlanes = {{1.f, 2.f, 4.f, 8.f}};
+    frame.lighting.shadows.directionalBias = .001f;
+    frame.lighting.shadows.spotShadowOffset = .001f;
+    frame.lighting.shadows.spotShadowBias = .001f;
+    frame.lighting.shadows.projectorLightIds[0] =
+        projectorLight.semanticId;
+    for (auto& matrix : frame.lighting.shadows.matrices)
+        for (std::size_t diagonal = 0; diagonal < 4; ++diagonal)
+            matrix[diagonal * 5] = 1.f;
+    for (std::size_t diagonal = 0; diagonal < 4; ++diagonal)
+    {
+        frame.lighting.viewMatrix[diagonal * 5] = 1.f;
+        frame.lighting.projectionMatrix[diagonal * 5] = 1.f;
+    }
+    frame.passes |=
+        productionFramePassBit(ProductionFramePass::DirectionalShadow) |
+        productionFramePassBit(ProductionFramePass::ProjectorShadow) |
+        productionFramePassBit(ProductionFramePass::ProjectorLighting);
+    ++frame.assemblyEpoch;
+    ++frame.materials.resourceEpoch;
+    ++frame.lighting.resourceEpoch;
+    residencyLimits.maxEntries = 4;
+    status = residency.update(frame, residencyLimits, residencyResult);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8c3 retains the masked and projector images",
+                  residencyResult.residentEntries, std::uint32_t{3});
+    status = targets.ensure(frame, targetLimits, targetResult);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8c3 owns four G-buffer, depth, lighting and six semantic shadow images",
+                  targetResult.imageCount, std::uint32_t{12});
+
+    status = executor.submit(
+        frame, targets.targets(), residency, executionLimits);
+    ensure(status.message(), status.ok());
+    status = executor.poll(executionResult);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc productionLightingPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_LIGHTING_SHADER_PACKAGE, productionLightingPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc productionProjectorPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_PROJECTOR_SHADER_PACKAGE, productionProjectorPackage);
+    ensure(status.message(), status.ok());
+    ShaderPackageDesc productionShadowPackage;
+    status = loadShaderPackage(
+        LL_GHI_I7_SHADOW_SHADER_PACKAGE, productionShadowPackage);
+    ensure(status.message(), status.ok());
+    ProductionLightingExecutor lightingExecutor(
+        *created.device, std::move(productionLightingPackage),
+        std::move(productionProjectorPackage),
+        std::move(productionShadowPackage));
+    ProductionLightingLimits lightingLimits;
+    status = lightingExecutor.submit(
+        frame, targets.targets(), residency, lightingLimits);
+    ensure(status.message(), status.ok());
+    ensure("I8c3 shared lighting execution is asynchronous",
+           lightingExecutor.pending());
+    ProductionLightingResult lightingResult;
+    status = lightingExecutor.poll(lightingResult);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8c3 executes four directional cascades",
+                  lightingResult.directionalShadowMaps, std::uint32_t{4});
+    ensure_equals("I8c3 executes one projector shadow",
+                  lightingResult.projectorShadowMaps, std::uint32_t{1});
+    ensure_equals("I8c3 replays opaque and alpha-masked casters",
+                  lightingResult.shadowCasterDraws, std::uint32_t{3});
+    ensure_equals("I8c3 includes two rigged casters",
+                  lightingResult.shadowRiggedDraws, std::uint32_t{2});
+    ensure_equals("I8c3 includes one alpha-masked caster",
+                  lightingResult.shadowMaskedDraws, std::uint32_t{1});
+    ensure_equals("I8c3 executes one projector light",
+                  lightingResult.projectorLights, std::uint32_t{1});
+    ensure("I8c3 completes the shared lighting readback",
+           !lightingResult.lightingSha256.empty());
+    ensure("I8c3 records the same production-frame identity",
+           !lightingResult.frameSha256.empty());
+    ensure("I8c3 destroys lighting resources explicitly",
+           lightingExecutor.shutdown().ok());
+#endif
     ensure("I8c2 destroys execution resources explicitly",
            executor.shutdown().ok());
 #endif

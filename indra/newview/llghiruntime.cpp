@@ -17,6 +17,7 @@
 #include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghiproductionframeconsumer.h"
 #include "ghi/include/llghiproductiongbufferexecutor.h"
+#include "ghi/include/llghiproductionlightingexecutor.h"
 #include "ghi/include/llghiproductionframetargets.h"
 #include "ghi/include/llghiproductiontextureresidency.h"
 #include "ghi/include/llghiterrainscenepacket.h"
@@ -37,8 +38,10 @@ std::unique_ptr<LL::GHI::TerrainOffscreenProbe> sTerrainProbe;
 std::unique_ptr<LL::GHI::ProductionTextureResidency> sTextureResidency;
 std::unique_ptr<LL::GHI::ProductionFrameTargets> sFrameTargets;
 std::unique_ptr<LL::GHI::ProductionGBufferExecutor> sGBufferExecutor;
+std::unique_ptr<LL::GHI::ProductionLightingExecutor> sProductionLightingExecutor;
 std::optional<LL::GHI::ProductionTextureResidencyResult>
     sPendingProductionResidency;
+std::optional<std::string> sPendingProductionGBufferHash;
 bool sPendingProductionBudgetLimited = false;
 std::uint64_t sNextLivePacketFrame = 0;
 std::uint32_t sLivePacketAttempts = 0;
@@ -75,9 +78,15 @@ bool sLightingDisabled = false;
 
 bool shadowOffscreenRequestedInternal();
 
+bool productionLightingExecutionRequested()
+{
+    return gSavedSettings.getBOOL("RenderVulkanLightingExecutionProbe");
+}
+
 bool gBufferExecutionRequested()
 {
-    return gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe");
+    return gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe") ||
+           productionLightingExecutionRequested();
 }
 
 bool frameGraphRequested()
@@ -467,8 +476,30 @@ void pollProductionGBuffer()
             << " non-clear-pixels=" << result.nonClearPixels[0] << ','
             << result.nonClearPixels[1] << ',' << result.nonClearPixels[2]
             << ',' << result.nonClearPixels[3] << LL_ENDL;
-        sPendingProductionResidency.reset();
-        sPendingProductionBudgetLimited = false;
+        sPendingProductionGBufferHash.reset();
+        if (!productionLightingExecutionRequested())
+        {
+            sPendingProductionResidency.reset();
+            sPendingProductionBudgetLimited = false;
+        }
+        return;
+    }
+    if (productionLightingExecutionRequested())
+    {
+        sPendingProductionGBufferHash = result.frameSha256;
+        LL_INFOS("GHIIntegration")
+            << "I8c3 shared production G-buffer stage ready: frame="
+            << result.frameId << " assembly-epoch=" << result.assemblyEpoch
+            << " target-generation/extent=" << result.targetGeneration << '/'
+            << result.width << 'x' << result.height
+            << " draws(material/rigged/terrain/pbr/deferred-material/deferred-terrain)="
+            << result.materialDraws << '/' << result.riggedMaterialDraws << '/'
+            << result.terrainDraws << '/' << result.pbrTerrainDraws << '/'
+            << result.deferredMaterialDraws << '/'
+            << result.deferredTerrainDraws
+            << " frame-sha256=" << result.frameSha256
+            << ". Shadow and lighting completion remains pending; visible rendering remains OpenGL."
+            << LL_ENDL;
         return;
     }
     ++sFrameAssemblySamples;
@@ -499,6 +530,96 @@ void pollProductionGBuffer()
             << (sPendingProductionBudgetLimited ? "yes" : "no")
             << ". Shared native attachments remain private; lighting, surfaces, swapchains, presentation, and visible output remain excluded."
             << LL_ENDL;
+    sPendingProductionResidency.reset();
+    sPendingProductionBudgetLimited = false;
+}
+
+void pollProductionLighting()
+{
+    if (!sProductionLightingExecutor ||
+        !sProductionLightingExecutor->pending()) return;
+    LL::GHI::ProductionLightingResult result;
+    const LL::GHI::Status status =
+        sProductionLightingExecutor->poll(result);
+    if (!status)
+    {
+        if (status.code() != LL::GHI::StatusCode::NotReady)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I8c3 production shadow/lighting verification failed: "
+                << status.message() << LL_ENDL;
+            sFrameAssemblyDisabled = true;
+        }
+        return;
+    }
+    const bool frameIdentityMatches = sPendingProductionGBufferHash &&
+        *sPendingProductionGBufferHash == result.frameSha256;
+    const bool directionalCoverage = result.directionalShadowMaps &&
+        std::any_of(result.shadowNonClearPixels.begin(),
+                    result.shadowNonClearPixels.begin() +
+                        LL::GHI::LIGHTING_DIRECTIONAL_SHADOW_CASCADES,
+                    [](std::uint64_t pixels) { return pixels != 0; });
+    const bool projectorCoverage = result.projectorLights &&
+        result.projectorShadowMaps &&
+        std::any_of(result.shadowNonClearPixels.begin() +
+                        LL::GHI::LIGHTING_DIRECTIONAL_SHADOW_CASCADES,
+                    result.shadowNonClearPixels.end(),
+                    [](std::uint64_t pixels) { return pixels != 0; });
+    if (!frameIdentityMatches || !result.litNonClearPixels ||
+        !result.shadowCasterDraws || !directionalCoverage ||
+        !projectorCoverage)
+    {
+        LL_INFOS("GHIIntegration")
+            << "I8c3 completed without full coherent directional/projector shadow and lighting coverage; retrying. frame="
+            << result.frameId << " identity-match="
+            << (frameIdentityMatches ? "yes" : "no")
+            << " lights(directional/point/projector)="
+            << result.directionalLights << '/' << result.pointLights << '/'
+            << result.projectorLights << " shadows(total/directional/projector/casters)="
+            << result.shadowMaps << '/' << result.directionalShadowMaps << '/'
+            << result.projectorShadowMaps << '/' << result.shadowCasterDraws
+            << " lit-pixels=" << result.litNonClearPixels
+            << " shadow-pixels=";
+        for (std::size_t shadow = 0;
+             shadow < result.shadowNonClearPixels.size(); ++shadow)
+            LL_CONT << (shadow ? "," : "")
+                    << result.shadowNonClearPixels[shadow];
+        LL_CONT << LL_ENDL;
+        sPendingProductionGBufferHash.reset();
+        sPendingProductionResidency.reset();
+        sPendingProductionBudgetLimited = false;
+        return;
+    }
+    ++sFrameAssemblySamples;
+    LL_INFOS("GHIIntegration")
+        << "I8c3 shared-target native shadow and lighting PASS: sample="
+        << sFrameAssemblySamples << '/' << livePacketMaximum()
+        << " frame=" << result.frameId << " assembly-epoch="
+        << result.assemblyEpoch << " target-generation/extent="
+        << result.targetGeneration << '/' << result.width << 'x'
+        << result.height << " lights(directional/point/projector/textures/volume/fullscreen)="
+        << result.directionalLights << '/' << result.pointLights << '/'
+        << result.projectorLights << '/' << result.projectorTextures << '/'
+        << result.projectorVolumeLights << '/'
+        << result.projectorFullscreenLights
+        << " shadows(total/directional/projector/casters/rigged/masked/deferred)="
+        << result.shadowMaps << '/' << result.directionalShadowMaps << '/'
+        << result.projectorShadowMaps << '/' << result.shadowCasterDraws << '/'
+        << result.shadowRiggedDraws << '/' << result.shadowMaskedDraws << '/'
+        << result.deferredShadowDraws << " upload-bytes="
+        << result.uploadBytes << " frame-sha256=" << result.frameSha256
+        << " lighting-sha256=" << result.lightingSha256
+        << " lit-non-clear-pixels=" << result.litNonClearPixels
+        << " shadow-non-clear-pixels=";
+    for (std::size_t shadow = 0;
+         shadow < result.shadowNonClearPixels.size(); ++shadow)
+        LL_CONT << (shadow ? "," : "")
+                << result.shadowNonClearPixels[shadow];
+    LL_CONT << " capture-budget-limited="
+            << (sPendingProductionBudgetLimited ? "yes" : "no")
+            << ". G-buffer, depth, shadow, and lighting targets share one private production-frame identity; surfaces, swapchains, presentation, and visible output remain excluded."
+            << LL_ENDL;
+    sPendingProductionGBufferHash.reset();
     sPendingProductionResidency.reset();
     sPendingProductionBudgetLimited = false;
 }
@@ -597,10 +718,57 @@ void initialize()
                             *sVulkanDevice, std::move(materialPackage),
                             std::move(terrainPackage));
                 }
+                if (productionLightingExecutionRequested())
+                {
+                    const std::string lightingPath =
+                        gDirUtilp->getExpandedFilename(
+                            LL_PATH_APP_SETTINGS, "ghi_shaders",
+                            "i7_deferred_lighting.llghisp");
+                    const std::string projectorPath =
+                        gDirUtilp->getExpandedFilename(
+                            LL_PATH_APP_SETTINGS, "ghi_shaders",
+                            "i7_projector_lighting.llghisp");
+                    const std::string shadowPath =
+                        gDirUtilp->getExpandedFilename(
+                            LL_PATH_APP_SETTINGS, "ghi_shaders",
+                            "i7_shadow.llghisp");
+                    LL::GHI::ShaderPackageDesc lightingPackage;
+                    LL::GHI::ShaderPackageDesc projectorPackage;
+                    LL::GHI::ShaderPackageDesc shadowPackage;
+                    const LL::GHI::Status lightingStatus =
+                        LL::GHI::loadShaderPackage(
+                            lightingPath, lightingPackage);
+                    const LL::GHI::Status projectorStatus =
+                        LL::GHI::loadShaderPackage(
+                            projectorPath, projectorPackage);
+                    const LL::GHI::Status shadowStatus =
+                        LL::GHI::loadShaderPackage(
+                            shadowPath, shadowPackage);
+                    if (!lightingStatus || !projectorStatus || !shadowStatus)
+                    {
+                        LL_WARNS("GHIIntegration")
+                            << "I8c3 production lighting shader packages were not loaded: lighting="
+                            << lightingStatus.message() << " projector="
+                            << projectorStatus.message() << " shadow="
+                            << shadowStatus.message()
+                            << ". Visible rendering remains OpenGL."
+                            << LL_ENDL;
+                    }
+                    else
+                    {
+                        sProductionLightingExecutor = std::make_unique<
+                            LL::GHI::ProductionLightingExecutor>(
+                                *sVulkanDevice, std::move(lightingPackage),
+                                std::move(projectorPackage),
+                                std::move(shadowPackage));
+                    }
+                }
             }
             const LL::GHI::ProductionTextureResidencyLimits limits;
             LL_INFOS("GHIIntegration")
-                << (gBufferExecutionRequested()
+                << (productionLightingExecutionRequested()
+                    ? "I8c3 shared-target native shadow and lighting execution armed; interval="
+                    : gBufferExecutionRequested()
                     ? "I8c2 shared-target material and terrain G-buffer execution armed; interval="
                     : frameGraphRequested()
                     ? "I8c1 shared production frame targets and retained texture residency armed; interval="
@@ -612,7 +780,9 @@ void initialize()
                 << limits.maxResidentBytes << '/'
                 << limits.maxUploadBytesPerFrame << '/'
                 << limits.staleAfterAssemblyEpochs
-                << (gBufferExecutionRequested()
+                << (productionLightingExecutionRequested()
+                    ? ". Immutable decoded images are retained by content; material, terrain, directional/projector shadows, deferred lighting, and projector lighting execute against one private target graph with asynchronous verification and no presentation."
+                    : gBufferExecutionRequested()
                     ? ". Immutable decoded images are retained by content; material and terrain draws execute only into private shared attachments with asynchronous verification and no presentation."
                     : ". Immutable decoded images are deduplicated by content while logical source generations remain explicit; no draw or presentation is recorded.")
                 << LL_ENDL;
@@ -933,6 +1103,16 @@ void shutdown()
                 << probeStatus.message() << LL_ENDL;
         sTerrainProbe.reset();
     }
+    if (sProductionLightingExecutor)
+    {
+        const LL::GHI::Status executionStatus =
+            sProductionLightingExecutor->shutdown();
+        if (!executionStatus)
+            LL_WARNS("GHIIntegration")
+                << "I8c3 production shadow/lighting executor did not retire cleanly: "
+                << executionStatus.message() << LL_ENDL;
+        sProductionLightingExecutor.reset();
+    }
     if (sGBufferExecutor)
     {
         const LL::GHI::Status executionStatus = sGBufferExecutor->shutdown();
@@ -969,6 +1149,7 @@ void shutdown()
     }
     sVulkanDevice.reset();
     sPendingProductionResidency.reset();
+    sPendingProductionGBufferHash.reset();
     sPendingProductionBudgetLimited = false;
     sNextLivePacketFrame = 0;
     sLivePacketAttempts = 0;
@@ -1116,10 +1297,13 @@ bool shadowOffscreenRequested()
 bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id)
 {
     pollProductionGBuffer();
+    pollProductionLighting();
     pollMaterialProbe();
     if (!materialCaptureRequested() || sMaterialCaptureClaimed ||
         (sMaterialProbe && sMaterialProbe->pending()) ||
         (sGBufferExecutor && sGBufferExecutor->pending()) ||
+        (sProductionLightingExecutor &&
+         sProductionLightingExecutor->pending()) ||
         sPendingLightingMaterial)
         return false;
     if (frameAssemblyRequested())
@@ -1242,10 +1426,13 @@ bool terrainCaptureRequested()
 bool shouldCaptureLiveTerrainPacket(std::uint64_t frame_id)
 {
     pollProductionGBuffer();
+    pollProductionLighting();
     pollTerrainProbe();
     if (!terrainCaptureRequested() || sTerrainCaptureClaimed ||
         (sTerrainProbe && sTerrainProbe->pending()) ||
         (sGBufferExecutor && sGBufferExecutor->pending()) ||
+        (sProductionLightingExecutor &&
+         sProductionLightingExecutor->pending()) ||
         sPendingLightingTerrain) return false;
     if (frameAssemblyRequested())
     {
@@ -1355,8 +1542,11 @@ bool lightingCaptureRequested()
 bool shouldCaptureLiveLightingPacket(std::uint64_t frame_id)
 {
     pollProductionGBuffer();
+    pollProductionLighting();
     if (!lightingCaptureRequested() || sLightingCaptureClaimed) return false;
-    if (sGBufferExecutor && sGBufferExecutor->pending()) return false;
+    if ((sGBufferExecutor && sGBufferExecutor->pending()) ||
+        (sProductionLightingExecutor &&
+         sProductionLightingExecutor->pending())) return false;
     if (frameAssemblyRequested())
     {
         const std::uint32_t maximum = livePacketMaximum();
@@ -1561,17 +1751,49 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
                         sFrameAssemblyDisabled = true;
                     return;
                 }
+                if (productionLightingExecutionRequested())
+                {
+                    if (!sProductionLightingExecutor)
+                    {
+                        LL_WARNS("GHIIntegration")
+                            << "I8c3 shadow/lighting execution was requested without an active executor."
+                            << LL_ENDL;
+                        sFrameAssemblyDisabled = true;
+                        return;
+                    }
+                    const LL::GHI::ProductionLightingLimits lightingLimits;
+                    const LL::GHI::Status lightingStatus =
+                        sProductionLightingExecutor->submit(
+                            frame, sFrameTargets->targets(),
+                            *sTextureResidency, lightingLimits);
+                    if (!lightingStatus)
+                    {
+                        LL_WARNS("GHIIntegration")
+                            << "I8c3 production shadow/lighting submission rejected frame "
+                            << packet.frameId << ": "
+                            << lightingStatus.message() << " attempt="
+                            << sFrameAssemblyAttempts << LL_ENDL;
+                        if (lightingStatus.code() ==
+                            LL::GHI::StatusCode::DeviceLost)
+                            sFrameAssemblyDisabled = true;
+                        return;
+                    }
+                }
                 sPendingProductionResidency = result;
                 sPendingProductionBudgetLimited = captureBudgetLimited;
                 LL_INFOS("GHIIntegration")
-                    << "I8c2 shared-target material and terrain G-buffer submitted asynchronously: frame="
+                    << (productionLightingExecutionRequested()
+                        ? "I8c3 shared-target G-buffer, shadow, and lighting graph submitted asynchronously: frame="
+                        : "I8c2 shared-target material and terrain G-buffer submitted asynchronously: frame=")
                     << packet.frameId << " assembly-epoch="
                     << frame.assemblyEpoch << " target-generation/extent="
                     << targetResult.targetGeneration << '/'
                     << targetResult.width << 'x' << targetResult.height
                     << " resident-entries/bytes=" << result.residentEntries
                     << '/' << result.residentBytes
-                    << ". Completion will be polled on later OpenGL frames; visible rendering remains OpenGL."
+                    << (productionLightingExecutionRequested()
+                        ? ". Both ordered native submissions share the same frame identity and private targets; completion will be polled on later OpenGL frames and visible rendering remains OpenGL."
+                        : ". Completion will be polled on later OpenGL frames; visible rendering remains OpenGL.")
                     << LL_ENDL;
                 return;
             }

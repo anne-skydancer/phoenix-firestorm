@@ -11,6 +11,7 @@
 #include "llghivalidation.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -52,6 +53,23 @@ bool hasAnyUsage(ResourceUsage value, ResourceUsage mask)
 {
     using Value = std::underlying_type_t<ResourceUsage>;
     return (static_cast<Value>(value) & static_cast<Value>(mask)) != 0;
+}
+
+float srgbToLinear(std::uint8_t value)
+{
+    const float encoded = static_cast<float>(value) / 255.f;
+    return encoded <= 0.04045f
+        ? encoded / 12.92f
+        : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+}
+
+std::uint8_t linearToSrgb(float value)
+{
+    const float linear = std::clamp(value, 0.f, 1.f);
+    const float encoded = linear <= 0.0031308f
+        ? linear * 12.92f
+        : 1.055f * std::pow(linear, 1.f / 2.4f) - 0.055f;
+    return static_cast<std::uint8_t>(std::lround(encoded * 255.f));
 }
 
 std::uint32_t formatBytesPerTexel(Format format)
@@ -1778,13 +1796,14 @@ Status ValidationDevice::executeGenerateMipmaps(
         return invalidHandle("mip generation requires a live transfer source/destination image");
     }
     const Format format = image->second.format;
-    const bool byte_unorm = format == Format::R8UNorm || format == Format::RG8UNorm ||
-        format == Format::RGBA8UNorm || format == Format::BGRA8UNorm;
-    if (!byte_unorm)
+    const bool byte_color = format == Format::R8UNorm || format == Format::RG8UNorm ||
+        format == Format::RGBA8UNorm || format == Format::BGRA8UNorm ||
+        format == Format::RGBA8SRGB || format == Format::BGRA8SRGB;
+    if (!byte_color)
     {
         return Status::failure(
             StatusCode::Unsupported,
-            "validation mip generation currently supports byte UNorm formats");
+            "validation mip generation currently supports byte color formats");
     }
     if (subresources.aspect != ImageAspect::Color || subresources.mipLevelCount < 2 ||
         subresources.arrayLayerCount == 0 ||
@@ -1819,7 +1838,11 @@ Status ValidationDevice::executeGenerateMipmaps(
             for (std::uint32_t x = 0; x < destination_extent.width; ++x)
             for (std::uint32_t channel = 0; channel < channels; ++channel)
             {
+                const bool srgb_channel =
+                    (format == Format::RGBA8SRGB || format == Format::BGRA8SRGB) &&
+                    channel < 3;
                 std::uint32_t sum = 0;
+                float linear_sum = 0.f;
                 std::uint32_t samples = 0;
                 for (std::uint32_t dz = 0; dz < 2; ++dz)
                 for (std::uint32_t dy = 0; dy < 2; ++dy)
@@ -1834,14 +1857,25 @@ Status ValidationDevice::executeGenerateMipmaps(
                         const std::size_t source_index =
                             (((static_cast<std::size_t>(sz) * source_extent.height + sy) *
                                source_extent.width + sx) * channels) + channel;
-                        sum += std::to_integer<std::uint8_t>(source[source_index]);
+                        const std::uint8_t sample =
+                            std::to_integer<std::uint8_t>(source[source_index]);
+                        if (srgb_channel)
+                        {
+                            linear_sum += srgbToLinear(sample);
+                        }
+                        else
+                        {
+                            sum += sample;
+                        }
                         ++samples;
                     }
                 }
                 const std::size_t destination_index =
                     (((static_cast<std::size_t>(z) * destination_extent.height + y) *
                        destination_extent.width + x) * channels) + channel;
-                destination[destination_index] = std::byte(sum / samples);
+                destination[destination_index] = srgb_channel
+                    ? static_cast<std::byte>(linearToSrgb(linear_sum / samples))
+                    : static_cast<std::byte>(sum / samples);
             }
         }
     }

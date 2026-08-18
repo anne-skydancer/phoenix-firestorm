@@ -1504,7 +1504,6 @@ private:
                 if (status) status = commands.setScissor(
                     {0, 0, PROBE_WIDTH, PROBE_HEIGHT});
                 bool geometryBound = false;
-                bool frameSetBound = false;
                 for (const ShadowDrawResources& caster : shadowDraws)
                 {
                     if (!status) break;
@@ -1514,12 +1513,11 @@ private:
                         packet.materials[draw.material];
                     status = commands.bindPipeline(material.doubleSided
                         ? mShadowDoubleSidedPipeline : mShadowCulledPipeline);
-                    if (status && !frameSetBound)
-                    {
-                        status = commands.bindBindingSet(
-                            0, shadowPasses[shadow].set);
-                        frameSetBound = status.ok();
-                    }
+                    // GHI pipeline binding invalidates descriptor state. Bind
+                    // the pass set after every pipeline choice so a cull-mode
+                    // change cannot leave the shadow draw without group 0.
+                    if (status) status = commands.bindBindingSet(
+                        0, shadowPasses[shadow].set);
                     if (status && !geometryBound)
                     {
                         status = commands.bindVertexBuffer(0, vertices, 0);

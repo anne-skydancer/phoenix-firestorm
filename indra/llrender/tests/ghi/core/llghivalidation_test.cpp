@@ -19,6 +19,8 @@
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghimaterialscenepacket.h"
 #include "ghi/include/llghimaterialoffscreenprobe.h"
+#include "ghi/include/llghiproductionframeconsumer.h"
+#include "ghi/include/llghiproductionframepacket.h"
 #include "ghi/include/llghilightingscenepacket.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
 #include "ghi/include/llghiterrainscenepacket.h"
@@ -2660,6 +2662,149 @@ void LLGHIValidationObject::test<35>()
 #endif
     ensure("I7b deferred resources drain", created.device->waitIdle().ok());
 #endif
+}
+
+template<> template<>
+void LLGHIValidationObject::test<36>()
+{
+    using namespace LL::GHI;
+
+    constexpr std::uint64_t frameId = 0x4938615f4652414dull; // "I8a_FRAM"
+    ProductionFramePacket frame;
+    frame.frameId = frameId;
+    frame.assemblyEpoch = 7;
+    frame.sourceWidth = 64;
+    frame.sourceHeight = 64;
+    frame.passes =
+        productionFramePassBit(ProductionFramePass::MaterialGBuffer) |
+        productionFramePassBit(ProductionFramePass::TerrainGBuffer) |
+        productionFramePassBit(ProductionFramePass::DeferredLighting);
+
+    frame.materials.frameId = frameId;
+    frame.materials.sceneEpoch = 11;
+    frame.materials.resourceEpoch = 3;
+    frame.materials.sourceWidth = frame.sourceWidth;
+    frame.materials.sourceHeight = frame.sourceHeight;
+    MaterialResource material;
+    material.identity[0] = std::byte{0x11};
+    material.model = MaterialModel::MetallicRoughness;
+    frame.materials.materials.push_back(material);
+    MaterialSceneVertex materialVertex;
+    materialVertex.position = {{-0.5f, -0.5f, 0.5f}};
+    frame.materials.vertices.push_back(materialVertex);
+    materialVertex.position = {{0.5f, -0.5f, 0.5f}};
+    frame.materials.vertices.push_back(materialVertex);
+    materialVertex.position = {{0.f, 0.5f, 0.5f}};
+    frame.materials.vertices.push_back(materialVertex);
+    frame.materials.indices = {0, 1, 2};
+    MaterialSceneDraw materialDraw;
+    materialDraw.semanticId = 0x4938615f4d41544cull; // "I8a_MATL"
+    materialDraw.material = 0;
+    materialDraw.indexCount = 3;
+    frame.materials.draws.push_back(materialDraw);
+
+    frame.terrain.frameId = frameId;
+    frame.terrain.sceneEpoch = 12;
+    frame.terrain.resourceEpoch = 4;
+    frame.terrain.sourceWidth = frame.sourceWidth;
+    frame.terrain.sourceHeight = frame.sourceHeight;
+    MaterialTextureResource terrainTexture;
+    terrainTexture.sourceIdentity[0] = std::byte{0x21};
+    terrainTexture.contentIdentity[0] = std::byte{0x22};
+    terrainTexture.colorSpace = TextureColorSpace::SRGB;
+    terrainTexture.width = terrainTexture.height = 1;
+    terrainTexture.components = 4;
+    terrainTexture.decodedPixels = {
+        std::byte{64}, std::byte{96}, std::byte{128}, std::byte{255}};
+    frame.terrain.textures.push_back(terrainTexture);
+    TerrainRegionResource region;
+    region.identity[0] = std::byte{0x31};
+    region.compositionTexture = 0;
+    for (std::size_t layer = 0; layer < region.layers.size(); ++layer)
+    {
+        region.layers[layer].identity[0] =
+            static_cast<std::byte>(0x40 + layer);
+        region.layers[layer].baseColorTexture = 0;
+    }
+    frame.terrain.regions.push_back(region);
+    TerrainSceneVertex terrainVertex;
+    terrainVertex.position = {{-0.75f, -0.75f, 0.5f}};
+    frame.terrain.vertices.push_back(terrainVertex);
+    terrainVertex.position = {{0.75f, -0.75f, 0.5f}};
+    frame.terrain.vertices.push_back(terrainVertex);
+    terrainVertex.position = {{0.f, 0.75f, 0.5f}};
+    frame.terrain.vertices.push_back(terrainVertex);
+    frame.terrain.indices = {0, 1, 2};
+    TerrainSceneDraw terrainDraw;
+    terrainDraw.semanticId = 0x4938615f54455252ull; // "I8a_TERR"
+    terrainDraw.region = 0;
+    terrainDraw.indexCount = 3;
+    frame.terrain.draws.push_back(terrainDraw);
+
+    frame.lighting.frameId = frameId;
+    frame.lighting.sceneEpoch = 13;
+    frame.lighting.resourceEpoch = 5;
+    frame.lighting.sourceWidth = frame.sourceWidth;
+    frame.lighting.sourceHeight = frame.sourceHeight;
+    frame.lighting.ambientColor = {{0.1f, 0.2f, 0.3f}};
+    frame.lighting.sun.active = true;
+
+    ProductionFrameResourceSummary summary;
+    Status status = validateProductionFramePacket(frame, &summary);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8a summarizes both draw streams",
+                  summary.materialDraws + summary.terrainDraws,
+                  std::uint32_t{2});
+    ensure_equals("I8a summarizes combined geometry", summary.vertices,
+                  std::uint32_t{6});
+    ensure_equals("I8a builds a typed unique resource inventory",
+                  summary.uniqueResources, std::uint32_t{7});
+    ensure_equals("I8a accounts decoded texture bytes",
+                  summary.decodedTextureBytes, std::uint64_t{4});
+
+    std::vector<std::byte> first, second;
+    ensure("I8a encodes an assembled frame",
+           encodeProductionFramePacket(frame, first).ok());
+    ensure("I8a encoding is deterministic",
+           encodeProductionFramePacket(frame, second).ok() && first == second);
+    ProductionFramePacket decoded;
+    ensure("I8a decodes an assembled frame",
+           decodeProductionFramePacket(first, decoded).ok());
+    ensure("I8a packet round trips exactly", decoded == frame);
+    const std::string hash = productionFramePacketSha256(frame);
+    ensure_equals("I8a packet hash is SHA-256", hash.size(), std::size_t{64});
+
+    ProductionFramePacket mismatched = frame;
+    ++mismatched.terrain.frameId;
+    ensure("I8a rejects cross-frame assembly",
+           validateProductionFramePacket(mismatched).code() ==
+               StatusCode::InvalidArgument);
+    ProductionFramePacket invalidPass = frame;
+    invalidPass.passes |=
+        productionFramePassBit(ProductionFramePass::ProjectorLighting);
+    ensure("I8a rejects a projector pass without projector resources",
+           validateProductionFramePacket(invalidPass).code() ==
+               StatusCode::InvalidArgument);
+    std::vector<std::byte> truncated(first.begin(), first.end() - 1);
+    ensure("I8a rejects truncated assembled frames",
+           decodeProductionFramePacket(truncated, decoded).code() ==
+               StatusCode::InvalidArgument);
+
+    DeviceCreationResult created = createDevice(
+        {Backend::Validation, 0, 2, true});
+    ensure("I8a validation device", created.status.ok() && created.device);
+    ProductionFrameTransferResult result;
+    ProductionFrameTransferLimits limits;
+    status = consumeProductionFrameTransfer(
+        *created.device, frame, limits, result);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8a transfers the complete encoded frame",
+                  result.uploadBytes,
+                  static_cast<std::uint64_t>(first.size()));
+    ensure_equals("I8a transfer preserves frame identity",
+                  result.packetSha256, hash);
+    ensure("I8a deferred transfer resources drain",
+           created.device->waitIdle().ok());
 }
 
 } // namespace tut

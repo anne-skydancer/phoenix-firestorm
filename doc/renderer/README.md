@@ -21,6 +21,9 @@ supported peer and recovery path.
 - [I7 production lighting integration checkpoint](i7-production-lighting-integration-checkpoint.md)
   records the staged live lighting/shadow seam, beginning with bounded
   production-state transfer and ending with native shadow-map execution.
+- [I8 production-frame integration checkpoint](i8-production-frame-integration-checkpoint.md)
+  assembles material, terrain, lighting, projector, and shadow state from one
+  production frame before retained native frame-graph execution begins.
 - [Native Vulkan UI integration plan](ui-integration-plan.md) defines the
   frontend seam, composition order, staged UI/HUD/picking work, and release
   gates without changing the current OpenGL production route.

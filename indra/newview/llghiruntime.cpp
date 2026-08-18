@@ -15,6 +15,7 @@
 #include "ghi/include/llghiopaqueoffscreenprobe.h"
 #include "ghi/include/llghiopaquepacketconsumer.h"
 #include "ghi/include/llghimaterialoffscreenprobe.h"
+#include "ghi/include/llghiproductionframeconsumer.h"
 #include "ghi/include/llghiterrainscenepacket.h"
 #include "ghi/include/llghiterrainoffscreenprobe.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
@@ -44,6 +45,13 @@ bool sMaterialDisabled = false;
 bool sPendingMaterialBudgetLimited = false;
 std::optional<LL::GHI::MaterialScenePacket> sPendingLightingMaterial;
 std::optional<LL::GHI::TerrainScenePacket> sPendingLightingTerrain;
+std::uint64_t sNextFrameAssemblyFrame = 0;
+std::uint64_t sFrameAssemblyEpoch = 0;
+std::uint32_t sFrameAssemblyAttempts = 0;
+std::uint32_t sFrameAssemblySamples = 0;
+bool sFrameAssemblyDisabled = false;
+bool sPendingFrameMaterialBudgetLimited = false;
+bool sPendingFrameTerrainBudgetLimited = false;
 std::uint64_t sNextTerrainFrame = 0;
 std::uint32_t sTerrainAttempts = 0;
 std::uint32_t sTerrainSamples = 0;
@@ -57,6 +65,11 @@ bool sLightingCaptureClaimed = false;
 bool sLightingDisabled = false;
 
 bool shadowOffscreenRequestedInternal();
+
+bool frameAssemblyRequested()
+{
+    return gSavedSettings.getBOOL("RenderVulkanFrameAssemblyProbe");
+}
 
 bool projectorLightingOffscreenRequested()
 {
@@ -449,6 +462,29 @@ void initialize()
         << ". Visible rendering and the active renderer snapshot remain OpenGL."
         << LL_ENDL;
 
+    if (frameAssemblyRequested())
+    {
+        const LL::GHI::ProductionFrameTransferLimits limits;
+        LL_INFOS("GHIIntegration")
+            << "I8a same-frame production assembly transfer armed; interval="
+            << livePacketInterval() << " frames max-samples="
+            << livePacketMaximum()
+            << " limits(material-draws/terrain-draws/vertices/indices/resources/decoded-bytes/encoded-bytes)="
+            << limits.maxMaterialDraws << '/' << limits.maxTerrainDraws << '/'
+            << limits.maxVertices << '/' << limits.maxIndices << '/'
+            << limits.maxUniqueResources << '/'
+            << limits.maxDecodedTextureBytes << '/' << limits.maxEncodedBytes
+            << ". Material, terrain, and lighting components must share one production frame; no draw or presentation is recorded."
+            << LL_ENDL;
+        if (gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe") ||
+            gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe") ||
+            gSavedSettings.getBOOL("RenderVulkanLightingPacketProbe") ||
+            lightingOffscreenRequested() || terrainLightingOffscreenRequested())
+            LL_WARNS("GHIIntegration")
+                << "I8a frame assembly was combined with an earlier packet/offscreen probe. I8a capture precedence applies; use one integration mode per run."
+                << LL_ENDL;
+    }
+
     if (offscreenProbeRequested())
     {
         const std::string packagePath = gDirUtilp->getExpandedFilename(
@@ -761,6 +797,13 @@ void shutdown()
     sPendingMaterialBudgetLimited = false;
     sPendingLightingMaterial.reset();
     sPendingLightingTerrain.reset();
+    sNextFrameAssemblyFrame = 0;
+    sFrameAssemblyEpoch = 0;
+    sFrameAssemblyAttempts = 0;
+    sFrameAssemblySamples = 0;
+    sFrameAssemblyDisabled = false;
+    sPendingFrameMaterialBudgetLimited = false;
+    sPendingFrameTerrainBudgetLimited = false;
     sNextTerrainFrame = 0;
     sTerrainAttempts = 0;
     sTerrainSamples = 0;
@@ -871,9 +914,11 @@ void consumeLiveOpaquePacket(const LL::GHI::OpaqueScenePacket& packet,
 
 bool materialCaptureRequested()
 {
-    return sVulkanDevice && !sMaterialDisabled && sMaterialProbe &&
-           (gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe") ||
-            lightingOffscreenRequested());
+    return sVulkanDevice && !sMaterialDisabled &&
+           ((frameAssemblyRequested() && !sFrameAssemblyDisabled) ||
+            (sMaterialProbe &&
+             (gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe") ||
+              lightingOffscreenRequested())));
 }
 
 bool shadowOffscreenRequested()
@@ -885,8 +930,25 @@ bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id)
 {
     pollMaterialProbe();
     if (!materialCaptureRequested() || sMaterialCaptureClaimed ||
-        sMaterialProbe->pending() || sPendingLightingMaterial)
+        (sMaterialProbe && sMaterialProbe->pending()) ||
+        sPendingLightingMaterial)
         return false;
+    if (frameAssemblyRequested())
+    {
+        const std::uint32_t maximum = livePacketMaximum();
+        if (!maximum || sFrameAssemblySamples >= maximum ||
+            static_cast<std::uint64_t>(sFrameAssemblyAttempts) >=
+                static_cast<std::uint64_t>(maximum) * 8ull)
+            return false;
+        if (!sNextFrameAssemblyFrame)
+        {
+            sNextFrameAssemblyFrame = frame_id + livePacketInterval();
+            return false;
+        }
+        if (frame_id < sNextFrameAssemblyFrame) return false;
+        sMaterialCaptureClaimed = true;
+        return true;
+    }
     const std::uint32_t maximum = livePacketMaximum();
     if (!maximum || sMaterialSamples >= maximum ||
         static_cast<std::uint64_t>(sMaterialAttempts) >=
@@ -905,8 +967,23 @@ bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id)
 void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
                                bool budget_limited)
 {
-    if (!sMaterialCaptureClaimed || !sMaterialProbe) return;
+    if (!sMaterialCaptureClaimed ||
+        (!frameAssemblyRequested() && !sMaterialProbe)) return;
     sMaterialCaptureClaimed = false;
+    if (frameAssemblyRequested())
+    {
+        sPendingLightingMaterial = packet;
+        sPendingFrameMaterialBudgetLimited = budget_limited;
+        LL_INFOS("GHIIntegration")
+            << "I8a captured material component for production-frame assembly: frame="
+            << packet.frameId << " draws=" << packet.draws.size()
+            << " vertices=" << packet.vertices.size() << " indices="
+            << packet.indices.size() << " resources="
+            << packet.textures.size() + packet.materials.size() +
+                   packet.skins.size()
+            << LL_ENDL;
+        return;
+    }
     ++sMaterialAttempts;
     sNextMaterialFrame = packet.frameId + livePacketInterval();
     if (packet.draws.empty())
@@ -966,16 +1043,35 @@ void consumeLiveMaterialPacket(const LL::GHI::MaterialScenePacket& packet,
 
 bool terrainCaptureRequested()
 {
-    return sVulkanDevice && sTerrainProbe && !sTerrainDisabled &&
-           (gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe") ||
-            terrainLightingOffscreenRequested());
+    return sVulkanDevice && !sTerrainDisabled &&
+           ((frameAssemblyRequested() && !sFrameAssemblyDisabled) ||
+            (sTerrainProbe &&
+             (gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe") ||
+              terrainLightingOffscreenRequested())));
 }
 
 bool shouldCaptureLiveTerrainPacket(std::uint64_t frame_id)
 {
     pollTerrainProbe();
     if (!terrainCaptureRequested() || sTerrainCaptureClaimed ||
-        sTerrainProbe->pending() || sPendingLightingTerrain) return false;
+        (sTerrainProbe && sTerrainProbe->pending()) ||
+        sPendingLightingTerrain) return false;
+    if (frameAssemblyRequested())
+    {
+        const std::uint32_t maximum = livePacketMaximum();
+        if (!maximum || sFrameAssemblySamples >= maximum ||
+            static_cast<std::uint64_t>(sFrameAssemblyAttempts) >=
+                static_cast<std::uint64_t>(maximum) * 8ull)
+            return false;
+        if (!sNextFrameAssemblyFrame)
+        {
+            sNextFrameAssemblyFrame = frame_id + livePacketInterval();
+            return false;
+        }
+        if (frame_id < sNextFrameAssemblyFrame) return false;
+        sTerrainCaptureClaimed = true;
+        return true;
+    }
     const std::uint32_t maximum = livePacketMaximum();
     if (!maximum || sTerrainSamples >= maximum ||
         static_cast<std::uint64_t>(sTerrainAttempts) >=
@@ -996,6 +1092,18 @@ void consumeLiveTerrainPacket(const LL::GHI::TerrainScenePacket& packet,
 {
     if (!sTerrainCaptureClaimed || !sVulkanDevice) return;
     sTerrainCaptureClaimed = false;
+    if (frameAssemblyRequested())
+    {
+        sPendingLightingTerrain = packet;
+        sPendingFrameTerrainBudgetLimited = budget_limited;
+        LL_INFOS("GHIIntegration")
+            << "I8a captured terrain component for production-frame assembly: frame="
+            << packet.frameId << " draws=" << packet.draws.size()
+            << " regions=" << packet.regions.size() << " vertices="
+            << packet.vertices.size() << " indices=" << packet.indices.size()
+            << " textures=" << packet.textures.size() << LL_ENDL;
+        return;
+    }
     ++sTerrainAttempts;
     sNextTerrainFrame = packet.frameId + livePacketInterval();
     if (packet.draws.empty())
@@ -1047,7 +1155,8 @@ void consumeLiveTerrainPacket(const LL::GHI::TerrainScenePacket& packet,
 bool lightingCaptureRequested()
 {
     return sVulkanDevice && !sLightingDisabled &&
-           (gSavedSettings.getBOOL("RenderVulkanLightingPacketProbe") ||
+           ((frameAssemblyRequested() && !sFrameAssemblyDisabled) ||
+            gSavedSettings.getBOOL("RenderVulkanLightingPacketProbe") ||
             lightingOffscreenRequested() ||
             terrainLightingOffscreenRequested());
 }
@@ -1055,6 +1164,33 @@ bool lightingCaptureRequested()
 bool shouldCaptureLiveLightingPacket(std::uint64_t frame_id)
 {
     if (!lightingCaptureRequested() || sLightingCaptureClaimed) return false;
+    if (frameAssemblyRequested())
+    {
+        const std::uint32_t maximum = livePacketMaximum();
+        if (!maximum || sFrameAssemblySamples >= maximum ||
+            static_cast<std::uint64_t>(sFrameAssemblyAttempts) >=
+                static_cast<std::uint64_t>(maximum) * 8ull)
+            return false;
+        if (!sPendingLightingMaterial || !sPendingLightingTerrain) return false;
+        const std::uint64_t materialFrame =
+            sPendingLightingMaterial->frameId;
+        const std::uint64_t terrainFrame = sPendingLightingTerrain->frameId;
+        if (materialFrame != frame_id || terrainFrame != frame_id)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I8a discarded unpaired production-frame components: current="
+                << frame_id << " material=" << materialFrame << " terrain="
+                << terrainFrame << LL_ENDL;
+            sPendingLightingMaterial.reset();
+            sPendingLightingTerrain.reset();
+            sPendingFrameMaterialBudgetLimited = false;
+            sPendingFrameTerrainBudgetLimited = false;
+            sNextFrameAssemblyFrame = frame_id + livePacketInterval();
+            return false;
+        }
+        sLightingCaptureClaimed = true;
+        return true;
+    }
     const std::uint32_t maximum = livePacketMaximum();
     if (!maximum || sLightingSamples >= maximum ||
         static_cast<std::uint64_t>(sLightingAttempts) >=
@@ -1099,6 +1235,101 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
 {
     if (!sLightingCaptureClaimed || !sVulkanDevice) return;
     sLightingCaptureClaimed = false;
+    if (frameAssemblyRequested())
+    {
+        ++sFrameAssemblyAttempts;
+        sNextFrameAssemblyFrame = packet.frameId + livePacketInterval();
+        if (!sPendingLightingMaterial || !sPendingLightingTerrain ||
+            sPendingLightingMaterial->frameId != packet.frameId ||
+            sPendingLightingTerrain->frameId != packet.frameId)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I8a rejected lighting without same-frame material and terrain components: frame="
+                << packet.frameId << LL_ENDL;
+            sPendingLightingMaterial.reset();
+            sPendingLightingTerrain.reset();
+            sPendingFrameMaterialBudgetLimited = false;
+            sPendingFrameTerrainBudgetLimited = false;
+            return;
+        }
+
+        LL::GHI::ProductionFramePacket frame;
+        frame.frameId = packet.frameId;
+        frame.assemblyEpoch = ++sFrameAssemblyEpoch;
+        frame.sourceWidth = packet.sourceWidth;
+        frame.sourceHeight = packet.sourceHeight;
+        frame.passes =
+            LL::GHI::productionFramePassBit(
+                LL::GHI::ProductionFramePass::MaterialGBuffer) |
+            LL::GHI::productionFramePassBit(
+                LL::GHI::ProductionFramePass::TerrainGBuffer) |
+            LL::GHI::productionFramePassBit(
+                LL::GHI::ProductionFramePass::DeferredLighting);
+        const bool projectorLighting = std::any_of(
+            packet.localLights.begin(), packet.localLights.end(),
+            [](const LL::GHI::LocalLightRecord& light)
+            { return light.kind == LL::GHI::LocalLightKind::Projector; }) &&
+            !packet.projectorTextures.empty();
+        if (packet.shadows.enabled &&
+            packet.shadows.directionalCascadeCount)
+            frame.passes |= LL::GHI::productionFramePassBit(
+                LL::GHI::ProductionFramePass::DirectionalShadow);
+        if (projectorLighting)
+            frame.passes |= LL::GHI::productionFramePassBit(
+                LL::GHI::ProductionFramePass::ProjectorLighting);
+        if (projectorLighting && packet.shadows.enabled &&
+            packet.shadows.projectorShadowCount)
+            frame.passes |= LL::GHI::productionFramePassBit(
+                LL::GHI::ProductionFramePass::ProjectorShadow);
+        frame.materials = std::move(*sPendingLightingMaterial);
+        frame.terrain = std::move(*sPendingLightingTerrain);
+        frame.lighting = packet;
+        sPendingLightingMaterial.reset();
+        sPendingLightingTerrain.reset();
+
+        const bool captureBudgetLimited = budget_limited ||
+            sPendingFrameMaterialBudgetLimited ||
+            sPendingFrameTerrainBudgetLimited;
+        sPendingFrameMaterialBudgetLimited = false;
+        sPendingFrameTerrainBudgetLimited = false;
+        const LL::GHI::ProductionFrameTransferLimits limits;
+        LL::GHI::ProductionFrameTransferResult result;
+        const LL::GHI::Status status =
+            LL::GHI::consumeProductionFrameTransfer(
+                *sVulkanDevice, frame, limits, result);
+        if (!status)
+        {
+            LL_WARNS("GHIIntegration")
+                << "I8a production-frame assembly transfer rejected at frame "
+                << packet.frameId << ": " << status.message()
+                << " attempt=" << sFrameAssemblyAttempts << LL_ENDL;
+            if (status.code() == LL::GHI::StatusCode::DeviceLost)
+                sFrameAssemblyDisabled = true;
+            return;
+        }
+        ++sFrameAssemblySamples;
+        LL_INFOS("GHIIntegration")
+            << "I8a same-frame production assembly/transfer PASS: sample="
+            << sFrameAssemblySamples << '/' << livePacketMaximum()
+            << " frame=" << result.frameId << " assembly-epoch="
+            << result.assemblyEpoch << " pass-mask=0x" << std::hex
+            << result.passes << std::dec << " draws(material/terrain)="
+            << result.resources.materialDraws << '/'
+            << result.resources.terrainDraws << " vertices/indices="
+            << result.resources.vertices << '/' << result.resources.indices
+            << " resources(unique/material-textures/terrain-textures/projector-textures)="
+            << result.resources.uniqueResources << '/'
+            << result.resources.materialTextures << '/'
+            << result.resources.terrainTextures << '/'
+            << result.resources.projectorTextures << " decoded-bytes="
+            << result.resources.decodedTextureBytes << " upload-bytes="
+            << result.uploadBytes << " sha256=" << result.packetSha256
+            << " capture-budget-limited="
+            << (captureBudgetLimited ? "yes" : "no")
+            << ". The assembled frame contains no native handles and records no draw, surface, swapchain, or presentation; visible rendering remains OpenGL."
+            << LL_ENDL;
+        return;
+    }
     ++sLightingAttempts;
     sNextLightingFrame = packet.frameId + livePacketInterval();
     if (lightingOffscreenRequested())

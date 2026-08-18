@@ -12767,6 +12767,19 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderVulkanFrameAssemblyProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: assemble same-frame bounded production material, terrain, lighting, projector, and shadow state into one versioned backend-neutral frame packet and transfer it to native Vulkan storage. Records no draw, surface, swapchain, or presentation; visible world and UI remain OpenGL. Requires RenderVulkanDeveloperProbe and restart. Do not combine with earlier Vulkan packet or offscreen probes.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

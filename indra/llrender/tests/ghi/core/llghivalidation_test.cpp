@@ -21,6 +21,7 @@
 #include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghiproductionframeconsumer.h"
 #include "ghi/include/llghiproductionframepacket.h"
+#include "ghi/include/llghiproductiontextureresidency.h"
 #include "ghi/include/llghilightingscenepacket.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
 #include "ghi/include/llghiterrainscenepacket.h"
@@ -2804,6 +2805,55 @@ void LLGHIValidationObject::test<36>()
     ensure_equals("I8a transfer preserves frame identity",
                   result.packetSha256, hash);
     ensure("I8a deferred transfer resources drain",
+           created.device->waitIdle().ok());
+
+    ProductionTextureResidency residency(*created.device);
+    ProductionTextureResidencyLimits residencyLimits;
+    residencyLimits.maxEntries = 1;
+    ProductionTextureResidencyResult residencyResult;
+    status = residency.update(frame, residencyLimits, residencyResult);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8b uploads the first unique decoded texture",
+                  residencyResult.uploads, std::uint32_t{1});
+    ensure_equals("I8b records one resident allocation",
+                  residencyResult.residentEntries, std::uint32_t{1});
+    const ProductionTextureSourceIdentity terrainSource{
+        ProductionTextureDomain::Terrain,
+        frame.terrain.textures[0].sourceIdentity};
+    const auto firstBinding = residency.find(terrainSource);
+    ensure("I8b resolves a retained native binding", firstBinding.has_value());
+    ensure_equals("I8b starts logical source generation at one",
+                  firstBinding->generation, std::uint64_t{1});
+
+    ++frame.assemblyEpoch;
+    status = residency.update(frame, residencyLimits, residencyResult);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8b reuses unchanged decoded content",
+                  residencyResult.cacheHits, std::uint32_t{1});
+    ensure_equals("I8b avoids redundant uploads",
+                  residencyResult.uploads, std::uint32_t{0});
+
+    ++frame.assemblyEpoch;
+    frame.terrain.textures[0].decodedPixels[0] = std::byte{65};
+    frame.terrain.textures[0].contentIdentity[0] = std::byte{0x23};
+    status = residency.update(frame, residencyLimits, residencyResult);
+    ensure(status.message(), status.ok());
+    ensure_equals("I8b advances a changed logical source generation",
+                  residencyResult.generationChanges, std::uint32_t{1});
+    ensure_equals("I8b uploads changed decoded content",
+                  residencyResult.uploads, std::uint32_t{1});
+    ensure_equals("I8b evicts the displaced allocation under its cap",
+                  residencyResult.evictions, std::uint32_t{1});
+    const auto changedBinding = residency.find(terrainSource);
+    ensure("I8b resolves the changed native binding", changedBinding.has_value());
+    ensure_equals("I8b publishes the new source generation",
+                  changedBinding->generation, std::uint64_t{2});
+    ensure("I8b replaces the native image handle",
+           changedBinding->image != firstBinding->image);
+
+    ensure("I8b destroys retained resources explicitly",
+           residency.shutdown().ok());
+    ensure("I8b deferred residency resources drain",
            created.device->waitIdle().ok());
 }
 

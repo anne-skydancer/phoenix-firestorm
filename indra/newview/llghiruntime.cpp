@@ -16,6 +16,7 @@
 #include "ghi/include/llghiopaquepacketconsumer.h"
 #include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghiproductionframeconsumer.h"
+#include "ghi/include/llghiproductiontextureresidency.h"
 #include "ghi/include/llghiterrainscenepacket.h"
 #include "ghi/include/llghiterrainoffscreenprobe.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
@@ -31,6 +32,7 @@ std::unique_ptr<LL::GHI::Device> sVulkanDevice;
 std::unique_ptr<LL::GHI::OpaqueOffscreenProbe> sOffscreenProbe;
 std::unique_ptr<LL::GHI::MaterialOffscreenProbe> sMaterialProbe;
 std::unique_ptr<LL::GHI::TerrainOffscreenProbe> sTerrainProbe;
+std::unique_ptr<LL::GHI::ProductionTextureResidency> sTextureResidency;
 std::uint64_t sNextLivePacketFrame = 0;
 std::uint32_t sLivePacketAttempts = 0;
 std::uint32_t sLivePacketSamples = 0;
@@ -66,9 +68,15 @@ bool sLightingDisabled = false;
 
 bool shadowOffscreenRequestedInternal();
 
+bool textureResidencyRequested()
+{
+    return gSavedSettings.getBOOL("RenderVulkanTextureResidencyProbe");
+}
+
 bool frameAssemblyRequested()
 {
-    return gSavedSettings.getBOOL("RenderVulkanFrameAssemblyProbe");
+    return gSavedSettings.getBOOL("RenderVulkanFrameAssemblyProbe") ||
+           textureResidencyRequested();
 }
 
 bool projectorLightingOffscreenRequested()
@@ -464,24 +472,47 @@ void initialize()
 
     if (frameAssemblyRequested())
     {
-        const LL::GHI::ProductionFrameTransferLimits limits;
-        LL_INFOS("GHIIntegration")
-            << "I8a same-frame production assembly transfer armed; interval="
-            << livePacketInterval() << " frames max-samples="
-            << livePacketMaximum()
-            << " limits(material-draws/terrain-draws/vertices/indices/resources/decoded-bytes/encoded-bytes)="
-            << limits.maxMaterialDraws << '/' << limits.maxTerrainDraws << '/'
-            << limits.maxVertices << '/' << limits.maxIndices << '/'
-            << limits.maxUniqueResources << '/'
-            << limits.maxDecodedTextureBytes << '/' << limits.maxEncodedBytes
-            << ". Material, terrain, and lighting components must share one production frame; no draw or presentation is recorded."
-            << LL_ENDL;
+        if (textureResidencyRequested())
+        {
+            sTextureResidency =
+                std::make_unique<LL::GHI::ProductionTextureResidency>(
+                    *sVulkanDevice);
+            const LL::GHI::ProductionTextureResidencyLimits limits;
+            LL_INFOS("GHIIntegration")
+                << "I8b retained production texture residency armed; interval="
+                << livePacketInterval() << " frames max-samples="
+                << livePacketMaximum()
+                << " limits(entries/sources/resident-bytes/upload-bytes/stale-epochs)="
+                << limits.maxEntries << '/' << limits.maxSourceRecords << '/'
+                << limits.maxResidentBytes << '/'
+                << limits.maxUploadBytesPerFrame << '/'
+                << limits.staleAfterAssemblyEpochs
+                << ". Immutable decoded images are deduplicated by content while logical source generations remain explicit; no draw or presentation is recorded."
+                << LL_ENDL;
+        }
+        else
+        {
+            const LL::GHI::ProductionFrameTransferLimits limits;
+            LL_INFOS("GHIIntegration")
+                << "I8a same-frame production assembly transfer armed; interval="
+                << livePacketInterval() << " frames max-samples="
+                << livePacketMaximum()
+                << " limits(material-draws/terrain-draws/vertices/indices/resources/decoded-bytes/encoded-bytes)="
+                << limits.maxMaterialDraws << '/' << limits.maxTerrainDraws << '/'
+                << limits.maxVertices << '/' << limits.maxIndices << '/'
+                << limits.maxUniqueResources << '/'
+                << limits.maxDecodedTextureBytes << '/' << limits.maxEncodedBytes
+                << ". Material, terrain, and lighting components must share one production frame; no draw or presentation is recorded."
+                << LL_ENDL;
+        }
         if (gSavedSettings.getBOOL("RenderVulkanMaterialOffscreenProbe") ||
             gSavedSettings.getBOOL("RenderVulkanTerrainOffscreenProbe") ||
             gSavedSettings.getBOOL("RenderVulkanLightingPacketProbe") ||
             lightingOffscreenRequested() || terrainLightingOffscreenRequested())
             LL_WARNS("GHIIntegration")
-                << "I8a frame assembly was combined with an earlier packet/offscreen probe. I8a capture precedence applies; use one integration mode per run."
+                << (textureResidencyRequested()
+                    ? "I8b texture residency was combined with an earlier packet/offscreen probe. I8b capture precedence applies; use one integration mode per run."
+                    : "I8a frame assembly was combined with an earlier packet/offscreen probe. I8a capture precedence applies; use one integration mode per run.")
                 << LL_ENDL;
     }
 
@@ -774,6 +805,15 @@ void shutdown()
                 << "I6 terrain offscreen resources did not retire cleanly: "
                 << probeStatus.message() << LL_ENDL;
         sTerrainProbe.reset();
+    }
+    if (sTextureResidency)
+    {
+        const LL::GHI::Status residencyStatus = sTextureResidency->shutdown();
+        if (!residencyStatus)
+            LL_WARNS("GHIIntegration")
+                << "I8b retained texture resources did not retire cleanly: "
+                << residencyStatus.message() << LL_ENDL;
+        sTextureResidency.reset();
     }
     const LL::GHI::Status status = sVulkanDevice->waitIdle();
     if (!status)
@@ -1292,43 +1332,90 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
             sPendingFrameTerrainBudgetLimited;
         sPendingFrameMaterialBudgetLimited = false;
         sPendingFrameTerrainBudgetLimited = false;
-        const LL::GHI::ProductionFrameTransferLimits limits;
-        LL::GHI::ProductionFrameTransferResult result;
-        const LL::GHI::Status status =
-            LL::GHI::consumeProductionFrameTransfer(
-                *sVulkanDevice, frame, limits, result);
-        if (!status)
+        if (textureResidencyRequested())
         {
-            LL_WARNS("GHIIntegration")
-                << "I8a production-frame assembly transfer rejected at frame "
-                << packet.frameId << ": " << status.message()
-                << " attempt=" << sFrameAssemblyAttempts << LL_ENDL;
-            if (status.code() == LL::GHI::StatusCode::DeviceLost)
+            if (!sTextureResidency)
+            {
+                LL_WARNS("GHIIntegration")
+                    << "I8b texture residency was requested without an active cache."
+                    << LL_ENDL;
                 sFrameAssemblyDisabled = true;
+                return;
+            }
+            const LL::GHI::ProductionTextureResidencyLimits limits;
+            LL::GHI::ProductionTextureResidencyResult result;
+            const LL::GHI::Status status = sTextureResidency->update(
+                frame, limits, result);
+            if (!status)
+            {
+                LL_WARNS("GHIIntegration")
+                    << "I8b production texture residency rejected frame "
+                    << packet.frameId << ": " << status.message()
+                    << " attempt=" << sFrameAssemblyAttempts << LL_ENDL;
+                if (status.code() == LL::GHI::StatusCode::DeviceLost)
+                    sFrameAssemblyDisabled = true;
+                return;
+            }
+            ++sFrameAssemblySamples;
+            LL_INFOS("GHIIntegration")
+                << "I8b retained production texture residency PASS: sample="
+                << sFrameAssemblySamples << '/' << livePacketMaximum()
+                << " frame=" << result.frameId << " assembly-epoch="
+                << result.assemblyEpoch
+                << " sources/unique/deferred=" << result.requestedSources
+                << '/' << result.uniqueContents << '/'
+                << result.deferredSources << " hits/uploads/generation-changes/evictions="
+                << result.cacheHits << '/' << result.uploads << '/'
+                << result.generationChanges << '/' << result.evictions
+                << " upload-bytes=" << result.uploadBytes
+                << " resident-entries/bytes=" << result.residentEntries
+                << '/' << result.residentBytes
+                << " capture-budget-limited="
+                << (captureBudgetLimited ? "yes" : "no")
+                << ". Residency contains immutable decoded images only and records no draw, surface, swapchain, or presentation; visible rendering remains OpenGL."
+                << LL_ENDL;
             return;
         }
-        ++sFrameAssemblySamples;
-        LL_INFOS("GHIIntegration")
-            << "I8a same-frame production assembly/transfer PASS: sample="
-            << sFrameAssemblySamples << '/' << livePacketMaximum()
-            << " frame=" << result.frameId << " assembly-epoch="
-            << result.assemblyEpoch << " pass-mask=0x" << std::hex
-            << result.passes << std::dec << " draws(material/terrain)="
-            << result.resources.materialDraws << '/'
-            << result.resources.terrainDraws << " vertices/indices="
-            << result.resources.vertices << '/' << result.resources.indices
-            << " resources(unique/material-textures/terrain-textures/projector-textures)="
-            << result.resources.uniqueResources << '/'
-            << result.resources.materialTextures << '/'
-            << result.resources.terrainTextures << '/'
-            << result.resources.projectorTextures << " decoded-bytes="
-            << result.resources.decodedTextureBytes << " upload-bytes="
-            << result.uploadBytes << " sha256=" << result.packetSha256
-            << " capture-budget-limited="
-            << (captureBudgetLimited ? "yes" : "no")
-            << ". The assembled frame contains no native handles and records no draw, surface, swapchain, or presentation; visible rendering remains OpenGL."
-            << LL_ENDL;
-        return;
+        else
+        {
+            const LL::GHI::ProductionFrameTransferLimits limits;
+            LL::GHI::ProductionFrameTransferResult result;
+            const LL::GHI::Status status =
+                LL::GHI::consumeProductionFrameTransfer(
+                    *sVulkanDevice, frame, limits, result);
+            if (!status)
+            {
+                LL_WARNS("GHIIntegration")
+                    << "I8a production-frame assembly transfer rejected at frame "
+                    << packet.frameId << ": " << status.message()
+                    << " attempt=" << sFrameAssemblyAttempts << LL_ENDL;
+                if (status.code() == LL::GHI::StatusCode::DeviceLost)
+                    sFrameAssemblyDisabled = true;
+                return;
+            }
+            ++sFrameAssemblySamples;
+            LL_INFOS("GHIIntegration")
+                << "I8a same-frame production assembly/transfer PASS: sample="
+                << sFrameAssemblySamples << '/' << livePacketMaximum()
+                << " frame=" << result.frameId << " assembly-epoch="
+                << result.assemblyEpoch << " pass-mask=0x" << std::hex
+                << result.passes << std::dec << " draws(material/terrain)="
+                << result.resources.materialDraws << '/'
+                << result.resources.terrainDraws << " vertices/indices="
+                << result.resources.vertices << '/' << result.resources.indices
+                << " resources(unique/material-textures/terrain-textures/projector-textures)="
+                << result.resources.uniqueResources << '/'
+                << result.resources.materialTextures << '/'
+                << result.resources.terrainTextures << '/'
+                << result.resources.projectorTextures << " decoded-bytes="
+                << result.resources.decodedTextureBytes << " upload-bytes="
+                << result.uploadBytes << " sha256=" << result.packetSha256
+                << " capture-budget-limited="
+                << (captureBudgetLimited ? "yes" : "no")
+                << ". The assembled frame contains no native handles and records no draw, surface, swapchain, or presentation; visible rendering remains OpenGL."
+                << LL_ENDL;
+            return;
+        }
     }
     ++sLightingAttempts;
     sNextLightingFrame = packet.frameId + livePacketInterval();

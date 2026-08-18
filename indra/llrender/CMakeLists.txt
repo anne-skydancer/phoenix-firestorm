@@ -43,6 +43,7 @@ set(llrender_SOURCE_FILES
     ghi/core/llghimaterialscenepacket.cpp
     ghi/core/llghiproductionframeconsumer.cpp
     ghi/core/llghiproductionframepacket.cpp
+    ghi/core/llghiproductiontextureresidency.cpp
     ghi/core/llghiterrainscenepacket.cpp
     ghi/core/llghiterrainoffscreenprobe.cpp
     ghi/core/llghimaterialoffscreenprobe.cpp
@@ -104,6 +105,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghiproductioncontract.h
     ghi/include/llghiproductionframeconsumer.h
     ghi/include/llghiproductionframepacket.h
+    ghi/include/llghiproductiontextureresidency.h
     ghi/include/llghimaterialscenepacket.h
     ghi/include/llghiterrainscenepacket.h
     ghi/include/llghiterrainoffscreenprobe.h
@@ -1078,6 +1080,7 @@ if (LL_TESTS)
       ghi/core/llghimaterialscenepacket.cpp
       ghi/core/llghiproductionframeconsumer.cpp
       ghi/core/llghiproductionframepacket.cpp
+      ghi/core/llghiproductiontextureresidency.cpp
       ghi/core/llghiterrainscenepacket.cpp
       ghi/core/llghiterrainoffscreenprobe.cpp
       ghi/core/llghimaterialoffscreenprobe.cpp

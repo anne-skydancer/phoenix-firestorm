@@ -85,19 +85,81 @@ These results close I8a. They prove coherent same-frame assembly and bounded
 native ownership transfer; they do not yet claim persistent resource residency
 or execution of the assembled graph.
 
+## I8b — retained decoded-texture residency
+
+I8b replaces I8a's temporary monolithic destination buffer with a retained GHI
+cache for immutable decoded images. Material, terrain, and projector textures
+use domain-qualified logical source identities; native image allocations are
+deduplicated by exact content identity, dimensions, and format. Sharing is
+therefore safe across source domains without conflating different layouts or
+linear/sRGB interpretation.
+
+Each logical source has an explicit generation. Re-observing unchanged content
+reuses the existing native image and generation. A new content identity for the
+same source advances its generation and creates or reuses the matching native
+content allocation. The lookup contract exposes a GHI image/view binding plus
+format, extent, mip count, generation, and content identity for later I8 frame-
+graph execution; no native Vulkan type crosses the seam.
+
+Uploads are batched into one staging buffer and one GHI frame. Three-channel
+input is expanded to RGBA, sRGB luminance/alpha input is expanded without losing
+alpha semantics, and complete mip chains are generated natively. The default
+cache is bounded to 1,024 allocations, 4,096 logical sources, 512 MiB resident,
+and 32 MiB uploaded per accepted frame. Least-recently-used content is evicted
+under pressure, while content unused for 120 assembly epochs is stale. Destroyed
+GHI handles become invalid immediately and native allocations retire behind the
+device's in-flight window.
+
+Animated skin palettes, transient vertex/index streams, per-frame light state,
+and render targets are deliberately excluded. They are mutable frame data and
+would become stale if keyed as immutable assets. Geometry and shared target
+ownership begin in I8c.
+
+`RenderVulkanTextureResidencyProbe` enables the I8b developer gate and
+supersedes the I8a transfer consumer while retaining the same coherent-frame
+capture and validation rules. It creates no shader pipeline, render target,
+surface, swapchain, window, or presentation operation.
+
+The deterministic GHI suite remains **36/36 pass** and now verifies first-use
+upload, unchanged-content cache reuse, logical generation advancement, bounded
+LRU eviction, native-handle replacement, explicit cache shutdown, and deferred
+native retirement.
+
+### Live I8b exit gate
+
+The live gate passed on Windows with Vulkan validation enabled beside both
+production OpenGL providers.
+
+- System OpenGL completed 5/5 coherent updates. The first frame uploaded 33
+  unique images totaling 1,726,528 bytes. Four legitimate content changes on
+  the second loading frame advanced four logical-source generations and grew
+  the retained set to 37 images / 1,955,904 bytes. Frames three through five
+  were 33/33 cache hits with zero uploads and stable residency.
+- Mesa + Zink was positively identified as Mesa 26.3 Zink and completed 5/5.
+  The first frame requested 30 logical sources that deduplicated to 29 exact
+  contents totaling 1,712,192 bytes. Frames two through five were 29/29 cache
+  hits with zero uploads, no generation change, and stable residency. This
+  directly exercises safe cross-source content sharing.
+- Both runs kept visible world/UI rendering on OpenGL, explicitly retired the
+  retained cache, shut down the private Vulkan device, and reached `Goodbye!`.
+  Neither reported a Vulkan validation error, device loss, surface, swapchain,
+  or presentation operation.
+
+These results close I8b. Later frame-graph work may resolve the retained GHI
+bindings by logical source and generation; it does not need to recreate or
+reupload unchanged decoded assets.
+
 ## Remaining I8 work
 
 After I8a, the assembled packet becomes the sole input to a private native
 frame graph in incremental gates:
 
-1. retain and deduplicate resources across frames with explicit generation and
-   eviction ownership;
-2. execute material and terrain G-buffer passes into shared private targets;
-3. execute native shadow, deferred-lighting, and projector passes from the same
+1. execute material and terrain G-buffer passes into shared private targets;
+2. execute native shadow, deferred-lighting, and projector passes from the same
    graph and frame identity;
-4. add sky, water, alpha, recursive/offscreen views, HUD/UI composition, and
+3. add sky, water, alpha, recursive/offscreen views, HUD/UI composition, and
    picking in separately testable slices; and
-5. permit selectable visible Vulkan presentation only after parity, recovery,
+4. permit selectable visible Vulkan presentation only after parity, recovery,
    and provider-matrix gates are satisfied.
 
 The architecture remains additive: native OpenGL and Mesa + Zink continue to be

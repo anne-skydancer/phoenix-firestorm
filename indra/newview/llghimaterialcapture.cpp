@@ -266,7 +266,8 @@ public:
             gSavedSettings.getBOOL("RenderVulkanShadowOffscreenProbe");
         const bool frameAssemblyConfigured =
             gSavedSettings.getBOOL("RenderVulkanFrameAssemblyProbe") ||
-            gSavedSettings.getBOOL("RenderVulkanTextureResidencyProbe");
+            gSavedSettings.getBOOL("RenderVulkanTextureResidencyProbe") ||
+            gSavedSettings.getBOOL("RenderVulkanFrameGraphProbe");
         if ((mState == State::Disabled &&
              !materialConfigured && !lightingConfigured &&
              !terrainConfigured && !terrainLightingConfigured &&

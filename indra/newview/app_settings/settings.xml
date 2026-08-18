@@ -12793,6 +12793,19 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderVulkanFrameGraphProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: establish the I8c1 shared private production-frame attachment topology and retain immutable decoded texture residency. Allocates and reuses bounded G-buffer, depth, lighting, and shadow targets through GHI, but records no draw, surface, swapchain, or presentation; visible world and UI remain OpenGL. Requires RenderVulkanDeveloperProbe and restart. Supersedes RenderVulkanTextureResidencyProbe and RenderVulkanFrameAssemblyProbe.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

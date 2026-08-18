@@ -149,6 +149,59 @@ These results close I8b. Later frame-graph work may resolve the retained GHI
 bindings by logical source and generation; it does not need to recreate or
 reupload unchanged decoded assets.
 
+## I8c1 — shared private frame-target ownership
+
+I8c1 establishes the attachment topology that the executable production frame
+graph will use. One GHI owner allocates four G-buffer images, a depth image, an
+HDR lighting image, and the directional/projector shadow images declared by the
+coherent frame pass mask. It exposes only typed GHI image and view handles;
+backend-native objects remain confined to the Vulkan implementation.
+
+The private extent preserves the production camera aspect ratio while remaining
+bounded to 512 by 512 pixels, 262,144 pixels, and 64 MiB by default. An exact
+extent/pass topology match reuses every allocation and retains its generation.
+A resize or shadow-topology change allocates a complete replacement first,
+advances the generation, then retires the old views and images through the
+device's deferred-destruction contract. Allocation failure cannot partially
+replace the active set.
+
+`RenderVulkanFrameGraphProbe` enables this developer-only gate and supersedes
+the I8b and I8a gates. It retains the I8b immutable texture cache and coherent
+I8a frame capture, but records no render pass, draw, surface, swapchain, window,
+or presentation command. Visible world and UI rendering therefore remain on
+the selected OpenGL provider.
+
+The deterministic GHI suite remains **36/36 pass** and verifies initial target
+allocation, exact-topology reuse, bounded resize, generation advancement,
+explicit shutdown, and deferred native retirement. The Release Vulkanstorm
+viewer builds successfully and the render-API boundary ratchet reports no new
+OpenGL or Vulkan coupling above the backend seam.
+
+### Live I8c1 exit gate
+
+The isolated live gate passed on Windows with Vulkan validation enabled beside
+both production OpenGL providers. Every older Vulkan packet/offscreen probe was
+explicitly disabled for these runs.
+
+- System OpenGL completed 5/5 coherent updates. The first frame allocated 12
+  images at 512 by 270 pixels totaling 8,294,400 bytes and retained target
+  generation 1. The first update uploaded 33 resident images / 1,941,568 bytes;
+  updates two through five reused all 33 images with zero upload and reused the
+  complete target topology.
+- Mesa + Zink was positively identified as Mesa 26.3 Zink and completed 5/5
+  coherent updates. It produced the same 12-image, 512 by 270, 8,294,400-byte
+  target set, stable generation, 33 resident images, and four exact target and
+  texture-residency reuses. Its lower visible OpenGL frame cadence only spread
+  the 600-frame samples farther apart.
+- Both runs explicitly retired the shared targets and retained cache, shut down
+  the private Vulkan device, and reached `Goodbye!`. Neither reported a Vulkan
+  validation error, device loss, legacy probe execution, surface, swapchain, or
+  presentation operation.
+
+These results close I8c1. They prove production-frame attachment ownership and
+lifetime, not native rendering into those images; material and terrain G-buffer
+execution begins in I8c2.
+
 ## Remaining I8 work
 
 After I8a, the assembled packet becomes the sole input to a private native

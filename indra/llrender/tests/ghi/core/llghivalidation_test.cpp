@@ -21,6 +21,7 @@
 #include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghiproductionframeconsumer.h"
 #include "ghi/include/llghiproductionframepacket.h"
+#include "ghi/include/llghiproductionframetargets.h"
 #include "ghi/include/llghiproductiontextureresidency.h"
 #include "ghi/include/llghilightingscenepacket.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
@@ -2853,6 +2854,38 @@ void LLGHIValidationObject::test<36>()
 
     ensure("I8b destroys retained resources explicitly",
            residency.shutdown().ok());
+
+    ProductionFrameTargets targets(*created.device);
+    ProductionFrameTargetLimits targetLimits;
+    targetLimits.maxWidth = targetLimits.maxHeight = 32;
+    targetLimits.maxPixels = 32 * 32;
+    ProductionFrameTargetResult targetResult;
+    status = targets.ensure(frame, targetLimits, targetResult);
+    ensure(status.message(), status.ok());
+    ensure("I8c1 allocates a new shared target topology",
+           !targetResult.reused);
+    ensure_equals("I8c1 owns four G-buffer, depth, and lighting images",
+                  targetResult.imageCount, std::uint32_t{6});
+    ensure_equals("I8c1 bounds the private target width",
+                  targetResult.width, std::uint32_t{32});
+    const std::uint64_t firstTargetGeneration =
+        targetResult.targetGeneration;
+    status = targets.ensure(frame, targetLimits, targetResult);
+    ensure(status.message(), status.ok());
+    ensure("I8c1 reuses an unchanged shared target topology",
+           targetResult.reused);
+    ensure_equals("I8c1 retains its target generation on reuse",
+                  targetResult.targetGeneration, firstTargetGeneration);
+    targetLimits.maxWidth = targetLimits.maxHeight = 16;
+    targetLimits.maxPixels = 16 * 16;
+    status = targets.ensure(frame, targetLimits, targetResult);
+    ensure(status.message(), status.ok());
+    ensure("I8c1 reallocates a changed bounded extent",
+           !targetResult.reused);
+    ensure("I8c1 advances target generation on replacement",
+           targetResult.targetGeneration > firstTargetGeneration);
+    ensure("I8c1 destroys shared targets explicitly",
+           targets.shutdown().ok());
     ensure("I8b deferred residency resources drain",
            created.device->waitIdle().ok());
 }

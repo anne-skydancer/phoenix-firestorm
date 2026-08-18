@@ -16,6 +16,7 @@
 #include "ghi/include/llghiopaquepacketconsumer.h"
 #include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghiproductionframeconsumer.h"
+#include "ghi/include/llghiproductionframetargets.h"
 #include "ghi/include/llghiproductiontextureresidency.h"
 #include "ghi/include/llghiterrainscenepacket.h"
 #include "ghi/include/llghiterrainoffscreenprobe.h"
@@ -33,6 +34,7 @@ std::unique_ptr<LL::GHI::OpaqueOffscreenProbe> sOffscreenProbe;
 std::unique_ptr<LL::GHI::MaterialOffscreenProbe> sMaterialProbe;
 std::unique_ptr<LL::GHI::TerrainOffscreenProbe> sTerrainProbe;
 std::unique_ptr<LL::GHI::ProductionTextureResidency> sTextureResidency;
+std::unique_ptr<LL::GHI::ProductionFrameTargets> sFrameTargets;
 std::uint64_t sNextLivePacketFrame = 0;
 std::uint32_t sLivePacketAttempts = 0;
 std::uint32_t sLivePacketSamples = 0;
@@ -68,9 +70,15 @@ bool sLightingDisabled = false;
 
 bool shadowOffscreenRequestedInternal();
 
+bool frameGraphRequested()
+{
+    return gSavedSettings.getBOOL("RenderVulkanFrameGraphProbe");
+}
+
 bool textureResidencyRequested()
 {
-    return gSavedSettings.getBOOL("RenderVulkanTextureResidencyProbe");
+    return gSavedSettings.getBOOL("RenderVulkanTextureResidencyProbe") ||
+           frameGraphRequested();
 }
 
 bool frameAssemblyRequested()
@@ -477,9 +485,15 @@ void initialize()
             sTextureResidency =
                 std::make_unique<LL::GHI::ProductionTextureResidency>(
                     *sVulkanDevice);
+            if (frameGraphRequested())
+                sFrameTargets =
+                    std::make_unique<LL::GHI::ProductionFrameTargets>(
+                        *sVulkanDevice);
             const LL::GHI::ProductionTextureResidencyLimits limits;
             LL_INFOS("GHIIntegration")
-                << "I8b retained production texture residency armed; interval="
+                << (frameGraphRequested()
+                    ? "I8c1 shared production frame targets and retained texture residency armed; interval="
+                    : "I8b retained production texture residency armed; interval=")
                 << livePacketInterval() << " frames max-samples="
                 << livePacketMaximum()
                 << " limits(entries/sources/resident-bytes/upload-bytes/stale-epochs)="
@@ -805,6 +819,15 @@ void shutdown()
                 << "I6 terrain offscreen resources did not retire cleanly: "
                 << probeStatus.message() << LL_ENDL;
         sTerrainProbe.reset();
+    }
+    if (sFrameTargets)
+    {
+        const LL::GHI::Status targetStatus = sFrameTargets->shutdown();
+        if (!targetStatus)
+            LL_WARNS("GHIIntegration")
+                << "I8c1 shared production frame targets did not retire cleanly: "
+                << targetStatus.message() << LL_ENDL;
+        sFrameTargets.reset();
     }
     if (sTextureResidency)
     {
@@ -1356,9 +1379,37 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
                     sFrameAssemblyDisabled = true;
                 return;
             }
+            LL::GHI::ProductionFrameTargetResult targetResult;
+            if (frameGraphRequested())
+            {
+                if (!sFrameTargets)
+                {
+                    LL_WARNS("GHIIntegration")
+                        << "I8c1 frame targets were requested without an active owner."
+                        << LL_ENDL;
+                    sFrameAssemblyDisabled = true;
+                    return;
+                }
+                const LL::GHI::ProductionFrameTargetLimits targetLimits;
+                const LL::GHI::Status targetStatus = sFrameTargets->ensure(
+                    frame, targetLimits, targetResult);
+                if (!targetStatus)
+                {
+                    LL_WARNS("GHIIntegration")
+                        << "I8c1 production target topology rejected frame "
+                        << packet.frameId << ": " << targetStatus.message()
+                        << " attempt=" << sFrameAssemblyAttempts << LL_ENDL;
+                    if (targetStatus.code() == LL::GHI::StatusCode::DeviceLost)
+                        sFrameAssemblyDisabled = true;
+                    return;
+                }
+            }
             ++sFrameAssemblySamples;
+            const bool frameGraph = frameGraphRequested();
             LL_INFOS("GHIIntegration")
-                << "I8b retained production texture residency PASS: sample="
+                << (frameGraph
+                    ? "I8c1 shared production frame targets PASS: sample="
+                    : "I8b retained production texture residency PASS: sample=")
                 << sFrameAssemblySamples << '/' << livePacketMaximum()
                 << " frame=" << result.frameId << " assembly-epoch="
                 << result.assemblyEpoch
@@ -1371,8 +1422,18 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
                 << " resident-entries/bytes=" << result.residentEntries
                 << '/' << result.residentBytes
                 << " capture-budget-limited="
-                << (captureBudgetLimited ? "yes" : "no")
-                << ". Residency contains immutable decoded images only and records no draw, surface, swapchain, or presentation; visible rendering remains OpenGL."
+                << (captureBudgetLimited ? "yes" : "no");
+            if (frameGraph)
+                LL_CONT << " target-generation/extent/images/bytes/reused="
+                        << targetResult.targetGeneration << '/'
+                        << targetResult.width << 'x' << targetResult.height
+                        << '/' << targetResult.imageCount << '/'
+                        << targetResult.allocatedBytes << '/'
+                        << (targetResult.reused ? "yes" : "no");
+            LL_CONT
+                << (frameGraph
+                    ? ". The shared private attachment topology records no draw, surface, swapchain, or presentation; visible rendering remains OpenGL."
+                    : ". Residency contains immutable decoded images only and records no draw, surface, swapchain, or presentation; visible rendering remains OpenGL.")
                 << LL_ENDL;
             return;
         }

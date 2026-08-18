@@ -18,6 +18,12 @@ supported peer and recovery path.
   API-boundary ratchet.
 - [I6 production terrain integration checkpoint](i6-production-terrain-integration-checkpoint.md)
   records the private native Vulkan terrain contract and live gate.
+- [I7 production lighting integration checkpoint](i7-production-lighting-integration-checkpoint.md)
+  records the staged live lighting/shadow seam, beginning with bounded
+  production-state transfer and ending with native shadow-map execution.
+- [Native Vulkan UI integration plan](ui-integration-plan.md) defines the
+  frontend seam, composition order, staged UI/HUD/picking work, and release
+  gates without changing the current OpenGL production route.
 - [R1 lifecycle checkpoint](r1-lifecycle-checkpoint.md) records the gated
   native-Vulkan presentation slice and its validation evidence.
 - [R2 resource checkpoint](r2-resource-checkpoint.md) records the neutral

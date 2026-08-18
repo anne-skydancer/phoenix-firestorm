@@ -12702,6 +12702,19 @@ Change of this parameter will affect the layout of buttons in notification toast
       <key>Backup</key>
       <integer>0</integer>
     </map>
+    <key>RenderVulkanLightingPacketProbe</key>
+    <map>
+      <key>Comment</key>
+      <string>Developer only: capture production-filtered sun, moon, local/projector light and shadow policy state and transfer the bounded neutral packet to native Vulkan. Does not read OpenGL shadow images, draw, or present. Requires RenderVulkanDeveloperProbe and restart.</string>
+      <key>Persist</key>
+      <integer>1</integer>
+      <key>Type</key>
+      <string>Boolean</string>
+      <key>Value</key>
+      <integer>0</integer>
+      <key>Backup</key>
+      <integer>0</integer>
+    </map>
     <key>RenderGLMultiThreadedTextures</key>
     <map>
       <key>Comment</key>

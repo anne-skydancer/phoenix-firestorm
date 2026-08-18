@@ -17,6 +17,8 @@
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
 #include "ghi/include/llghimaterialscenepacket.h"
+#include "ghi/include/llghilightingscenepacket.h"
+#include "ghi/include/llghilightingpacketconsumer.h"
 #include "ghi/include/llghiterrainscenepacket.h"
 #include "ghi/include/llghiterrainoffscreenprobe.h"
 #include "ghi/include/llghialphacontract.h"
@@ -2128,6 +2130,113 @@ void LLGHIValidationObject::test<33>()
     first.pop_back();
     ensure("I6 rejects a truncated terrain packet",
            decodeTerrainScenePacket(first, decoded).code() ==
+               StatusCode::InvalidArgument);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<34>()
+{
+    using namespace LL::GHI;
+
+    LightingScenePacket source;
+    source.frameId = 81426;
+    source.sceneEpoch = 7;
+    source.resourceEpoch = 3;
+    source.sourceWidth = 2560;
+    source.sourceHeight = 1369;
+    for (std::size_t diagonal = 0; diagonal < 4; ++diagonal)
+    {
+        source.viewMatrix[diagonal * 5] = 1.f;
+        source.projectionMatrix[diagonal * 5] = 1.f;
+    }
+    source.cameraOrigin = {{128.f, 64.f, 32.f}};
+    source.ambientColor = {{0.08f, 0.10f, 0.14f}};
+    source.sun.direction = {{0.25f, 0.5f, -0.75f}};
+    source.sun.color = {{1.f, 0.9f, 0.75f}};
+    source.sun.active = true;
+    source.moon.direction = {{-0.25f, -0.5f, 0.75f}};
+    source.moon.color = {{0.2f, 0.3f, 0.6f}};
+
+    source.shadows.enabled = true;
+    source.shadows.directionalCascadeCount = 4;
+    source.shadows.projectorShadowCount = 1;
+    source.shadows.comparability =
+        LightingComparability::ShadowImagesDeferred;
+    for (auto& matrix : source.shadows.matrices)
+        for (std::size_t diagonal = 0; diagonal < 4; ++diagonal)
+            matrix[diagonal * 5] = 1.f;
+    source.shadows.clipPlanes = {{16.f, 64.f, 128.f, 256.f}};
+    source.shadows.directionalBias = 0.002f;
+    source.shadows.spotShadowOffset = 0.001f;
+    source.shadows.spotShadowBias = 0.003f;
+    source.shadows.projectorLightIds[0] = 0x4937415f50524f4aull;
+    source.shadows.projectorFade[0] = 0.875f;
+
+    LocalLightRecord point;
+    point.semanticId = 0x4937415f504f494eull;
+    point.position = {{124.f, 70.f, 35.f}};
+    point.radius = 12.f;
+    point.color = {{0.8f, 0.4f, 0.2f}};
+    point.falloff = 0.5f;
+    source.localLights.push_back(point);
+
+    LocalLightRecord projector;
+    projector.semanticId = source.shadows.projectorLightIds[0];
+    projector.kind = LocalLightKind::Projector;
+    projector.comparability =
+        LightingComparability::ProjectorImageDeferred;
+    projector.position = {{136.f, 72.f, 40.f}};
+    projector.radius = 24.f;
+    projector.color = {{0.2f, 0.5f, 1.f}};
+    projector.falloff = 0.75f;
+    projector.projectorParams = {{1.1f, 0.4f, 0.125f}};
+    projector.projectorTextureIdentity[0] = 17;
+    projector.projectorTextureIdentity[15] = 91;
+    projector.shadowSlot = 0;
+    projector.shadowFade = 0.875f;
+    source.localLights.push_back(projector);
+
+    std::vector<std::byte> first;
+    std::vector<std::byte> second;
+    Status status = encodeLightingScenePacket(source, first);
+    ensure(status.message(), status.ok());
+    ensure("I7a lighting encoding is deterministic",
+           encodeLightingScenePacket(source, second).ok() && first == second);
+    LightingScenePacket decoded;
+    status = decodeLightingScenePacket(first, decoded);
+    ensure(status.message(), status.ok());
+    ensure("I7a lighting packet round trips exactly", decoded == source);
+    ensure("I7a lighting packet has deterministic identity",
+           !lightingScenePacketSha256(source).empty());
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    ensure("I7a validation device", created.status.ok() && created.device);
+    LightingPacketTransferResult result;
+    LightingPacketTransferLimits limits;
+    status = consumeLightingPacketTransfer(
+        *created.device, source, limits, result);
+    ensure(status.message(), status.ok());
+    ensure_equals("I7a transfers both local lights", result.localLights,
+                  std::uint32_t{2});
+    ensure_equals("I7a identifies the projector", result.projectorLights,
+                  std::uint32_t{1});
+    ensure_equals("I7a retains the cascade count", result.shadowCascades,
+                  std::uint32_t{4});
+    ensure("I7a transfer retires cleanly", created.device->waitIdle().ok());
+
+    limits.maxLocalLights = 1;
+    ensure("I7a rejects transfer above the runtime light limit",
+           consumeLightingPacketTransfer(*created.device, source, limits, result)
+                   .code() == StatusCode::InvalidArgument);
+    limits.maxLocalLights = 256;
+    source.localLights[0].radius = 0.f;
+    ensure("I7a rejects a nonpositive light radius",
+           encodeLightingScenePacket(source, first).code() ==
+               StatusCode::InvalidArgument);
+    source.localLights[0].radius = 12.f;
+    first.pop_back();
+    ensure("I7a rejects a truncated lighting packet",
+           decodeLightingScenePacket(first, decoded).code() ==
                StatusCode::InvalidArgument);
 }
 

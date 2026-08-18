@@ -29,6 +29,8 @@
 #include "llghiopaquecapture.h"
 #include "llghimaterialcapture.h"
 #include "llghiterraincapture.h"
+#include "llghiruntime.h"
+#include "ghi/include/llghilightingscenepacket.h"
 
 #include "pipeline.h"
 
@@ -9776,6 +9778,175 @@ LLVector4 pow4fsrgb(LLVector4 v, F32 f)
     return v;
 }
 
+void LLPipeline::captureGHILightingState(LLViewerCamera& camera,
+                                         F32 light_scale)
+{
+    if (gCubeSnapshot || sRenderingHUDs || !gViewerWindow ||
+        !LLGHIRuntime::shouldCaptureLiveLightingPacket(gFrameCount))
+        return;
+
+    constexpr std::size_t MAX_CAPTURED_LOCAL_LIGHTS = 256;
+    static std::uint64_t sceneEpoch = 0;
+    static std::uint64_t resourceEpoch = 0;
+    static std::uint64_t previousResourceSignature = 0;
+
+    LL::GHI::LightingScenePacket packet;
+    packet.frameId = gFrameCount;
+    packet.sceneEpoch = ++sceneEpoch;
+    packet.sourceWidth = static_cast<U32>(gViewerWindow->getWorldViewWidthRaw());
+    packet.sourceHeight = static_cast<U32>(gViewerWindow->getWorldViewHeightRaw());
+    const glm::mat4 view = get_current_modelview();
+    const glm::mat4 projection = get_current_projection();
+    std::copy_n(glm::value_ptr(view), 16, packet.viewMatrix.begin());
+    std::copy_n(glm::value_ptr(projection), 16, packet.projectionMatrix.begin());
+    std::copy_n(camera.getOrigin().mV, 3, packet.cameraOrigin.begin());
+
+    LLEnvironment& environment = LLEnvironment::instance();
+    LLSettingsSky::ptr_t sky = environment.getCurrentSky();
+    const LLColor4 ambient = sky->getTotalAmbient();
+    std::copy_n(ambient.mV, 3, packet.ambientColor.begin());
+
+    auto copyDirectional = [](const LLVector4& direction,
+                              const LLColor4& color, bool active,
+                              LL::GHI::DirectionalLightRecord& output)
+    {
+        std::copy_n(direction.mV, 3, output.direction.begin());
+        std::copy_n(color.mV, 3, output.color.begin());
+        output.intensity = 1.f;
+        output.active = active;
+    };
+    copyDirectional(mSunDir, mSunDiffuse, environment.getIsSunUp(), packet.sun);
+    copyDirectional(mMoonDir, mMoonDiffuse, environment.getIsMoonUp(), packet.moon);
+
+    packet.shadows.enabled = RenderShadowDetail > 0;
+    packet.shadows.directionalCascadeCount = packet.shadows.enabled
+        ? static_cast<std::uint32_t>(llclamp(RenderShadowSplits + 1, 0, 4)) : 0;
+    if (packet.shadows.enabled)
+    {
+        for (std::size_t matrix = 0;
+             matrix < packet.shadows.matrices.size(); ++matrix)
+            std::copy_n(glm::value_ptr(mSunShadowMatrix[matrix]), 16,
+                        packet.shadows.matrices[matrix].begin());
+        std::copy_n(mSunClipPlanes.mV, 4, packet.shadows.clipPlanes.begin());
+        packet.shadows.directionalBias = RenderShadowBias +
+            RenderShadowBiasError * std::fabs(camera.getOrigin().mV[2]) / 3000.f;
+        packet.shadows.spotShadowOffset = RenderSpotShadowOffset;
+        packet.shadows.spotShadowBias = RenderSpotShadowBias;
+        packet.shadows.comparability =
+            LL::GHI::LightingComparability::ShadowImagesDeferred;
+        for (std::size_t slot = 0;
+             slot < packet.shadows.projectorLightIds.size(); ++slot)
+        {
+            LLDrawable* drawable = mShadowSpotLight[slot].get();
+            LLVOVolume* volume = drawable ? drawable->getVOVolume() : nullptr;
+            if (!volume) continue;
+            packet.shadows.projectorLightIds[slot] =
+                volume->getID().getDigest64();
+            packet.shadows.projectorFade[slot] = 1.f - mSpotLightFade[slot];
+            ++packet.shadows.projectorShadowCount;
+        }
+    }
+
+    static LLCachedControl<S32> localLightCount(
+        gSavedSettings, "RenderLocalLightCount", 256);
+    bool budgetLimited = false;
+    S32 considered = 0;
+    std::vector<std::uint64_t> resourceKeys;
+    for (light_set_t::iterator iterator = mNearbyLights.begin();
+         iterator != mNearbyLights.end(); ++iterator)
+    {
+        if (++considered > localLightCount)
+        {
+            budgetLimited = true;
+            break;
+        }
+        LLDrawable* drawable = iterator->drawable;
+        LLVOVolume* volume = drawable ? drawable->getVOVolume() : nullptr;
+        if (!volume || (volume->isAttachment() && !sRenderAttachedLights))
+            continue;
+
+        LLVector4a center;
+        center.load3(drawable->getPositionAgent().mV);
+        const float radius = volume->getLightRadius() * 1.5f;
+        if (radius <= 0.001f) continue;
+        const LLColor3 color = volume->getLightLinearColor() * light_scale;
+        if (color.magVecSquared() < 0.001f) continue;
+        LLVector4a radiusVector;
+        radiusVector.splat(radius);
+        if (camera.AABBInFrustumNoFarClip(center, radiusVector) == 0) continue;
+        if (packet.localLights.size() == MAX_CAPTURED_LOCAL_LIGHTS)
+        {
+            budgetLimited = true;
+            break;
+        }
+
+        LL::GHI::LocalLightRecord light;
+        light.semanticId = volume->getID().getDigest64();
+        if (!light.semanticId) light.semanticId = volume->getLocalID();
+        std::copy_n(drawable->getPositionAgent().mV, 3, light.position.begin());
+        light.radius = radius;
+        std::copy_n(color.mV, 3, light.color.begin());
+        light.falloff = volume->getLightFalloff(DEFERRED_LIGHT_FALLOFF);
+
+        if (volume->isLightSpotlight())
+        {
+            light.kind = LL::GHI::LocalLightKind::Projector;
+            light.comparability =
+                LL::GHI::LightingComparability::ProjectorImageDeferred;
+            const LLQuaternion rotation = volume->getRenderRotation();
+            std::copy_n(rotation.mQ, 4, light.rotation.begin());
+            const LLVector3 scale = volume->getScale();
+            std::copy_n(scale.mV, 3, light.scale.begin());
+            const LLVector3 params = volume->getSpotLightParams();
+            std::copy_n(params.mV, 3, light.projectorParams.begin());
+            const LLUUID& texture = volume->getLightTextureID();
+            std::copy_n(texture.mData, 16,
+                        light.projectorTextureIdentity.begin());
+            for (std::size_t slot = 0; slot < 2; ++slot)
+            {
+                if (mShadowSpotLight[slot] == drawable)
+                {
+                    light.shadowSlot = static_cast<std::int32_t>(slot);
+                    light.shadowFade = 1.f - mSpotLightFade[slot];
+                    break;
+                }
+            }
+        }
+        resourceKeys.push_back(light.semanticId);
+        if (light.kind == LL::GHI::LocalLightKind::Projector)
+        {
+            std::uint64_t textureKey = 0;
+            for (std::uint8_t byte : light.projectorTextureIdentity)
+                textureKey = (textureKey ^ byte) * 1099511628211ull;
+            resourceKeys.push_back(textureKey);
+        }
+        packet.localLights.push_back(light);
+    }
+
+    // Resource identity is independent of camera-priority order and ordinary
+    // animated light values; sceneEpoch covers those per-sample changes.
+    std::sort(resourceKeys.begin(), resourceKeys.end());
+    std::uint64_t resourceSignature = 1469598103934665603ull;
+    auto mix = [&resourceSignature](std::uint64_t value)
+    {
+        for (unsigned shift = 0; shift != 64; shift += 8)
+        {
+            resourceSignature ^= (value >> shift) & 0xffu;
+            resourceSignature *= 1099511628211ull;
+        }
+    };
+    mix(packet.shadows.enabled ? 1u : 0u);
+    mix(packet.shadows.directionalCascadeCount);
+    for (std::uint64_t key : resourceKeys) mix(key);
+    if (!resourceEpoch || resourceSignature != previousResourceSignature)
+    {
+        ++resourceEpoch;
+        previousResourceSignature = resourceSignature;
+    }
+    packet.resourceEpoch = resourceEpoch;
+    LLGHIRuntime::consumeLiveLightingPacket(packet, budgetLimited);
+}
+
 void LLPipeline::renderDeferredLighting()
 {
     LL_PROFILE_ZONE_SCOPED_CATEGORY_PIPELINE;
@@ -9817,6 +9988,7 @@ void LLPipeline::renderDeferredLighting()
         glm::mat4 mat = get_current_modelview();
 
         setupHWLights();  // to set mSun/MoonDir;
+        captureGHILightingState(*camera, light_scale);
 
         glm::vec4 tc(mSunDir);
         tc = mat * tc;

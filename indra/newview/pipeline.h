@@ -348,6 +348,9 @@ public:
     void unbindReflectionProbes(LLGLSLShader& shader);
 
     void renderDeferredLighting();
+    // Developer-gated observation of the exact production light-selection
+    // inputs. Visible rendering remains on the selected OpenGL provider.
+    void captureGHILightingState(LLViewerCamera& camera, F32 light_scale);
 
     // apply atmospheric haze based on contents of color and depth buffer
     // should be called just before rendering water when camera is under water

@@ -17,6 +17,7 @@
 #include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghiterrainscenepacket.h"
 #include "ghi/include/llghiterrainoffscreenprobe.h"
+#include "ghi/include/llghilightingpacketconsumer.h"
 
 #include <algorithm>
 #include <memory>
@@ -46,6 +47,11 @@ std::uint32_t sTerrainSamples = 0;
 bool sTerrainCaptureClaimed = false;
 bool sTerrainDisabled = false;
 bool sPendingTerrainBudgetLimited = false;
+std::uint64_t sNextLightingFrame = 0;
+std::uint32_t sLightingAttempts = 0;
+std::uint32_t sLightingSamples = 0;
+bool sLightingCaptureClaimed = false;
+bool sLightingDisabled = false;
 
 bool offscreenProbeRequested()
 {
@@ -366,6 +372,18 @@ void initialize()
         }
     }
 
+    if (gSavedSettings.getBOOL("RenderVulkanLightingPacketProbe"))
+    {
+        const LL::GHI::LightingPacketTransferLimits limits;
+        LL_INFOS("GHIIntegration")
+            << "I7a live deferred-lighting packet transfer armed; interval="
+            << livePacketInterval() << " frames max-samples="
+            << livePacketMaximum() << " limits(lights/bytes)="
+            << limits.maxLocalLights << '/' << limits.maxUploadBytes
+            << ". Shadow matrices and policy are captured, while OpenGL shadow images are explicitly deferred."
+            << LL_ENDL;
+    }
+
     if (sOffscreenProbe ||
         gSavedSettings.getBOOL("RenderVulkanLivePacketProbe"))
     {
@@ -445,6 +463,11 @@ void shutdown()
     sTerrainCaptureClaimed = false;
     sTerrainDisabled = false;
     sPendingTerrainBudgetLimited = false;
+    sNextLightingFrame = 0;
+    sLightingAttempts = 0;
+    sLightingSamples = 0;
+    sLightingCaptureClaimed = false;
+    sLightingDisabled = false;
     LL_INFOS("GHIIntegration")
         << "Native Vulkan coexistence device shut down."
         << LL_ENDL;
@@ -666,6 +689,70 @@ void consumeLiveTerrainPacket(const LL::GHI::TerrainScenePacket& packet,
         << packet.vertices.size() << " indices=" << packet.indices.size()
         << " textures=" << packet.textures.size()
         << ". Completion will be polled on later OpenGL frames."
+        << LL_ENDL;
+}
+
+bool lightingCaptureRequested()
+{
+    return sVulkanDevice && !sLightingDisabled &&
+           gSavedSettings.getBOOL("RenderVulkanLightingPacketProbe");
+}
+
+bool shouldCaptureLiveLightingPacket(std::uint64_t frame_id)
+{
+    if (!lightingCaptureRequested() || sLightingCaptureClaimed) return false;
+    const std::uint32_t maximum = livePacketMaximum();
+    if (!maximum || sLightingSamples >= maximum ||
+        static_cast<std::uint64_t>(sLightingAttempts) >=
+            static_cast<std::uint64_t>(maximum) * 4ull)
+        return false;
+    if (!sNextLightingFrame)
+    {
+        sNextLightingFrame = frame_id + livePacketInterval();
+        return false;
+    }
+    if (frame_id < sNextLightingFrame) return false;
+    sLightingCaptureClaimed = true;
+    return true;
+}
+
+void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
+                               bool budget_limited)
+{
+    if (!sLightingCaptureClaimed || !sVulkanDevice) return;
+    sLightingCaptureClaimed = false;
+    ++sLightingAttempts;
+    sNextLightingFrame = packet.frameId + livePacketInterval();
+    const LL::GHI::LightingPacketTransferLimits limits;
+    LL::GHI::LightingPacketTransferResult result;
+    const LL::GHI::Status status = LL::GHI::consumeLightingPacketTransfer(
+        *sVulkanDevice, packet, limits, result);
+    if (!status)
+    {
+        LL_WARNS("GHIIntegration")
+            << "I7a live lighting packet transfer rejected at frame "
+            << packet.frameId << ": " << status.message() << LL_ENDL;
+        if (status.code() == LL::GHI::StatusCode::DeviceLost)
+        {
+            sLightingDisabled = true;
+            LL_WARNS("GHIIntegration")
+                << "I7a lighting transfer disabled after device loss. The production OpenGL renderer remains active."
+                << LL_ENDL;
+        }
+        return;
+    }
+    ++sLightingSamples;
+    LL_INFOS("GHIIntegration")
+        << "I7a live deferred-lighting packet transfer PASS: sample="
+        << sLightingSamples << '/' << livePacketMaximum() << " frame="
+        << result.frameId << " scene-epoch=" << result.sceneEpoch
+        << " resource-epoch=" << result.resourceEpoch << " local-lights="
+        << result.localLights << " projectors=" << result.projectorLights
+        << " shadow-cascades=" << result.shadowCascades
+        << " upload-bytes=" << result.uploadBytes << " sha256="
+        << result.packetSha256 << " capture-budget-limited="
+        << (budget_limited ? "yes" : "no")
+        << ". No shadow image, draw, surface, swapchain, or presentation operation was used; visible rendering remains OpenGL."
         << LL_ENDL;
 }
 

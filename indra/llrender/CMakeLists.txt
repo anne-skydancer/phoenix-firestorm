@@ -38,6 +38,8 @@ set(llrender_SOURCE_FILES
     ghi/backends/opengl/llghiopenglinfo.cpp
     ghi/core/llghidevice.cpp
     ghi/core/llghihash.cpp
+    ghi/core/llghilightingscenepacket.cpp
+    ghi/core/llghilightingpacketconsumer.cpp
     ghi/core/llghimaterialscenepacket.cpp
     ghi/core/llghiterrainscenepacket.cpp
     ghi/core/llghiterrainoffscreenprobe.cpp
@@ -87,6 +89,8 @@ set(llrender_HEADER_FILES
     ghi/backends/opengl/llghiopenglpresentation.h
     ghi/include/llghi.h
     ghi/include/llghialphacontract.h
+    ghi/include/llghilightingscenepacket.h
+    ghi/include/llghilightingpacketconsumer.h
     ghi/include/llghioffscreencontract.h
     ghi/include/llghiopaqueoffscreenprobe.h
     ghi/include/llghimaterialoffscreenprobe.h
@@ -947,6 +951,8 @@ if (LL_TESTS)
   add_executable(llrender_ghi_contract_test
       ghi/core/llghidevice.cpp
       ghi/core/llghihash.cpp
+      ghi/core/llghilightingscenepacket.cpp
+      ghi/core/llghilightingpacketconsumer.cpp
       ghi/core/llghimaterialscenepacket.cpp
       ghi/core/llghiterrainscenepacket.cpp
       ghi/core/llghiterrainoffscreenprobe.cpp

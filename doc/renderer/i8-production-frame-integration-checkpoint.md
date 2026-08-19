@@ -318,10 +318,17 @@ After I8a, the assembled packet becomes the sole input to a private native
 frame graph in incremental gates:
 
 1. add sky and water execution to the shared private frame graph;
-2. add alpha, recursive/offscreen views, HUD/UI composition, and
-   picking in separately testable slices; and
-3. permit selectable visible Vulkan presentation only after parity, recovery,
+2. add alpha and recursive/offscreen views in separately testable slices;
+3. complete UI0-UI6, including HUD/UI composition, snapshots, and picking;
+4. run the mandatory legacy-`gGL`-to-GHI convergence track across those
+   slices, then close the remaining production coupling inventory; and
+5. permit selectable visible Vulkan presentation only after parity, recovery,
    and provider-matrix gates are satisfied.
+
+The GHI convergence gate is P0 and blocks production selector approval. A
+Vulkan session may not depend on ambient `gGL` state or a viewer-owned OpenGL
+context; residual OpenGL implementation belongs inside the OpenGL peer, not in
+shared renderer-facing code.
 
 The architecture remains additive: native OpenGL and Mesa + Zink continue to be
 usable OpenGL providers throughout I8, and no production route is retired by

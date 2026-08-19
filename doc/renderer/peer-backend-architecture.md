@@ -42,6 +42,8 @@ a supported peer and rollback path.
 - Match the accepted Mesa-correct output for documented AMD OpenGL rendering
   divergences while achieving native accelerated performance.
 - Prevent graphics-API types and calls from leaking above backend directories.
+- Complete the production-path convergence from legacy `gGL`/implicit OpenGL
+  state to GHI so a Vulkan session has no renderer-facing OpenGL dependency.
 - Add capabilities incrementally without destabilizing production OpenGL.
 - Make resource lifetime, synchronization, and pass dependencies explicit.
 - Reuse the R00-R14 reference evidence and parity ledger for acceptance.
@@ -259,6 +261,34 @@ offered until the complete required ledger is satisfied. Intermediate releases
 must continue to route the complete production world/UI frame through OpenGL;
 they must not assemble a hybrid production frame from completed Vulkan slices.
 
+### Production GHI convergence gate — P0
+
+The existing zero-growth API-boundary ratchet is a safety floor, not the final
+exit criterion. Finishing the integration requires a measured burn-down of the
+legacy `gGL` and implicit-OpenGL inventory as each world, alpha, offscreen, HUD,
+UI, snapshot, and interaction slice adopts GHI.
+
+Before Vulkan may be exposed as a production backend:
+
+- every production rendering path reachable during a Vulkan session must
+  express resources, state, passes, draws, synchronization, and readback only
+  through backend-neutral GHI contracts;
+- renderer-facing code must not require a current OpenGL context, inspect an
+  OpenGL object name, or use ambient `gGL` state when Vulkan is selected;
+- `LLRender`, `LLVertexBuffer`, `LLRenderTarget`, `LLGLSLShader`, and
+  `LLImageGL` must either become backend-neutral adapters for their remaining
+  callers or be confined to the native OpenGL implementation;
+- the coupling inventory must decline at every applicable integration
+  checkpoint, with no unexplained regression; and
+- any residual native-OpenGL use above the backend must be a reviewed,
+  documented exception that is compile-time or structurally unreachable from
+  the Vulkan production route. The preferred final state is no such exception.
+
+This is semantic convergence, not a mechanical replacement of `gGL` calls by
+similarly shaped virtual methods. Feature policy remains above GHI, while API
+mechanics remain below it. Both OpenGL and Vulkan peers must execute the same
+adopted semantic work and retain their existing deterministic and live gates.
+
 ## Backend selection and fallback
 
 Keep API selection separate from OpenGL implementation selection:
@@ -475,10 +505,13 @@ Exit gate: R07 and R11-R13 pass with recursion and alpha-routing invariants.
 
 - UI/HUD, picking, selection, snapshots, profiling, device-loss reporting, and
   content-heavy region entry.
+- Complete production-path `gGL`-to-GHI convergence and close or explicitly
+  approve every remaining coupling-inventory exception.
 - Complete Windows and Linux hardware coverage and performance qualification.
 
 Exit gate: all required ledger rows are `PARITY`, R00-R14 gates pass, no native
-API boundary growth is unexplained, and Vulkan is explicitly approved for
+API boundary growth is unexplained, no Vulkan production path depends on
+legacy `gGL` or an OpenGL context, and Vulkan is explicitly approved for
 production selection.
 
 Passing R8 permits a separate release decision to expose Vulkan as a production
@@ -518,6 +551,7 @@ the concerns isolated while preserving one authoritative codebase.
 | Backend setting conflation | Zink mistaken for native Vulkan | Separate API backend and OpenGL provider settings |
 | Premature production exposure | Incomplete viewer under Vulkan | Developer gate until the full required parity ledger passes |
 | Premature Mesa + Zink retirement | Loss of the known-correct AMD workaround before Vulkan is ready | Keep it available through R8; require a separate post-parity retirement checkpoint |
+| Partial GHI convergence | Vulkan presentation still depends on hidden OpenGL state or bypass paths | Track subsystem burn-down, require dual-peer execution, and block selector approval on the final coupling audit |
 | Abstraction overhead | Failure to reach native performance | Coarse command/batch dispatch, immutable cached state, telemetry from R3 onward |
 
 ## First implementation change

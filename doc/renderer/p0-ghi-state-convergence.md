@@ -233,8 +233,9 @@ Viewer-side capture now retains the same-frame rigid opaque component for I8
 frame assembly. A missing, stale, or cross-frame opaque component rejects the
 whole observation instead of silently producing a partial opaque frame. The
 transfer and execution budgets account for opaque draws and geometry, and the
-live acceptance gate requires the opaque stream plus all four G-buffer targets
-to contain work.
+live acceptance gate requires the opaque stream plus all three geometry
+G-buffer targets to contain work. The emission target may remain clear when a
+valid scene contains no emissive contribution.
 
 P0e1a is a private, non-presenting adoption checkpoint. It establishes a
 coherent opaque input and execution graph but does not yet reroute the visible
@@ -293,6 +294,78 @@ This closes duplicate opaque ownership in the private production graph. The
 remaining P0e1 gates are isolated OpenGL-peer execution, cross-peer semantic
 comparison, and live qualification before any visible OpenGL draw family can
 be redirected.
+
+### P0e1d — isolated native-peer replay gate
+
+Production-frame qualification does not create a second GHI OpenGL device on
+the viewer's live context. Doing so would allow the isolated peer to change
+program, vertex-array, framebuffer, texture, buffer, and raster state behind
+the production renderer's legacy caches. Instead, the viewer serializes one
+immutable, backend-neutral `ProductionFramePacket` after a configurable scene
+settle interval. The visible world and UI remain on their selected OpenGL
+provider throughout capture.
+
+Set `VULKANSTORM_GHI_PRODUCTION_FRAME_CAPTURE` to the desired `.llghif` path
+before starting the viewer. This one setting arms the otherwise developer-only
+assembly route without changing persistent graphics settings. Capture waits
+120 seconds by default so decoded scene resources can settle, ignores
+incoherent observations, writes the first complete bounded frame once, records
+whether collection reached a capture budget in the log, and then disarms. A
+dense scene may legitimately reach a collection bound; replay must compare the
+same recorded subset rather than treating that safety limit as invalid input.
+Tests may override the wait from 0 through 3600 seconds with
+`VULKANSTORM_GHI_PRODUCTION_FRAME_CAPTURE_DELAY_SECONDS`.
+
+The capture request also arms the existing bounded decoder-observation cache
+from process startup. This preserves small, backend-neutral texture samples
+while normal J2C decoding owns them; it neither reads texture pixels back from
+OpenGL nor retains native texture names. Without those observations a late
+capture could contain valid asset metadata but no executable peer texture
+resources.
+
+Two standalone executables consume the exact saved bytes:
+
+- `llrender_opengl_production_frame_harness` creates an isolated WGL context
+  and executes the OpenGL 4.1-capable shader artifacts;
+- `llrender_vulkan_production_frame_harness` creates no window or OpenGL
+  context and executes the Vulkan GLSL artifacts, optionally with validation;
+  and
+- `scripts/renderer/compare_ghi_production_frame.py` runs both, requires the
+  same packet identity, extent, draws, residency, lights, shadow routes, and
+  active maps, then applies explicit absolute and relative tolerances to
+  G-buffer, lighting, and shadow coverage. Native pixel hashes are reported
+  as evidence but are not required to be bit-identical across APIs.
+
+The comparator rejects an empty required geometry G-buffer or lighting target;
+the optional emission target may be clear. It
+requires covered work in each active shadow category, not every individual
+cascade, because a valid camera can leave one cascade clear. This preserves
+the corrected I7 acceptance rule while still detecting a missing directional
+or projector-shadow implementation.
+
+The first real-grid gate captured frame 20966 after the 120-second settle
+period. Its 7,525,836-byte packet contains 3,599,360 decoded texture bytes, 29
+captured material draws, 64 terrain draws, four directional shadow cascades,
+and 36 local lights. The executable subset on both peers is identical: 28
+material draws (all legacy in this scene), five rigged material draws, 64
+terrain draws, and 29 shadow casters. The packet identity is
+`5154c81d7a5abe1368685ebd096f7ae69b9020b1587c06b8cb94b2d871b0ad82`.
+
+Real replay exposed three missing OpenGL-peer cases that the synthetic
+fixtures had not reached. The OpenGL 4.1 state compiler now accepts a
+depth-only rendering scope, creates a pipeline with a depth attachment and no
+color attachment, and reads a complete depth mip into a verification buffer.
+Depth-only scopes explicitly select `GL_NONE` draw/read buffers, and reused
+framebuffers detach stale color attachments. These are valid modern OpenGL
+operations hidden entirely below the GHI boundary.
+
+With Vulkan validation enabled, both peers passed. G-buffer base/normal and
+lighting coverage differ by one pixel; specular coverage and every directional
+shadow-map coverage count are identical. The emission target is clear on both
+because the captured executable subset has no emissive contribution. No
+Vulkan validation error was reported. P0e1 is therefore accepted for private,
+non-presenting production execution; visible world ownership remains OpenGL
+until the later integration and selector gates authorize exposure.
 
 ## State-ownership invariant
 

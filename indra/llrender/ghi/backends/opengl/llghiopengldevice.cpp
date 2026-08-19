@@ -1240,7 +1240,8 @@ PipelineHandle OpenGLDevice::createPipeline(const PipelineDesc& desc, Status& st
     }
     if (!translateTopology(desc.topology) || !translatePolygonMode(desc.polygonMode) ||
         desc.samples != 1 ||
-        desc.colorFormats.empty() || desc.colorFormats.size() != desc.blendStates.size() ||
+        (desc.colorFormats.empty() && !desc.depthStencilFormat) ||
+        desc.colorFormats.size() != desc.blendStates.size() ||
         !desc.specializationConstants.empty() ||
         !std::isfinite(desc.lineWidth) || desc.lineWidth <= 0.f ||
         desc.lineWidth > mCapabilities.maxLineWidth ||
@@ -1540,7 +1541,8 @@ Status OpenGLDevice::copyImageToBuffer(ImageHandle source, BufferHandle destinat
             ? src->second.desc.arrayLayers : 1;
         const std::uint32_t depth = src->second.target == GL_TEXTURE_3D
             ? std::max(1u, src->second.desc.extent.depth >> sub.mipLevel) : 1;
-        if ((region.bufferOffset & 3u) != 0 || sub.aspect != ImageAspect::Color ||
+        if ((region.bufferOffset & 3u) != 0 ||
+            !aspectCompatible(sub.aspect, src->second.format.aspect) ||
             sub.mipLevel >= src->second.desc.mipLevels ||
             region.imageOffset != Offset3D{} || region.imageExtent.width != width ||
             region.imageExtent.height != height || region.imageExtent.depth != depth ||
@@ -1640,9 +1642,15 @@ Status OpenGLDevice::beginRendering(const RenderingInfo& info)
 {
     if (!mCommands.frameActive()) return invalidState("beginRendering requires an active frame");
     if (mCommands.renderingActive()) return invalidState("a rendering scope is already active");
-    if (!mFramebuffer || !info.width || !info.height || info.colors.empty() ||
-        info.colors.size() > mCapabilities.maxColorAttachments)
-        return invalidArgument("invalid OpenGL rendering scope");
+    if (!mFramebuffer)
+        return invalidArgument("OpenGL rendering scope has no device framebuffer");
+    if (!info.width || !info.height)
+        return invalidArgument("OpenGL rendering scope has an empty extent");
+    if (info.colors.empty() && !info.depthStencil)
+        return invalidArgument("OpenGL rendering scope has no attachment");
+    if (info.colors.size() > mCapabilities.maxColorAttachments)
+        return invalidArgument(
+            "OpenGL rendering scope exceeds the device color-attachment limit");
 
     // Legacy rendering may have used the shared context since the preceding
     // GHI scope. This boundary makes the GHI cache authoritative only while
@@ -1690,7 +1698,22 @@ Status OpenGLDevice::beginRendering(const RenderingInfo& info)
                                    image->second.name, range.baseMipLevel);
         drawBuffers.push_back(slot);
     }
-    glDrawBuffers(static_cast<GLsizei>(drawBuffers.size()), drawBuffers.data());
+    for (std::size_t i = info.colors.size();
+         i < mCapabilities.maxColorAttachments; ++i)
+        glFramebufferTexture2D(
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(i),
+            GL_TEXTURE_2D, 0, 0);
+    if (drawBuffers.empty())
+    {
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
+    }
+    else
+    {
+        glDrawBuffers(
+            static_cast<GLsizei>(drawBuffers.size()), drawBuffers.data());
+        glReadBuffer(drawBuffers.front());
+    }
 
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);

@@ -25,6 +25,10 @@
 #include "ghi/include/llghilightingpacketconsumer.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -78,6 +82,89 @@ std::uint32_t sLightingSamples = 0;
 bool sLightingCaptureClaimed = false;
 bool sLightingDisabled = false;
 
+const std::filesystem::path& productionFrameCapturePath()
+{
+    static const std::filesystem::path path = []
+    {
+        if (const char* value =
+                std::getenv("VULKANSTORM_GHI_PRODUCTION_FRAME_CAPTURE"))
+            if (*value) return std::filesystem::path(value);
+        return std::filesystem::path{};
+    }();
+    return path;
+}
+
+bool productionFrameCaptureRequested()
+{
+    return !productionFrameCapturePath().empty();
+}
+
+std::uint32_t productionFrameCaptureDelaySeconds()
+{
+    static const std::uint32_t seconds = []
+    {
+        constexpr std::uint32_t DEFAULT_DELAY = 120;
+        const char* value = std::getenv(
+            "VULKANSTORM_GHI_PRODUCTION_FRAME_CAPTURE_DELAY_SECONDS");
+        if (!value || !*value) return DEFAULT_DELAY;
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        return end && !*end && parsed <= 3600
+            ? static_cast<std::uint32_t>(parsed) : DEFAULT_DELAY;
+    }();
+    return seconds;
+}
+
+bool productionFrameCaptureReady()
+{
+    if (!productionFrameCaptureRequested()) return true;
+    static const auto armed = std::chrono::steady_clock::now();
+    return std::chrono::steady_clock::now() - armed >=
+        std::chrono::seconds(productionFrameCaptureDelaySeconds());
+}
+
+void captureProductionFrame(const LL::GHI::ProductionFramePacket& frame,
+                            bool budgetLimited)
+{
+    static bool attempted = false;
+    if (attempted) return;
+    const std::filesystem::path& output = productionFrameCapturePath();
+    if (output.empty()) return;
+    attempted = true;
+
+    std::vector<std::byte> encoded;
+    const LL::GHI::Status status =
+        LL::GHI::encodeProductionFramePacket(frame, encoded);
+    if (!status)
+    {
+        LL_WARNS("GHIIntegration")
+            << "P0e1 production-frame replay capture rejected frame "
+            << frame.frameId << ": " << status.message() << LL_ENDL;
+        return;
+    }
+    std::error_code error;
+    if (output.has_parent_path())
+        std::filesystem::create_directories(output.parent_path(), error);
+    std::ofstream stream(output, std::ios::binary | std::ios::trunc);
+    stream.write(reinterpret_cast<const char*>(encoded.data()),
+                 static_cast<std::streamsize>(encoded.size()));
+    stream.close();
+    if (!stream)
+    {
+        LL_WARNS("GHIIntegration")
+            << "P0e1 production-frame replay capture could not write "
+            << output.string() << LL_ENDL;
+        return;
+    }
+    LL_INFOS("GHIIntegration")
+        << "P0e1 production-frame replay capture complete: frame="
+        << frame.frameId << " bytes=" << encoded.size() << " sha256="
+        << LL::GHI::sha256(encoded) << " capture-budget-limited="
+        << (budgetLimited ? "yes" : "no") << " output=" << output.string()
+        << ". The packet contains renderer inputs only and can be replayed in isolated OpenGL and Vulkan peers."
+        << LL_ENDL;
+}
+
 bool shadowOffscreenRequestedInternal();
 
 bool productionLightingExecutionRequested()
@@ -106,7 +193,7 @@ bool textureResidencyRequested()
 bool frameAssemblyRequested()
 {
     return gSavedSettings.getBOOL("RenderVulkanFrameAssemblyProbe") ||
-           textureResidencyRequested();
+           textureResidencyRequested() || productionFrameCaptureRequested();
 }
 
 bool projectorLightingOffscreenRequested()
@@ -153,7 +240,10 @@ std::uint32_t livePacketInterval()
 
 std::uint32_t livePacketMaximum()
 {
-    return gSavedSettings.getU32("RenderVulkanLivePacketMaxSamples");
+    const std::uint32_t configured =
+        gSavedSettings.getU32("RenderVulkanLivePacketMaxSamples");
+    return productionFrameCaptureRequested()
+        ? std::max(1u, configured) : configured;
 }
 
 void disableLivePacketProbe(const LL::GHI::Status& status,
@@ -465,13 +555,13 @@ void pollProductionGBuffer()
         return;
     }
     const bool completeCoverage = std::all_of(
-        result.nonClearPixels.begin(), result.nonClearPixels.end(),
+        result.nonClearPixels.begin(), result.nonClearPixels.begin() + 3,
         [](std::uint64_t pixels) { return pixels != 0; });
     if (!result.materialDraws || !result.legacyMaterialDraws ||
         !result.terrainDraws || !result.pbrTerrainDraws || !completeCoverage)
     {
         LL_INFOS("GHIIntegration")
-            << "P0e1 completed without full legacy/PBR material, PBR-terrain, and four-target coverage; retrying. frame="
+            << "P0e1 completed without full legacy/PBR material, PBR-terrain, and required geometry-target coverage; retrying. frame="
             << result.frameId << " draws(opaque/material/legacy/rigged/terrain/pbr)="
             << result.opaqueDraws << '/' << result.materialDraws << '/'
             << result.legacyMaterialDraws << '/' << result.riggedMaterialDraws
@@ -636,7 +726,9 @@ namespace LLGHIRuntime
 
 void initialize()
 {
-    if (sVulkanDevice || !gSavedSettings.getBOOL("RenderVulkanDeveloperProbe"))
+    if (sVulkanDevice ||
+        (!gSavedSettings.getBOOL("RenderVulkanDeveloperProbe") &&
+         !productionFrameCaptureRequested()))
     {
         return;
     }
@@ -681,6 +773,14 @@ void initialize()
         << " cube-arrays=" << (capabilities.cubeMapArrays ? "yes" : "no")
         << ". Visible rendering and the active renderer snapshot remain OpenGL."
         << LL_ENDL;
+
+    if (productionFrameCaptureRequested())
+        LL_INFOS("GHIIntegration")
+            << "P0e1 production-frame capture armed after a "
+            << productionFrameCaptureDelaySeconds()
+            << "-second scene-settle delay; output="
+            << productionFrameCapturePath().string()
+            << ". Persistent viewer settings are unchanged." << LL_ENDL;
 
     if (frameAssemblyRequested())
     {
@@ -1211,9 +1311,16 @@ bool active()
     return static_cast<bool>(sVulkanDevice);
 }
 
+bool productionFrameCaptureRequested()
+{
+    return ::productionFrameCaptureRequested();
+}
+
 bool shouldCaptureLiveOpaquePacket(std::uint64_t frame_id)
 {
     pollOffscreenProbe();
+    if (frameAssemblyRequested() && !productionFrameCaptureReady())
+        return false;
     if (!sVulkanDevice || sLivePacketDisabled || sLivePacketCaptureClaimed ||
         !livePacketRequested())
         return false;
@@ -1349,6 +1456,8 @@ bool shouldCaptureLiveMaterialPacket(std::uint64_t frame_id)
     pollProductionGBuffer();
     pollProductionLighting();
     pollMaterialProbe();
+    if (frameAssemblyRequested() && !productionFrameCaptureReady())
+        return false;
     if (!materialCaptureRequested() || sMaterialCaptureClaimed ||
         (sMaterialProbe && sMaterialProbe->pending()) ||
         (sGBufferExecutor && sGBufferExecutor->pending()) ||
@@ -1478,6 +1587,8 @@ bool shouldCaptureLiveTerrainPacket(std::uint64_t frame_id)
     pollProductionGBuffer();
     pollProductionLighting();
     pollTerrainProbe();
+    if (frameAssemblyRequested() && !productionFrameCaptureReady())
+        return false;
     if (!terrainCaptureRequested() || sTerrainCaptureClaimed ||
         (sTerrainProbe && sTerrainProbe->pending()) ||
         (sGBufferExecutor && sGBufferExecutor->pending()) ||
@@ -1593,6 +1704,8 @@ bool shouldCaptureLiveLightingPacket(std::uint64_t frame_id)
 {
     pollProductionGBuffer();
     pollProductionLighting();
+    if (frameAssemblyRequested() && !productionFrameCaptureReady())
+        return false;
     if (!lightingCaptureRequested() || sLightingCaptureClaimed) return false;
     if ((sGBufferExecutor && sGBufferExecutor->pending()) ||
         (sProductionLightingExecutor &&
@@ -1738,6 +1851,7 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
             sPendingFrameOpaqueBudgetLimited ||
             sPendingFrameMaterialBudgetLimited ||
             sPendingFrameTerrainBudgetLimited;
+        captureProductionFrame(frame, captureBudgetLimited);
         sPendingFrameOpaqueBudgetLimited = false;
         sPendingFrameMaterialBudgetLimited = false;
         sPendingFrameTerrainBudgetLimited = false;

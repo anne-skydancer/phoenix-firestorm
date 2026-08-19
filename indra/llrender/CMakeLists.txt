@@ -909,6 +909,22 @@ if (USE_VULKAN_GHI)
       LL_GHI_R8_INTERACTION_SHADER_PACKAGE="${GHI_R8_INTERACTION_SHADER_PACKAGE}")
   target_link_libraries(llrender_vulkan_interaction_harness llrender Vulkan::Vulkan)
   add_dependencies(llrender_vulkan_interaction_harness llrender_ghi_shaders)
+
+  add_executable(llrender_vulkan_production_frame_harness
+      tests/ghi/llghiproductionframeharness.cpp)
+  target_include_directories(llrender_vulkan_production_frame_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+  target_compile_definitions(llrender_vulkan_production_frame_harness PRIVATE
+      LL_GHI_PRODUCTION_VULKAN=1
+      LL_GHI_PRODUCTION_OPAQUE_PACKAGE="${GHI_R4_SHADER_PACKAGE}"
+      LL_GHI_PRODUCTION_MATERIAL_PACKAGE="${GHI_R5A_SHADER_PACKAGE}"
+      LL_GHI_PRODUCTION_TERRAIN_PACKAGE="${GHI_I6_TERRAIN_SHADER_PACKAGE}"
+      LL_GHI_PRODUCTION_LIGHTING_PACKAGE="${GHI_I7_LIGHTING_SHADER_PACKAGE}"
+      LL_GHI_PRODUCTION_PROJECTOR_PACKAGE="${GHI_I7_PROJECTOR_SHADER_PACKAGE}"
+      LL_GHI_PRODUCTION_SHADOW_PACKAGE="${GHI_I7_SHADOW_SHADER_PACKAGE}")
+  target_link_libraries(llrender_vulkan_production_frame_harness
+      llrender Vulkan::Vulkan)
+  add_dependencies(llrender_vulkan_production_frame_harness llrender_ghi_shaders)
 endif ()
 
 if (WINDOWS)
@@ -1072,6 +1088,22 @@ if (WINDOWS)
         LL_GHI_R8_INTERACTION_SHADER_PACKAGE="${GHI_R8_INTERACTION_SHADER_PACKAGE}")
     target_link_libraries(llrender_opengl_interaction_harness llrender OpenGL::GL)
     add_dependencies(llrender_opengl_interaction_harness llrender_ghi_shaders)
+
+    add_executable(llrender_opengl_production_frame_harness
+        tests/ghi/llghiproductionframeharness.cpp)
+    target_include_directories(llrender_opengl_production_frame_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+    target_compile_definitions(llrender_opengl_production_frame_harness PRIVATE
+        LL_GHI_PRODUCTION_OPENGL=1
+        LL_GHI_PRODUCTION_OPAQUE_PACKAGE="${GHI_R4_SHADER_PACKAGE}"
+        LL_GHI_PRODUCTION_MATERIAL_PACKAGE="${GHI_R5A_SHADER_PACKAGE}"
+        LL_GHI_PRODUCTION_TERRAIN_PACKAGE="${GHI_I6_TERRAIN_SHADER_PACKAGE}"
+        LL_GHI_PRODUCTION_LIGHTING_PACKAGE="${GHI_I7_LIGHTING_SHADER_PACKAGE}"
+        LL_GHI_PRODUCTION_PROJECTOR_PACKAGE="${GHI_I7_PROJECTOR_SHADER_PACKAGE}"
+        LL_GHI_PRODUCTION_SHADOW_PACKAGE="${GHI_I7_SHADOW_SHADER_PACKAGE}")
+    target_link_libraries(llrender_opengl_production_frame_harness
+        llrender OpenGL::GL)
+    add_dependencies(llrender_opengl_production_frame_harness llrender_ghi_shaders)
   endif ()
 endif ()
 

@@ -526,6 +526,32 @@ void LLProgressView::initLogos()
     texture_start_x += icon_width + default_pad;
 #endif //LL_HAVOK
 
+#ifdef LL_GROK
+    // Official Grok Image Compression organization mark (200x200).
+    icon_width = default_height;
+    icon_height = default_height;
+    loadLogo(temp_str + "grok_logo.png",
+        image_codec,
+        LLRect(texture_start_x, texture_start_y + icon_height, texture_start_x + icon_width, texture_start_y),
+        default_clip,
+        default_clip);
+
+    texture_start_x += icon_width + default_pad;
+#endif // LL_GROK
+
+#ifdef LL_SOLOUD
+    // Official transparent SoLoud logo (437x315), preserving its aspect ratio.
+    icon_width = 39;
+    icon_height = default_height;
+    loadLogo(temp_str + "soloud_logo.png",
+        image_codec,
+        LLRect(texture_start_x, texture_start_y + icon_height, texture_start_x + icon_width, texture_start_y),
+        default_clip,
+        default_clip);
+
+    texture_start_x += icon_width + default_pad;
+#endif // LL_SOLOUD
+
     // 108x41
     icon_width = 74;
     icon_height = default_height;

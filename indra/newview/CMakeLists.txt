@@ -2305,6 +2305,12 @@ add_executable(${VIEWER_BINARY_NAME}
     ${viewer_SOURCE_FILES}
     )
 
+# Expose the selected JPEG 2000 implementation to startup branding without
+# coupling viewer code to Grok headers or symbols.
+if (USE_GROK)
+    target_compile_definitions(${VIEWER_BINARY_NAME} PRIVATE LL_GROK=1)
+endif ()
+
 # add package files
 file(GLOB EVENT_HOST_SCRIPT_GLOB_LIST
      ${CMAKE_CURRENT_SOURCE_DIR}/../viewer_components/*.py)

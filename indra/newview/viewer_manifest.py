@@ -133,6 +133,14 @@ class ViewerManifest(LLManifest,FSViewerManifest):
             self.path("*/xui/*/*.xml")
             self.path("*/xui/*/widgets/*.xml")
 
+        # A developer copy does not traverse the complete skin texture tree,
+        # but the startup progress view loads these logos directly from disk.
+        # Keep staged development runs consistent with packaged viewers.
+        if not self.is_packaging_viewer():
+            with self.prefix(src="skins/default/textures/3p_icons",
+                             dst="skins/default/textures/3p_icons"):
+                self.path("*.png")
+
         if self.is_packaging_viewer():
             with self.prefix(src_dst="app_settings"):
                 # include the extracted list of contributors

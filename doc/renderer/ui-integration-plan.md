@@ -22,6 +22,9 @@ renderer must preserve:
 - CPU UI hit testing before world picking, plus transparent/rigged/HUD world
   pick policy when the UI does not consume the event;
 - snapshot modes that include or exclude HUD and UI independently; and
+- the complete snapshot composition workflow, including the capture-frame mask
+  and `Show framing guide` overlay, every guide style, and the persisted guide
+  color, thickness, and opacity settings; and
 - all shipped Firestorm skins at supported DPI and UI scales.
 
 The UI path must not expose Vulkan handles to LLUI or add Vulkan-shaped methods
@@ -135,10 +138,18 @@ exactly once.
 
 Express world-only, world+HUD, and world+HUD+UI snapshots as explicit graph
 outputs. The final compositor consumes only native-GHI images from the selected
-backend. Vulkan presentation is still developer-gated at this step.
+backend. The live snapshot composition view must also reproduce the existing
+capture-frame mask and `Show framing guide` overlay. Coverage includes rule of
+thirds, diagonal, and all four golden-ratio orientations, together with guide
+color, pixel thickness, and opacity. Whether the frame and guides are preview
+overlays or included in a saved output is existing product policy and must
+match OpenGL exactly; Vulkan must not silently burn an overlay into an image or
+omit one from a mode where OpenGL includes it. Vulkan presentation is still
+developer-gated at this step.
 
 Exit gate: snapshot dimensions, alpha, color space, tiling/high-resolution
-paths, and UI inclusion policy match OpenGL without a full-device idle.
+paths, HUD/UI inclusion policy, capture-frame masking, and every framing-guide
+configuration match OpenGL without a full-device idle.
 
 ### UI6 — production-frame and presentation gate
 
@@ -184,8 +195,9 @@ The live gate covers System OpenGL, Mesa + Zink, and native Vulkan on Windows,
 then native OpenGL and Vulkan on Linux. It includes every shipped skin, 96/120/
 144/192 DPI, UI scales 0.75/1.0/1.25/1.5/2.0, window resize and minimize,
 inventory and outfit panels, chat/emoji, menus/tooltips, build tools, media
-controls, HUD attachments, snapshots, and picking. Intel and macOS Vulkan are
-not production requirements; macOS retains its OpenGL 4.1 path.
+controls, HUD attachments, snapshots, the capture-frame mask, every framing-
+guide style and appearance control, and picking. Intel and macOS Vulkan are not
+production requirements; macOS retains its OpenGL 4.1 path.
 
 ## Revisit points
 

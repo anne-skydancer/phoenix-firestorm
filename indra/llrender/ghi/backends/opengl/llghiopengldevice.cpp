@@ -19,6 +19,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstddef>
 #include <cstdint>
@@ -251,6 +252,17 @@ GLenum translateTopology(PrimitiveTopology topology)
     case PrimitiveTopology::LineStrip: return GL_LINE_STRIP;
     case PrimitiveTopology::Triangles: return GL_TRIANGLES;
     case PrimitiveTopology::TriangleStrip: return GL_TRIANGLE_STRIP;
+    }
+    return 0;
+}
+
+GLenum translatePolygonMode(PolygonMode mode)
+{
+    switch (mode)
+    {
+    case PolygonMode::Fill: return GL_FILL;
+    case PolygonMode::Line: return GL_LINE;
+    case PolygonMode::Point: return GL_POINT;
     }
     return 0;
 }
@@ -655,6 +667,9 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     mCapabilities.maxVaryingVectors = std::max(0, value / 4);
     glGetIntegerv(GL_MAX_SAMPLES, &value);
     mCapabilities.maxSamples = std::max(1, value);
+    GLfloat lineWidthRange[2]{1.f, 1.f};
+    glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, lineWidthRange);
+    mCapabilities.maxLineWidth = std::max(1.f, lineWidthRange[1]);
     mCapabilities.maxFramesInFlight = info.framesInFlight;
     mCapabilities.maxBufferSize = static_cast<std::uint64_t>(std::numeric_limits<GLsizeiptr>::max());
     glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &value);
@@ -665,6 +680,8 @@ OpenGLDevice::OpenGLDevice(const DeviceCreateInfo& info) :
     mCapabilities.occlusionQueries = glBeginQuery && glEndQuery &&
         glGetQueryObjectuiv && glGetQueryObjectui64v;
     mCapabilities.depthClamp = true;
+    mCapabilities.nonSolidFill = true;
+    mCapabilities.wideLines = mCapabilities.maxLineWidth > 1.f;
     mCapabilities.independentBlend = glEnablei && glDisablei &&
         glBlendFuncSeparatei && glBlendEquationSeparatei && glColorMaski;
     mCapabilities.baselineGraphicsPipeline = true;
@@ -1190,9 +1207,14 @@ PipelineHandle OpenGLDevice::createPipeline(const PipelineDesc& desc, Status& st
     {
         status = invalidHandle("pipeline references an invalid shader package"); return {};
     }
-    if (!translateTopology(desc.topology) || desc.samples != 1 ||
+    if (!translateTopology(desc.topology) || !translatePolygonMode(desc.polygonMode) ||
+        desc.samples != 1 ||
         desc.colorFormats.empty() || desc.colorFormats.size() != desc.blendStates.size() ||
-        !desc.specializationConstants.empty())
+        !desc.specializationConstants.empty() ||
+        !std::isfinite(desc.lineWidth) || desc.lineWidth <= 0.f ||
+        desc.lineWidth > mCapabilities.maxLineWidth ||
+        !std::isfinite(desc.depthBiasConstantFactor) ||
+        !std::isfinite(desc.depthBiasSlopeFactor))
     {
         status = unsupported("R3d OpenGL requires single-sample graphics state without specialization constants");
         return {};
@@ -1200,6 +1222,14 @@ PipelineHandle OpenGLDevice::createPipeline(const PipelineDesc& desc, Status& st
     if (desc.colorFormats.size() > mCapabilities.maxColorAttachments)
     {
         status = invalidArgument("pipeline exceeds OpenGL color attachment limits"); return {};
+    }
+    if (desc.polygonMode != PolygonMode::Fill && !mCapabilities.nonSolidFill)
+    {
+        status = unsupported("OpenGL non-solid polygon rasterization is unavailable"); return {};
+    }
+    if (desc.lineWidth != 1.f && !mCapabilities.wideLines)
+    {
+        status = unsupported("OpenGL wide lines are unavailable"); return {};
     }
     if (!mCapabilities.independentBlend && desc.blendStates.size() > 1 &&
         !std::all_of(desc.blendStates.begin() + 1, desc.blendStates.end(),
@@ -1740,6 +1770,18 @@ Status OpenGLDevice::bindPipeline(PipelineHandle handle)
         glCullFace(desc.cullMode == CullMode::Front ? GL_FRONT : GL_BACK);
     }
     glFrontFace(desc.frontFaceCounterClockwise ? GL_CCW : GL_CW);
+    glPolygonMode(GL_FRONT_AND_BACK, translatePolygonMode(desc.polygonMode));
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glDisable(GL_POLYGON_OFFSET_LINE);
+    glDisable(GL_POLYGON_OFFSET_POINT);
+    if (desc.depthBias)
+    {
+        const GLenum offsetMode = desc.polygonMode == PolygonMode::Fill ? GL_POLYGON_OFFSET_FILL :
+            desc.polygonMode == PolygonMode::Line ? GL_POLYGON_OFFSET_LINE : GL_POLYGON_OFFSET_POINT;
+        glEnable(offsetMode);
+        glPolygonOffset(desc.depthBiasSlopeFactor, desc.depthBiasConstantFactor);
+    }
+    glLineWidth(desc.lineWidth);
     if (desc.depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     glDepthMask(desc.depthWrite ? GL_TRUE : GL_FALSE);
     glDepthFunc(translateCompare(desc.depthCompare));

@@ -684,6 +684,8 @@ void VulkanPresentationSurface::captureSnapshot()
     capabilities.maxVaryingVectors = limits.maxVertexOutputComponents / 4;
     capabilities.maxSamples = sampleCount(
         limits.framebufferColorSampleCounts & limits.framebufferDepthSampleCounts);
+    capabilities.maxLineWidth = features.features.wideLines
+        ? limits.lineWidthRange[1] : 1.f;
     capabilities.maxBufferSize = std::max<std::uint64_t>(
         limits.maxStorageBufferRange, limits.maxUniformBufferRange);
     capabilities.timestampQueries = limits.timestampComputeAndGraphics != 0;
@@ -692,6 +694,8 @@ void VulkanPresentationSurface::captureSnapshot()
     capabilities.descriptorIndexing = features12.descriptorIndexing != 0;
     capabilities.storageImageAtomics = features.features.fragmentStoresAndAtomics != 0;
     capabilities.depthClamp = features.features.depthClamp != 0;
+    capabilities.nonSolidFill = features.features.fillModeNonSolid != 0;
+    capabilities.wideLines = features.features.wideLines != 0;
     capabilities.independentBlend = features.features.independentBlend != 0;
     capabilities.cubeMapArrays = features.features.imageCubeArray != 0;
     // Device creation already enforces the Vulkan baseline required by this

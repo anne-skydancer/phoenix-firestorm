@@ -213,6 +213,7 @@ struct RendererCapabilities
     std::uint32_t maxUniformBufferSize = 0;
     std::uint32_t maxVaryingVectors = 0;
     std::uint32_t maxSamples = 1;
+    float maxLineWidth = 1.f;
     std::uint64_t maxBufferSize = 0;
     std::uint64_t uniformBufferOffsetAlignment = 1;
     std::uint64_t storageBufferOffsetAlignment = 1;
@@ -225,6 +226,10 @@ struct RendererCapabilities
     bool descriptorIndexing = false;
     bool storageImageAtomics = false;
     bool depthClamp = false;
+    // Non-solid rasterization and wide lines are optional in Vulkan but core
+    // state in the OpenGL 4.1 compatibility baseline.
+    bool nonSolidFill = false;
+    bool wideLines = false;
     bool independentBlend = false;
     // Required by reflection/hero probes, mirrors, and cube snapshots. This is
     // a semantic capability, independent of native API version numbering.

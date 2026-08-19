@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_revision": "061795a033a438232538805e4770af81ce3606d2",
+  "source_revision": "6d1599d404b3f977b7bf00f3eb2933f16e947f6a",
   "scope": {
     "roots": [
       "indra/llappearance",
@@ -17,7 +17,7 @@
   },
   "summary": {
     "ggl_member_uses": 4441,
-    "legacy_state_symbol_uses": 516,
+    "legacy_state_symbol_uses": 512,
     "direct_gl_shaped_calls": 796,
     "unclassified_symbols": []
   },
@@ -1834,13 +1834,13 @@
       "LLGLEnable": {
         "classification": "live_implicit_state",
         "disposition": "replace_with_ghi_pipeline_state",
-        "count": 115,
+        "count": 111,
         "owners": {
           "environment": 6,
           "offscreen_and_recursive": 2,
           "renderer_core": 8,
           "ui_core": 1,
-          "ui_hud_and_interaction": 25,
+          "ui_hud_and_interaction": 21,
           "world_renderer": 73
         },
         "files": {
@@ -1848,7 +1848,7 @@
           "indra/llrender/llglstates.h": 5,
           "indra/llrender/llrendertarget.cpp": 1,
           "indra/llui/llfloater.cpp": 1,
-          "indra/newview/fsmaniprotatejoint.cpp": 12,
+          "indra/newview/fsmaniprotatejoint.cpp": 10,
           "indra/newview/fsmaniptranslatejoint.cpp": 1,
           "indra/newview/gltfscenemanager.cpp": 1,
           "indra/newview/lldrawpoolavatar.cpp": 1,
@@ -1858,7 +1858,7 @@
           "indra/newview/llface.cpp": 2,
           "indra/newview/llfasttimerview.cpp": 3,
           "indra/newview/llfloaterimagepreview.cpp": 1,
-          "indra/newview/llmaniprotate.cpp": 5,
+          "indra/newview/llmaniprotate.cpp": 4,
           "indra/newview/llmanipscale.cpp": 2,
           "indra/newview/llmaniptranslate.cpp": 2,
           "indra/newview/llmodelpreview.cpp": 1,
@@ -1870,7 +1870,7 @@
           "indra/newview/llviewerwindow.cpp": 15,
           "indra/newview/llvoavatar.cpp": 3,
           "indra/newview/pipeline.cpp": 29,
-          "indra/newview/qtoolalign.cpp": 2
+          "indra/newview/qtoolalign.cpp": 1
         }
       },
       "LLGLSDefault": {

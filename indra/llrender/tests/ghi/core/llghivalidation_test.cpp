@@ -33,6 +33,8 @@
 #include "ghi/include/llghioffscreencontract.h"
 #include "ghi/include/llghiopaqueoffscreenprobe.h"
 #include "ghi/include/llghiopaquepacketconsumer.h"
+
+#include <limits>
 #include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
 #include "ghi/include/llghiworldcontract.h"
@@ -820,6 +822,32 @@ void LLGHIValidationObject::test<18>()
     changedPipeline.colorFormats = {Format::RGBA8SRGB};
     ensure("pipeline state change invalidates pipeline cache",
         identity != pipelineCacheIdentity(package, changedPipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
+            Backend::OpenGL, domain));
+    changedPipeline = pipeline;
+    changedPipeline.polygonMode = PolygonMode::Line;
+    ensure("polygon mode invalidates pipeline cache",
+        identity != pipelineCacheIdentity(package, changedPipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
+            Backend::OpenGL, domain));
+    changedPipeline = pipeline;
+    changedPipeline.depthBias = true;
+    changedPipeline.depthBiasConstantFactor = 2.f;
+    changedPipeline.depthBiasSlopeFactor = 1.f;
+    ensure("depth bias invalidates pipeline cache",
+        identity != pipelineCacheIdentity(package, changedPipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
+            Backend::OpenGL, domain));
+    changedPipeline = pipeline;
+    changedPipeline.lineWidth = 2.f;
+    ensure("line width invalidates pipeline cache",
+        identity != pipelineCacheIdentity(package, changedPipeline,
+            ShaderPackageDesc::TargetProfile::OpenGL44,
+            Backend::OpenGL, domain));
+    changedPipeline = pipeline;
+    changedPipeline.depthBiasConstantFactor = -0.f;
+    ensure_equals("signed zero has one semantic pipeline identity", identity,
+        pipelineCacheIdentity(package, changedPipeline,
             ShaderPackageDesc::TargetProfile::OpenGL44,
             Backend::OpenGL, domain));
     ensure("target profile change invalidates pipeline cache",
@@ -3084,6 +3112,51 @@ void LLGHIValidationObject::test<36>()
            residency.shutdown().ok());
     ensure("I8b deferred residency resources drain",
            created.device->waitIdle().ok());
+}
+
+template<> template<>
+void LLGHIValidationObject::test<37>()
+{
+    using namespace LL::GHI;
+
+    DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
+    auto* device = dynamic_cast<ValidationDevice*>(created.device.get());
+    ensure("P0c validation device", created.status.ok() && device);
+    ensure("P0c exposes non-solid fill", device->capabilities().nonSolidFill);
+    ensure("P0c exposes wide lines", device->capabilities().wideLines);
+
+    Status status = Status::success();
+    ShaderPackageHandle shader = device->createShaderPackage(
+        makeUnboundShaderPackage(), status);
+    ensure("P0c shader package", status.ok() && shader);
+
+    PipelineDesc pipeline;
+    pipeline.shader = shader;
+    pipeline.polygonMode = PolygonMode::Line;
+    pipeline.depthBias = true;
+    pipeline.depthBiasConstantFactor = 2.f;
+    pipeline.depthBiasSlopeFactor = 1.f;
+    pipeline.lineWidth = 2.f;
+    pipeline.depthTest = false;
+    pipeline.depthWrite = false;
+    pipeline.colorFormats = {Format::RGBA8UNorm};
+    pipeline.blendStates = {BlendState{}};
+    PipelineHandle accepted = device->createPipeline(pipeline, status);
+    ensure("P0c explicit raster state accepted", status.ok() && accepted);
+
+    pipeline.lineWidth = 0.f;
+    ensure("P0c zero line width rejected",
+        !device->createPipeline(pipeline, status) &&
+        status.code() == StatusCode::InvalidArgument);
+    pipeline.lineWidth = std::numeric_limits<float>::infinity();
+    ensure("P0c non-finite line width rejected",
+        !device->createPipeline(pipeline, status) &&
+        status.code() == StatusCode::InvalidArgument);
+    pipeline.lineWidth = 1.f;
+    pipeline.depthBiasSlopeFactor = std::numeric_limits<float>::quiet_NaN();
+    ensure("P0c non-finite depth bias rejected",
+        !device->createPipeline(pipeline, status) &&
+        status.code() == StatusCode::InvalidArgument);
 }
 
 } // namespace tut

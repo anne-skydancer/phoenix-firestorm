@@ -347,6 +347,9 @@ RendererSnapshot queryOpenGLRendererSnapshot()
         std::max(gGLManager.mMaxVaryingVectors, 0));
     device_caps.maxSamples = static_cast<std::uint32_t>(
         std::max(gGLManager.mMaxSamples, 1));
+    GLfloat line_width_range[2]{1.f, 1.f};
+    glGetFloatv(GL_ALIASED_LINE_WIDTH_RANGE, line_width_range);
+    device_caps.maxLineWidth = std::max(line_width_range[1], 1.f);
     device_caps.maxBufferSize = 0; // OpenGL exposes target-specific limits only.
     device_caps.timestampQueries = gGLManager.mGLVersion >= 3.3f;
     device_caps.timestampPeriodNanoseconds = device_caps.timestampQueries ? 1.0 : 0.0;
@@ -354,6 +357,8 @@ RendererSnapshot queryOpenGLRendererSnapshot()
     device_caps.descriptorIndexing = false;
     device_caps.storageImageAtomics = gGLManager.mGLVersion >= 4.2f;
     device_caps.depthClamp = gGLManager.mGLVersion >= 3.2f;
+    device_caps.nonSolidFill = true;
+    device_caps.wideLines = device_caps.maxLineWidth > 1.f;
     device_caps.baselineGraphicsPipeline = gGLManager.mGLVersion >= 3.f;
     device_caps.advancedGraphicsPipeline = gGLManager.mGLVersion >= 4.4f;
     device_caps.independentBlend = glEnablei && glDisablei &&

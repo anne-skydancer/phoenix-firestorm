@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -225,6 +226,17 @@ VkPrimitiveTopology translateTopology(PrimitiveTopology topology)
     case PrimitiveTopology::TriangleStrip: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
     }
     return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+}
+
+VkPolygonMode translatePolygonMode(PolygonMode mode)
+{
+    switch (mode)
+    {
+    case PolygonMode::Fill: return VK_POLYGON_MODE_FILL;
+    case PolygonMode::Line: return VK_POLYGON_MODE_LINE;
+    case PolygonMode::Point: return VK_POLYGON_MODE_POINT;
+    }
+    return VK_POLYGON_MODE_MAX_ENUM;
 }
 
 VkCompareOp translateCompare(CompareOp compare)
@@ -655,6 +667,8 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     VkPhysicalDeviceFeatures enabledFeatures{};
     enabledFeatures.samplerAnisotropy = availableFeatures.samplerAnisotropy;
     enabledFeatures.depthClamp = availableFeatures.depthClamp;
+    enabledFeatures.fillModeNonSolid = availableFeatures.fillModeNonSolid;
+    enabledFeatures.wideLines = availableFeatures.wideLines;
     enabledFeatures.independentBlend = availableFeatures.independentBlend;
     enabledFeatures.imageCubeArray = availableFeatures.imageCubeArray;
     enabledFeatures.fragmentStoresAndAtomics =
@@ -705,6 +719,8 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     mCapabilities.maxSamples = (properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_8_BIT) ? 8 :
                               (properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) ? 4 :
                               (properties.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_2_BIT) ? 2 : 1;
+    mCapabilities.maxLineWidth = enabledFeatures.wideLines
+        ? properties.limits.lineWidthRange[1] : 1.f;
     mCapabilities.maxBufferSize = std::numeric_limits<VkDeviceSize>::max();
     mCapabilities.uniformBufferOffsetAlignment = properties.limits.minUniformBufferOffsetAlignment;
     mCapabilities.storageBufferOffsetAlignment = properties.limits.minStorageBufferOffsetAlignment;
@@ -739,6 +755,8 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     mCapabilities.timestampPeriodNanoseconds = properties.limits.timestampPeriod;
     mCapabilities.occlusionQueries = true;
     mCapabilities.depthClamp = enabledFeatures.depthClamp == VK_TRUE;
+    mCapabilities.nonSolidFill = enabledFeatures.fillModeNonSolid == VK_TRUE;
+    mCapabilities.wideLines = enabledFeatures.wideLines == VK_TRUE;
     mCapabilities.independentBlend = enabledFeatures.independentBlend == VK_TRUE;
     mCapabilities.cubeMapArrays = enabledFeatures.imageCubeArray == VK_TRUE;
     mCapabilities.baselineGraphicsPipeline = true;
@@ -1142,6 +1160,16 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc, Status& st
     { status = invalidArgument("invalid Vulkan graphics pipeline descriptor"); return {}; }
     if (desc.depthClamp && !mCapabilities.depthClamp)
     { status = unsupported("Vulkan depth clamp is unavailable"); return {}; }
+    if (translatePolygonMode(desc.polygonMode) == VK_POLYGON_MODE_MAX_ENUM ||
+        !std::isfinite(desc.lineWidth) || desc.lineWidth <= 0.f ||
+        desc.lineWidth > mCapabilities.maxLineWidth ||
+        !std::isfinite(desc.depthBiasConstantFactor) ||
+        !std::isfinite(desc.depthBiasSlopeFactor))
+    { status = invalidArgument("invalid Vulkan rasterization state"); return {}; }
+    if (desc.polygonMode != PolygonMode::Fill && !mCapabilities.nonSolidFill)
+    { status = unsupported("Vulkan non-solid polygon rasterization is unavailable"); return {}; }
+    if (desc.lineWidth != 1.f && !mCapabilities.wideLines)
+    { status = unsupported("Vulkan wide lines are unavailable"); return {}; }
     if (!mCapabilities.independentBlend && desc.blendStates.size() > 1 &&
         !std::all_of(desc.blendStates.begin() + 1, desc.blendStates.end(),
                      [&](const BlendState& blend) { return blend == desc.blendStates.front(); }))
@@ -1194,7 +1222,7 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc, Status& st
     viewport.viewportCount = 1; viewport.scissorCount = 1;
     VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     raster.depthClampEnable = desc.depthClamp;
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.polygonMode = translatePolygonMode(desc.polygonMode);
     raster.cullMode = desc.cullMode == CullMode::None ? VK_CULL_MODE_NONE :
         desc.cullMode == CullMode::Front ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
     // Front-face state is expressed in the GHI's canonical framebuffer
@@ -1202,7 +1230,10 @@ PipelineHandle VulkanDevice::createPipeline(const PipelineDesc& desc, Status& st
     // native winding selection is not inverted again here.
     raster.frontFace = desc.frontFaceCounterClockwise ? VK_FRONT_FACE_COUNTER_CLOCKWISE
                                                       : VK_FRONT_FACE_CLOCKWISE;
-    raster.lineWidth = 1.f;
+    raster.depthBiasEnable = desc.depthBias;
+    raster.depthBiasConstantFactor = desc.depthBiasConstantFactor;
+    raster.depthBiasSlopeFactor = desc.depthBiasSlopeFactor;
+    raster.lineWidth = desc.lineWidth;
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = samples;
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};

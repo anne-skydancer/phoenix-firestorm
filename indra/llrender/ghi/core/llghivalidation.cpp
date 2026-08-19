@@ -693,6 +693,7 @@ ValidationDevice::ValidationDevice(const DeviceCreateInfo& info) :
     mCapabilities.maxUniformBufferSize = 65536;
     mCapabilities.maxVaryingVectors = 32;
     mCapabilities.maxSamples = 8;
+    mCapabilities.maxLineWidth = 64.f;
     mCapabilities.maxBufferSize = std::uint64_t{1} << 40;
     mCapabilities.uniformBufferOffsetAlignment = 256;
     mCapabilities.storageBufferOffsetAlignment = 256;
@@ -703,6 +704,8 @@ ValidationDevice::ValidationDevice(const DeviceCreateInfo& info) :
     mCapabilities.descriptorIndexing = true;
     mCapabilities.storageImageAtomics = true;
     mCapabilities.depthClamp = true;
+    mCapabilities.nonSolidFill = true;
+    mCapabilities.wideLines = true;
     mCapabilities.independentBlend = true;
     mCapabilities.cubeMapArrays = true;
 }
@@ -1066,9 +1069,15 @@ PipelineHandle ValidationDevice::createPipeline(const PipelineDesc& desc, Status
                     [](Format format) { return !isColorFormat(format); }) ||
         (desc.depthStencilFormat &&
          (*desc.depthStencilFormat == Format::Undefined || isColorFormat(*desc.depthStencilFormat))) ||
-        (desc.depthClamp && !mCapabilities.depthClamp))
+        (desc.depthClamp && !mCapabilities.depthClamp) ||
+        (desc.polygonMode != PolygonMode::Fill && !mCapabilities.nonSolidFill) ||
+        (desc.lineWidth != 1.f && !mCapabilities.wideLines) ||
+        !std::isfinite(desc.lineWidth) || desc.lineWidth <= 0.f ||
+        desc.lineWidth > mCapabilities.maxLineWidth ||
+        !std::isfinite(desc.depthBiasConstantFactor) ||
+        !std::isfinite(desc.depthBiasSlopeFactor))
     {
-        status = invalidArgument("pipeline formats, samples, or depth-clamp state are unsupported");
+        status = invalidArgument("pipeline formats, samples, or raster state are unsupported");
         return {};
     }
     if (!mCapabilities.independentBlend && desc.blendStates.size() > 1 &&

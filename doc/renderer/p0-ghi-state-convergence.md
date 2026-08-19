@@ -79,6 +79,40 @@ passes 36 of 36 tests. The obsolete pre-rename `firestorm-bin.vcxproj` remains
 stale in an existing build directory and is not a valid build target; project
 regeneration and all subsequent verification use `vulkanstorm-bin.vcxproj`.
 
+### P0c explicit raster-state contract
+
+The first state-contract completion slice adds the demonstrated raster-state
+gaps to `PipelineDesc` rather than introducing GL-shaped GHI commands:
+
+- fill, line, and point polygon modes;
+- polygon depth-bias enable, constant factor, and slope factor; and
+- line width, bounded by an explicit device limit.
+
+The OpenGL peer compiles those fields to OpenGL 4.1 state. The Vulkan peer
+compiles the same fields to static Vulkan rasterization state and enables the
+optional `fillModeNonSolid` and `wideLines` device features only when exposed.
+Both peers publish `nonSolidFill`, `wideLines`, and `maxLineWidth` capabilities,
+and unsupported descriptors fail during pipeline creation. The pipeline-cache
+identity includes every new field and canonicalizes signed zero.
+
+Legacy point size and texture coordinate generation calls are not modeled as
+virtual state. Their eventual production slices must express the same
+rendering intent through shader inputs, shader logic, and explicit draw data.
+This prevents obsolete fixed-function vocabulary from becoming part of the
+permanent GHI interface.
+
+The only executable fixed-function alpha-test enable was attached to an
+untextured alignment-box draw and had no shader alpha-test contract. Three
+legacy clip-plane enables likewise had no shader writing `gl_ClipDistance`.
+Those four removed-mode enables were sanitized as inert OpenGL-core state,
+rather than preserved as false GHI capabilities.
+
+The regenerated ledger now contains 4,441 `gGL` uses, 512 broader state
+references, and 796 direct GL-shaped calls, with no unclassified symbol. The
+Release renderer library and complete viewer executable build, the boundary
+ratchet passes, and the expanded deterministic GHI contract suite passes 37 of
+37 tests.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

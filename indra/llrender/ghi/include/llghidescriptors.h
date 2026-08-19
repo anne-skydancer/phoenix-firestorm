@@ -437,6 +437,13 @@ enum class CullMode : std::uint8_t
     Back,
 };
 
+enum class PolygonMode : std::uint8_t
+{
+    Fill,
+    Line,
+    Point,
+};
+
 enum class CompareOp : std::uint8_t
 {
     Never,
@@ -516,7 +523,12 @@ struct PipelineDesc
     ShaderPackageHandle shader;
     PrimitiveTopology topology = PrimitiveTopology::Triangles;
     CullMode cullMode = CullMode::Back;
+    PolygonMode polygonMode = PolygonMode::Fill;
     bool frontFaceCounterClockwise = true;
+    bool depthBias = false;
+    float depthBiasConstantFactor = 0.f;
+    float depthBiasSlopeFactor = 0.f;
+    float lineWidth = 1.f;
     bool depthTest = true;
     bool depthWrite = true;
     CompareOp depthCompare = CompareOp::GreaterEqual;

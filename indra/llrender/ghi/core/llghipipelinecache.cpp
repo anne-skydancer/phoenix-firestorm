@@ -12,6 +12,7 @@
 
 #include "llghihash.h"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -47,6 +48,14 @@ public:
     }
 
     void boolean(bool value) { integer<std::uint8_t>(value ? 1 : 0); }
+
+    void floating(float value)
+    {
+        // IEEE negative zero compares equal to positive zero and must not
+        // create a distinct cache entry for the same semantic pipeline.
+        if (value == 0.f) value = 0.f;
+        integer(std::bit_cast<std::uint32_t>(value));
+    }
 
     void bytes(std::span<const std::uint8_t> value)
     {
@@ -104,7 +113,7 @@ std::string pipelineCacheIdentity(
     const PipelineCacheDomain& domain)
 {
     CanonicalBytes bytes;
-    bytes.string("LLGHI_PIPELINE_CACHE_V1");
+    bytes.string("LLGHI_PIPELINE_CACHE_V2");
     bytes.integer(backend);
     bytes.integer(target);
     bytes.bytes(shaderPackage.semanticHash);
@@ -114,7 +123,12 @@ std::string pipelineCacheIdentity(
 
     bytes.integer(pipeline.topology);
     bytes.integer(pipeline.cullMode);
+    bytes.integer(pipeline.polygonMode);
     bytes.boolean(pipeline.frontFaceCounterClockwise);
+    bytes.boolean(pipeline.depthBias);
+    bytes.floating(pipeline.depthBiasConstantFactor);
+    bytes.floating(pipeline.depthBiasSlopeFactor);
+    bytes.floating(pipeline.lineWidth);
     bytes.boolean(pipeline.depthClamp);
     bytes.boolean(pipeline.depthTest);
     bytes.boolean(pipeline.depthWrite);

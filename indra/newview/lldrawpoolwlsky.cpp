@@ -150,10 +150,6 @@ void LLDrawPoolWLSky::renderSkyHazeDeferred(const LLVector3& camPosLocal, F32 ca
 
     LLVector3 const & origin = LLViewerCamera::getInstance()->getOrigin();
 
-    if (LLGHIEnvironmentCapture::active())
-        LLGHIEnvironmentCapture::instance().observeSky(
-            origin, camHeightLocal, use_hdri_sky());
-
     if (gPipeline.canUseWindLightShaders() && gPipeline.hasRenderType(LLPipeline::RENDER_TYPE_SKY))
     {
         if (use_hdri_sky())
@@ -501,6 +497,12 @@ void LLDrawPoolWLSky::renderDeferred(S32 pass)
         {
             renderSkyCloudsDeferred(origin, camHeightLocal, cloud_shader);
         }
+
+        // Observe after the authoritative path has ensured dome, celestial,
+        // and randomized star geometry exists for this frame.
+        if (LLGHIEnvironmentCapture::active())
+            LLGHIEnvironmentCapture::instance().observeSky(
+                origin, camHeightLocal, use_hdri_sky());
     }
 }
 

@@ -19,6 +19,7 @@
 #include "llviewertexture.h"
 #include "llvertexbuffer.h"
 #include "llvosky.h"
+#include "llvowlsky.h"
 #include "llvowater.h"
 #include "pipeline.h"
 #include "ghi/core/llghihash.h"
@@ -184,6 +185,165 @@ public:
             {LL::GHI::EnvironmentTextureSemantic::Hdri, index});
     }
 
+    bool appendSkyVertices(const LLVertexBuffer& buffer,
+                           std::uint32_t firstVertex,
+                           std::uint32_t vertexCount, bool colors,
+                           std::vector<std::uint32_t>& remap)
+    {
+        constexpr std::uint32_t required =
+            LLVertexBuffer::MAP_VERTEX | LLVertexBuffer::MAP_TEXCOORD0;
+        if (!vertexCount || firstVertex > buffer.getNumVerts() ||
+            vertexCount > buffer.getNumVerts() - firstVertex ||
+            (buffer.getTypeMask() & required) != required ||
+            !buffer.getMappedData() ||
+            mPacket.skyVertices.size() + vertexCount > 1024ull * 1024ull)
+        {
+            mBudgetLimited = true;
+            return false;
+        }
+        const auto* data = buffer.getMappedData();
+        const auto* positions = reinterpret_cast<const float*>(
+            data + buffer.getOffset(LLVertexBuffer::TYPE_VERTEX));
+        const auto* texcoords = reinterpret_cast<const float*>(
+            data + buffer.getOffset(LLVertexBuffer::TYPE_TEXCOORD0));
+        const auto* vertexColors = colors &&
+            buffer.hasDataType(LLVertexBuffer::TYPE_COLOR)
+            ? data + buffer.getOffset(LLVertexBuffer::TYPE_COLOR) : nullptr;
+        remap.resize(vertexCount);
+        for (std::uint32_t local = 0; local < vertexCount; ++local)
+        {
+            const std::uint32_t source = firstVertex + local;
+            remap[local] = static_cast<std::uint32_t>(mPacket.skyVertices.size());
+            LL::GHI::SkySceneVertex vertex;
+            std::copy_n(positions + static_cast<std::size_t>(source) * 4, 3,
+                        vertex.position.begin());
+            std::copy_n(texcoords + static_cast<std::size_t>(source) * 2, 2,
+                        vertex.texCoord.begin());
+            if (vertexColors)
+                for (std::size_t component = 0; component < 4; ++component)
+                    vertex.color[component] =
+                        static_cast<float>(vertexColors[source * 4 + component]) /
+                        255.f;
+            mPacket.skyVertices.push_back(vertex);
+        }
+        return true;
+    }
+
+    bool indexedSkyGeometry(
+        const LLVertexBuffer& buffer, LL::GHI::SkyGeometryKind kind,
+        LL::GHI::EnvironmentPrimitive primitive, std::uint32_t firstVertex,
+        std::uint32_t vertexCount, std::uint32_t firstIndex,
+        std::uint32_t indexCount, const std::array<float, 16>& transform,
+        bool colors = false)
+    {
+        if (!indexCount || !buffer.getMappedIndices() ||
+            firstIndex > buffer.getNumIndices() ||
+            indexCount > buffer.getNumIndices() - firstIndex ||
+            (buffer.getIndexStride() != 2 && buffer.getIndexStride() != 4) ||
+            mPacket.skyIndices.size() + indexCount > 3ull * 1024ull * 1024ull ||
+            mPacket.skyDraws.size() >= 1024)
+        {
+            mBudgetLimited = true;
+            return false;
+        }
+        std::vector<std::uint32_t> remap;
+        if (!appendSkyVertices(buffer, firstVertex, vertexCount, colors, remap))
+            return false;
+        const auto* raw = buffer.getMappedIndices();
+        const std::uint32_t firstOutput =
+            static_cast<std::uint32_t>(mPacket.skyIndices.size());
+        for (std::uint32_t item = 0; item < indexCount; ++item)
+        {
+            const std::uint32_t source = buffer.getIndexStride() == 2
+                ? reinterpret_cast<const std::uint16_t*>(raw)[firstIndex + item]
+                : reinterpret_cast<const std::uint32_t*>(raw)[firstIndex + item];
+            if (source < firstVertex || source >= firstVertex + vertexCount)
+                return false;
+            mPacket.skyIndices.push_back(remap[source - firstVertex]);
+        }
+        mPacket.skyDraws.push_back(
+            {kind, primitive, firstOutput, indexCount, transform});
+        return true;
+    }
+
+    bool arraySkyGeometry(const LLVertexBuffer& buffer,
+                          LL::GHI::SkyGeometryKind kind,
+                          std::uint32_t vertexCount,
+                          const std::array<float, 16>& transform)
+    {
+        if (mPacket.skyIndices.size() + vertexCount > 3ull * 1024ull * 1024ull ||
+            mPacket.skyDraws.size() >= 1024)
+        {
+            mBudgetLimited = true;
+            return false;
+        }
+        std::vector<std::uint32_t> remap;
+        if (!appendSkyVertices(buffer, 0, vertexCount, true, remap)) return false;
+        const std::uint32_t firstOutput =
+            static_cast<std::uint32_t>(mPacket.skyIndices.size());
+        mPacket.skyIndices.insert(mPacket.skyIndices.end(), remap.begin(), remap.end());
+        mPacket.skyDraws.push_back(
+            {kind, LL::GHI::EnvironmentPrimitive::Triangles,
+             firstOutput, vertexCount, transform});
+        return true;
+    }
+
+    void skyGeometry(const LLVector3& cameraPosition)
+    {
+        if (!gSky.mVOWLSkyp) return;
+        const auto& domeTransform = mPacket.sky.domeTransform;
+        for (const auto& segment : gSky.mVOWLSkyp->getDomeVertexBuffers())
+            if (segment)
+                indexedSkyGeometry(
+                    *segment, LL::GHI::SkyGeometryKind::Dome,
+                    LL::GHI::EnvironmentPrimitive::TriangleStrip, 0,
+                    segment->getNumVerts(), 0, segment->getNumIndices(),
+                    domeTransform);
+
+        glm::mat4 celestial(1.f);
+        celestial = glm::translate(
+            celestial, glm::vec3(cameraPosition.mV[0], cameraPosition.mV[1],
+                                 cameraPosition.mV[2]));
+        std::array<float, 16> celestialTransform{};
+        std::copy_n(glm::value_ptr(celestial), 16, celestialTransform.begin());
+        auto captureFace = [this, &celestialTransform](
+            LLFace* face, LL::GHI::SkyGeometryKind kind)
+        {
+            if (!face || !face->getVertexBuffer()) return;
+            indexedSkyGeometry(
+                *face->getVertexBuffer(), kind,
+                LL::GHI::EnvironmentPrimitive::Triangles,
+                face->getGeomIndex(), face->getGeomCount(),
+                face->getIndicesStart(), face->getIndicesCount(),
+                celestialTransform);
+        };
+        if ((mPacket.passMask & LL::GHI::environmentPassBit(
+                LL::GHI::EnvironmentPass::Sun)) != 0)
+            captureFace(gSky.mVOSkyp->mFace[LLVOSky::FACE_SUN],
+                        LL::GHI::SkyGeometryKind::Sun);
+        if ((mPacket.passMask & LL::GHI::environmentPassBit(
+                LL::GHI::EnvironmentPass::Moon)) != 0)
+            captureFace(gSky.mVOSkyp->mFace[LLVOSky::FACE_MOON],
+                        LL::GHI::SkyGeometryKind::Moon);
+        if ((mPacket.passMask & LL::GHI::environmentPassBit(
+                LL::GHI::EnvironmentPass::Stars)) != 0)
+        {
+            glm::mat4 stars = glm::rotate(
+                celestial,
+                glm::radians(static_cast<float>(gFrameTimeSeconds) * .01f),
+                glm::vec3(0.f, 0.f, 1.f));
+            std::array<float, 16> starTransform{};
+            std::copy_n(glm::value_ptr(stars), 16, starTransform.begin());
+            if (LLVertexBuffer* buffer = gSky.mVOWLSkyp->getStarsVertexBuffer())
+                arraySkyGeometry(
+                    *buffer, LL::GHI::SkyGeometryKind::Stars,
+                    std::min<std::uint32_t>(
+                        buffer->getNumVerts(),
+                        gSky.mVOWLSkyp->getStarsDrawVertexCount()),
+                    starTransform);
+        }
+    }
+
     void sky(const LLVector3& cameraPosition, float cameraHeight, bool hdri)
     {
         if (!mInFrame || mSkyObserved || !gSky.mVOSkyp) return;
@@ -253,6 +413,8 @@ public:
         skyState.blendFactor = static_cast<float>(settings->getBlendFactor());
         skyState.sunUp = settings->getIsSunUp();
         skyState.moonUp = settings->getIsMoonUp();
+        skyState.emissiveBuffer =
+            gSavedSettings.getBOOL("RenderEnableEmissiveBuffer");
 
         glm::vec3 translated(cameraPosition.mV[0], cameraPosition.mV[1],
                              cameraPosition.mV[2]);
@@ -275,6 +437,7 @@ public:
             skyState.hdriSplitScreen =
                 gSavedSettings.getF32("RenderHDRISplitScreen");
             bindHdriPlaceholder();
+            skyGeometry(cameraPosition);
             return;
         }
 
@@ -311,6 +474,7 @@ public:
                  LL::GHI::TextureColorSpace::SRGB);
         }
         if (gPipeline.hasRenderType(LLPipeline::RENDER_TYPE_SKY) &&
+            skyState.starBrightness >= .001f &&
             gSky.mVOSkyp->getBloomTex())
         {
             mPacket.passMask |= LL::GHI::environmentPassBit(
@@ -334,6 +498,7 @@ public:
                  LL::GHI::EnvironmentTextureSemantic::CloudNoiseNext,
                  LL::GHI::TextureColorSpace::Linear);
         }
+        skyGeometry(cameraPosition);
     }
 
     bool geometry(const LLFace& face)

@@ -2382,6 +2382,7 @@ if (WINDOWS)
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_deferred_lighting.llghisp
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_projector_lighting.llghisp
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_shadow.llghisp
+           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_environment.llghisp
           )
     endif ()
 

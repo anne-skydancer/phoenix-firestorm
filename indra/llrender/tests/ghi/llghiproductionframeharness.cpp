@@ -6,6 +6,7 @@
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/include/llghidevice.h"
 #include "ghi/include/llghiproductionframepacket.h"
+#include "ghi/include/llghiproductionenvironmentexecutor.h"
 #include "ghi/include/llghiproductionframetargets.h"
 #include "ghi/include/llghiproductiongbufferexecutor.h"
 #include "ghi/include/llghiproductionlightingexecutor.h"
@@ -23,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -162,6 +164,22 @@ bool readPacket(const char* path, ProductionFramePacket& packet,
     return true;
 }
 
+bool readEnvironmentPacket(const char* path, EnvironmentScenePacket& packet,
+                           std::string& message)
+{
+    std::ifstream stream(path, std::ios::binary | std::ios::ate);
+    if (!stream) { message = "could not open environment packet"; return false; }
+    const std::streamoff length = stream.tellg();
+    if (length <= 0) { message = "environment packet is empty"; return false; }
+    stream.seekg(0, std::ios::beg);
+    std::vector<std::byte> encoded(static_cast<std::size_t>(length));
+    stream.read(reinterpret_cast<char*>(encoded.data()), length);
+    if (!stream) { message = "could not read environment packet"; return false; }
+    const Status status = decodeEnvironmentScenePacket(encoded, packet);
+    if (!status) { message = status.message(); return false; }
+    return true;
+}
+
 bool loadPackage(const char* path, ShaderPackageDesc& package)
 {
     const Status status = loadShaderPackage(path, package);
@@ -202,12 +220,13 @@ int main(int argc, char** argv)
     {
         std::cerr << "usage: " << argv[0]
                   << " <production-frame.llghif> [--adapter <index>]"
-                     " [--validation]\n";
+                     " [--validation] [--environment <packet.llghie>]\n";
         return 2;
     }
 
     std::uint32_t adapterIndex = 0;
     bool validation = false;
+    const char* environmentPath = nullptr;
     for (int argument = 2; argument < argc; ++argument)
     {
         const std::string option = argv[argument];
@@ -220,6 +239,8 @@ int main(int argc, char** argv)
             }
         }
         else if (option == "--validation") validation = true;
+        else if (option == "--environment" && argument + 1 < argc)
+            environmentPath = argv[++argument];
         else
         {
             std::cerr << "unknown or incomplete option: " << option << '\n';
@@ -230,6 +251,13 @@ int main(int argc, char** argv)
     ProductionFramePacket frame;
     std::string message;
     if (!readPacket(argv[1], frame, message))
+    {
+        std::cerr << message << '\n';
+        return 3;
+    }
+    EnvironmentScenePacket environmentPacket;
+    if (environmentPath &&
+        !readEnvironmentPacket(environmentPath, environmentPacket, message))
     {
         std::cerr << message << '\n';
         return 3;
@@ -262,12 +290,17 @@ int main(int argc, char** argv)
 
     ShaderPackageDesc opaquePackage, materialPackage, terrainPackage;
     ShaderPackageDesc lightingPackage, projectorPackage, shadowPackage;
+    ShaderPackageDesc environmentPackage;
     if (!loadPackage(LL_GHI_PRODUCTION_OPAQUE_PACKAGE, opaquePackage) ||
         !loadPackage(LL_GHI_PRODUCTION_MATERIAL_PACKAGE, materialPackage) ||
         !loadPackage(LL_GHI_PRODUCTION_TERRAIN_PACKAGE, terrainPackage) ||
         !loadPackage(LL_GHI_PRODUCTION_LIGHTING_PACKAGE, lightingPackage) ||
         !loadPackage(LL_GHI_PRODUCTION_PROJECTOR_PACKAGE, projectorPackage) ||
-        !loadPackage(LL_GHI_PRODUCTION_SHADOW_PACKAGE, shadowPackage))
+        !loadPackage(LL_GHI_PRODUCTION_SHADOW_PACKAGE, shadowPackage) ||
+        (environmentPath && !loadPackage(
+            std::filesystem::path(LL_GHI_PRODUCTION_SHADOW_PACKAGE)
+                .replace_filename("p0_environment.llghisp").string().c_str(),
+            environmentPackage)))
         return 6;
 
     ProductionTextureResidency residency(*creation.device);
@@ -278,6 +311,10 @@ int main(int argc, char** argv)
     ProductionLightingExecutor lighting(
         *creation.device, std::move(lightingPackage),
         std::move(projectorPackage), std::move(shadowPackage));
+    std::unique_ptr<ProductionEnvironmentExecutor> environment;
+    if (environmentPath)
+        environment = std::make_unique<ProductionEnvironmentExecutor>(
+            *creation.device, std::move(environmentPackage));
 
     ProductionTextureResidencyResult residencyResult;
     Status status = residency.update(
@@ -289,6 +326,9 @@ int main(int argc, char** argv)
     if (status)
         status = gbuffer.submit(
             frame, targets.targets(), residency, ProductionGBufferLimits{});
+    if (status && environment)
+        status = environment->submit(environmentPacket, targets.targets(),
+                                     ProductionEnvironmentLimits{});
     if (status)
         status = lighting.submit(
             frame, targets.targets(), residency, ProductionLightingLimits{});
@@ -301,6 +341,9 @@ int main(int argc, char** argv)
     ProductionGBufferResult gbufferResult;
     status = pollUntilReady([&]() { return gbuffer.poll(gbufferResult); });
     ProductionLightingResult lightingResult;
+    ProductionEnvironmentResult environmentResult;
+    if (status && environment)
+        status = pollUntilReady([&]() { return environment->poll(environmentResult); });
     if (status)
         status = pollUntilReady([&]() { return lighting.poll(lightingResult); });
     if (!status)
@@ -336,6 +379,17 @@ int main(int argc, char** argv)
               << lightingResult.deferredShadowDraws;
     printValues("gbuffer-coverage", gbufferResult.nonClearPixels);
     printValues("gbuffer-sha256", gbufferResult.colorSha256);
+    if (environment)
+    {
+        std::cout << " environment-draws=" << environmentResult.atmosphereDraws
+                  << ',' << environmentResult.sunDraws << ','
+                  << environmentResult.moonDraws << ','
+                  << environmentResult.starDraws << ','
+                  << environmentResult.cloudDraws
+                  << " environment-sha256=" << environmentResult.packetSha256;
+        printValues("environment-coverage", environmentResult.nonClearPixels);
+        printValues("environment-color-sha256", environmentResult.colorSha256);
+    }
     std::cout << " lighting-coverage=" << lightingResult.litNonClearPixels
               << " lighting-sha256=" << lightingResult.lightingSha256;
     printValues("shadow-active", lightingResult.shadowActive);
@@ -348,6 +402,7 @@ int main(int argc, char** argv)
         if (shutdown && !candidate) shutdown = std::move(candidate);
     };
     retainFirstFailure(lighting.shutdown());
+    if (environment) retainFirstFailure(environment->shutdown());
     retainFirstFailure(gbuffer.shutdown());
     retainFirstFailure(targets.shutdown());
     retainFirstFailure(residency.shutdown());

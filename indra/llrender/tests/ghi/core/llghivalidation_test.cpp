@@ -3267,6 +3267,16 @@ void LLGHIValidationObject::test<38>()
         {EnvironmentTextureSemantic::CloudNoise, 3}};
     source.water.textures = {
         {EnvironmentTextureSemantic::WaterNormal, 4}};
+    source.skyVertices = {
+        {{{-1.f, -1.f, 0.f}}, {{0.f, 0.f}}, {{1.f, 1.f, 1.f, 1.f}}},
+        {{{ 1.f, -1.f, 0.f}}, {{1.f, 0.f}}, {{1.f, 1.f, 1.f, 1.f}}},
+        {{{ 0.f,  1.f, 0.f}}, {{.5f, 1.f}}, {{1.f, 1.f, 1.f, 1.f}}}};
+    source.skyIndices = {0, 1, 2};
+    source.skyDraws = {
+        {SkyGeometryKind::Dome, EnvironmentPrimitive::TriangleStrip, 0, 3, {}},
+        {SkyGeometryKind::Sun, EnvironmentPrimitive::Triangles, 0, 3, {}},
+        {SkyGeometryKind::Moon, EnvironmentPrimitive::Triangles, 0, 3, {}},
+        {SkyGeometryKind::Stars, EnvironmentPrimitive::Triangles, 0, 3, {}}};
     source.waterVertices = {
         {{{-1.f, -1.f, 0.f}}, {{0.f, 0.f, 1.f}}, {{0.f, 0.f}}},
         {{{ 1.f, -1.f, 0.f}}, {{0.f, 0.f, 1.f}}, {{1.f, 0.f}}},
@@ -3300,6 +3310,10 @@ void LLGHIValidationObject::test<38>()
     invalid.sky.textures.push_back(
         {EnvironmentTextureSemantic::Sun, 1});
     ensure("P0e2 texture semantics have one owner",
+           !validateEnvironmentScenePacket(invalid));
+    invalid = source;
+    invalid.skyDraws.pop_back();
+    ensure("P0e2 randomized stars require captured geometry",
            !validateEnvironmentScenePacket(invalid));
     invalid = source;
     invalid.waterIndices[2] = 3;

@@ -281,6 +281,50 @@ and 68,736 indices. The 2,263,896-byte packet identity was
 The viewer auto-logged in and exited cleanly; visible rendering remained native
 OpenGL throughout.
 
+### P0e2c — shared-target sky executor
+
+`EnvironmentScenePacket` version 2 adds the exact CPU-observable sky geometry
+that the production viewer submitted: dome strips, indexed sun or moon quads,
+and the randomized star vertex/color stream. Each draw carries a semantic kind,
+primitive topology, index range, and explicit model transform. The packet also
+records whether the production sky pass writes its color through the emissive
+G-buffer. Validation requires matching geometry for every active celestial
+route and rejects invalid topology, range, transform, or bounded-resource data.
+No OpenGL buffer, vertex-array, texture, framebuffer, or program name crosses
+the seam.
+
+One deterministic shader package implements atmosphere, sun, moon, stars,
+clouds, and the reserved HDRI route for OpenGL 4.1/4.4 and Vulkan GLSL. The
+shared production environment executor appends those routes to the existing
+four G-buffer attachments and reverse-Z depth attachment after opaque geometry
+and before deferred lighting. Its GHI pipelines explicitly describe depth,
+blend, topology, vertex layout, textures, samplers, and bindings. Vulkan device
+creation opportunistically enables the Vulkan 1.3
+`shaderDemoteToHelperInvocation` feature when exposed because the pinned
+glslang toolchain may lower ordinary GLSL `discard` to that capability.
+
+A fresh real-grid packet-v2 capture recorded frame 4355 at 2560 by 1350 with
+22,628 sky vertices, 41,063 indices, three geometry draws, ten comparable
+textures, and the existing seven water draws. The 3,243,024-byte packet identity
+is `2a7ca6f02acc1c4595b8b3272b072c1e5dc2cb80da210dfcaab9099c4e394d37`.
+Its active sky work is one atmosphere, sun, star, and cloud execution; moon is
+correctly inactive for the captured environment.
+
+The same packet executes successfully in the isolated Vulkan and OpenGL peers
+against the shared production targets. Both report sky coverage
+`87380,0,87387,50853` and the same pass structure. Vulkan completes with
+Khronos validation enabled and no validation error. Native hashes are retained
+as evidence but are not required to be identical across APIs. The readback
+gate sizes every host buffer before access, preventing an empty-span overrun
+that the first real execution exposed. The deterministic GHI contract suite
+passes 38 of 38 tests.
+
+P0e2c is accepted as private, non-presenting execution. HDRI remains fail-closed
+until a comparable decoded source is available, water execution remains P0e2d,
+and P0e2e still must perform same-frame capture alignment, bounded image
+comparison, lifecycle qualification, and steady-state resource-residency
+optimization. Visible world and UI rendering remain OpenGL.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid

@@ -293,6 +293,11 @@ void LLVOWLSky::drawStars(void)
     }
 }
 
+U32 LLVOWLSky::getStarsDrawVertexCount() const
+{
+    return getStarsNumVerts() * 4;
+}
+
 void LLVOWLSky::drawFsSky(void)
 {
     if (mFsSkyVerts.isNull())

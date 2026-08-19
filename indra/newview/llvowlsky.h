@@ -54,6 +54,15 @@ public:
     void cleanupGL();
     void restoreGL();
 
+    // Read-only observation seam used by the dormant GHI environment capture.
+    // No backend handle or draw operation crosses the scene-packet boundary.
+    const std::vector<LLPointer<LLVertexBuffer>>& getDomeVertexBuffers() const
+    {
+        return mStripsVerts;
+    }
+    LLVertexBuffer* getStarsVertexBuffer() const { return mStarsVerts.get(); }
+    U32 getStarsDrawVertexCount() const;
+
 private:
 
     // helper function for initializing the stars.

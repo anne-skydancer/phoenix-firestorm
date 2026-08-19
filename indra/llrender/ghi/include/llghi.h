@@ -21,6 +21,7 @@
 #include "llghimaterialoffscreenprobe.h"
 #include "llghiopaquepacketconsumer.h"
 #include "llghiproductioncontract.h"
+#include "llghiproductionenvironmentexecutor.h"
 #include "llghirendererinfo.h"
 #include "llghitypes.h"
 

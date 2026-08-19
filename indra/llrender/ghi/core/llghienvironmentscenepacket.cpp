@@ -19,9 +19,12 @@ namespace
 {
 constexpr std::array<std::byte, 8> MAGIC{{
     std::byte{'L'}, std::byte{'L'}, std::byte{'G'}, std::byte{'H'},
-    std::byte{'I'}, std::byte{'E'}, std::byte{'2'}, std::byte{'A'}}};
+    std::byte{'I'}, std::byte{'E'}, std::byte{'2'}, std::byte{'C'}}};
 constexpr std::uint64_t MAX_TEXTURES = 64;
 constexpr std::uint64_t MAX_TEXTURE_BYTES = 256ull * 1024ull * 1024ull;
+constexpr std::uint64_t MAX_SKY_VERTICES = 1024ull * 1024ull;
+constexpr std::uint64_t MAX_SKY_INDICES = 3ull * 1024ull * 1024ull;
+constexpr std::uint64_t MAX_SKY_DRAWS = 1024;
 constexpr std::uint64_t MAX_WATER_VERTICES = 4ull * 1024ull * 1024ull;
 constexpr std::uint64_t MAX_WATER_INDICES = 12ull * 1024ull * 1024ull;
 constexpr std::uint64_t MAX_WATER_DRAWS = 256ull * 1024ull;
@@ -336,6 +339,9 @@ Status validateEnvironmentScenePacket(const EnvironmentScenePacket& packet)
         (packet.passMask & ~PASS_MASK) != 0 ||
         (packet.dependencyMask & ~DEPENDENCY_MASK) != 0 ||
         packet.textures.size() > MAX_TEXTURES ||
+        packet.skyVertices.size() > MAX_SKY_VERTICES ||
+        packet.skyIndices.size() > MAX_SKY_INDICES ||
+        packet.skyDraws.size() > MAX_SKY_DRAWS ||
         packet.waterVertices.size() > MAX_WATER_VERTICES ||
         packet.waterIndices.size() > MAX_WATER_INDICES ||
         packet.waterDraws.size() > MAX_WATER_DRAWS ||
@@ -368,6 +374,38 @@ Status validateEnvironmentScenePacket(const EnvironmentScenePacket& packet)
     if (hasPass(packet, EnvironmentPass::Clouds) &&
         !hasBinding(packet.sky.textures, EnvironmentTextureSemantic::CloudNoise))
         return invalid("cloud route requires a noise texture");
+
+    for (const auto& vertex : packet.skyVertices)
+        if (!finite(vertex.position) || !finite(vertex.texCoord) ||
+            !finite(vertex.color))
+            return invalid("invalid sky vertex");
+    for (std::uint32_t index : packet.skyIndices)
+        if (index >= packet.skyVertices.size())
+            return invalid("sky index is outside the vertex stream");
+    bool dome = false, sun = false, moon = false, stars = false;
+    for (const auto& draw : packet.skyDraws)
+    {
+        if (static_cast<std::uint32_t>(draw.kind) >
+                static_cast<std::uint32_t>(SkyGeometryKind::Stars) ||
+            static_cast<std::uint32_t>(draw.primitive) >
+                static_cast<std::uint32_t>(EnvironmentPrimitive::TriangleStrip) ||
+            !draw.indexCount || draw.firstIndex > packet.skyIndices.size() ||
+            draw.indexCount > packet.skyIndices.size() - draw.firstIndex ||
+            !finite(draw.modelTransform))
+            return invalid("invalid sky draw");
+        dome |= draw.kind == SkyGeometryKind::Dome;
+        sun |= draw.kind == SkyGeometryKind::Sun;
+        moon |= draw.kind == SkyGeometryKind::Moon;
+        stars |= draw.kind == SkyGeometryKind::Stars;
+    }
+    if ((atmosphere || hdri || hasPass(packet, EnvironmentPass::Clouds)) && !dome)
+        return invalid("sky route requires dome geometry");
+    if (hasPass(packet, EnvironmentPass::Sun) && !sun)
+        return invalid("sun route requires celestial geometry");
+    if (hasPass(packet, EnvironmentPass::Moon) && !moon)
+        return invalid("moon route requires celestial geometry");
+    if (hasPass(packet, EnvironmentPass::Stars) && !stars)
+        return invalid("star route requires captured startup geometry");
 
     const bool hasWater = waterSurface || underwater;
     constexpr std::uint32_t WATER_DEPENDENCIES =
@@ -443,6 +481,9 @@ Status encodeEnvironmentScenePacket(const EnvironmentScenePacket& packet,
     appendU32(encoded, packet.passMask);
     appendU32(encoded, packet.dependencyMask);
     appendU64(encoded, packet.textures.size());
+    appendU64(encoded, packet.skyVertices.size());
+    appendU64(encoded, packet.skyIndices.size());
+    appendU64(encoded, packet.skyDraws.size());
     appendU64(encoded, packet.waterVertices.size());
     appendU64(encoded, packet.waterIndices.size());
     appendU64(encoded, packet.waterDraws.size());
@@ -488,6 +529,7 @@ Status encodeEnvironmentScenePacket(const EnvironmentScenePacket& packet,
         appendFloat(encoded, value);
     appendBool(encoded, sky.sunUp);
     appendBool(encoded, sky.moonUp);
+    appendBool(encoded, sky.emissiveBuffer);
     encodeBindings(encoded, sky.textures);
 
     const auto& water = packet.water;
@@ -510,6 +552,21 @@ Status encodeEnvironmentScenePacket(const EnvironmentScenePacket& packet,
     encodeBindings(encoded, water.textures);
 
     for (const auto& texture : packet.textures) encodeTexture(encoded, texture);
+    for (const auto& vertex : packet.skyVertices)
+    {
+        appendFloats(encoded, vertex.position);
+        appendFloats(encoded, vertex.texCoord);
+        appendFloats(encoded, vertex.color);
+    }
+    for (std::uint32_t index : packet.skyIndices) appendU32(encoded, index);
+    for (const auto& draw : packet.skyDraws)
+    {
+        appendU32(encoded, static_cast<std::uint32_t>(draw.kind));
+        appendU32(encoded, static_cast<std::uint32_t>(draw.primitive));
+        appendU32(encoded, draw.firstIndex);
+        appendU32(encoded, draw.indexCount);
+        appendFloats(encoded, draw.modelTransform);
+    }
     for (const auto& vertex : packet.waterVertices)
     {
         appendFloats(encoded, vertex.position);
@@ -535,13 +592,18 @@ Status decodeEnvironmentScenePacket(std::span<const std::byte> encoded,
     EnvironmentScenePacket out;
     std::array<std::byte, 8> magic{};
     std::uint32_t viewKind = 0;
-    std::uint64_t textureCount = 0, vertexCount = 0, indexCount = 0, drawCount = 0;
+    std::uint64_t textureCount = 0, skyVertexCount = 0, skyIndexCount = 0,
+                  skyDrawCount = 0, vertexCount = 0, indexCount = 0,
+                  drawCount = 0;
     if (!reader.bytes(magic) || magic != MAGIC || !reader.u32(out.version) ||
         !reader.u32(viewKind) || !reader.u64(out.frameId) ||
         !reader.u64(out.sceneEpoch) || !reader.u64(out.resourceEpoch) ||
         !reader.u32(out.sourceWidth) || !reader.u32(out.sourceHeight) ||
         !reader.u32(out.passMask) || !reader.u32(out.dependencyMask) ||
         !reader.u64(textureCount) || textureCount > MAX_TEXTURES ||
+        !reader.u64(skyVertexCount) || skyVertexCount > MAX_SKY_VERTICES ||
+        !reader.u64(skyIndexCount) || skyIndexCount > MAX_SKY_INDICES ||
+        !reader.u64(skyDrawCount) || skyDrawCount > MAX_SKY_DRAWS ||
         !reader.u64(vertexCount) || vertexCount > MAX_WATER_VERTICES ||
         !reader.u64(indexCount) || indexCount > MAX_WATER_INDICES ||
         !reader.u64(drawCount) || drawCount > MAX_WATER_DRAWS ||
@@ -586,6 +648,7 @@ Status decodeEnvironmentScenePacket(std::span<const std::byte> encoded,
                          &sky.hdriExposure, &sky.hdriRotation, &sky.hdriSplitScreen})
         if (!reader.floating(*value)) return invalid("truncated sky scalar");
     if (!reader.boolean(sky.sunUp) || !reader.boolean(sky.moonUp) ||
+        !reader.boolean(sky.emissiveBuffer) ||
         !decodeBindings(reader, sky.textures))
         return invalid("truncated sky route state");
 
@@ -615,6 +678,25 @@ Status decodeEnvironmentScenePacket(std::span<const std::byte> encoded,
     for (auto& texture : out.textures)
         if (!decodeTexture(reader, texture, textureBytes))
             return invalid("truncated environment texture resource");
+    out.skyVertices.resize(static_cast<std::size_t>(skyVertexCount));
+    for (auto& vertex : out.skyVertices)
+        if (!reader.floats(vertex.position) || !reader.floats(vertex.texCoord) ||
+            !reader.floats(vertex.color))
+            return invalid("truncated sky vertex");
+    out.skyIndices.resize(static_cast<std::size_t>(skyIndexCount));
+    for (auto& index : out.skyIndices)
+        if (!reader.u32(index)) return invalid("truncated sky index");
+    out.skyDraws.resize(static_cast<std::size_t>(skyDrawCount));
+    for (auto& draw : out.skyDraws)
+    {
+        std::uint32_t kind = 0, primitive = 0;
+        if (!reader.u32(kind) || !reader.u32(primitive) ||
+            !reader.u32(draw.firstIndex) || !reader.u32(draw.indexCount) ||
+            !reader.floats(draw.modelTransform))
+            return invalid("truncated sky draw");
+        draw.kind = static_cast<SkyGeometryKind>(kind);
+        draw.primitive = static_cast<EnvironmentPrimitive>(primitive);
+    }
     out.waterVertices.resize(static_cast<std::size_t>(vertexCount));
     for (auto& vertex : out.waterVertices)
         if (!reader.floats(vertex.position) || !reader.floats(vertex.normal) ||

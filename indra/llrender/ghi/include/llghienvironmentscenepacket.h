@@ -18,7 +18,7 @@
 namespace LL::GHI
 {
 
-inline constexpr std::uint32_t ENVIRONMENT_SCENE_PACKET_VERSION = 1;
+inline constexpr std::uint32_t ENVIRONMENT_SCENE_PACKET_VERSION = 2;
 
 enum class EnvironmentViewKind : std::uint32_t
 {
@@ -148,6 +148,7 @@ struct SkyLayerState
     float hdriSplitScreen = 0.f;
     bool sunUp = false;
     bool moonUp = false;
+    bool emissiveBuffer = false;
     std::vector<EnvironmentTextureBinding> textures;
 
     friend bool operator==(const SkyLayerState&,
@@ -206,6 +207,46 @@ struct WaterSceneDraw
                            const WaterSceneDraw&) = default;
 };
 
+enum class SkyGeometryKind : std::uint32_t
+{
+    Dome,
+    Sun,
+    Moon,
+    Stars,
+};
+
+enum class EnvironmentPrimitive : std::uint32_t
+{
+    Triangles,
+    TriangleStrip,
+};
+
+// Production sky geometry is packetized because the star field is randomized
+// when the viewer starts and celestial quads are derived from the live camera
+// basis. A peer must not reconstruct either with backend-specific rules.
+struct SkySceneVertex
+{
+    std::array<float, 3> position{};
+    std::array<float, 2> texCoord{};
+    std::array<float, 4> color{{1.f, 1.f, 1.f, 1.f}};
+
+    friend bool operator==(const SkySceneVertex&,
+                           const SkySceneVertex&) = default;
+};
+static_assert(sizeof(SkySceneVertex) == 36);
+
+struct SkySceneDraw
+{
+    SkyGeometryKind kind = SkyGeometryKind::Dome;
+    EnvironmentPrimitive primitive = EnvironmentPrimitive::Triangles;
+    std::uint32_t firstIndex = 0;
+    std::uint32_t indexCount = 0;
+    std::array<float, 16> modelTransform{};
+
+    friend bool operator==(const SkySceneDraw&,
+                           const SkySceneDraw&) = default;
+};
+
 // Immutable after encoding. Attachment dependencies are semantic inputs from
 // the shared production graph, never OpenGL framebuffer names or Vulkan views.
 struct EnvironmentScenePacket
@@ -226,6 +267,9 @@ struct EnvironmentScenePacket
     SkyLayerState sky;
     WaterState water;
     std::vector<MaterialTextureResource> textures;
+    std::vector<SkySceneVertex> skyVertices;
+    std::vector<std::uint32_t> skyIndices;
+    std::vector<SkySceneDraw> skyDraws;
     std::vector<WaterSceneVertex> waterVertices;
     std::vector<std::uint32_t> waterIndices;
     std::vector<WaterSceneDraw> waterDraws;

@@ -676,6 +676,11 @@ Status VulkanDevice::initialize(const DeviceCreateInfo& info)
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     VkPhysicalDeviceVulkan13Features enabled13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     enabled13.dynamicRendering = VK_TRUE;
+    // glslang targets Vulkan 1.3 for GHI packages and may lower GLSL discard
+    // to DemoteToHelperInvocation. Enable the optional core feature whenever
+    // the adapter exposes it so ordinary alpha-tested shaders remain valid.
+    enabled13.shaderDemoteToHelperInvocation =
+        available13.shaderDemoteToHelperInvocation;
     deviceInfo.pNext = &enabled13;
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;

@@ -131,6 +131,22 @@ context between scopes. Failed native state compilation also invalidates the
 cache. This preserves one trusted owner at a time until P0e removes the need
 for the temporary legacy boundary.
 
+### Additional reachability sanitation
+
+A second reachability pass retired the old `LLPostProcess` subsystem. It had no
+call to `apply()` anywhere in the tree; startup only allocated it, shutdown
+deleted it, and GL teardown invalidated it. Its constructor explicitly stated
+that the implementation did nothing until rewritten for the then-current
+shader system. Removing it also removes its compatibility-only attribute-stack
+calls without affecting the active deferred post-processing pipeline.
+
+The same pass replaced a fixed-function face-color call with the existing
+buffered `LLRender` color path, replaced a client-side physics-hull draw with
+the existing `LLVertexBuffer::drawElements` path, and removed an unused
+compatibility texture-residency probe that was compiled only by a dormant debug
+metric. The ledger is now 4,423 `gGL` uses, 512 broader state references, and
+779 direct GL-shaped calls, with no unclassified symbol.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

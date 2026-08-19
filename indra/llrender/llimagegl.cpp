@@ -557,8 +557,6 @@ void LLImageGL::init(bool usemipmaps, bool allow_compression)
     mHasMipMaps = false;
     mMipLevels = -1;
 
-    mIsResident = 0;
-
     mComponents = 0;
     mMaxDiscardLevel = MAX_DISCARD_LEVEL;
 
@@ -682,7 +680,6 @@ void LLImageGL::dump()
 
     LL_INFOS() << " mTextureMemory " << mTextureMemory
             << " mTexNames " << mTexName
-            << " mIsResident " << S32(mIsResident)
             << LL_ENDL;
 }
 
@@ -697,7 +694,7 @@ bool LLImageGL::updateBindStats() const
     if (mTexName != 0)
     {
 #ifdef DEBUG_MISS
-        mMissed = ! getIsResident(true);
+        mMissed = false;
 #endif
         sBindCount++;
         if (mLastBindTime != sLastFrameTime)
@@ -2005,23 +2002,6 @@ void LLImageGL::setFilteringOption(LLTexUnit::eTextureFilterOptions option)
     }
 }
 
-bool LLImageGL::getIsResident(bool test_now)
-{
-    if (test_now)
-    {
-        if (mTexName != 0)
-        {
-            glAreTexturesResident(1, (GLuint*)&mTexName, &mIsResident);
-        }
-        else
-        {
-            mIsResident = false;
-        }
-    }
-
-    return mIsResident;
-}
-
 S32 LLImageGL::getHeight(S32 discard_level) const
 {
     if (discard_level < 0)
@@ -2660,4 +2640,3 @@ void LLImageGLThread::run()
     gGL.shutdown();
     mWindow->destroySharedContext(mContext);
 }
-

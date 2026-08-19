@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_revision": "6d1599d404b3f977b7bf00f3eb2933f16e947f6a",
+  "source_revision": "1f31246e7ab8a749a8414354e4d8c55dec28ef42",
   "scope": {
     "roots": [
       "indra/llappearance",
@@ -16,9 +16,9 @@
     "note": "Static source classification; runtime reachability is a separate P0 gate."
   },
   "summary": {
-    "ggl_member_uses": 4441,
+    "ggl_member_uses": 4423,
     "legacy_state_symbol_uses": 512,
-    "direct_gl_shaped_calls": 796,
+    "direct_gl_shaped_calls": 779,
     "unclassified_symbols": []
   },
   "surfaces": {
@@ -447,12 +447,13 @@
       "diffuseColor4ubv": {
         "classification": "draw_assembly",
         "disposition": "replace_with_explicit_draw_packets",
-        "count": 2,
+        "count": 3,
         "owners": {
           "offscreen_and_recursive": 1,
-          "world_renderer": 1
+          "world_renderer": 2
         },
         "files": {
+          "indra/newview/lldrawpool.cpp": 1,
           "indra/newview/llmodelpreview.cpp": 1,
           "indra/newview/llspatialpartition.cpp": 1
         }
@@ -645,13 +646,13 @@
       "getTexUnit": {
         "classification": "resource_and_light_binding",
         "disposition": "replace_with_ghi_binding_sets",
-        "count": 639,
+        "count": 632,
         "owners": {
           "alpha_and_particles": 9,
           "appearance_and_baking": 33,
           "environment": 159,
           "offscreen_and_recursive": 40,
-          "renderer_core": 93,
+          "renderer_core": 86,
           "ui_core": 18,
           "ui_hud_and_interaction": 58,
           "world_renderer": 229
@@ -667,7 +668,6 @@
           "indra/llrender/llfontvertexbuffer.cpp": 1,
           "indra/llrender/llglslshader.cpp": 8,
           "indra/llrender/llimagegl.cpp": 24,
-          "indra/llrender/llpostprocess.cpp": 7,
           "indra/llrender/llrender.cpp": 1,
           "indra/llrender/llrender2dutils.cpp": 18,
           "indra/llrender/llrendertarget.cpp": 11,
@@ -801,19 +801,18 @@
       "loadIdentity": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 57,
+        "count": 55,
         "owners": {
           "alpha_and_particles": 2,
           "appearance_and_baking": 2,
           "environment": 12,
           "offscreen_and_recursive": 13,
-          "renderer_core": 4,
+          "renderer_core": 2,
           "ui_hud_and_interaction": 7,
           "world_renderer": 17
         },
         "files": {
           "indra/llappearance/lltexlayer.cpp": 2,
-          "indra/llrender/llpostprocess.cpp": 2,
           "indra/llrender/llrender2dutils.cpp": 2,
           "indra/newview/lldrawpool.cpp": 2,
           "indra/newview/lldrawpoolalpha.cpp": 2,
@@ -927,13 +926,13 @@
       "matrixMode": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 184,
+        "count": 180,
         "owners": {
           "alpha_and_particles": 6,
           "appearance_and_baking": 4,
           "environment": 29,
           "offscreen_and_recursive": 25,
-          "renderer_core": 19,
+          "renderer_core": 15,
           "ui_core": 2,
           "ui_hud_and_interaction": 37,
           "world_renderer": 62
@@ -942,7 +941,6 @@
           "indra/llappearance/lltexlayer.cpp": 4,
           "indra/llrender/llcubemap.cpp": 4,
           "indra/llrender/llgl.cpp": 4,
-          "indra/llrender/llpostprocess.cpp": 4,
           "indra/llrender/llrender2dutils.cpp": 2,
           "indra/llrender/llvertexbuffer.cpp": 5,
           "indra/llui/llaccordionctrltab.cpp": 1,
@@ -1019,18 +1017,17 @@
       "ortho": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 13,
+        "count": 12,
         "owners": {
           "appearance_and_baking": 1,
           "environment": 1,
           "offscreen_and_recursive": 4,
-          "renderer_core": 2,
+          "renderer_core": 1,
           "ui_hud_and_interaction": 2,
           "world_renderer": 3
         },
         "files": {
           "indra/llappearance/lltexlayer.cpp": 1,
-          "indra/llrender/llpostprocess.cpp": 1,
           "indra/llrender/llrender2dutils.cpp": 1,
           "indra/newview/llfasttimerview.cpp": 1,
           "indra/newview/llfloaterbvhpreview.cpp": 1,
@@ -1046,12 +1043,12 @@
       "popMatrix": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 175,
+        "count": 173,
         "owners": {
           "appearance_and_baking": 3,
           "environment": 5,
           "offscreen_and_recursive": 20,
-          "renderer_core": 7,
+          "renderer_core": 5,
           "ui_hud_and_interaction": 70,
           "world_renderer": 70
         },
@@ -1060,7 +1057,6 @@
           "indra/llappearance/lltexlayer.cpp": 2,
           "indra/llrender/llcubemap.cpp": 1,
           "indra/llrender/llgl.cpp": 1,
-          "indra/llrender/llpostprocess.cpp": 2,
           "indra/llrender/llvertexbuffer.cpp": 3,
           "indra/newview/fsmaniprotatejoint.cpp": 13,
           "indra/newview/fsmaniptranslatejoint.cpp": 6,
@@ -1139,12 +1135,12 @@
       "pushMatrix": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 174,
+        "count": 172,
         "owners": {
           "appearance_and_baking": 3,
           "environment": 5,
           "offscreen_and_recursive": 20,
-          "renderer_core": 7,
+          "renderer_core": 5,
           "ui_hud_and_interaction": 70,
           "world_renderer": 69
         },
@@ -1153,7 +1149,6 @@
           "indra/llappearance/lltexlayer.cpp": 2,
           "indra/llrender/llcubemap.cpp": 1,
           "indra/llrender/llgl.cpp": 1,
-          "indra/llrender/llpostprocess.cpp": 2,
           "indra/llrender/llvertexbuffer.cpp": 3,
           "indra/newview/fsmaniprotatejoint.cpp": 13,
           "indra/newview/fsmaniptranslatejoint.cpp": 6,
@@ -1445,15 +1440,14 @@
       "syncMatrices": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 7,
+        "count": 6,
         "owners": {
           "renderer_core": 3,
-          "world_renderer": 4
+          "world_renderer": 3
         },
         "files": {
           "indra/llrender/llvertexbuffer.cpp": 3,
           "indra/newview/gltfscenemanager.cpp": 1,
-          "indra/newview/llspatialpartition.cpp": 1,
           "indra/newview/pipeline.cpp": 2
         }
       },
@@ -2084,17 +2078,6 @@
           "indra/newview/gltfscenemanager.cpp": 1
         }
       },
-      "glAreTexturesResident": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 1,
-        "owners": {
-          "renderer_core": 1
-        },
-        "files": {
-          "indra/llrender/llimagegl.cpp": 1
-        }
-      },
       "glAttachShader": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
@@ -2370,16 +2353,15 @@
       "glClear": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 25,
+        "count": 24,
         "owners": {
           "environment": 1,
           "offscreen_and_recursive": 6,
-          "renderer_core": 3,
+          "renderer_core": 2,
           "window_and_context": 2,
           "world_renderer": 13
         },
         "files": {
-          "indra/llrender/llpostprocess.cpp": 1,
           "indra/llrender/llrendertarget.cpp": 2,
           "indra/llwindow/llwindowsdl2.cpp": 1,
           "indra/llwindow/llwindowwin32.cpp": 1,
@@ -2407,16 +2389,14 @@
       "glClearColor": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 25,
+        "count": 24,
         "owners": {
           "environment": 1,
           "offscreen_and_recursive": 1,
-          "renderer_core": 1,
           "window_and_context": 2,
           "world_renderer": 20
         },
         "files": {
-          "indra/llrender/llpostprocess.cpp": 1,
           "indra/llwindow/llwindowsdl2.cpp": 1,
           "indra/llwindow/llwindowwin32.cpp": 1,
           "indra/newview/llgltfmaterialpreviewmgr.cpp": 1,
@@ -2446,17 +2426,6 @@
         },
         "files": {
           "indra/llrender/llimagegl.cpp": 1
-        }
-      },
-      "glColor4ubv": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 1,
-        "owners": {
-          "world_renderer": 1
-        },
-        "files": {
-          "indra/newview/lldrawpool.cpp": 1
         }
       },
       "glColorMask": {
@@ -2492,17 +2461,6 @@
         },
         "files": {
           "indra/llrender/llimagegl.cpp": 2
-        }
-      },
-      "glCopyTexImage2D": {
-        "classification": "valid_or_reviewed_native_gl",
-        "disposition": "confine_to_opengl_backend",
-        "count": 1,
-        "owners": {
-          "renderer_core": 1
-        },
-        "files": {
-          "indra/llrender/llpostprocess.cpp": 1
         }
       },
       "glCopyTexSubImage2D": {
@@ -2762,17 +2720,6 @@
         "files": {
           "indra/llrender/llrendertarget.cpp": 1,
           "indra/newview/pipeline.cpp": 1
-        }
-      },
-      "glDrawElements": {
-        "classification": "valid_or_reviewed_native_gl",
-        "disposition": "confine_to_opengl_backend",
-        "count": 1,
-        "owners": {
-          "world_renderer": 1
-        },
-        "files": {
-          "indra/newview/llspatialpartition.cpp": 1
         }
       },
       "glDrawRangeElements": {
@@ -3151,10 +3098,10 @@
       "glGetError": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 27,
+        "count": 25,
         "owners": {
           "appearance_and_baking": 1,
-          "renderer_core": 22,
+          "renderer_core": 20,
           "ui_hud_and_interaction": 2,
           "world_renderer": 2
         },
@@ -3162,7 +3109,6 @@
           "indra/llappearance/lltexlayer.cpp": 1,
           "indra/llrender/llgl.cpp": 6,
           "indra/llrender/llimagegl.cpp": 3,
-          "indra/llrender/llpostprocess.cpp": 2,
           "indra/llrender/llrendertarget.cpp": 2,
           "indra/llrender/llshadermgr.cpp": 9,
           "indra/newview/fsmaniprotatejoint.cpp": 2,
@@ -3234,13 +3180,12 @@
       "glGetProgramInfoLog": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 3,
+        "count": 2,
         "owners": {
-          "renderer_core": 3
+          "renderer_core": 2
         },
         "files": {
           "indra/llrender/llglslshader.cpp": 1,
-          "indra/llrender/llpostprocess.cpp": 1,
           "indra/llrender/llshadermgr.cpp": 1
         }
       },
@@ -3306,13 +3251,12 @@
       "glGetShaderiv": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 4,
+        "count": 3,
         "owners": {
-          "renderer_core": 4
+          "renderer_core": 3
         },
         "files": {
           "indra/llrender/llglslshader.cpp": 1,
-          "indra/llrender/llpostprocess.cpp": 1,
           "indra/llrender/llshadermgr.cpp": 2
         }
       },
@@ -3379,13 +3323,12 @@
       "glGetUniformLocation": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 9,
+        "count": 8,
         "owners": {
-          "renderer_core": 9
+          "renderer_core": 8
         },
         "files": {
-          "indra/llrender/llglslshader.cpp": 8,
-          "indra/llrender/llpostprocess.cpp": 1
+          "indra/llrender/llglslshader.cpp": 8
         }
       },
       "glHint": {
@@ -3589,28 +3532,6 @@
           "indra/newview/pipeline.cpp": 8
         }
       },
-      "glPopAttrib": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 1,
-        "owners": {
-          "renderer_core": 1
-        },
-        "files": {
-          "indra/llrender/llpostprocess.cpp": 1
-        }
-      },
-      "glPopClientAttrib": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 1,
-        "owners": {
-          "renderer_core": 1
-        },
-        "files": {
-          "indra/llrender/llpostprocess.cpp": 1
-        }
-      },
       "glProgramBinary": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
@@ -3631,28 +3552,6 @@
         },
         "files": {
           "indra/llrender/llshadermgr.cpp": 1
-        }
-      },
-      "glPushAttrib": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 1,
-        "owners": {
-          "renderer_core": 1
-        },
-        "files": {
-          "indra/llrender/llpostprocess.cpp": 1
-        }
-      },
-      "glPushClientAttrib": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 1,
-        "owners": {
-          "renderer_core": 1
-        },
-        "files": {
-          "indra/llrender/llpostprocess.cpp": 1
         }
       },
       "glReadBuffer": {
@@ -3809,14 +3708,13 @@
       "glTexImage2D": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 6,
+        "count": 5,
         "owners": {
           "offscreen_and_recursive": 1,
-          "renderer_core": 5
+          "renderer_core": 4
         },
         "files": {
           "indra/llrender/llimagegl.cpp": 4,
-          "indra/llrender/llpostprocess.cpp": 1,
           "indra/newview/llreflectionmapmanager.cpp": 1
         }
       },
@@ -4178,17 +4076,6 @@
         },
         "files": {
           "indra/llrender/llvertexbuffer.cpp": 13
-        }
-      },
-      "glVertexPointer": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 1,
-        "owners": {
-          "world_renderer": 1
-        },
-        "files": {
-          "indra/newview/llspatialpartition.cpp": 1
         }
       },
       "glViewport": {

@@ -173,8 +173,6 @@ public:
 
     bool getIsAlphaMask() const;
 
-    bool getIsResident(bool test_now = false); // not const
-
     void setTarget(const LLGLenum target, const LLTexUnit::eTextureType bind_target);
 
     LLTexUnit::eTextureType getTarget(void) const { return mBindTarget; }
@@ -262,7 +260,6 @@ protected:
     bool mHasMipMaps;
     S32 mMipLevels;
 
-    LLGLboolean mIsResident;
 
     S8 mComponents;
     S8 mMaxDiscardLevel;

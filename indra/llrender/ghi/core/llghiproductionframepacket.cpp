@@ -22,6 +22,7 @@ constexpr std::array<std::byte, 8> MAGIC{{
     std::byte{'I'}, std::byte{'F'}, std::byte{'8'}, std::byte{'A'}}};
 constexpr std::uint64_t MAX_CHILD_BYTES = 2ull * 1024ull * 1024ull * 1024ull;
 constexpr ProductionFramePassMask KNOWN_PASSES =
+    productionFramePassBit(ProductionFramePass::OpaqueGBuffer) |
     productionFramePassBit(ProductionFramePass::MaterialGBuffer) |
     productionFramePassBit(ProductionFramePass::TerrainGBuffer) |
     productionFramePassBit(ProductionFramePass::DirectionalShadow) |
@@ -29,6 +30,7 @@ constexpr ProductionFramePassMask KNOWN_PASSES =
     productionFramePassBit(ProductionFramePass::DeferredLighting) |
     productionFramePassBit(ProductionFramePass::ProjectorLighting);
 constexpr ProductionFramePassMask REQUIRED_PASSES =
+    productionFramePassBit(ProductionFramePass::OpaqueGBuffer) |
     productionFramePassBit(ProductionFramePass::MaterialGBuffer) |
     productionFramePassBit(ProductionFramePass::TerrainGBuffer) |
     productionFramePassBit(ProductionFramePass::DeferredLighting);
@@ -130,14 +132,18 @@ Status buildSummary(const ProductionFramePacket& packet,
     summary.skins = static_cast<std::uint32_t>(packet.materials.skins.size());
     summary.terrainRegions =
         static_cast<std::uint32_t>(packet.terrain.regions.size());
+    summary.opaqueDraws =
+        static_cast<std::uint32_t>(packet.opaque.draws.size());
     summary.materialDraws =
         static_cast<std::uint32_t>(packet.materials.draws.size());
     summary.terrainDraws =
         static_cast<std::uint32_t>(packet.terrain.draws.size());
 
-    const std::uint64_t vertices = packet.materials.vertices.size() +
+    const std::uint64_t vertices = packet.opaque.vertices.size() +
+                                   packet.materials.vertices.size() +
                                    packet.terrain.vertices.size();
-    const std::uint64_t indices = packet.materials.indices.size() +
+    const std::uint64_t indices = packet.opaque.indices.size() +
+                                  packet.materials.indices.size() +
                                   packet.terrain.indices.size();
     if (vertices > std::numeric_limits<std::uint32_t>::max() ||
         indices > std::numeric_limits<std::uint32_t>::max())
@@ -181,19 +187,23 @@ Status validateProductionFramePacket(
     if ((packet.passes & ~KNOWN_PASSES) != 0 ||
         (packet.passes & REQUIRED_PASSES) != REQUIRED_PASSES)
         return invalid("production frame pass mask is incomplete or unknown");
-    if (packet.materials.frameId != packet.frameId ||
+    if (packet.opaque.frameId != packet.frameId ||
+        packet.materials.frameId != packet.frameId ||
         packet.terrain.frameId != packet.frameId ||
         packet.lighting.frameId != packet.frameId)
         return invalid("production frame child packets do not share a frame");
-    if (packet.materials.sourceWidth != packet.sourceWidth ||
+    if (packet.opaque.sourceWidth != packet.sourceWidth ||
+        packet.opaque.sourceHeight != packet.sourceHeight ||
+        packet.materials.sourceWidth != packet.sourceWidth ||
         packet.materials.sourceHeight != packet.sourceHeight ||
         packet.terrain.sourceWidth != packet.sourceWidth ||
         packet.terrain.sourceHeight != packet.sourceHeight ||
         packet.lighting.sourceWidth != packet.sourceWidth ||
         packet.lighting.sourceHeight != packet.sourceHeight)
         return invalid("production frame child extents do not match");
-    if (packet.materials.draws.empty() || packet.terrain.draws.empty())
-        return invalid("production frame requires material and terrain draws");
+    if (packet.opaque.draws.empty() || packet.materials.draws.empty() ||
+        packet.terrain.draws.empty())
+        return invalid("production frame requires opaque, material, and terrain draws");
 
     if (productionFrameHasPass(packet.passes,
                                ProductionFramePass::DirectionalShadow) &&
@@ -223,7 +233,9 @@ Status validateProductionFramePacket(
     // production stream. Encoding here also rejects malformed nested resource
     // references before an assembled packet can cross the GHI boundary.
     std::vector<std::byte> child;
-    Status status = encodeMaterialScenePacket(packet.materials, child);
+    Status status = encodeOpaqueScenePacket(packet.opaque, child);
+    if (!status) return status;
+    status = encodeMaterialScenePacket(packet.materials, child);
     if (!status) return status;
     status = encodeTerrainScenePacket(packet.terrain, child);
     if (!status) return status;
@@ -243,12 +255,14 @@ Status encodeProductionFramePacket(const ProductionFramePacket& packet,
     Status status = validateProductionFramePacket(packet);
     if (!status) return status;
 
-    std::vector<std::byte> materialBytes, terrainBytes, lightingBytes;
-    if (!(status = encodeMaterialScenePacket(packet.materials, materialBytes)) ||
+    std::vector<std::byte> opaqueBytes, materialBytes, terrainBytes, lightingBytes;
+    if (!(status = encodeOpaqueScenePacket(packet.opaque, opaqueBytes)) ||
+        !(status = encodeMaterialScenePacket(packet.materials, materialBytes)) ||
         !(status = encodeTerrainScenePacket(packet.terrain, terrainBytes)) ||
         !(status = encodeLightingScenePacket(packet.lighting, lightingBytes)))
         return status;
-    if (materialBytes.size() > MAX_CHILD_BYTES ||
+    if (opaqueBytes.size() > MAX_CHILD_BYTES ||
+        materialBytes.size() > MAX_CHILD_BYTES ||
         terrainBytes.size() > MAX_CHILD_BYTES ||
         lightingBytes.size() > MAX_CHILD_BYTES)
         return invalid("production frame child packet exceeds format limit");
@@ -261,9 +275,11 @@ Status encodeProductionFramePacket(const ProductionFramePacket& packet,
     appendU64(encoded, packet.assemblyEpoch);
     appendU32(encoded, packet.sourceWidth);
     appendU32(encoded, packet.sourceHeight);
+    appendU64(encoded, opaqueBytes.size());
     appendU64(encoded, materialBytes.size());
     appendU64(encoded, terrainBytes.size());
     appendU64(encoded, lightingBytes.size());
+    encoded.insert(encoded.end(), opaqueBytes.begin(), opaqueBytes.end());
     encoded.insert(encoded.end(), materialBytes.begin(), materialBytes.end());
     encoded.insert(encoded.end(), terrainBytes.begin(), terrainBytes.end());
     encoded.insert(encoded.end(), lightingBytes.begin(), lightingBytes.end());
@@ -276,22 +292,29 @@ Status decodeProductionFramePacket(std::span<const std::byte> encoded,
     Reader reader(encoded);
     ProductionFramePacket output;
     std::array<std::byte, 8> magic{};
-    std::uint64_t materialSize = 0, terrainSize = 0, lightingSize = 0;
+    std::uint64_t opaqueSize = 0, materialSize = 0, terrainSize = 0,
+                  lightingSize = 0;
     if (!reader.bytes(magic) || magic != MAGIC ||
         !reader.u32(output.version) || !reader.u32(output.passes) ||
         !reader.u64(output.frameId) || !reader.u64(output.assemblyEpoch) ||
         !reader.u32(output.sourceWidth) || !reader.u32(output.sourceHeight) ||
+        !reader.u64(opaqueSize) ||
         !reader.u64(materialSize) || !reader.u64(terrainSize) ||
-        !reader.u64(lightingSize) || materialSize > MAX_CHILD_BYTES ||
+        !reader.u64(lightingSize) || opaqueSize > MAX_CHILD_BYTES ||
+        materialSize > MAX_CHILD_BYTES ||
         terrainSize > MAX_CHILD_BYTES || lightingSize > MAX_CHILD_BYTES)
         return invalid("truncated or unrecognized production frame header");
 
-    std::span<const std::byte> materialBytes, terrainBytes, lightingBytes;
-    if (!reader.view(materialSize, materialBytes) ||
+    std::span<const std::byte> opaqueBytes, materialBytes, terrainBytes,
+                               lightingBytes;
+    if (!reader.view(opaqueSize, opaqueBytes) ||
+        !reader.view(materialSize, materialBytes) ||
         !reader.view(terrainSize, terrainBytes) ||
         !reader.view(lightingSize, lightingBytes) || !reader.finished())
         return invalid("truncated production frame child packets");
-    Status status = decodeMaterialScenePacket(materialBytes, output.materials);
+    Status status = decodeOpaqueScenePacket(opaqueBytes, output.opaque);
+    if (!status) return status;
+    status = decodeMaterialScenePacket(materialBytes, output.materials);
     if (!status) return status;
     status = decodeTerrainScenePacket(terrainBytes, output.terrain);
     if (!status) return status;

@@ -1,6 +1,6 @@
 /**
  * @file llghiproductiongbufferexecutor.cpp
- * @brief I8c2 shared-target material and terrain G-buffer execution.
+ * @brief Shared-target generic opaque, material, and terrain execution.
  */
 
 #include "linden_common.h"
@@ -32,6 +32,9 @@ constexpr std::size_t MATERIAL_FLOATS = 44;
 constexpr std::size_t OBJECT_FLOATS = 32;
 constexpr std::size_t TERRAIN_FLOATS = 132;
 using SkinData = std::array<float, MATERIAL_SKIN_FLOATS>;
+constexpr std::array<float, 16> OPAQUE_MATERIAL{{
+    1.f, 1.f, 1.f, 1.f, 0.25f, 0.5f, 0.75f, 1.f,
+    0.5f, 0.5f, 1.f, 1.f, 0.125f, 0.25f, 0.5f, 1.f}};
 
 Status invalid(const char* message)
 {
@@ -141,9 +144,11 @@ std::uint64_t alignUp(std::uint64_t value, std::uint64_t alignment)
 class ProductionGBufferExecutor::Impl
 {
 public:
-    Impl(Device& device, ShaderPackageDesc materialShader,
+    Impl(Device& device, ShaderPackageDesc opaqueShader,
+         ShaderPackageDesc materialShader,
          ShaderPackageDesc terrainShader) :
         mDevice(device),
+        mOpaquePackage(std::move(opaqueShader)),
         mMaterialPackage(std::move(materialShader)),
         mTerrainPackage(std::move(terrainShader))
     {
@@ -159,16 +164,19 @@ public:
         if (mPending)
             return Status::failure(StatusCode::NotReady,
                                    "production G-buffer execution is still pending");
-        if (!limits.maxMaterialDraws || !limits.maxTerrainDraws ||
+        if (!limits.maxOpaqueDraws || !limits.maxMaterialDraws ||
+            !limits.maxTerrainDraws ||
             !limits.maxUploadBytes)
             return invalid("production G-buffer limits must be nonzero");
         Status status = validateProductionFramePacket(frame);
         if (!status) return status;
         if (!productionFrameHasPass(frame.passes,
+                                    ProductionFramePass::OpaqueGBuffer) ||
+            !productionFrameHasPass(frame.passes,
                                     ProductionFramePass::MaterialGBuffer) ||
             !productionFrameHasPass(frame.passes,
                                     ProductionFramePass::TerrainGBuffer))
-            return invalid("production G-buffer execution requires both draw passes");
+            return invalid("production G-buffer execution requires all opaque draw passes");
         if (!targets.width || !targets.height || !targets.generation ||
             targets.width > frame.sourceWidth || targets.height > frame.sourceHeight)
             return invalid("production G-buffer targets do not match the frame");
@@ -182,6 +190,11 @@ public:
         status = ensureReadbacks(targets);
         if (!status) return status;
 
+        struct OpaqueDraw
+        {
+            std::size_t source = 0;
+            BindingSetHandle frameSet;
+        };
         struct MaterialDraw
         {
             std::size_t source = 0;
@@ -196,12 +209,25 @@ public:
             std::array<ImageViewHandle, 5> views{};
             BindingSetHandle set;
         };
+        std::vector<OpaqueDraw> opaqueDraws;
         std::vector<MaterialDraw> materialDraws;
         std::vector<TerrainDraw> terrainDraws;
         std::uint32_t deferredMaterial = 0;
         std::uint32_t deferredTerrain = 0;
         std::uint32_t riggedDraws = 0;
         std::uint32_t pbrTerrainDraws = 0;
+
+        for (std::size_t source = 0;
+             source < frame.opaque.draws.size() &&
+             opaqueDraws.size() < limits.maxOpaqueDraws; ++source)
+        {
+            const OpaqueSceneDraw& draw = frame.opaque.draws[source];
+            if (!draw.indexCount ||
+                draw.firstIndex > frame.opaque.indices.size() ||
+                draw.indexCount > frame.opaque.indices.size() - draw.firstIndex)
+                continue;
+            opaqueDraws.push_back({source, {}});
+        }
 
         constexpr std::array<TextureSemantic, 4> semantics{{
             TextureSemantic::BaseColor, TextureSemantic::Normal,
@@ -305,11 +331,16 @@ public:
             pbrTerrainDraws += region.model == MaterialModel::MetallicRoughness;
             terrainDraws.push_back(executable);
         }
-        if (materialDraws.empty() || terrainDraws.empty())
-            return invalid("production G-buffer frame has no executable material or terrain draws");
+        if (opaqueDraws.empty() || materialDraws.empty() ||
+            terrainDraws.empty())
+            return invalid("production G-buffer frame has no executable opaque, material, or terrain draws");
 
         const std::uint64_t alignment = std::max<std::uint64_t>(
             16, mDevice.capabilities().uniformBufferOffsetAlignment);
+        const std::uint64_t opaqueVertexBytes =
+            frame.opaque.vertices.size() * sizeof(OpaqueSceneVertex);
+        const std::uint64_t opaqueIndexBytes =
+            frame.opaque.indices.size() * sizeof(std::uint32_t);
         const std::uint64_t materialVertexBytes =
             frame.materials.vertices.size() * sizeof(MaterialSceneVertex);
         const std::uint64_t materialIndexBytes =
@@ -318,20 +349,31 @@ public:
             frame.terrain.vertices.size() * sizeof(TerrainSceneVertex);
         const std::uint64_t terrainIndexBytes =
             frame.terrain.indices.size() * sizeof(std::uint32_t);
-        const std::uint64_t materialVertexOffset = 0;
+        const std::uint64_t opaqueVertexOffset = 0;
+        const std::uint64_t opaqueIndexOffset =
+            alignUp(opaqueVertexOffset + opaqueVertexBytes, alignment);
+        const std::uint64_t materialVertexOffset =
+            alignUp(opaqueIndexOffset + opaqueIndexBytes, alignment);
         const std::uint64_t materialIndexOffset =
             alignUp(materialVertexOffset + materialVertexBytes, alignment);
         const std::uint64_t terrainVertexOffset =
             alignUp(materialIndexOffset + materialIndexBytes, alignment);
         const std::uint64_t terrainIndexOffset =
             alignUp(terrainVertexOffset + terrainVertexBytes, alignment);
+        const std::uint64_t opaqueTransformStride =
+            alignUp(sizeof(std::array<float, 16>), alignment);
+        const std::uint64_t opaqueTransformOffset =
+            alignUp(terrainIndexOffset + terrainIndexBytes, alignment);
+        const std::uint64_t opaqueMaterialOffset = alignUp(
+            opaqueTransformOffset + opaqueTransformStride * opaqueDraws.size(),
+            alignment);
         const std::uint64_t frameStride = alignUp(16 * sizeof(float), alignment);
         const std::uint64_t objectStride = alignUp(OBJECT_FLOATS * sizeof(float), alignment);
         const std::uint64_t skinStride = alignUp(MATERIAL_SKIN_BYTES, alignment);
         const std::uint64_t materialStride = alignUp(MATERIAL_FLOATS * sizeof(float), alignment);
         const std::uint64_t terrainStride = alignUp(TERRAIN_FLOATS * sizeof(float), alignment);
         const std::uint64_t frameOffset =
-            alignUp(terrainIndexOffset + terrainIndexBytes, alignment);
+            alignUp(opaqueMaterialOffset + sizeof(OPAQUE_MATERIAL), alignment);
         const std::uint64_t objectOffset =
             alignUp(frameOffset + frameStride * materialDraws.size(), alignment);
         const std::uint64_t skinOffset =
@@ -348,6 +390,10 @@ public:
             return unsupported("production G-buffer upload exceeds its bounded limit");
 
         std::vector<std::byte> uploadData(static_cast<std::size_t>(uploadBytes));
+        std::memcpy(uploadData.data() + opaqueVertexOffset,
+                    frame.opaque.vertices.data(), opaqueVertexBytes);
+        std::memcpy(uploadData.data() + opaqueIndexOffset,
+                    frame.opaque.indices.data(), opaqueIndexBytes);
         std::memcpy(uploadData.data() + materialVertexOffset,
                     frame.materials.vertices.data(), materialVertexBytes);
         std::memcpy(uploadData.data() + materialIndexOffset,
@@ -356,6 +402,16 @@ public:
                     frame.terrain.vertices.data(), terrainVertexBytes);
         std::memcpy(uploadData.data() + terrainIndexOffset,
                     frame.terrain.indices.data(), terrainIndexBytes);
+        for (std::size_t item = 0; item < opaqueDraws.size(); ++item)
+        {
+            const OpaqueSceneDraw& draw =
+                frame.opaque.draws[opaqueDraws[item].source];
+            std::memcpy(uploadData.data() + opaqueTransformOffset +
+                            opaqueTransformStride * item,
+                        draw.transform.data(), sizeof(draw.transform));
+        }
+        std::memcpy(uploadData.data() + opaqueMaterialOffset,
+                    OPAQUE_MATERIAL.data(), sizeof(OPAQUE_MATERIAL));
 
         for (std::size_t item = 0; item < materialDraws.size(); ++item)
         {
@@ -440,11 +496,16 @@ public:
                         uniform.data(), sizeof(uniform));
         }
 
-        BufferHandle upload, materialVertices, materialIndices, terrainVertices,
-                     terrainIndices, frames, objects, skins, materials, terrains;
+        BufferHandle upload, opaqueVertices, opaqueIndices, opaqueTransforms,
+                     opaqueMaterial, materialVertices, materialIndices,
+                     terrainVertices, terrainIndices, frames, objects, skins,
+                     materials, terrains;
+        BindingSetHandle opaqueMaterialSet;
         auto destroyTransient = [&]()
         {
             Status first = Status::success();
+            for (auto& draw : opaqueDraws) destroy(draw.frameSet, first);
+            destroy(opaqueMaterialSet, first);
             for (auto& draw : materialDraws)
             {
                 destroy(draw.frameSet, first);
@@ -453,6 +514,8 @@ public:
             }
             for (auto& draw : terrainDraws) destroy(draw.set, first);
             destroy(upload, first);
+            destroy(opaqueVertices, first); destroy(opaqueIndices, first);
+            destroy(opaqueTransforms, first); destroy(opaqueMaterial, first);
             destroy(materialVertices, first); destroy(materialIndices, first);
             destroy(terrainVertices, first); destroy(terrainIndices, first);
             destroy(frames, first); destroy(objects, first); destroy(skins, first);
@@ -462,6 +525,18 @@ public:
 
         upload = mDevice.createBuffer(
             {uploadBytes, ResourceUsage::TransferSource, MemoryClass::Upload}, status);
+        if (status) opaqueVertices = mDevice.createBuffer(
+            {opaqueVertexBytes, ResourceUsage::Vertex |
+             ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
+        if (status) opaqueIndices = mDevice.createBuffer(
+            {opaqueIndexBytes, ResourceUsage::Index |
+             ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
+        if (status) opaqueTransforms = mDevice.createBuffer(
+            {opaqueTransformStride * opaqueDraws.size(), ResourceUsage::Uniform |
+             ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
+        if (status) opaqueMaterial = mDevice.createBuffer(
+            {sizeof(OPAQUE_MATERIAL), ResourceUsage::Uniform |
+             ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
         if (status) materialVertices = mDevice.createBuffer(
             {materialVertexBytes, ResourceUsage::Vertex |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
@@ -494,6 +569,21 @@ public:
             destroyTransient();
             return status;
         }
+
+        for (std::size_t item = 0; status && item < opaqueDraws.size(); ++item)
+        {
+            BindingSetDesc frameDesc{mOpaqueShader, 0, {{
+                0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                opaqueTransforms, opaqueTransformStride * item,
+                sizeof(std::array<float, 16>), {}, {}}}};
+            opaqueDraws[item].frameSet =
+                mDevice.createBindingSet(frameDesc, status);
+        }
+        BindingSetDesc opaqueMaterialDesc{mOpaqueShader, 2, {{
+            0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+            opaqueMaterial, 0, sizeof(OPAQUE_MATERIAL), {}, {}}}};
+        if (status) opaqueMaterialSet =
+            mDevice.createBindingSet(opaqueMaterialDesc, status);
 
         for (std::size_t item = 0; status && item < materialDraws.size(); ++item)
         {
@@ -562,6 +652,14 @@ public:
                 {sourceOffset, 0, bytes}}};
             return commands.copyBuffer(upload, destination, regions);
         };
+        if (status) status = copy(opaqueVertices, opaqueVertexOffset,
+                                  opaqueVertexBytes);
+        if (status) status = copy(opaqueIndices, opaqueIndexOffset,
+                                  opaqueIndexBytes);
+        if (status) status = copy(opaqueTransforms, opaqueTransformOffset,
+                                  opaqueTransformStride * opaqueDraws.size());
+        if (status) status = copy(opaqueMaterial, opaqueMaterialOffset,
+                                  sizeof(OPAQUE_MATERIAL));
         if (status) status = copy(materialVertices, materialVertexOffset,
                                   materialVertexBytes);
         if (status) status = copy(materialIndices, materialIndexOffset,
@@ -603,6 +701,30 @@ public:
             static_cast<float>(targets.height), 0.f, 1.f});
         if (status) status = commands.setScissor(
             {0, 0, targets.width, targets.height});
+        bool opaqueGeometryBound = false;
+        for (const OpaqueDraw& executable : opaqueDraws)
+        {
+            if (!status) break;
+            const OpaqueSceneDraw& draw =
+                frame.opaque.draws[executable.source];
+            const bool doubleSided =
+                (static_cast<std::uint32_t>(draw.flags) &
+                 static_cast<std::uint32_t>(
+                     OpaqueSceneDrawFlags::DoubleSided)) != 0;
+            status = commands.bindPipeline(doubleSided
+                ? mOpaqueDoubleSidedPipeline : mOpaqueCulledPipeline);
+            if (status && !opaqueGeometryBound)
+            {
+                status = commands.bindVertexBuffer(0, opaqueVertices, 0);
+                if (status) status = commands.bindIndexBuffer(
+                    opaqueIndices, 0, IndexType::UInt32);
+                opaqueGeometryBound = status.ok();
+            }
+            if (status) status = commands.bindBindingSet(0, executable.frameSet);
+            if (status) status = commands.bindBindingSet(2, opaqueMaterialSet);
+            if (status) status = commands.drawIndexed(
+                {draw.indexCount, 1, draw.firstIndex, 0, 0});
+        }
         bool materialGeometryBound = false;
         for (const MaterialDraw& executable : materialDraws)
         {
@@ -668,6 +790,8 @@ public:
         mPendingResult.targetGeneration = targets.generation;
         mPendingResult.width = targets.width;
         mPendingResult.height = targets.height;
+        mPendingResult.opaqueDraws =
+            static_cast<std::uint32_t>(opaqueDraws.size());
         mPendingResult.materialDraws =
             static_cast<std::uint32_t>(materialDraws.size());
         mPendingResult.riggedMaterialDraws = riggedDraws;
@@ -724,9 +848,12 @@ public:
         mPending = false;
         Status first = Status::success();
         destroyReadbacks(first);
+        destroy(mOpaqueCulledPipeline, first);
+        destroy(mOpaqueDoubleSidedPipeline, first);
         destroy(mMaterialCulledPipeline, first);
         destroy(mMaterialDoubleSidedPipeline, first);
         destroy(mTerrainPipeline, first);
+        destroy(mOpaqueShader, first);
         destroy(mMaterialShader, first);
         destroy(mTerrainShader, first);
         destroy(mRepeatSampler, first);
@@ -792,7 +919,7 @@ private:
 
     Status initialize()
     {
-        if (mMaterialCulledPipeline) return Status::success();
+        if (mOpaqueCulledPipeline) return Status::success();
         if (mShutdown)
             return Status::failure(StatusCode::InvalidState,
                                    "production G-buffer executor is shut down");
@@ -803,7 +930,9 @@ private:
             return unsupported("device lacks production G-buffer capabilities");
 
         Status status = Status::success();
-        mMaterialShader = mDevice.createShaderPackage(mMaterialPackage, status);
+        mOpaqueShader = mDevice.createShaderPackage(mOpaquePackage, status);
+        if (status) mMaterialShader =
+            mDevice.createShaderPackage(mMaterialPackage, status);
         if (status) mTerrainShader =
             mDevice.createShaderPackage(mTerrainPackage, status);
         SamplerDesc repeat;
@@ -869,6 +998,35 @@ private:
 
         if (status)
         {
+            PipelineDesc opaque;
+            opaque.shader = mOpaqueShader;
+            opaque.cullMode = CullMode::Back;
+            opaque.depthTest = true;
+            opaque.depthWrite = true;
+            opaque.depthCompare = CompareOp::GreaterEqual;
+            opaque.colorFormats.assign(COLOR_FORMATS.begin(),
+                                       COLOR_FORMATS.end());
+            opaque.depthStencilFormat = DEPTH_FORMAT;
+            opaque.blendStates.assign(PRODUCTION_GBUFFER_TARGETS,
+                                      BlendState{});
+            opaque.blendStates[1].colorWriteMask = 0x07;
+            opaque.blendStates[2].colorWriteMask = 0x0b;
+            opaque.blendStates[3].colorWriteMask = 0x0d;
+            opaque.vertexBuffers = {{
+                0, sizeof(OpaqueSceneVertex), VertexInputRate::PerVertex}};
+            opaque.vertexAttributes = {
+                {0, 0, VertexFormat::Float32x3,
+                 offsetof(OpaqueSceneVertex, position)},
+                {1, 0, VertexFormat::UNorm8x4,
+                 offsetof(OpaqueSceneVertex, color)}};
+            mOpaqueCulledPipeline = mDevice.createPipeline(opaque, status);
+            if (status)
+            {
+                opaque.cullMode = CullMode::None;
+                mOpaqueDoubleSidedPipeline =
+                    mDevice.createPipeline(opaque, status);
+            }
+
             PipelineDesc material;
             material.shader = mMaterialShader;
             material.cullMode = CullMode::Back;
@@ -895,7 +1053,8 @@ private:
                  offsetof(MaterialSceneVertex, joints)},
                 {6, 0, VertexFormat::Float32x4,
                  offsetof(MaterialSceneVertex, weights)}};
-            mMaterialCulledPipeline = mDevice.createPipeline(material, status);
+            if (status) mMaterialCulledPipeline =
+                mDevice.createPipeline(material, status);
             if (status)
             {
                 material.cullMode = CullMode::None;
@@ -932,10 +1091,14 @@ private:
     }
 
     Device& mDevice;
+    ShaderPackageDesc mOpaquePackage;
     ShaderPackageDesc mMaterialPackage;
     ShaderPackageDesc mTerrainPackage;
+    ShaderPackageHandle mOpaqueShader;
     ShaderPackageHandle mMaterialShader;
     ShaderPackageHandle mTerrainShader;
+    PipelineHandle mOpaqueCulledPipeline;
+    PipelineHandle mOpaqueDoubleSidedPipeline;
     PipelineHandle mMaterialCulledPipeline;
     PipelineHandle mMaterialDoubleSidedPipeline;
     PipelineHandle mTerrainPipeline;
@@ -954,9 +1117,11 @@ private:
 };
 
 ProductionGBufferExecutor::ProductionGBufferExecutor(
-    Device& device, ShaderPackageDesc materialShader,
+    Device& device, ShaderPackageDesc opaqueShader,
+    ShaderPackageDesc materialShader,
     ShaderPackageDesc terrainShader) :
-    mImpl(std::make_unique<Impl>(device, std::move(materialShader),
+    mImpl(std::make_unique<Impl>(device, std::move(opaqueShader),
+                                 std::move(materialShader),
                                  std::move(terrainShader)))
 {
 }

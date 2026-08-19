@@ -214,6 +214,34 @@ resource-lifetime or presentation reference can be more consequential than
 many immediate-mode debug draws. P0e progress is accepted by semantic route
 coverage and per-slice gates, not by raw count alone.
 
+### P0e1a — coherent generic opaque adoption
+
+The production-frame contract is version 2 and includes the existing rigid
+generic-opaque stream alongside material, terrain, and lighting streams. All
+four child packets must have the same frame identity and source extent. The
+frame cannot validate without non-empty generic opaque, material, and terrain
+draw streams or without the corresponding explicit pass bits.
+
+The shared production G-buffer executor consumes the generic opaque stream
+before PBR material and terrain draws in the same rendering scope, using the
+same four G-buffer attachments and reverse-Z depth attachment. It uses the
+established backend-neutral R4 shader package, explicit transform binding,
+vertex/index buffers, and culled or double-sided GHI pipelines. The executor
+does not import an OpenGL buffer, texture, framebuffer, or shader name.
+
+Viewer-side capture now retains the same-frame rigid opaque component for I8
+frame assembly. A missing, stale, or cross-frame opaque component rejects the
+whole observation instead of silently producing a partial opaque frame. The
+transfer and execution budgets account for opaque draws and geometry, and the
+live acceptance gate requires the opaque stream plus all four G-buffer targets
+to contain work.
+
+P0e1a is a private, non-presenting adoption checkpoint. It establishes a
+coherent opaque input and execution graph but does not yet reroute the visible
+OpenGL frame or expose Vulkan selection. Generic opaque shadow-caster parity,
+remaining opaque pool coverage, target integration, and live dual-provider
+qualification remain P0e1 work.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

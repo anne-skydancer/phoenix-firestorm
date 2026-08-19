@@ -8,6 +8,7 @@
 
 #include "llghilightingscenepacket.h"
 #include "llghimaterialscenepacket.h"
+#include "llghiopaquescenepacket.h"
 #include "llghiterrainscenepacket.h"
 
 #include <cstddef>
@@ -19,7 +20,7 @@
 namespace LL::GHI
 {
 
-inline constexpr std::uint32_t PRODUCTION_FRAME_PACKET_VERSION = 1;
+inline constexpr std::uint32_t PRODUCTION_FRAME_PACKET_VERSION = 2;
 
 enum class ProductionFramePass : std::uint32_t
 {
@@ -29,6 +30,7 @@ enum class ProductionFramePass : std::uint32_t
     ProjectorShadow = 1u << 3,
     DeferredLighting = 1u << 4,
     ProjectorLighting = 1u << 5,
+    OpaqueGBuffer = 1u << 6,
 };
 
 using ProductionFramePassMask = std::uint32_t;
@@ -45,10 +47,11 @@ constexpr bool productionFrameHasPass(ProductionFramePassMask mask,
     return (mask & productionFramePassBit(pass)) != 0;
 }
 
-// I8a assembles already established material, terrain, and lighting contracts
-// without introducing a native handle or importing an OpenGL resource. The
-// child epochs remain authoritative for their individual resource streams;
-// assemblyEpoch identifies the accepted whole-frame observation.
+// The production frame assembles already established rigid opaque, material,
+// terrain, and lighting contracts without introducing a native handle or
+// importing an OpenGL resource. The child epochs remain authoritative for
+// their individual streams; assemblyEpoch identifies the accepted whole-frame
+// observation.
 struct ProductionFramePacket
 {
     std::uint32_t version = PRODUCTION_FRAME_PACKET_VERSION;
@@ -57,6 +60,7 @@ struct ProductionFramePacket
     std::uint32_t sourceWidth = 0;
     std::uint32_t sourceHeight = 0;
     ProductionFramePassMask passes = 0;
+    OpaqueScenePacket opaque;
     MaterialScenePacket materials;
     TerrainScenePacket terrain;
     LightingScenePacket lighting;
@@ -75,6 +79,7 @@ struct ProductionFrameResourceSummary
     std::uint32_t materials = 0;
     std::uint32_t skins = 0;
     std::uint32_t terrainRegions = 0;
+    std::uint32_t opaqueDraws = 0;
     std::uint32_t materialDraws = 0;
     std::uint32_t terrainDraws = 0;
     std::uint32_t vertices = 0;

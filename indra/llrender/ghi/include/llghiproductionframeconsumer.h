@@ -19,6 +19,7 @@ class Device;
 
 struct ProductionFrameTransferLimits
 {
+    std::size_t maxOpaqueDraws = 256;
     std::size_t maxMaterialDraws = 256;
     std::size_t maxTerrainDraws = 128;
     std::size_t maxVertices = 262144;

@@ -1,6 +1,6 @@
 /**
  * @file llghiproductiongbufferexecutor.h
- * @brief Material and terrain execution into shared private frame targets.
+ * @brief Generic opaque, material, and terrain execution into shared targets.
  */
 
 #ifndef LL_LLGHIPRODUCTIONGBUFFEREXECUTOR_H
@@ -22,6 +22,7 @@ class Device;
 
 struct ProductionGBufferLimits
 {
+    std::uint32_t maxOpaqueDraws = 256;
     std::uint32_t maxMaterialDraws = 256;
     std::uint32_t maxTerrainDraws = 128;
     std::uint64_t maxUploadBytes = 64ull * 1024ull * 1024ull;
@@ -34,6 +35,7 @@ struct ProductionGBufferResult
     std::uint64_t targetGeneration = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t opaqueDraws = 0;
     std::uint32_t materialDraws = 0;
     std::uint32_t riggedMaterialDraws = 0;
     std::uint32_t terrainDraws = 0;
@@ -52,6 +54,7 @@ class ProductionGBufferExecutor
 {
 public:
     ProductionGBufferExecutor(Device& device,
+                              ShaderPackageDesc opaqueShader,
                               ShaderPackageDesc materialShader,
                               ShaderPackageDesc terrainShader);
     ~ProductionGBufferExecutor();

@@ -2708,9 +2708,27 @@ void LLGHIValidationObject::test<36>()
     frame.sourceWidth = 64;
     frame.sourceHeight = 64;
     frame.passes =
+        productionFramePassBit(ProductionFramePass::OpaqueGBuffer) |
         productionFramePassBit(ProductionFramePass::MaterialGBuffer) |
         productionFramePassBit(ProductionFramePass::TerrainGBuffer) |
         productionFramePassBit(ProductionFramePass::DeferredLighting);
+
+    frame.opaque.frameId = frameId;
+    frame.opaque.sceneEpoch = 10;
+    frame.opaque.sourceWidth = frame.sourceWidth;
+    frame.opaque.sourceHeight = frame.sourceHeight;
+    OpaqueSceneVertex opaqueVertex;
+    opaqueVertex.position = {{-0.25f, -0.25f, 0.5f}};
+    frame.opaque.vertices.push_back(opaqueVertex);
+    opaqueVertex.position = {{0.25f, -0.25f, 0.5f}};
+    frame.opaque.vertices.push_back(opaqueVertex);
+    opaqueVertex.position = {{0.f, 0.25f, 0.5f}};
+    frame.opaque.vertices.push_back(opaqueVertex);
+    frame.opaque.indices = {0, 2, 1};
+    OpaqueSceneDraw opaqueDraw;
+    opaqueDraw.semanticId = 0x503065315f4f5041ull; // "P0e1_OPA"
+    opaqueDraw.indexCount = 3;
+    frame.opaque.draws.push_back(opaqueDraw);
 
     frame.materials.frameId = frameId;
     frame.materials.sceneEpoch = 11;
@@ -2800,11 +2818,12 @@ void LLGHIValidationObject::test<36>()
     ProductionFrameResourceSummary summary;
     Status status = validateProductionFramePacket(frame, &summary);
     ensure(status.message(), status.ok());
-    ensure_equals("I8a summarizes both draw streams",
-                  summary.materialDraws + summary.terrainDraws,
-                  std::uint32_t{3});
+    ensure_equals("P0e1 summarizes all opaque draw streams",
+                  summary.opaqueDraws + summary.materialDraws +
+                      summary.terrainDraws,
+                  std::uint32_t{4});
     ensure_equals("I8a summarizes combined geometry", summary.vertices,
-                  std::uint32_t{6});
+                  std::uint32_t{9});
     ensure_equals("I8a builds a typed unique resource inventory",
                   summary.uniqueResources, std::uint32_t{8});
     ensure_equals("I8a accounts decoded texture bytes",
@@ -2826,6 +2845,17 @@ void LLGHIValidationObject::test<36>()
     ++mismatched.terrain.frameId;
     ensure("I8a rejects cross-frame assembly",
            validateProductionFramePacket(mismatched).code() ==
+               StatusCode::InvalidArgument);
+    ProductionFramePacket missingOpaque = frame;
+    missingOpaque.opaque.draws.clear();
+    ensure("P0e1 rejects a frame without generic opaque geometry",
+           validateProductionFramePacket(missingOpaque).code() ==
+               StatusCode::InvalidArgument);
+    ProductionFramePacket missingOpaquePass = frame;
+    missingOpaquePass.passes &=
+        ~productionFramePassBit(ProductionFramePass::OpaqueGBuffer);
+    ensure("P0e1 requires the generic opaque pass declaration",
+           validateProductionFramePacket(missingOpaquePass).code() ==
                StatusCode::InvalidArgument);
     ProductionFramePacket invalidPass = frame;
     invalidPass.passes |=
@@ -2927,8 +2957,13 @@ void LLGHIValidationObject::test<36>()
            !targetResult.reused);
     ensure("I8c1 advances target generation on replacement",
            targetResult.targetGeneration > firstTargetGeneration);
-#if defined(LL_GHI_R5A_SHADER_PACKAGE) && \
+#if defined(LL_GHI_R4_SHADER_PACKAGE) && \
+    defined(LL_GHI_R5A_SHADER_PACKAGE) && \
     defined(LL_GHI_I6_TERRAIN_SHADER_PACKAGE)
+    ShaderPackageDesc productionOpaquePackage;
+    status = loadShaderPackage(
+        LL_GHI_R4_SHADER_PACKAGE, productionOpaquePackage);
+    ensure(status.message(), status.ok());
     ShaderPackageDesc productionMaterialPackage;
     status = loadShaderPackage(
         LL_GHI_R5A_SHADER_PACKAGE, productionMaterialPackage);
@@ -2938,7 +2973,8 @@ void LLGHIValidationObject::test<36>()
         LL_GHI_I6_TERRAIN_SHADER_PACKAGE, productionTerrainPackage);
     ensure(status.message(), status.ok());
     ProductionGBufferExecutor executor(
-        *created.device, std::move(productionMaterialPackage),
+        *created.device, std::move(productionOpaquePackage),
+        std::move(productionMaterialPackage),
         std::move(productionTerrainPackage));
     ProductionGBufferLimits executionLimits;
     status = executor.submit(
@@ -2949,6 +2985,8 @@ void LLGHIValidationObject::test<36>()
     ProductionGBufferResult executionResult;
     status = executor.poll(executionResult);
     ensure(status.message(), status.ok());
+    ensure_equals("P0e1 executes the generic opaque stream",
+                  executionResult.opaqueDraws, std::uint32_t{1});
     ensure_equals("I8c2 executes the material stream",
                   executionResult.materialDraws, std::uint32_t{2});
     ensure_equals("I8c2 executes a rigged material draw",

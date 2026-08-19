@@ -22,7 +22,8 @@ Status consumeProductionFrameTransfer(
     ProductionFrameTransferResult& result)
 {
     result = {};
-    if (!limits.maxMaterialDraws || !limits.maxTerrainDraws ||
+    if (!limits.maxOpaqueDraws || !limits.maxMaterialDraws ||
+        !limits.maxTerrainDraws ||
         !limits.maxVertices || !limits.maxIndices ||
         !limits.maxUniqueResources || !limits.maxDecodedTextureBytes ||
         !limits.maxEncodedBytes)
@@ -32,7 +33,8 @@ Status consumeProductionFrameTransfer(
     ProductionFrameResourceSummary resources;
     Status status = validateProductionFramePacket(packet, &resources);
     if (!status) return status;
-    if (resources.materialDraws > limits.maxMaterialDraws ||
+    if (resources.opaqueDraws > limits.maxOpaqueDraws ||
+        resources.materialDraws > limits.maxMaterialDraws ||
         resources.terrainDraws > limits.maxTerrainDraws ||
         resources.vertices > limits.maxVertices ||
         resources.indices > limits.maxIndices ||

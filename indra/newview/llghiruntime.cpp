@@ -55,6 +55,7 @@ std::uint32_t sMaterialSamples = 0;
 bool sMaterialCaptureClaimed = false;
 bool sMaterialDisabled = false;
 bool sPendingMaterialBudgetLimited = false;
+std::optional<LL::GHI::OpaqueScenePacket> sPendingFrameOpaque;
 std::optional<LL::GHI::MaterialScenePacket> sPendingLightingMaterial;
 std::optional<LL::GHI::TerrainScenePacket> sPendingLightingTerrain;
 std::uint64_t sNextFrameAssemblyFrame = 0;
@@ -62,6 +63,7 @@ std::uint64_t sFrameAssemblyEpoch = 0;
 std::uint32_t sFrameAssemblyAttempts = 0;
 std::uint32_t sFrameAssemblySamples = 0;
 bool sFrameAssemblyDisabled = false;
+bool sPendingFrameOpaqueBudgetLimited = false;
 bool sPendingFrameMaterialBudgetLimited = false;
 bool sPendingFrameTerrainBudgetLimited = false;
 std::uint64_t sNextTerrainFrame = 0;
@@ -140,7 +142,7 @@ bool offscreenProbeRequested()
 bool livePacketRequested()
 {
     return gSavedSettings.getBOOL("RenderVulkanLivePacketProbe") ||
-           offscreenProbeRequested();
+           offscreenProbeRequested() || frameAssemblyRequested();
 }
 
 std::uint32_t livePacketInterval()
@@ -465,13 +467,14 @@ void pollProductionGBuffer()
     const bool completeCoverage = std::all_of(
         result.nonClearPixels.begin(), result.nonClearPixels.end(),
         [](std::uint64_t pixels) { return pixels != 0; });
-    if (!result.materialDraws || !result.terrainDraws ||
+    if (!result.opaqueDraws || !result.materialDraws || !result.terrainDraws ||
         !result.pbrTerrainDraws || !completeCoverage)
     {
         LL_INFOS("GHIIntegration")
-            << "I8c2 completed without full material/PBR-terrain/four-target coverage; retrying. frame="
-            << result.frameId << " draws(material/rigged/terrain/pbr)="
-            << result.materialDraws << '/' << result.riggedMaterialDraws
+            << "P0e1 completed without full opaque/material/PBR-terrain/four-target coverage; retrying. frame="
+            << result.frameId << " draws(opaque/material/rigged/terrain/pbr)="
+            << result.opaqueDraws << '/' << result.materialDraws << '/'
+            << result.riggedMaterialDraws
             << '/' << result.terrainDraws << '/' << result.pbrTerrainDraws
             << " non-clear-pixels=" << result.nonClearPixels[0] << ','
             << result.nonClearPixels[1] << ',' << result.nonClearPixels[2]
@@ -492,8 +495,9 @@ void pollProductionGBuffer()
             << result.frameId << " assembly-epoch=" << result.assemblyEpoch
             << " target-generation/extent=" << result.targetGeneration << '/'
             << result.width << 'x' << result.height
-            << " draws(material/rigged/terrain/pbr/deferred-material/deferred-terrain)="
-            << result.materialDraws << '/' << result.riggedMaterialDraws << '/'
+            << " draws(opaque/material/rigged/terrain/pbr/deferred-material/deferred-terrain)="
+            << result.opaqueDraws << '/' << result.materialDraws << '/'
+            << result.riggedMaterialDraws << '/'
             << result.terrainDraws << '/' << result.pbrTerrainDraws << '/'
             << result.deferredMaterialDraws << '/'
             << result.deferredTerrainDraws
@@ -504,13 +508,14 @@ void pollProductionGBuffer()
     }
     ++sFrameAssemblySamples;
     LL_INFOS("GHIIntegration")
-        << "I8c2 shared-target material and terrain G-buffer PASS: sample="
+        << "P0e1 shared-target opaque, material, and terrain G-buffer PASS: sample="
         << sFrameAssemblySamples << '/' << livePacketMaximum()
         << " frame=" << result.frameId << " assembly-epoch="
         << result.assemblyEpoch << " target-generation/extent="
         << result.targetGeneration << '/' << result.width << 'x'
-        << result.height << " draws(material/rigged/terrain/pbr/deferred-material/deferred-terrain)="
-        << result.materialDraws << '/' << result.riggedMaterialDraws << '/'
+        << result.height << " draws(opaque/material/rigged/terrain/pbr/deferred-material/deferred-terrain)="
+        << result.opaqueDraws << '/' << result.materialDraws << '/'
+        << result.riggedMaterialDraws << '/'
         << result.terrainDraws << '/' << result.pbrTerrainDraws << '/'
         << result.deferredMaterialDraws << '/' << result.deferredTerrainDraws
         << " upload-bytes=" << result.uploadBytes;
@@ -689,6 +694,10 @@ void initialize()
                         *sVulkanDevice);
             if (gBufferExecutionRequested())
             {
+                const std::string opaquePath =
+                    gDirUtilp->getExpandedFilename(
+                        LL_PATH_APP_SETTINGS, "ghi_shaders",
+                        "r4_opaque.llghisp");
                 const std::string materialPath =
                     gDirUtilp->getExpandedFilename(
                         LL_PATH_APP_SETTINGS, "ghi_shaders",
@@ -697,16 +706,20 @@ void initialize()
                     gDirUtilp->getExpandedFilename(
                         LL_PATH_APP_SETTINGS, "ghi_shaders",
                         "i6_terrain.llghisp");
+                LL::GHI::ShaderPackageDesc opaquePackage;
                 LL::GHI::ShaderPackageDesc materialPackage;
                 LL::GHI::ShaderPackageDesc terrainPackage;
+                const LL::GHI::Status opaqueStatus =
+                    LL::GHI::loadShaderPackage(opaquePath, opaquePackage);
                 const LL::GHI::Status materialStatus =
                     LL::GHI::loadShaderPackage(materialPath, materialPackage);
                 const LL::GHI::Status terrainStatus =
                     LL::GHI::loadShaderPackage(terrainPath, terrainPackage);
-                if (!materialStatus || !terrainStatus)
+                if (!opaqueStatus || !materialStatus || !terrainStatus)
                 {
                     LL_WARNS("GHIIntegration")
-                        << "I8c2 production G-buffer shader packages were not loaded: material="
+                        << "P0e1 production G-buffer shader packages were not loaded: opaque="
+                        << opaqueStatus.message() << " material="
                         << materialStatus.message() << " terrain="
                         << terrainStatus.message()
                         << ". Visible rendering remains OpenGL." << LL_ENDL;
@@ -715,7 +728,8 @@ void initialize()
                 {
                     sGBufferExecutor = std::make_unique<
                         LL::GHI::ProductionGBufferExecutor>(
-                            *sVulkanDevice, std::move(materialPackage),
+                            *sVulkanDevice, std::move(opaquePackage),
+                            std::move(materialPackage),
                             std::move(terrainPackage));
                 }
                 if (productionLightingExecutionRequested())
@@ -794,8 +808,9 @@ void initialize()
                 << "I8a same-frame production assembly transfer armed; interval="
                 << livePacketInterval() << " frames max-samples="
                 << livePacketMaximum()
-                << " limits(material-draws/terrain-draws/vertices/indices/resources/decoded-bytes/encoded-bytes)="
-                << limits.maxMaterialDraws << '/' << limits.maxTerrainDraws << '/'
+                << " limits(opaque-draws/material-draws/terrain-draws/vertices/indices/resources/decoded-bytes/encoded-bytes)="
+                << limits.maxOpaqueDraws << '/' << limits.maxMaterialDraws
+                << '/' << limits.maxTerrainDraws << '/'
                 << limits.maxVertices << '/' << limits.maxIndices << '/'
                 << limits.maxUniqueResources << '/'
                 << limits.maxDecodedTextureBytes << '/' << limits.maxEncodedBytes
@@ -1163,6 +1178,7 @@ void shutdown()
     sMaterialCaptureClaimed = false;
     sMaterialDisabled = false;
     sPendingMaterialBudgetLimited = false;
+    sPendingFrameOpaque.reset();
     sPendingLightingMaterial.reset();
     sPendingLightingTerrain.reset();
     sNextFrameAssemblyFrame = 0;
@@ -1170,6 +1186,7 @@ void shutdown()
     sFrameAssemblyAttempts = 0;
     sFrameAssemblySamples = 0;
     sFrameAssemblyDisabled = false;
+    sPendingFrameOpaqueBudgetLimited = false;
     sPendingFrameMaterialBudgetLimited = false;
     sPendingFrameTerrainBudgetLimited = false;
     sNextTerrainFrame = 0;
@@ -1199,6 +1216,27 @@ bool shouldCaptureLiveOpaquePacket(std::uint64_t frame_id)
     if (!sVulkanDevice || sLivePacketDisabled || sLivePacketCaptureClaimed ||
         !livePacketRequested())
         return false;
+    if (frameAssemblyRequested())
+    {
+        if (sFrameAssemblyDisabled || sPendingFrameOpaque ||
+            (sGBufferExecutor && sGBufferExecutor->pending()) ||
+            (sProductionLightingExecutor &&
+             sProductionLightingExecutor->pending()))
+            return false;
+        const std::uint32_t maximum = livePacketMaximum();
+        if (!maximum || sFrameAssemblySamples >= maximum ||
+            static_cast<std::uint64_t>(sFrameAssemblyAttempts) >=
+                static_cast<std::uint64_t>(maximum) * 8ull)
+            return false;
+        if (!sNextFrameAssemblyFrame)
+        {
+            sNextFrameAssemblyFrame = frame_id + livePacketInterval();
+            return false;
+        }
+        if (frame_id < sNextFrameAssemblyFrame) return false;
+        sLivePacketCaptureClaimed = true;
+        return true;
+    }
     if (offscreenProbeRequested() && !sOffscreenProbe) return false;
     if (sOffscreenProbe && sOffscreenProbe->pending()) return false;
     const std::uint32_t maximum = livePacketMaximum();
@@ -1221,6 +1259,17 @@ void consumeLiveOpaquePacket(const LL::GHI::OpaqueScenePacket& packet,
 {
     if (!sLivePacketCaptureClaimed || !sVulkanDevice) return;
     sLivePacketCaptureClaimed = false;
+    if (frameAssemblyRequested())
+    {
+        sPendingFrameOpaque = packet;
+        sPendingFrameOpaqueBudgetLimited = budget_limited;
+        LL_INFOS("GHIIntegration")
+            << "P0e1 captured rigid opaque component for production-frame assembly: frame="
+            << packet.frameId << " draws=" << packet.draws.size()
+            << " vertices=" << packet.vertices.size() << " indices="
+            << packet.indices.size() << LL_ENDL;
+        return;
+    }
     ++sLivePacketAttempts;
     sNextLivePacketFrame = packet.frameId + livePacketInterval();
 
@@ -1554,18 +1603,24 @@ bool shouldCaptureLiveLightingPacket(std::uint64_t frame_id)
             static_cast<std::uint64_t>(sFrameAssemblyAttempts) >=
                 static_cast<std::uint64_t>(maximum) * 8ull)
             return false;
-        if (!sPendingLightingMaterial || !sPendingLightingTerrain) return false;
+        if (!sPendingFrameOpaque || !sPendingLightingMaterial ||
+            !sPendingLightingTerrain)
+            return false;
+        const std::uint64_t opaqueFrame = sPendingFrameOpaque->frameId;
         const std::uint64_t materialFrame =
             sPendingLightingMaterial->frameId;
         const std::uint64_t terrainFrame = sPendingLightingTerrain->frameId;
-        if (materialFrame != frame_id || terrainFrame != frame_id)
+        if (opaqueFrame != frame_id || materialFrame != frame_id ||
+            terrainFrame != frame_id)
         {
             LL_WARNS("GHIIntegration")
                 << "I8a discarded unpaired production-frame components: current="
-                << frame_id << " material=" << materialFrame << " terrain="
-                << terrainFrame << LL_ENDL;
+                << frame_id << " opaque=" << opaqueFrame << " material="
+                << materialFrame << " terrain=" << terrainFrame << LL_ENDL;
+            sPendingFrameOpaque.reset();
             sPendingLightingMaterial.reset();
             sPendingLightingTerrain.reset();
+            sPendingFrameOpaqueBudgetLimited = false;
             sPendingFrameMaterialBudgetLimited = false;
             sPendingFrameTerrainBudgetLimited = false;
             sNextFrameAssemblyFrame = frame_id + livePacketInterval();
@@ -1622,15 +1677,19 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
     {
         ++sFrameAssemblyAttempts;
         sNextFrameAssemblyFrame = packet.frameId + livePacketInterval();
-        if (!sPendingLightingMaterial || !sPendingLightingTerrain ||
+        if (!sPendingFrameOpaque || !sPendingLightingMaterial ||
+            !sPendingLightingTerrain ||
+            sPendingFrameOpaque->frameId != packet.frameId ||
             sPendingLightingMaterial->frameId != packet.frameId ||
             sPendingLightingTerrain->frameId != packet.frameId)
         {
             LL_WARNS("GHIIntegration")
-                << "I8a rejected lighting without same-frame material and terrain components: frame="
+                << "P0e1 rejected lighting without same-frame opaque, material, and terrain components: frame="
                 << packet.frameId << LL_ENDL;
+            sPendingFrameOpaque.reset();
             sPendingLightingMaterial.reset();
             sPendingLightingTerrain.reset();
+            sPendingFrameOpaqueBudgetLimited = false;
             sPendingFrameMaterialBudgetLimited = false;
             sPendingFrameTerrainBudgetLimited = false;
             return;
@@ -1642,6 +1701,8 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
         frame.sourceWidth = packet.sourceWidth;
         frame.sourceHeight = packet.sourceHeight;
         frame.passes =
+            LL::GHI::productionFramePassBit(
+                LL::GHI::ProductionFramePass::OpaqueGBuffer) |
             LL::GHI::productionFramePassBit(
                 LL::GHI::ProductionFramePass::MaterialGBuffer) |
             LL::GHI::productionFramePassBit(
@@ -1664,15 +1725,19 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
             packet.shadows.projectorShadowCount)
             frame.passes |= LL::GHI::productionFramePassBit(
                 LL::GHI::ProductionFramePass::ProjectorShadow);
+        frame.opaque = std::move(*sPendingFrameOpaque);
         frame.materials = std::move(*sPendingLightingMaterial);
         frame.terrain = std::move(*sPendingLightingTerrain);
         frame.lighting = packet;
+        sPendingFrameOpaque.reset();
         sPendingLightingMaterial.reset();
         sPendingLightingTerrain.reset();
 
         const bool captureBudgetLimited = budget_limited ||
+            sPendingFrameOpaqueBudgetLimited ||
             sPendingFrameMaterialBudgetLimited ||
             sPendingFrameTerrainBudgetLimited;
+        sPendingFrameOpaqueBudgetLimited = false;
         sPendingFrameMaterialBudgetLimited = false;
         sPendingFrameTerrainBudgetLimited = false;
         if (textureResidencyRequested())
@@ -1853,7 +1918,9 @@ void consumeLiveLightingPacket(const LL::GHI::LightingScenePacket& packet,
                 << sFrameAssemblySamples << '/' << livePacketMaximum()
                 << " frame=" << result.frameId << " assembly-epoch="
                 << result.assemblyEpoch << " pass-mask=0x" << std::hex
-                << result.passes << std::dec << " draws(material/terrain)="
+                << result.passes << std::dec
+                << " draws(opaque/material/terrain)="
+                << result.resources.opaqueDraws << '/'
                 << result.resources.materialDraws << '/'
                 << result.resources.terrainDraws << " vertices/indices="
                 << result.resources.vertices << '/' << result.resources.indices

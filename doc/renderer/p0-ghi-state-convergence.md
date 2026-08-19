@@ -274,6 +274,26 @@ renderer library, and complete `vulkanstorm-bin.exe` build pass. This remains
 a private offscreen adoption checkpoint: visible-target integration and live
 dual-provider qualification still remain P0e1 work.
 
+### P0e1c — single ownership of simple opaque work
+
+The R4 generic-opaque stream is now a complementary untextured rigid fallback,
+not a second rendering owner. Textured `PASS_SIMPLE` work routes only through
+the legacy material contract introduced in P0e1b. The draw-pool traversal
+passes its actual textured/untextured intent to capture instead of inferring
+ownership from whether a default viewer texture object happens to exist.
+
+`OpaqueGBuffer` remains an explicit scheduled pass, but its draw stream may be
+empty. Frame validation and G-buffer execution require material and terrain
+work and safely accept zero fallback vertices, indices, transforms, and draws.
+The live gate now requires executable legacy and PBR material coverage rather
+than using a duplicate simple draw as a proxy for legacy coverage. Contract
+tests execute both a populated fallback and the normal zero-fallback case.
+
+This closes duplicate opaque ownership in the private production graph. The
+remaining P0e1 gates are isolated OpenGL-peer execution, cross-peer semantic
+comparison, and live qualification before any visible OpenGL draw family can
+be redirected.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

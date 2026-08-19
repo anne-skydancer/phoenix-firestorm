@@ -2858,9 +2858,10 @@ void LLGHIValidationObject::test<36>()
                StatusCode::InvalidArgument);
     ProductionFramePacket missingOpaque = frame;
     missingOpaque.opaque.draws.clear();
-    ensure("P0e1 rejects a frame without generic opaque geometry",
-           validateProductionFramePacket(missingOpaque).code() ==
-               StatusCode::InvalidArgument);
+    missingOpaque.opaque.vertices.clear();
+    missingOpaque.opaque.indices.clear();
+    ensure("P0e1 accepts an empty complementary opaque fallback",
+           validateProductionFramePacket(missingOpaque).ok());
     ProductionFramePacket missingOpaquePass = frame;
     missingOpaquePass.passes &=
         ~productionFramePassBit(ProductionFramePass::OpaqueGBuffer);
@@ -3012,6 +3013,15 @@ void LLGHIValidationObject::test<36>()
                !targetHash.empty());
     ensure("I8c2 records a combined production-frame identity",
            !executionResult.frameSha256.empty());
+    status = executor.submit(
+        missingOpaque, targets.targets(), residency, executionLimits);
+    ensure(status.message(), status.ok());
+    status = executor.poll(executionResult);
+    ensure(status.message(), status.ok());
+    ensure_equals("P0e1 executes without a duplicate opaque fallback",
+                  executionResult.opaqueDraws, std::uint32_t{0});
+    ensure_equals("P0e1 retains legacy material ownership without fallback",
+                  executionResult.legacyMaterialDraws, std::uint32_t{1});
 #if defined(LL_GHI_I7_LIGHTING_SHADER_PACKAGE) && \
     defined(LL_GHI_I7_PROJECTOR_SHADER_PACKAGE) && \
     defined(LL_GHI_I7_SHADOW_SHADER_PACKAGE)

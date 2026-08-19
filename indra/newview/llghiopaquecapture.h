@@ -22,7 +22,8 @@ public:
     // No work is performed unless VULKANSTORM_GHI_R4_CAPTURE names an output file.
     bool beginFrame(std::uint32_t width, std::uint32_t height,
                     std::uint64_t frame_id, bool production_occlusion_enabled);
-    void record(const LLDrawInfo& draw, std::uint32_t render_type, bool rigged);
+    void record(const LLDrawInfo& draw, std::uint32_t render_type, bool rigged,
+                bool textured);
     void endFrame();
 
 private:

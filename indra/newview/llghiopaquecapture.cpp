@@ -79,7 +79,8 @@ public:
         return true;
     }
 
-    void record(const LLDrawInfo& source, std::uint32_t render_type, bool rigged)
+    void record(const LLDrawInfo& source, std::uint32_t render_type, bool rigged,
+                bool textured)
     {
         if (!mInFrame) return;
         auto& stats = mPacket.statistics;
@@ -91,10 +92,12 @@ public:
             ++stats.skippedRiggedDraws;
             return;
         }
-        // R4d intentionally accepts only the rigid legacy simple pass. Material,
-        // alpha-mask, PBR, fullbright, and rigged parity belong to R5/R6.
-        if (render_type != LLRenderPass::PASS_SIMPLE || source.mMaterial.notNull() ||
-            source.mGLTFMaterial.notNull() || source.mFullbright)
+        // The material packet owns textured legacy work. R4 remains the
+        // complementary untextured rigid fallback and must never submit the
+        // same visible face a second time into the production G-buffer.
+        if (textured || render_type != LLRenderPass::PASS_SIMPLE ||
+            source.mMaterial.notNull() || source.mGLTFMaterial.notNull() ||
+            source.mFullbright)
         {
             ++stats.skippedMaterialDraws;
             return;
@@ -258,9 +261,9 @@ bool LLGHIOpaqueCapture::beginFrame(std::uint32_t width, std::uint32_t height,
 }
 
 void LLGHIOpaqueCapture::record(const LLDrawInfo& draw, std::uint32_t render_type,
-                                bool rigged)
+                                bool rigged, bool textured)
 {
-    mImpl->record(draw, render_type, rigged);
+    mImpl->record(draw, render_type, rigged, textured);
 }
 
 void LLGHIOpaqueCapture::endFrame()

@@ -339,9 +339,8 @@ public:
             pbrTerrainDraws += region.model == MaterialModel::MetallicRoughness;
             terrainDraws.push_back(executable);
         }
-        if (opaqueDraws.empty() || materialDraws.empty() ||
-            terrainDraws.empty())
-            return invalid("production G-buffer frame has no executable opaque, material, or terrain draws");
+        if (materialDraws.empty() || terrainDraws.empty())
+            return invalid("production G-buffer frame has no executable material or terrain draws");
 
         const std::uint64_t alignment = std::max<std::uint64_t>(
             16, mDevice.capabilities().uniformBufferOffsetAlignment);
@@ -398,10 +397,12 @@ public:
             return unsupported("production G-buffer upload exceeds its bounded limit");
 
         std::vector<std::byte> uploadData(static_cast<std::size_t>(uploadBytes));
-        std::memcpy(uploadData.data() + opaqueVertexOffset,
-                    frame.opaque.vertices.data(), opaqueVertexBytes);
-        std::memcpy(uploadData.data() + opaqueIndexOffset,
-                    frame.opaque.indices.data(), opaqueIndexBytes);
+        if (opaqueVertexBytes)
+            std::memcpy(uploadData.data() + opaqueVertexOffset,
+                        frame.opaque.vertices.data(), opaqueVertexBytes);
+        if (opaqueIndexBytes)
+            std::memcpy(uploadData.data() + opaqueIndexOffset,
+                        frame.opaque.indices.data(), opaqueIndexBytes);
         std::memcpy(uploadData.data() + materialVertexOffset,
                     frame.materials.vertices.data(), materialVertexBytes);
         std::memcpy(uploadData.data() + materialIndexOffset,
@@ -543,13 +544,14 @@ public:
         upload = mDevice.createBuffer(
             {uploadBytes, ResourceUsage::TransferSource, MemoryClass::Upload}, status);
         if (status) opaqueVertices = mDevice.createBuffer(
-            {opaqueVertexBytes, ResourceUsage::Vertex |
+            {std::max<std::uint64_t>(1, opaqueVertexBytes), ResourceUsage::Vertex |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
         if (status) opaqueIndices = mDevice.createBuffer(
-            {opaqueIndexBytes, ResourceUsage::Index |
+            {std::max<std::uint64_t>(1, opaqueIndexBytes), ResourceUsage::Index |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
         if (status) opaqueTransforms = mDevice.createBuffer(
-            {opaqueTransformStride * opaqueDraws.size(), ResourceUsage::Uniform |
+            {std::max<std::uint64_t>(
+                 1, opaqueTransformStride * opaqueDraws.size()), ResourceUsage::Uniform |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
         if (status) opaqueMaterial = mDevice.createBuffer(
             {sizeof(OPAQUE_MATERIAL), ResourceUsage::Uniform |
@@ -669,12 +671,15 @@ public:
                 {sourceOffset, 0, bytes}}};
             return commands.copyBuffer(upload, destination, regions);
         };
-        if (status) status = copy(opaqueVertices, opaqueVertexOffset,
-                                  opaqueVertexBytes);
-        if (status) status = copy(opaqueIndices, opaqueIndexOffset,
-                                  opaqueIndexBytes);
-        if (status) status = copy(opaqueTransforms, opaqueTransformOffset,
-                                  opaqueTransformStride * opaqueDraws.size());
+        if (status && opaqueVertexBytes)
+            status = copy(opaqueVertices, opaqueVertexOffset,
+                          opaqueVertexBytes);
+        if (status && opaqueIndexBytes)
+            status = copy(opaqueIndices, opaqueIndexOffset,
+                          opaqueIndexBytes);
+        if (status && !opaqueDraws.empty())
+            status = copy(opaqueTransforms, opaqueTransformOffset,
+                          opaqueTransformStride * opaqueDraws.size());
         if (status) status = copy(opaqueMaterial, opaqueMaterialOffset,
                                   sizeof(OPAQUE_MATERIAL));
         if (status) status = copy(materialVertices, materialVertexOffset,

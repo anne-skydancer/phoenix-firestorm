@@ -201,9 +201,8 @@ Status validateProductionFramePacket(
         packet.lighting.sourceWidth != packet.sourceWidth ||
         packet.lighting.sourceHeight != packet.sourceHeight)
         return invalid("production frame child extents do not match");
-    if (packet.opaque.draws.empty() || packet.materials.draws.empty() ||
-        packet.terrain.draws.empty())
-        return invalid("production frame requires opaque, material, and terrain draws");
+    if (packet.materials.draws.empty() || packet.terrain.draws.empty())
+        return invalid("production frame requires material and terrain draws");
 
     if (productionFrameHasPass(packet.passes,
                                ProductionFramePass::DirectionalShadow) &&

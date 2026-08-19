@@ -443,7 +443,7 @@ void LLRenderPass::pushBatches(U32 type, bool texture, bool batch_textures)
             LLDrawInfo* pparams = *i;
             LLCullResult::increment_iterator(i, end);
 
-            LLGHIOpaqueCapture::instance().record(*pparams, type, false);
+            LLGHIOpaqueCapture::instance().record(*pparams, type, false, true);
             if (LLGHIMaterialCapture::active())
                 LLGHIMaterialCapture::instance().record(*pparams, type, false);
             pushBatch(*pparams, texture, batch_textures);
@@ -465,7 +465,7 @@ void LLRenderPass::pushUntexturedBatches(U32 type)
         LLDrawInfo* pparams = *i;
         LLCullResult::increment_iterator(i, end);
 
-        LLGHIOpaqueCapture::instance().record(*pparams, type, false);
+        LLGHIOpaqueCapture::instance().record(*pparams, type, false, false);
         if (LLGHIMaterialCapture::active())
             LLGHIMaterialCapture::instance().record(*pparams, type, false);
         pushUntexturedBatch(*pparams);
@@ -488,7 +488,7 @@ void LLRenderPass::pushRiggedBatches(U32 type, bool texture, bool batch_textures
             LLDrawInfo* pparams = *i;
             LLCullResult::increment_iterator(i, end);
 
-            LLGHIOpaqueCapture::instance().record(*pparams, type, true);
+            LLGHIOpaqueCapture::instance().record(*pparams, type, true, true);
             if (LLGHIMaterialCapture::active())
                 LLGHIMaterialCapture::instance().record(*pparams, type, true);
             if (uploadMatrixPalette(pparams->mAvatar, pparams->mSkinInfo, lastAvatar, lastMeshId, skipLastSkin))
@@ -516,7 +516,7 @@ void LLRenderPass::pushUntexturedRiggedBatches(U32 type)
         LLDrawInfo* pparams = *i;
         LLCullResult::increment_iterator(i, end);
 
-        LLGHIOpaqueCapture::instance().record(*pparams, type, true);
+        LLGHIOpaqueCapture::instance().record(*pparams, type, true, false);
         if (LLGHIMaterialCapture::active())
             LLGHIMaterialCapture::instance().record(*pparams, type, true);
         if (uploadMatrixPalette(pparams->mAvatar, pparams->mSkinInfo, lastAvatar, lastMeshId, skipLastSkin))

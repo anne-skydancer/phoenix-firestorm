@@ -467,11 +467,11 @@ void pollProductionGBuffer()
     const bool completeCoverage = std::all_of(
         result.nonClearPixels.begin(), result.nonClearPixels.end(),
         [](std::uint64_t pixels) { return pixels != 0; });
-    if (!result.opaqueDraws || !result.materialDraws || !result.terrainDraws ||
-        !result.pbrTerrainDraws || !completeCoverage)
+    if (!result.materialDraws || !result.legacyMaterialDraws ||
+        !result.terrainDraws || !result.pbrTerrainDraws || !completeCoverage)
     {
         LL_INFOS("GHIIntegration")
-            << "P0e1 completed without full opaque/material/PBR-terrain/four-target coverage; retrying. frame="
+            << "P0e1 completed without full legacy/PBR material, PBR-terrain, and four-target coverage; retrying. frame="
             << result.frameId << " draws(opaque/material/legacy/rigged/terrain/pbr)="
             << result.opaqueDraws << '/' << result.materialDraws << '/'
             << result.legacyMaterialDraws << '/' << result.riggedMaterialDraws

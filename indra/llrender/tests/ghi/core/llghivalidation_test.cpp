@@ -2754,6 +2754,16 @@ void LLGHIValidationObject::test<36>()
     materialDraw.material = 0;
     materialDraw.indexCount = 3;
     frame.materials.draws.push_back(materialDraw);
+    MaterialResource legacyMaterial;
+    legacyMaterial.identity[0] = std::byte{0x13};
+    legacyMaterial.model = MaterialModel::Legacy;
+    legacyMaterial.legacySpecular = {{0.2f, 0.3f, 0.4f, 0.5f}};
+    legacyMaterial.environmentIntensity = 0.25f;
+    frame.materials.materials.push_back(legacyMaterial);
+    MaterialSceneDraw legacyMaterialDraw = materialDraw;
+    legacyMaterialDraw.semanticId = 0x50306531625f4c47ull; // "P0e1b_LG"
+    legacyMaterialDraw.material = 1;
+    frame.materials.draws.push_back(legacyMaterialDraw);
     SkinResource productionSkin;
     productionSkin.identity[0] = std::byte{0x12};
     productionSkin.jointCount = 1;
@@ -2821,11 +2831,11 @@ void LLGHIValidationObject::test<36>()
     ensure_equals("P0e1 summarizes all opaque draw streams",
                   summary.opaqueDraws + summary.materialDraws +
                       summary.terrainDraws,
-                  std::uint32_t{4});
+                  std::uint32_t{5});
     ensure_equals("I8a summarizes combined geometry", summary.vertices,
                   std::uint32_t{9});
     ensure_equals("I8a builds a typed unique resource inventory",
-                  summary.uniqueResources, std::uint32_t{8});
+                  summary.uniqueResources, std::uint32_t{9});
     ensure_equals("I8a accounts decoded texture bytes",
                   summary.decodedTextureBytes, std::uint64_t{4});
 
@@ -2988,7 +2998,9 @@ void LLGHIValidationObject::test<36>()
     ensure_equals("P0e1 executes the generic opaque stream",
                   executionResult.opaqueDraws, std::uint32_t{1});
     ensure_equals("I8c2 executes the material stream",
-                  executionResult.materialDraws, std::uint32_t{2});
+                  executionResult.materialDraws, std::uint32_t{3});
+    ensure_equals("P0e1 executes a legacy opaque material draw",
+                  executionResult.legacyMaterialDraws, std::uint32_t{1});
     ensure_equals("I8c2 executes a rigged material draw",
                   executionResult.riggedMaterialDraws, std::uint32_t{1});
     ensure_equals("I8c2 executes the terrain stream",
@@ -3024,7 +3036,7 @@ void LLGHIValidationObject::test<36>()
     frame.materials.materials.push_back(maskedMaterial);
     MaterialSceneDraw maskedDraw = riggedMaterialDraw;
     maskedDraw.semanticId = 0x493863335f4d4153ull; // "I8c3_MAS"
-    maskedDraw.material = 1;
+    maskedDraw.material = 2;
     frame.materials.draws.push_back(maskedDraw);
 
     ProjectorTextureResource projectorTexture;
@@ -3127,7 +3139,7 @@ void LLGHIValidationObject::test<36>()
     ensure_equals("I8c3 executes one projector shadow",
                   lightingResult.projectorShadowMaps, std::uint32_t{1});
     ensure_equals("I8c3 replays opaque and alpha-masked casters",
-                  lightingResult.shadowCasterDraws, std::uint32_t{3});
+                  lightingResult.shadowCasterDraws, std::uint32_t{4});
     ensure_equals("I8c3 includes two rigged casters",
                   lightingResult.shadowRiggedDraws, std::uint32_t{2});
     ensure_equals("I8c3 includes one alpha-masked caster",

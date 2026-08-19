@@ -37,6 +37,7 @@ struct ProductionGBufferResult
     std::uint32_t height = 0;
     std::uint32_t opaqueDraws = 0;
     std::uint32_t materialDraws = 0;
+    std::uint32_t legacyMaterialDraws = 0;
     std::uint32_t riggedMaterialDraws = 0;
     std::uint32_t terrainDraws = 0;
     std::uint32_t pbrTerrainDraws = 0;

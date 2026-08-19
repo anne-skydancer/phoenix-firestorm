@@ -28,7 +28,7 @@ constexpr std::array<Format, PRODUCTION_GBUFFER_TARGETS> COLOR_FORMATS{{
 constexpr std::array<std::uint32_t, PRODUCTION_GBUFFER_TARGETS>
     COLOR_BYTES{{4, 4, 8, 8}};
 constexpr Format DEPTH_FORMAT = Format::Depth32Float;
-constexpr std::size_t MATERIAL_FLOATS = 44;
+constexpr std::size_t MATERIAL_FLOATS = 48;
 constexpr std::size_t OBJECT_FLOATS = 32;
 constexpr std::size_t TERRAIN_FLOATS = 132;
 using SkinData = std::array<float, MATERIAL_SKIN_FLOATS>;
@@ -60,6 +60,15 @@ const MaterialTextureBinding* findBinding(const MaterialResource& material,
         material.textures.end(), [semantic](const MaterialTextureBinding& binding)
         { return binding.semantic == semantic; });
     return found == material.textures.end() ? nullptr : &*found;
+}
+
+std::array<TextureSemantic, 4> materialTextureSemantics(MaterialModel model)
+{
+    if (model == MaterialModel::Legacy)
+        return {{TextureSemantic::BaseColor, TextureSemantic::Normal,
+                 TextureSemantic::LegacySpecular, TextureSemantic::Emissive}};
+    return {{TextureSemantic::BaseColor, TextureSemantic::Normal,
+             TextureSemantic::MetallicRoughness, TextureSemantic::Emissive}};
 }
 
 bool validSkin(const SkinResource& skin)
@@ -214,6 +223,7 @@ public:
         std::vector<TerrainDraw> terrainDraws;
         std::uint32_t deferredMaterial = 0;
         std::uint32_t deferredTerrain = 0;
+        std::uint32_t legacyMaterialDraws = 0;
         std::uint32_t riggedDraws = 0;
         std::uint32_t pbrTerrainDraws = 0;
 
@@ -229,9 +239,6 @@ public:
             opaqueDraws.push_back({source, {}});
         }
 
-        constexpr std::array<TextureSemantic, 4> semantics{{
-            TextureSemantic::BaseColor, TextureSemantic::Normal,
-            TextureSemantic::MetallicRoughness, TextureSemantic::Emissive}};
         for (std::size_t source = 0;
              source < frame.materials.draws.size() &&
              materialDraws.size() < limits.maxMaterialDraws; ++source)
@@ -243,7 +250,6 @@ public:
                 frame.materials.materials[draw.material];
             if (draw.comparability != ResourceComparability::Comparable ||
                 material.comparability != ResourceComparability::Comparable ||
-                material.model != MaterialModel::MetallicRoughness ||
                 material.alphaMode != MaterialAlphaMode::Opaque ||
                 !supportedTextureCoordinates(material))
                 continue;
@@ -257,6 +263,7 @@ public:
             MaterialDraw executable;
             executable.source = source;
             bool ready = true;
+            const auto semantics = materialTextureSemantics(material.model);
             for (std::size_t texture = 0; texture < semantics.size(); ++texture)
             {
                 executable.views[texture] = mFallbackViews[texture];
@@ -283,6 +290,7 @@ public:
                 ++deferredMaterial;
                 continue;
             }
+            legacyMaterialDraws += material.model == MaterialModel::Legacy;
             riggedDraws += draw.skin != NO_RESOURCE;
             materialDraws.push_back(executable);
         }
@@ -418,6 +426,7 @@ public:
             const MaterialSceneDraw& draw =
                 frame.materials.draws[materialDraws[item].source];
             const MaterialResource& material = frame.materials.materials[draw.material];
+            const auto semantics = materialTextureSemantics(material.model);
             std::memcpy(uploadData.data() + frameOffset + frameStride * item,
                         draw.transform.data(), sizeof(draw.transform));
             std::array<float, OBJECT_FLOATS> object{};
@@ -429,24 +438,32 @@ public:
                 ? nullptr : &frame.materials.skins[draw.skin]);
             std::memcpy(uploadData.data() + skinOffset + skinStride * item,
                         skin.data(), sizeof(skin));
+            const bool legacy = material.model == MaterialModel::Legacy;
+            const bool legacySpecularTexture =
+                findBinding(material, TextureSemantic::LegacySpecular) != nullptr;
             std::array<float, MATERIAL_FLOATS> factors{{
                 material.baseColor[0], material.baseColor[1],
                 material.baseColor[2], material.baseColor[3],
-                material.emissive[0], material.emissive[1],
-                material.emissive[2], material.metallic,
-                material.roughness, 1.f, 0.f, 0.f}};
+                legacy ? material.legacySpecular[0] : material.emissive[0],
+                legacy ? material.legacySpecular[1] : material.emissive[1],
+                legacy ? material.legacySpecular[2] : material.emissive[2],
+                legacy ? material.legacySpecular[3] : material.metallic,
+                material.roughness, 1.f, 0.f, 0.f,
+                legacy ? 1.f : 0.f, material.fullbright ? 1.f : 0.f,
+                legacySpecularTexture ? 1.f : 0.f,
+                material.environmentIntensity}};
             for (std::size_t texture = 0; texture < semantics.size(); ++texture)
             {
                 constexpr std::array<float, 5> identity{{0.f, 0.f, 1.f, 1.f, 0.f}};
                 const MaterialTextureBinding* binding =
                     findBinding(material, semantics[texture]);
                 const auto& transform = binding ? binding->transform : identity;
-                const std::size_t uv = 12 + texture * 4;
+                const std::size_t uv = 16 + texture * 4;
                 factors[uv] = transform[0];
                 factors[uv + 1] = transform[1];
                 factors[uv + 2] = transform[2];
                 factors[uv + 3] = transform[3];
-                const std::size_t rotation = 28 + texture * 4;
+                const std::size_t rotation = 32 + texture * 4;
                 factors[rotation] = std::cos(transform[4]);
                 factors[rotation + 1] = std::sin(transform[4]);
             }
@@ -794,6 +811,7 @@ public:
             static_cast<std::uint32_t>(opaqueDraws.size());
         mPendingResult.materialDraws =
             static_cast<std::uint32_t>(materialDraws.size());
+        mPendingResult.legacyMaterialDraws = legacyMaterialDraws;
         mPendingResult.riggedMaterialDraws = riggedDraws;
         mPendingResult.terrainDraws =
             static_cast<std::uint32_t>(terrainDraws.size());

@@ -412,12 +412,16 @@ public:
         }
         const bool opaquePbrPass = renderType == LLRenderPass::PASS_GLTF_PBR ||
             renderType == LLRenderPass::PASS_GLTF_PBR_RIGGED;
+        const bool opaqueLegacyPass = !draw.mGLTFMaterial &&
+            shadowOpaquePass(renderType) &&
+            alphaMode(draw.mDiffuseAlphaMode) ==
+                LL::GHI::MaterialAlphaMode::Opaque;
         const bool shadowPass = mCaptureShadowRuntime &&
             (shadowOpaquePass(renderType) || shadowMaskPass(renderType));
-        const bool lightingReceiver = opaquePbrPass &&
-            draw.mGLTFMaterial.notNull() &&
-            alphaMode(draw.mGLTFMaterial->mAlphaMode) ==
-                LL::GHI::MaterialAlphaMode::Opaque;
+        const bool lightingReceiver = opaqueLegacyPass ||
+            (opaquePbrPass && draw.mGLTFMaterial.notNull() &&
+             alphaMode(draw.mGLTFMaterial->mAlphaMode) ==
+                 LL::GHI::MaterialAlphaMode::Opaque);
         const bool runtimeGeometry = lightingReceiver || shadowPass;
         if (mCaptureRuntime && !mCaptureFile && !runtimeGeometry) return;
 
@@ -604,11 +608,24 @@ private:
                          GeometryReject& reject)
     {
         const LLVertexBuffer* buffer = source.mVertexBuffer.get();
-        const std::uint32_t required = mCaptureShadowRuntime
-            ? LLVertexBuffer::MAP_VERTEX |
-                (alphaMasked ? LLVertexBuffer::MAP_TEXCOORD0 : 0u)
-            : LLVertexBuffer::MAP_VERTEX | LLVertexBuffer::MAP_NORMAL |
-                LLVertexBuffer::MAP_TANGENT | LLVertexBuffer::MAP_TEXCOORD0;
+        std::uint32_t required = LLVertexBuffer::MAP_VERTEX;
+        if (mCaptureShadowRuntime)
+        {
+            if (alphaMasked) required |= LLVertexBuffer::MAP_TEXCOORD0;
+        }
+        else
+        {
+            const bool lit = !source.mFullbright;
+            const bool hasTexture = source.mTexture.notNull() ||
+                source.mNormalMap.notNull() || source.mSpecularMap.notNull() ||
+                source.mGLTFMaterial.notNull();
+            const bool hasNormalTexture = source.mNormalMap.notNull() ||
+                (source.mGLTFMaterial.notNull() &&
+                 source.mGLTFMaterial->mNormalTexture.notNull());
+            if (lit) required |= LLVertexBuffer::MAP_NORMAL;
+            if (hasTexture) required |= LLVertexBuffer::MAP_TEXCOORD0;
+            if (lit && hasNormalTexture) required |= LLVertexBuffer::MAP_TANGENT;
+        }
         const bool skinned = skinResource != nullptr;
         reject = GeometryReject::None;
         if (!buffer || !source.mCount || source.mCount % 3 != 0)

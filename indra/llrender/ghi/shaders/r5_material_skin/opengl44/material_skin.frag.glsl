@@ -5,6 +5,7 @@ layout(std140, binding = 3) uniform MaterialData
     vec4 baseColorFactor;
     vec4 emissiveMetallic;
     vec4 roughnessNormalScale;
+    vec4 materialParams;
     vec4 uvOffsetScale[4];
     vec4 uvRotation[4];
 };
@@ -42,6 +43,20 @@ void main()
     vec3 normal = normalize(worldNormal);
     vec3 bitangent = worldTangent.w * cross(normal, tangent);
     vec3 mappedNormal = normalize(mat3(tangent, bitangent, normal) * tangentNormal);
+    if (materialParams.x > 0.5)
+    {
+        vec4 sampledSpecular = texture(ormMap, transformedUv(2u));
+        vec3 specular = emissiveMetallic.rgb * mix(
+            vec3(1.0), sampledSpecular.rgb, materialParams.z);
+        float glossiness = clamp(emissiveMetallic.a * mix(
+            1.0, sampledSpecular.a, materialParams.z), 0.0, 1.0);
+        bool fullbright = materialParams.y > 0.5;
+        outBaseColor = vec4(fullbright ? vec3(0.0) : base.rgb, base.a);
+        outOrm = fullbright ? vec4(0.0) : vec4(specular, glossiness);
+        outNormal = vec4(mappedNormal * 0.5 + 0.5, 0.0);
+        outEmissive = vec4(fullbright ? base.rgb : vec3(0.0), materialParams.w);
+        return;
+    }
     vec3 orm = texture(ormMap, transformedUv(2u)).rgb;
     orm.g *= roughnessNormalScale.x;
     orm.b *= emissiveMetallic.w;

@@ -242,6 +242,38 @@ OpenGL frame or expose Vulkan selection. Generic opaque shadow-caster parity,
 remaining opaque pool coverage, target integration, and live dual-provider
 qualification remain P0e1 work.
 
+### P0e1b — legacy opaque material convergence
+
+The live material route now admits opaque legacy diffuse, full-bright, shiny,
+bump, normal/specular, emissive-material, rigid, and rigged passes in addition
+to opaque glTF PBR. It reuses `MaterialScenePacket`; no second texture,
+material, or skin contract was added. Alpha-mask and blend passes remain
+excluded from the receiver route until P0e3, although the established shadow
+capture continues to preserve alpha-masked caster data.
+
+Runtime geometry requirements now follow material semantics. Lit geometry
+requires normals, a normal-map binding requires tangents, and textured work
+requires texture coordinates; full-bright or untextured work is not rejected
+for attributes it cannot consume. CPU-observed diffuse, normal, and legacy
+specular resources continue through the existing residency cache without
+importing an OpenGL texture name.
+
+The shared G-buffer executor accepts both material models. Legacy base color,
+specular color and gloss, environment intensity, normal mapping, and
+full-bright intent receive an explicit packed representation. The deferred and
+projector shader packages select a legacy Blinn-style lighting equation from
+that model marker while retaining the metallic/roughness equation for PBR.
+Full-bright legacy work emits its sampled base color and contributes neither
+diffuse nor specular direct light. The OpenGL 4.1, OpenGL 4.4, and Vulkan GLSL
+dialects carry the same contract.
+
+The validation frame now executes a legacy opaque material alongside rigid and
+rigged PBR, terrain, directional/projected lighting, and opaque/masked shadow
+casters. The deterministic shader packer, 37-test GHI contract suite, Release
+renderer library, and complete `vulkanstorm-bin.exe` build pass. This remains
+a private offscreen adoption checkpoint: visible-target integration and live
+dual-provider qualification still remain P0e1 work.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

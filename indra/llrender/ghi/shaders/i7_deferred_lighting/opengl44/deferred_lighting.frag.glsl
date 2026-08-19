@@ -63,6 +63,27 @@ vec3 evaluateLight(vec3 direction, vec3 radiance, vec3 base, vec3 normal,
         (4.0 * ndotl * ndotv);
     return radiance * ndotl * (diffuse + specular);
 }
+vec3 evaluateLegacyLight(vec3 direction, vec3 radiance, vec3 base,
+                         vec3 normal, vec3 viewDirection, vec3 specularColor,
+                         float glossiness)
+{
+    float ndotl = max(dot(normal, direction), 0.0);
+    vec3 halfDirection = normalize(direction + viewDirection);
+    float exponent = mix(1.0, 256.0,
+                         clamp(glossiness * glossiness, 0.0, 1.0));
+    float specular = pow(max(dot(normal, halfDirection), 0.0), exponent);
+    return radiance * ndotl * (base + specularColor * specular);
+}
+vec3 evaluateSurfaceLight(vec3 direction, vec3 radiance, vec3 base,
+                          vec3 normal, vec3 viewDirection, vec4 material,
+                          bool legacy)
+{
+    return legacy
+        ? evaluateLegacyLight(direction, radiance, base, normal,
+                              viewDirection, material.rgb, material.a)
+        : evaluateLight(direction, radiance, base, normal, viewDirection,
+                        material.b, material.g);
+}
 float legacyAttenuation(float distance, float falloff)
 {
     float attenuation = 1.0 - clamp((distance + falloff) /
@@ -103,19 +124,24 @@ void main()
     float depth = texture(depthMap, texCoord).r;
     if (depth <= 0.0) { outLighting = vec4(0.0); return; }
     vec3 base = texture(baseColorMap, texCoord).rgb;
-    vec3 orm = texture(ormMap, texCoord).rgb;
-    vec3 normal = normalize(texture(normalMap, texCoord).xyz * 2.0 - 1.0);
-    vec3 result = texture(emissiveMap, texCoord).rgb + base * ambientColor.rgb * orm.r;
+    vec4 material = texture(ormMap, texCoord);
+    vec4 normalSample = texture(normalMap, texCoord);
+    vec3 normal = normalize(normalSample.xyz * 2.0 - 1.0);
+    vec4 emissive = texture(emissiveMap, texCoord);
+    bool legacy = normalSample.a < 0.5;
+    vec3 result = emissive.rgb + base * ambientColor.rgb *
+        (legacy ? 1.0 : material.r);
+    if (legacy) result += material.rgb * ambientColor.rgb * emissive.a;
     vec3 worldPosition = reconstructWorldPosition(depth);
     vec3 viewDirection = normalize(cameraPointCount.xyz - worldPosition);
     if (sunDirectionActive.w > 0.5)
-        result += evaluateLight(normalize(-sunDirectionActive.xyz),
+        result += evaluateSurfaceLight(normalize(-sunDirectionActive.xyz),
             sunColorIntensity.rgb * sunColorIntensity.w, base, normal,
-            viewDirection, orm.b, orm.g) * directionalShadow(worldPosition);
+            viewDirection, material, legacy) * directionalShadow(worldPosition);
     if (moonDirectionActive.w > 0.5)
-        result += evaluateLight(normalize(-moonDirectionActive.xyz),
+        result += evaluateSurfaceLight(normalize(-moonDirectionActive.xyz),
             moonColorIntensity.rgb * moonColorIntensity.w, base, normal,
-            viewDirection, orm.b, orm.g) * directionalShadow(worldPosition);
+            viewDirection, material, legacy) * directionalShadow(worldPosition);
     int pointCount = min(int(cameraPointCount.w + 0.5), 64);
     for (int index = 0; index < pointCount; ++index)
     {
@@ -125,8 +151,9 @@ void main()
         if (distanceSquared >= radius * radius) continue;
         float attenuation = legacyAttenuation(sqrt(distanceSquared) / radius,
             pointColorFalloff[index].w);
-        result += evaluateLight(normalize(delta), pointColorFalloff[index].rgb * attenuation * 3.25,
-            base, normal, viewDirection, orm.b, orm.g);
+        result += evaluateSurfaceLight(normalize(delta),
+            pointColorFalloff[index].rgb * attenuation * 3.25,
+            base, normal, viewDirection, material, legacy);
     }
     outLighting = vec4(result, 1.0);
 }

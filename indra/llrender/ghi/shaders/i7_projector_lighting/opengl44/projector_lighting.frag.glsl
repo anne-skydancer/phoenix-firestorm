@@ -90,14 +90,30 @@ void main()
         range, 0.0, 1.0) * max(projectorParamsLevels.w - 1.0, 0.0);
     vec4 projected = textureLod(projectionMap, uv, lod);
     vec3 base = texture(baseColorMap, texCoord).rgb;
-    vec3 orm = texture(ormMap, texCoord).rgb;
-    vec3 normal = normalize(texture(normalMap, texCoord).xyz * 2.0 - 1.0);
+    vec4 material = texture(ormMap, texCoord);
+    vec4 normalSample = texture(normalMap, texCoord);
+    vec3 normal = normalize(normalSample.xyz * 2.0 - 1.0);
+    bool legacy = normalSample.a < 0.5;
     float ndotl = max(dot(normal, normalize(delta)), 0.0);
     float energy = attenuation(distance / radius, lightColorFalloff.w) *
                    (ndotl + max(projectorParamsLevels.z, 0.0)) * 3.25 *
                    projectorShadow(world);
-    vec3 color = base * lightColorFalloff.rgb * projected.rgb *
-                 projected.a * energy * mix(1.0, 0.5, orm.b) *
-                 mix(0.7, 1.0, 1.0 - orm.g);
+    vec3 litSurface = base;
+    if (legacy)
+    {
+        vec3 viewDirection = normalize(cameraOrigin.xyz - world);
+        vec3 halfDirection = normalize(normalize(delta) + viewDirection);
+        float exponent = mix(1.0, 256.0,
+            clamp(material.a * material.a, 0.0, 1.0));
+        litSurface += material.rgb * pow(
+            max(dot(normal, halfDirection), 0.0), exponent);
+    }
+    else
+    {
+        litSurface *= mix(1.0, 0.5, material.b) *
+                      mix(0.7, 1.0, 1.0 - material.g);
+    }
+    vec3 color = litSurface * lightColorFalloff.rgb * projected.rgb *
+                 projected.a * energy;
     outLighting = vec4(max(color, vec3(0.0)), 0.0);
 }

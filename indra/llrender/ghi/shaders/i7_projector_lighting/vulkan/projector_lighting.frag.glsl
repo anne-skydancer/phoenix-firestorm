@@ -67,6 +67,17 @@ vec3 evaluateLight(vec3 direction, vec3 radiance, vec3 base, vec3 normal,
         (4.0 * ndotl * ndotv);
     return radiance * ndotl * (diffuse + specular);
 }
+vec3 evaluateLegacyLight(vec3 direction, vec3 radiance, vec3 base,
+                         vec3 normal, vec3 viewDirection, vec3 specularColor,
+                         float glossiness)
+{
+    float ndotl = max(dot(normal, direction), 0.0);
+    vec3 halfDirection = normalize(direction + viewDirection);
+    float exponent = mix(1.0, 256.0,
+                         clamp(glossiness * glossiness, 0.0, 1.0));
+    float specular = pow(max(dot(normal, halfDirection), 0.0), exponent);
+    return radiance * ndotl * (base + specularColor * specular);
+}
 float legacyAttenuation(float distance, float falloff)
 {
     float attenuation = 1.0 - clamp((distance + falloff) /
@@ -133,16 +144,21 @@ void main()
     float edge = min(edgeDistance.x, edgeDistance.y);
     projectedColor *= smoothstep(0.0, max(0.002, 0.04 * lod), edge);
     vec3 base = texture(baseColorMap, texCoord).rgb;
-    vec3 orm = texture(ormMap, texCoord).rgb;
-    vec3 normal = normalize(texture(normalMap, texCoord).xyz * 2.0 - 1.0);
+    vec4 material = texture(ormMap, texCoord);
+    vec4 normalSample = texture(normalMap, texCoord);
+    vec3 normal = normalize(normalSample.xyz * 2.0 - 1.0);
+    bool legacy = normalSample.a < 0.5;
     vec3 viewDirection = normalize(projector.cameraOrigin.xyz - worldPosition);
     float attenuation = legacyAttenuation(
         distance / radius, projector.lightColorFalloff.w);
     vec3 radiance = projector.lightColorFalloff.rgb * projectedColor.rgb *
                     projectedColor.a * attenuation * 3.25 *
                     projectorShadow(worldPosition);
-    vec3 result = evaluateLight(normalize(delta), radiance, base, normal,
-        viewDirection, orm.b, orm.g);
+    vec3 result = legacy
+        ? evaluateLegacyLight(normalize(delta), radiance, base, normal,
+                              viewDirection, material.rgb, material.a)
+        : evaluateLight(normalize(delta), radiance, base, normal,
+                        viewDirection, material.b, material.g);
     float ambiance = max(projector.projectorParamsLevels.z, 0.0);
     result += base * projector.lightColorFalloff.rgb * projectedColor.rgb *
               projectedColor.a * attenuation * ambiance;

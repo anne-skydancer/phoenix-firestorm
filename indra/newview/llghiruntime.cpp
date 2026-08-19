@@ -472,9 +472,9 @@ void pollProductionGBuffer()
     {
         LL_INFOS("GHIIntegration")
             << "P0e1 completed without full opaque/material/PBR-terrain/four-target coverage; retrying. frame="
-            << result.frameId << " draws(opaque/material/rigged/terrain/pbr)="
+            << result.frameId << " draws(opaque/material/legacy/rigged/terrain/pbr)="
             << result.opaqueDraws << '/' << result.materialDraws << '/'
-            << result.riggedMaterialDraws
+            << result.legacyMaterialDraws << '/' << result.riggedMaterialDraws
             << '/' << result.terrainDraws << '/' << result.pbrTerrainDraws
             << " non-clear-pixels=" << result.nonClearPixels[0] << ','
             << result.nonClearPixels[1] << ',' << result.nonClearPixels[2]
@@ -495,8 +495,9 @@ void pollProductionGBuffer()
             << result.frameId << " assembly-epoch=" << result.assemblyEpoch
             << " target-generation/extent=" << result.targetGeneration << '/'
             << result.width << 'x' << result.height
-            << " draws(opaque/material/rigged/terrain/pbr/deferred-material/deferred-terrain)="
+            << " draws(opaque/material/legacy/rigged/terrain/pbr/deferred-material/deferred-terrain)="
             << result.opaqueDraws << '/' << result.materialDraws << '/'
+            << result.legacyMaterialDraws << '/'
             << result.riggedMaterialDraws << '/'
             << result.terrainDraws << '/' << result.pbrTerrainDraws << '/'
             << result.deferredMaterialDraws << '/'
@@ -513,9 +514,9 @@ void pollProductionGBuffer()
         << " frame=" << result.frameId << " assembly-epoch="
         << result.assemblyEpoch << " target-generation/extent="
         << result.targetGeneration << '/' << result.width << 'x'
-        << result.height << " draws(opaque/material/rigged/terrain/pbr/deferred-material/deferred-terrain)="
+        << result.height << " draws(opaque/material/legacy/rigged/terrain/pbr/deferred-material/deferred-terrain)="
         << result.opaqueDraws << '/' << result.materialDraws << '/'
-        << result.riggedMaterialDraws << '/'
+        << result.legacyMaterialDraws << '/' << result.riggedMaterialDraws << '/'
         << result.terrainDraws << '/' << result.pbrTerrainDraws << '/'
         << result.deferredMaterialDraws << '/' << result.deferredTerrainDraws
         << " upload-bytes=" << result.uploadBytes;

@@ -30,6 +30,7 @@ EXCLUDED_BACKEND_PREFIXES = (
     "indra/llrender/ghi/backends/opengl/",
     "indra/llrender/ghi/backends/vulkan/",
 )
+MACOS_GL_COMPATIBILITY_HEADER = "indra/llrender/llglheaders.h"
 
 COMMENT_OR_LITERAL = re.compile(
     r"//[^\r\n]*|/\*.*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
@@ -265,6 +266,13 @@ def collect_ledger():
         f"gGL.{symbol}" for symbol, entry in ggl_entries.items()
         if entry["classification"] == "unclassified"
     ]
+    legacy_alias_violations = [
+        f"{symbol} in {relative}"
+        for symbol, paths in sorted(direct_gl.items())
+        if symbol in LEGACY_EXTENSION_ALIASES
+        for relative in sorted(paths)
+        if relative != MACOS_GL_COMPATIBILITY_HEADER
+    ]
 
     return {
         "schema": 1,
@@ -279,6 +287,7 @@ def collect_ledger():
             "legacy_state_symbol_uses": sum(entry["count"] for entry in state_entries.values()),
             "direct_gl_shaped_calls": sum(entry["count"] for entry in gl_entries.values()),
             "unclassified_symbols": unclassified,
+            "legacy_extension_alias_violations": legacy_alias_violations,
         },
         "surfaces": {
             "ggl_members": ggl_entries,
@@ -308,15 +317,19 @@ def main(raw_args=None):
     print(f"  legacy state symbol uses   {summary['legacy_state_symbol_uses']:5d}")
     print(f"  direct GL-shaped calls     {summary['direct_gl_shaped_calls']:5d}")
     print(f"  unclassified symbols       {len(summary['unclassified_symbols']):5d}")
+    print(f"  extension alias violations {len(summary['legacy_extension_alias_violations']):5d}")
     for symbol in summary["unclassified_symbols"]:
         print(f"    {symbol}", file=sys.stderr)
+    for violation in summary["legacy_extension_alias_violations"]:
+        print(f"    {violation}", file=sys.stderr)
 
     if args.write_ledger:
         args.ledger.parent.mkdir(parents=True, exist_ok=True)
         args.ledger.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote {args.ledger.relative_to(REPOSITORY_ROOT)}")
 
-    if summary["unclassified_symbols"]:
+    if (summary["unclassified_symbols"] or
+            summary["legacy_extension_alias_violations"]):
         return 1
     if args.check:
         if not args.ledger.exists():

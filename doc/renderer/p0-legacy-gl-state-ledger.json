@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_revision": "f1c50bfca6a1c27e4bc6f014426fdf77aff45f57",
+  "source_revision": "f3f21dda096bd6b117b2fa7baba264e9bdaa745f",
   "scope": {
     "roots": [
       "indra/llappearance",
@@ -19,7 +19,8 @@
     "ggl_member_uses": 4322,
     "legacy_state_symbol_uses": 508,
     "direct_gl_shaped_calls": 721,
-    "unclassified_symbols": []
+    "unclassified_symbols": [],
+    "legacy_extension_alias_violations": []
   },
   "surfaces": {
     "ggl_members": {

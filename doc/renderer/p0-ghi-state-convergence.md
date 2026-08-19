@@ -155,6 +155,65 @@ texture-generation state and leaves no executable call classified as obsolete
 fixed-function code. The current ledger is 4,322 `gGL` uses, 508 broader state
 references, and 721 direct GL-shaped calls.
 
+The 29 entries classified as legacy extension aliases are declarations in the
+macOS compatibility header, not executable calls. They remain necessary to
+build the OpenGL 4.1 peer against Apple's legacy header surface and are not a
+reason to expose extension-shaped operations in GHI. The ten project-symbol
+false positives are likewise retained only so the deliberately broad scanner
+cannot silently lose them.
+
+## P0e production migration order
+
+No further legacy-state deletion is permitted merely because a function looks
+old. All remaining wrapper symbols have source-level callers and require
+runtime evidence before any reachability claim. P0e therefore
+migrates coherent feature families, preserving a fully visible OpenGL frame
+until the selected family passes both native peers.
+
+1. **P0e1 — opaque production frame.** Adopt the already packetized rigid and
+   rigged material, PBR terrain, shadow, and deferred-lighting work. Replace
+   its ambient matrix, raster, binding, and draw ownership with the existing
+   production frame packet and shared GHI targets. This is the first visible
+   adoption candidate because I8c3 already has deterministic and private-live
+   coverage on both peers.
+2. **P0e2 — sky, clouds, water, and remaining environment.** Add explicit
+   environment resources, passes, and composition without importing OpenGL
+   texture or framebuffer names. Preserve reverse-Z and reflection/refraction
+   semantics.
+3. **P0e3 — alpha and particles.** Express legacy-sorted alpha, full-bright
+   alpha, alpha masks, PPLL, and depth peeling as explicit route and pass data.
+   Particles retain their legacy alpha-routing policy, but neither peer may
+   interpret that policy as an OpenGL call path.
+4. **P0e4 — recursive and offscreen views.** Adopt mirrors, hero/reflection
+   probes, cube snapshots, impostors, previews, and pre-water alpha with their
+   established transparency exclusions intact. Each nested view receives its
+   own pass state and resources.
+5. **P0e5 — UI, HUD, interaction, and snapshots.** Execute UI0-UI6, including
+   clipping, picking, selection, media, snapshot framing guides, and readback.
+   The visible Vulkan selector remains unavailable until this slice closes.
+6. **P0e6 — appearance and baking.** Remove the remaining OpenGL assumptions
+   from avatar baking, layer composition, and readback, then prove lifecycle
+   behavior through teleport, relog, resize, and device recovery.
+
+The static ledger provides the starting size of each ownership domain:
+
+| Owner | `gGL` | state wrappers | direct GL-shaped references |
+|---|---:|---:|---:|
+| World renderer | 1,690 | 245 | 246 |
+| Renderer core | 792 | 89 | 386 |
+| UI, HUD, and interaction | 1,068 | 111 | 13 |
+| Offscreen and recursive | 370 | 28 | 42 |
+| Environment | 135 | 17 | 5 |
+| Appearance and baking | 123 | 5 | 5 |
+| UI core | 108 | 5 | 7 |
+| Alpha and particles | 36 | 8 | 0 |
+| Window and context | 0 | 0 | 17 |
+
+Counts are coupling indicators, not estimates of engineering effort. A single
+resource-lifetime or presentation reference can be more consequential than
+many immediate-mode debug draws. P0e progress is accepted by semantic route
+coverage and per-slice gates, not by raw count alone.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

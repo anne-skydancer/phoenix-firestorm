@@ -17,6 +17,7 @@
 #include "ghi/core/llghipipelinecache.h"
 #include "ghi/core/llghishaderpackage.h"
 #include "ghi/core/llghivalidation.h"
+#include "ghi/include/llghienvironmentscenepacket.h"
 #include "ghi/include/llghimaterialscenepacket.h"
 #include "ghi/include/llghimaterialoffscreenprobe.h"
 #include "ghi/include/llghiproductionframeconsumer.h"
@@ -37,7 +38,6 @@
 #include <limits>
 #include "ghi/include/llghiopaquescenepacket.h"
 #include "ghi/include/llghirendererinfo.h"
-#include "ghi/include/llghiworldcontract.h"
 #include "tests/ghi/llghidrawfixture.h"
 #include "tests/ghi/llghiresourcefixture.h"
 
@@ -1324,15 +1324,6 @@ template<> template<>
 void LLGHIValidationObject::test<25>()
 {
     using namespace LL::GHI;
-
-    ensure("R5 terrain depth precedes material",
-           WORLD_PASS_ORDER[0] == WorldPass::TerrainDepth);
-    ensure("R5 lighting follows shadow inputs",
-           WORLD_PASS_ORDER[4] == WorldPass::DeferredLighting);
-    ensure("R5 water follows atmosphere and reflection",
-           WORLD_PASS_ORDER[7] == WorldPass::WaterSurface);
-    ensure("R5 underwater is the final environment classification",
-           WORLD_PASS_ORDER[8] == WorldPass::Underwater);
 
     ShaderPackageDesc package;
     Status status = loadShaderPackage(LL_GHI_R5_WORLD_SHADER_PACKAGE, package);
@@ -3217,6 +3208,106 @@ void LLGHIValidationObject::test<37>()
     ensure("P0c non-finite depth bias rejected",
         !device->createPipeline(pipeline, status) &&
         status.code() == StatusCode::InvalidArgument);
+}
+
+template<> template<>
+void LLGHIValidationObject::test<38>()
+{
+    using namespace LL::GHI;
+
+    EnvironmentScenePacket source;
+    source.frameId = 0x5030453241ull;
+    source.sceneEpoch = 7;
+    source.resourceEpoch = 11;
+    source.sourceWidth = 1920;
+    source.sourceHeight = 1080;
+    source.passMask =
+        environmentPassBit(EnvironmentPass::Atmosphere) |
+        environmentPassBit(EnvironmentPass::Sun) |
+        environmentPassBit(EnvironmentPass::Moon) |
+        environmentPassBit(EnvironmentPass::Stars) |
+        environmentPassBit(EnvironmentPass::Clouds) |
+        environmentPassBit(EnvironmentPass::WaterSurface);
+    source.dependencyMask =
+        environmentDependencyBit(EnvironmentDependency::ProductionLighting) |
+        environmentDependencyBit(EnvironmentDependency::ProductionDepth) |
+        environmentDependencyBit(EnvironmentDependency::WaterExclusionMask) |
+        environmentDependencyBit(EnvironmentDependency::ReflectionColor) |
+        environmentDependencyBit(EnvironmentDependency::RefractionColor);
+    source.atmosphere.planetRadius = 6360.f;
+    source.atmosphere.skyBottomRadius = 6360.f;
+    source.atmosphere.skyTopRadius = 6420.f;
+    source.atmosphere.blueDensity = {.24f, .45f, .76f};
+    source.atmosphere.blueHorizon = {.49f, .49f, .64f};
+    source.atmosphere.gamma = 1.1f;
+    source.sky.cloudScale = .42f;
+    source.sky.blendFactor = .25f;
+    source.sky.sunUp = true;
+    source.water.fogDensity = .08f;
+    source.water.exposure = 1.25f;
+    source.water.normalBlendFactor = .25f;
+
+    for (std::uint8_t index = 0; index < 5; ++index)
+    {
+        MaterialTextureResource texture;
+        texture.sourceIdentity[0] = static_cast<std::byte>(index + 1);
+        texture.contentIdentity[0] = static_cast<std::byte>(index + 17);
+        texture.width = 1;
+        texture.height = 1;
+        texture.components = 4;
+        texture.decodedPixels = {
+            static_cast<std::byte>(index), std::byte{64},
+            std::byte{128}, std::byte{255}};
+        source.textures.push_back(std::move(texture));
+    }
+    source.sky.textures = {
+        {EnvironmentTextureSemantic::Sun, 0},
+        {EnvironmentTextureSemantic::Moon, 1},
+        {EnvironmentTextureSemantic::StarBloom, 2},
+        {EnvironmentTextureSemantic::CloudNoise, 3}};
+    source.water.textures = {
+        {EnvironmentTextureSemantic::WaterNormal, 4}};
+    source.waterVertices = {
+        {{{-1.f, -1.f, 0.f}}, {{0.f, 0.f, 1.f}}, {{0.f, 0.f}}},
+        {{{ 1.f, -1.f, 0.f}}, {{0.f, 0.f, 1.f}}, {{1.f, 0.f}}},
+        {{{ 0.f,  1.f, 0.f}}, {{0.f, 0.f, 1.f}}, {{.5f, 1.f}}}};
+    source.waterIndices = {0, 1, 2};
+    source.waterDraws = {{0x5741544552ull, 0, 3, {}, false}};
+
+    ensure("P0e2 environment contract validates",
+           validateEnvironmentScenePacket(source).ok());
+    std::vector<std::byte> first, second;
+    ensure("P0e2 environment packet encodes",
+           encodeEnvironmentScenePacket(source, first).ok());
+    ensure("P0e2 environment packet encoding is deterministic",
+           encodeEnvironmentScenePacket(source, second).ok() && first == second);
+    EnvironmentScenePacket decoded;
+    ensure("P0e2 environment packet decodes",
+           decodeEnvironmentScenePacket(first, decoded).ok());
+    ensure("P0e2 environment packet round trips", decoded == source);
+    ensure("P0e2 environment packet has a stable identity",
+           !environmentScenePacketSha256(source).empty());
+
+    EnvironmentScenePacket invalid = source;
+    invalid.passMask |= environmentPassBit(EnvironmentPass::HdriSky);
+    ensure("P0e2 atmosphere and HDRI are exclusive",
+           !validateEnvironmentScenePacket(invalid));
+    invalid = source;
+    invalid.dependencyMask = 0;
+    ensure("P0e2 water requires explicit shared-target dependencies",
+           !validateEnvironmentScenePacket(invalid));
+    invalid = source;
+    invalid.sky.textures.push_back(
+        {EnvironmentTextureSemantic::Sun, 1});
+    ensure("P0e2 texture semantics have one owner",
+           !validateEnvironmentScenePacket(invalid));
+    invalid = source;
+    invalid.waterIndices[2] = 3;
+    ensure("P0e2 water geometry is bounds checked",
+           !validateEnvironmentScenePacket(invalid));
+    first.pop_back();
+    ensure("P0e2 truncated environment packets fail closed",
+           !decodeEnvironmentScenePacket(first, decoded));
 }
 
 } // namespace tut

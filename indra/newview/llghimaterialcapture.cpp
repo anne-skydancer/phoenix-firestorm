@@ -271,11 +271,15 @@ public:
             gSavedSettings.getBOOL("RenderVulkanGBufferExecutionProbe") ||
             gSavedSettings.getBOOL("RenderVulkanLightingExecutionProbe") ||
             LLGHIRuntime::productionFrameCaptureRequested();
+        const char* environmentOutput =
+            std::getenv("VULKANSTORM_GHI_P0E2_CAPTURE");
+        const bool environmentConfigured =
+            environmentOutput && *environmentOutput;
         if ((mState == State::Disabled &&
              !materialConfigured && !lightingConfigured &&
              !terrainConfigured && !terrainLightingConfigured &&
              !projectorLightingConfigured && !shadowConfigured &&
-             !frameAssemblyConfigured) ||
+             !frameAssemblyConfigured && !environmentConfigured) ||
             mState == State::Complete || mState == State::Failed ||
             !image.getData() || image.getDataSize() <= 0)
             return;
@@ -294,7 +298,8 @@ public:
         const bool runtimeObservation =
             (materialConfigured || lightingConfigured || terrainConfigured ||
              terrainLightingConfigured || projectorLightingConfigured ||
-             shadowConfigured || frameAssemblyConfigured) &&
+             shadowConfigured || frameAssemblyConfigured ||
+             environmentConfigured) &&
             mState == State::Disabled;
         std::uint32_t observedWidth = sourceWidth;
         std::uint32_t observedHeight = sourceHeight;

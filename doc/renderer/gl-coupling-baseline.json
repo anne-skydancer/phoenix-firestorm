@@ -142,7 +142,7 @@
         "indra/newview/llbox.cpp": 15,
         "indra/newview/llcolorswatch.cpp": 3,
         "indra/newview/llcylinder.cpp": 10,
-        "indra/newview/lldrawpool.cpp": 21,
+        "indra/newview/lldrawpool.cpp": 22,
         "indra/newview/lldrawpoolalpha.cpp": 36,
         "indra/newview/lldrawpoolavatar.cpp": 46,
         "indra/newview/lldrawpoolbump.cpp": 47,

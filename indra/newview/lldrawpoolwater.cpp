@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 #include "llfeaturemanager.h"
 #include "lldrawpoolwater.h"
+#include "llghienvironmentcapture.h"
 
 #include "llviewercontrol.h"
 #include "lldir.h"
@@ -304,6 +305,10 @@ void LLDrawPoolWater::renderPostDeferred(S32 pass)
     }
 
     LLGLDisable cullface(GL_CULL_FACE);
+
+    if (LLGHIEnvironmentCapture::active())
+        LLGHIEnvironmentCapture::instance().observeWater(
+            mDrawFace, mWaterNormp[0], mWaterNormp[1], has_normal_mips);
 
     // Only push the water planes once.
     // Previously we did this twice: once for void water and one for region water.

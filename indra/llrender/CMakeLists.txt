@@ -36,6 +36,7 @@ set(llrender_SOURCE_FILES
     llglcommonfunc.cpp
     ghi/backends/opengl/llghiopenglinfo.cpp
     ghi/core/llghidevice.cpp
+    ghi/core/llghienvironmentscenepacket.cpp
     ghi/core/llghihash.cpp
     ghi/core/llghilightingscenepacket.cpp
     ghi/core/llghilightingpacketconsumer.cpp
@@ -102,6 +103,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghicommand.h
     ghi/include/llghidescriptors.h
     ghi/include/llghidevice.h
+    ghi/include/llghienvironmentscenepacket.h
     ghi/include/llghipresentation.h
     ghi/include/llghiproductioncontract.h
     ghi/include/llghiproductionframeconsumer.h
@@ -115,7 +117,6 @@ set(llrender_HEADER_FILES
     ghi/include/llghiterrainoffscreenprobe.h
     ghi/include/llghiopaquescenepacket.h
     ghi/include/llghirendererinfo.h
-    ghi/include/llghiworldcontract.h
     ghi/include/llghitypes.h
     ghi/core/llghihandlepool.h
     ghi/core/llghihash.h
@@ -1104,12 +1105,19 @@ if (WINDOWS)
     target_link_libraries(llrender_opengl_production_frame_harness
         llrender OpenGL::GL)
     add_dependencies(llrender_opengl_production_frame_harness llrender_ghi_shaders)
+
+    add_executable(llrender_environment_packet_inspector
+        tests/ghi/llghienvironmentpacketinspector.cpp)
+    target_include_directories(llrender_environment_packet_inspector PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+    target_link_libraries(llrender_environment_packet_inspector llrender)
   endif ()
 endif ()
 
 if (LL_TESTS)
   add_executable(llrender_ghi_contract_test
       ghi/core/llghidevice.cpp
+      ghi/core/llghienvironmentscenepacket.cpp
       ghi/core/llghihash.cpp
       ghi/core/llghilightingscenepacket.cpp
       ghi/core/llghilightingpacketconsumer.cpp

@@ -28,6 +28,7 @@
 
 #include "llghiopaquecapture.h"
 #include "llghimaterialcapture.h"
+#include "llghienvironmentcapture.h"
 #include "llghiterraincapture.h"
 #include "llghiruntime.h"
 #include "ghi/include/llghilightingscenepacket.h"
@@ -4295,6 +4296,14 @@ void LLPipeline::renderGeomDeferred(LLCamera& camera, bool do_occlusion)
             static_cast<U32>(gViewerWindow->getWorldViewWidthRaw()),
             static_cast<U32>(gViewerWindow->getWorldViewHeightRaw()),
             gFrameCount);
+    if (&camera == LLViewerCamera::getInstance() && !gCubeSnapshot &&
+        gAgent.getRegion() && gViewerWindow)
+    {
+        LLGHIEnvironmentCapture::instance().beginFrame(
+            static_cast<U32>(gViewerWindow->getWorldViewWidthRaw()),
+            static_cast<U32>(gViewerWindow->getWorldViewHeightRaw()),
+            gFrameCount);
+    }
 
     setupHWLights();
 
@@ -4551,6 +4560,10 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
     {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
+
+    if (&camera == LLViewerCamera::getInstance() &&
+        LLGHIEnvironmentCapture::active())
+        LLGHIEnvironmentCapture::instance().endFrame();
 }
 
 void LLPipeline::renderGeomShadow(LLCamera& camera)

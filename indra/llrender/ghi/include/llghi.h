@@ -15,6 +15,7 @@
 #include "llghicommand.h"
 #include "llghidescriptors.h"
 #include "llghidevice.h"
+#include "llghienvironmentscenepacket.h"
 #include "llghioffscreencontract.h"
 #include "llghiopaqueoffscreenprobe.h"
 #include "llghimaterialoffscreenprobe.h"

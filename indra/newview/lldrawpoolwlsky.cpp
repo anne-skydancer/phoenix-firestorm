@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lldrawpoolwlsky.h"
+#include "llghienvironmentcapture.h"
 
 #include "llerror.h"
 #include "llface.h"
@@ -148,6 +149,10 @@ void LLDrawPoolWLSky::renderSkyHazeDeferred(const LLVector3& camPosLocal, F32 ca
     }
 
     LLVector3 const & origin = LLViewerCamera::getInstance()->getOrigin();
+
+    if (LLGHIEnvironmentCapture::active())
+        LLGHIEnvironmentCapture::instance().observeSky(
+            origin, camHeightLocal, use_hdri_sky());
 
     if (gPipeline.canUseWindLightShaders() && gPipeline.hasRenderType(LLPipeline::RENDER_TYPE_SKY))
     {

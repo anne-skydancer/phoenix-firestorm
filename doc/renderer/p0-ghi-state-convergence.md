@@ -155,6 +155,13 @@ texture-generation state and leaves no executable call classified as obsolete
 fixed-function code. The current ledger is 4,322 `gGL` uses, 508 broader state
 references, and 721 direct GL-shaped calls.
 
+The face-color repair deliberately converted one raw fixed-function call in
+`lldrawpool.cpp` to the existing shader-buffered `gGL` color path. The API
+ratchet's per-file allowance for that file is therefore 22 rather than 21;
+this reviewed one-use increase is paired with removal of the raw call and does
+not raise the global facade ceiling. All subsequent P0 slices must burn this
+temporary facade ownership down through semantic GHI state.
+
 The 29 entries classified as legacy extension aliases are declarations in the
 macOS compatibility header, not executable calls. They remain necessary to
 build the OpenGL 4.1 peer against Apple's legacy header surface and are not a
@@ -213,6 +220,66 @@ Counts are coupling indicators, not estimates of engineering effort. A single
 resource-lifetime or presentation reference can be more consequential than
 many immediate-mode debug draws. P0e progress is accepted by semantic route
 coverage and per-slice gates, not by raw count alone.
+
+### P0e2 environment convergence plan
+
+P0e2 is divided into five independently reversible gates. The visible
+OpenGL environment remains authoritative until the final gate passes on both
+native peers.
+
+1. **P0e2a — semantic packet.** Capture the complete viewer-computed
+   atmosphere, cloud, celestial, and water inputs in one versioned,
+   backend-neutral packet. Encode view policy, shared-target dependencies,
+   transforms, decoded asset content, and water geometry explicitly.
+2. **P0e2b — live assembly.** Populate that packet at the established viewer
+   observation seam, reusing decoded-texture observations and rejecting
+   cross-frame or cross-epoch assemblies.
+3. **P0e2c — sky executor.** Execute HDRI or atmosphere, sun, moon, stars, and
+   clouds into shared production targets with explicit reverse-Z depth and
+   blend policy.
+4. **P0e2d — water executor.** Execute above-water or underwater composition
+   from explicit lighting, depth, exclusion, reflection, and refraction
+   dependencies. Reflection generation itself remains a P0e4 nested-view
+   responsibility.
+5. **P0e2e — qualification.** Replay the same captured environment bytes on
+   isolated OpenGL and Vulkan peers, compare pass structure and bounded image
+   results, then run live lifecycle checks without presenting the Vulkan
+   result.
+
+The P0e2a contract is `EnvironmentScenePacket`. It deliberately does not reuse
+the earlier fixture-only `EnvironmentState`: that sketch omitted most of the
+production EEP/HDRI state, decoded asset identity, celestial and cloud routes,
+water geometry, and attachment dependencies. Environment textures carry
+source and content identities rather than viewer pointers or graphics-API
+handles. Water consumes semantic shared-graph dependencies rather than an
+OpenGL framebuffer name. Main and nested view kinds are encoded now so P0e4
+can reuse the contract, but P0e2 does not execute recursive views.
+
+P0e2a and P0e2b are accepted. The packet codec is deterministic, validates all
+enumerations, finite state, unique semantic bindings, decoded texture content,
+mutually exclusive routes, water geometry bounds, and explicit attachment
+dependencies, and fails closed on malformed or trailing data. The old
+`llghiworldcontract.h` declarations were removed: repository-wide reachability
+showed that its terrain, lighting, environment, and pass-order sketches had no
+production consumer; four assertions merely tested their own constants.
+
+The live observer is dormant unless `VULKANSTORM_GHI_P0E2_CAPTURE` names an
+output file. `VULKANSTORM_GHI_P0E2_WARMUP_SECONDS` controls the 120-second
+default settle interval from 0 through 3600 seconds. It starts at the main-view
+deferred boundary, observes state and asset identity in the actual sky and
+water passes, and finalizes after post-deferred rendering. It reuses bounded
+decoder-time pixels and performs no OpenGL texture readback. HDRI identity is
+preserved but remains non-comparable until decoded HDRI source data is exposed
+above `LLImageGL`.
+
+The first real-grid P0e2b gate captured frame 7026 at 2560 by 1350. Independent
+decode reported pass mask `0x75` (EEP atmosphere, sun, stars, clouds, and water
+surface), all five shared water dependencies, ten of ten comparable textures
+containing 520,192 decoded bytes, and seven water draws with 45,824 vertices
+and 68,736 indices. The 2,263,896-byte packet identity was
+`5e0ff8dced980203a4cdfe286e6dd9b5f47e418cc823c6806296dd48e5bc28ab`.
+The viewer auto-logged in and exited cleanly; visible rendering remained native
+OpenGL throughout.
 
 ### P0e1a — coherent generic opaque adoption
 

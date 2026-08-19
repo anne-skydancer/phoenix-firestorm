@@ -113,6 +113,24 @@ Release renderer library and complete viewer executable build, the boundary
 ratchet passes, and the expanded deterministic GHI contract suite passes 37 of
 37 tests.
 
+### P0d OpenGL state compiler and cache
+
+The OpenGL peer owns a native pipeline-state cache that compiles only changed
+GHI fields into OpenGL calls. Rebinding the same pipeline becomes a no-op;
+switching pipelines applies only changed program, vertex-array, cull, winding,
+polygon, depth-bias, line, depth, stencil, blend, and color-mask state.
+Repeated binding sets with identical dynamic offsets and repeated viewport and
+scissor descriptions are also suppressed. Vertex and index input compilation
+is retained in each GHI-owned vertex-array object and rebuilt only when its
+explicit buffer binding changes.
+
+The cache is valid only within one GHI rendering scope. `beginRendering()` and
+`endRendering()` are explicit legacy-interoperation boundaries and invalidate
+it, because production legacy rendering can still mutate the shared OpenGL
+context between scopes. Failed native state compilation also invalidates the
+cache. This preserves one trusted owner at a time until P0e removes the need
+for the temporary legacy boundary.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

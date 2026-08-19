@@ -515,6 +515,11 @@ public:
 
 private:
     friend class OpenGLDevice;
+    struct BoundBindingSet
+    {
+        BindingSetHandle handle;
+        std::vector<std::uint32_t> dynamicOffsets;
+    };
     Status requireTransfer() const;
     OpenGLDevice& mDevice;
     bool mFrameActive = false;
@@ -525,8 +530,10 @@ private:
     std::uint32_t mRenderHeight = 0;
     std::vector<Format> mRenderColorFormats;
     std::optional<Format> mRenderDepthFormat;
+    std::optional<Viewport> mViewport;
+    std::optional<ScissorRect> mScissor;
     PipelineHandle mPipeline;
-    std::map<std::uint8_t, BindingSetHandle> mBindingSets;
+    std::map<std::uint8_t, BoundBindingSet> mBindingSets;
     std::map<std::uint32_t, std::pair<BufferHandle, std::uint64_t>> mVertexBuffers;
     BufferHandle mIndexBuffer;
     std::uint64_t mIndexOffset = 0;
@@ -614,7 +621,29 @@ private:
         std::unordered_map<std::uint32_t, GLuint> textureUnits;
     };
     struct BindingSetRecord { BindingSetDesc desc; };
-    struct PipelineRecord { PipelineDesc desc; GLuint vertexArray = 0; };
+    struct PipelineRecord
+    {
+        PipelineDesc desc;
+        GLuint vertexArray = 0;
+        std::map<std::uint32_t, std::pair<BufferHandle, std::uint64_t>> compiledVertexBuffers;
+        BufferHandle compiledIndexBuffer;
+    };
+    struct NativePipelineState
+    {
+        bool valid = false;
+        GLuint program = 0;
+        GLuint vertexArray = 0;
+        PipelineHandle pipeline;
+        PipelineDesc desc;
+
+        void invalidate()
+        {
+            valid = false;
+            program = 0;
+            vertexArray = 0;
+            pipeline = {};
+        }
+    };
     enum class NativeKind { Buffer, Texture, Sampler, Query, Program, VertexArray };
     struct Retirement { NativeKind kind; GLuint name; std::uint64_t releaseAfter; };
     struct Fence { std::uint64_t serial; GLsync sync; };
@@ -624,6 +653,7 @@ private:
     void pollFences(bool wait);
     void drainRetirements(bool force);
     bool serialComplete(std::uint64_t serial);
+    Status compileVertexInput(PipelineRecord&);
 
     RendererCapabilities mCapabilities;
     std::uint32_t mFramesInFlight = 1;
@@ -648,6 +678,7 @@ private:
     std::vector<Retirement> mRetirements;
     std::vector<Fence> mFences;
     GLuint mFramebuffer = 0;
+    NativePipelineState mNativePipelineState;
     OpenGLCommandContext mCommands;
 };
 
@@ -1613,6 +1644,10 @@ Status OpenGLDevice::beginRendering(const RenderingInfo& info)
         info.colors.size() > mCapabilities.maxColorAttachments)
         return invalidArgument("invalid OpenGL rendering scope");
 
+    // Legacy rendering may have used the shared context since the preceding
+    // GHI scope. This boundary makes the GHI cache authoritative only while
+    // its rendering scope is active.
+    mNativePipelineState.invalidate();
     glBindFramebuffer(GL_FRAMEBUFFER, mFramebuffer);
     std::vector<GLenum> drawBuffers;
     drawBuffers.reserve(info.colors.size());
@@ -1725,6 +1760,7 @@ Status OpenGLDevice::endRendering()
     glBindVertexArray(0);
     glUseProgram(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    mNativePipelineState.invalidate();
     mCommands.mRenderingActive = false;
     mCommands.resetDrawState();
     return glGetError() == GL_NO_ERROR ? Status::success()
@@ -1761,34 +1797,77 @@ Status OpenGLDevice::bindPipeline(PipelineHandle handle)
     if (desc.colorFormats != mCommands.mRenderColorFormats ||
         desc.depthStencilFormat != mCommands.mRenderDepthFormat)
         return invalidArgument("pipeline attachment formats do not match the rendering scope");
-    glUseProgram(shader->second.program);
-    glBindVertexArray(pipeline->second.vertexArray);
-    if (desc.cullMode == CullMode::None) glDisable(GL_CULL_FACE);
-    else
+    NativePipelineState& state = mNativePipelineState;
+    if (state.valid && state.pipeline == handle)
     {
-        glEnable(GL_CULL_FACE);
+        mCommands.mPipeline = handle;
+        return Status::success();
+    }
+    const PipelineDesc* previous = state.valid ? &state.desc : nullptr;
+    const bool force = previous == nullptr;
+
+    if (force || state.program != shader->second.program)
+        glUseProgram(shader->second.program);
+    if (force || state.vertexArray != pipeline->second.vertexArray)
+        glBindVertexArray(pipeline->second.vertexArray);
+
+    const bool cullEnabled = desc.cullMode != CullMode::None;
+    const bool previousCullEnabled = previous && previous->cullMode != CullMode::None;
+    if (force || cullEnabled != previousCullEnabled)
+    {
+        if (cullEnabled) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    }
+    if (cullEnabled && (force || !previousCullEnabled || desc.cullMode != previous->cullMode))
         glCullFace(desc.cullMode == CullMode::Front ? GL_FRONT : GL_BACK);
-    }
-    glFrontFace(desc.frontFaceCounterClockwise ? GL_CCW : GL_CW);
-    glPolygonMode(GL_FRONT_AND_BACK, translatePolygonMode(desc.polygonMode));
-    glDisable(GL_POLYGON_OFFSET_FILL);
-    glDisable(GL_POLYGON_OFFSET_LINE);
-    glDisable(GL_POLYGON_OFFSET_POINT);
-    if (desc.depthBias)
+    if (force || desc.frontFaceCounterClockwise != previous->frontFaceCounterClockwise)
+        glFrontFace(desc.frontFaceCounterClockwise ? GL_CCW : GL_CW);
+    if (force || desc.polygonMode != previous->polygonMode)
+        glPolygonMode(GL_FRONT_AND_BACK, translatePolygonMode(desc.polygonMode));
+
+    const auto offsetTarget = [](PolygonMode mode)
     {
-        const GLenum offsetMode = desc.polygonMode == PolygonMode::Fill ? GL_POLYGON_OFFSET_FILL :
-            desc.polygonMode == PolygonMode::Line ? GL_POLYGON_OFFSET_LINE : GL_POLYGON_OFFSET_POINT;
-        glEnable(offsetMode);
-        glPolygonOffset(desc.depthBiasSlopeFactor, desc.depthBiasConstantFactor);
+        return mode == PolygonMode::Fill ? GL_POLYGON_OFFSET_FILL :
+               mode == PolygonMode::Line ? GL_POLYGON_OFFSET_LINE : GL_POLYGON_OFFSET_POINT;
+    };
+    if (force)
+    {
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glDisable(GL_POLYGON_OFFSET_LINE);
+        glDisable(GL_POLYGON_OFFSET_POINT);
+        if (desc.depthBias) glEnable(offsetTarget(desc.polygonMode));
     }
-    glLineWidth(desc.lineWidth);
-    if (desc.depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    glDepthMask(desc.depthWrite ? GL_TRUE : GL_FALSE);
-    glDepthFunc(translateCompare(desc.depthCompare));
-    if (desc.depthClamp) glEnable(GL_DEPTH_CLAMP); else glDisable(GL_DEPTH_CLAMP);
+    else if (desc.depthBias != previous->depthBias ||
+             (desc.depthBias && desc.polygonMode != previous->polygonMode))
+    {
+        if (previous->depthBias) glDisable(offsetTarget(previous->polygonMode));
+        if (desc.depthBias) glEnable(offsetTarget(desc.polygonMode));
+    }
+    if (desc.depthBias &&
+        (force || !previous->depthBias ||
+         desc.depthBiasSlopeFactor != previous->depthBiasSlopeFactor ||
+         desc.depthBiasConstantFactor != previous->depthBiasConstantFactor))
+        glPolygonOffset(desc.depthBiasSlopeFactor, desc.depthBiasConstantFactor);
+    if (force || desc.lineWidth != previous->lineWidth)
+        glLineWidth(desc.lineWidth);
+
+    if (force || desc.depthTest != previous->depthTest)
+    {
+        if (desc.depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    }
+    if (force || desc.depthWrite != previous->depthWrite)
+        glDepthMask(desc.depthWrite ? GL_TRUE : GL_FALSE);
+    if (force || desc.depthCompare != previous->depthCompare)
+        glDepthFunc(translateCompare(desc.depthCompare));
+    if (force || desc.depthClamp != previous->depthClamp)
+    {
+        if (desc.depthClamp) glEnable(GL_DEPTH_CLAMP); else glDisable(GL_DEPTH_CLAMP);
+    }
+    if (force || desc.stencilTest != previous->stencilTest)
+    {
+        if (desc.stencilTest) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+    }
     if (desc.stencilTest)
     {
-        glEnable(GL_STENCIL_TEST);
         const auto applyStencil = [](GLenum face, const StencilFaceState& value)
         {
             glStencilFuncSeparate(face, translateCompare(value.compare),
@@ -1798,13 +1877,17 @@ Status OpenGLDevice::bindPipeline(PipelineHandle handle)
                                 translateStencilOp(value.depthFail),
                                 translateStencilOp(value.pass));
         };
-        applyStencil(GL_FRONT, desc.frontStencil);
-        applyStencil(GL_BACK, desc.backStencil);
+        if (force || !previous->stencilTest || desc.frontStencil != previous->frontStencil)
+            applyStencil(GL_FRONT, desc.frontStencil);
+        if (force || !previous->stencilTest || desc.backStencil != previous->backStencil)
+            applyStencil(GL_BACK, desc.backStencil);
     }
-    else glDisable(GL_STENCIL_TEST);
     for (std::size_t index = 0; index < desc.blendStates.size(); ++index)
     {
         const BlendState& blend = desc.blendStates[index];
+        const BlendState* previousBlend = !force && index < previous->blendStates.size()
+            ? &previous->blendStates[index] : nullptr;
+        if (previousBlend && blend == *previousBlend) continue;
         const GLuint drawBuffer = static_cast<GLuint>(index);
         if (blend.enabled)
         {
@@ -1826,8 +1909,18 @@ Status OpenGLDevice::bindPipeline(PipelineHandle handle)
                      (blend.colorWriteMask & 4) != 0,
                      (blend.colorWriteMask & 8) != 0);
     }
+    if (glGetError() != GL_NO_ERROR)
+    {
+        state.invalidate();
+        return backendError("OpenGL pipeline bind failed");
+    }
+    state.valid = true;
+    state.program = shader->second.program;
+    state.vertexArray = pipeline->second.vertexArray;
+    state.pipeline = handle;
+    state.desc = desc;
     mCommands.mPipeline = handle;
-    return glGetError() == GL_NO_ERROR ? Status::success() : backendError("OpenGL pipeline bind failed");
+    return Status::success();
 }
 
 Status OpenGLDevice::bindBindingSet(
@@ -1842,6 +1935,13 @@ Status OpenGLDevice::bindBindingSet(
     auto shader = mShaders.find(handleKey(pipeline->second.desc.shader));
     if (set->second.desc.shader != pipeline->second.desc.shader || set->second.desc.group != group)
         return invalidArgument("binding set is incompatible with the bound pipeline or group");
+    const auto alreadyBound = mCommands.mBindingSets.find(group);
+    if (alreadyBound != mCommands.mBindingSets.end() &&
+        alreadyBound->second.handle == handle &&
+        std::equal(alreadyBound->second.dynamicOffsets.begin(),
+                   alreadyBound->second.dynamicOffsets.end(),
+                   dynamicOffsets.begin(), dynamicOffsets.end()))
+        return Status::success();
     std::size_t dynamicIndex = 0;
     for (const auto& resource : set->second.desc.resources)
     {
@@ -1904,8 +2004,11 @@ Status OpenGLDevice::bindBindingSet(
     }
     if (dynamicIndex != dynamicOffsets.size())
         return invalidArgument("dynamic offset count does not match shader reflection");
-    mCommands.mBindingSets[group] = handle;
-    return glGetError() == GL_NO_ERROR ? Status::success() : backendError("OpenGL binding-set bind failed");
+    if (glGetError() != GL_NO_ERROR)
+        return backendError("OpenGL binding-set bind failed");
+    mCommands.mBindingSets[group] = {
+        handle, std::vector<std::uint32_t>(dynamicOffsets.begin(), dynamicOffsets.end())};
+    return Status::success();
 }
 
 Status OpenGLDevice::setViewport(const Viewport& viewport)
@@ -1917,11 +2020,19 @@ Status OpenGLDevice::setViewport(const Viewport& viewport)
         viewport.y + viewport.height > mCommands.mRenderHeight ||
         viewport.minDepth < 0.f || viewport.maxDepth > 1.f || viewport.minDepth > viewport.maxDepth)
         return invalidArgument("invalid OpenGL viewport");
+    if (mCommands.mViewport && *mCommands.mViewport == viewport)
+    {
+        mCommands.mViewportSet = true;
+        return Status::success();
+    }
     glViewport(static_cast<GLint>(viewport.x), static_cast<GLint>(viewport.y),
                static_cast<GLsizei>(viewport.width), static_cast<GLsizei>(viewport.height));
     glDepthRange(viewport.minDepth, viewport.maxDepth);
+    if (glGetError() != GL_NO_ERROR)
+        return backendError("OpenGL viewport update failed");
+    mCommands.mViewport = viewport;
     mCommands.mViewportSet = true;
-    return glGetError() == GL_NO_ERROR ? Status::success() : backendError("OpenGL viewport update failed");
+    return Status::success();
 }
 
 Status OpenGLDevice::setScissor(const ScissorRect& scissor)
@@ -1931,10 +2042,18 @@ Status OpenGLDevice::setScissor(const ScissorRect& scissor)
         static_cast<std::uint64_t>(scissor.x) + scissor.width > mCommands.mRenderWidth ||
         static_cast<std::uint64_t>(scissor.y) + scissor.height > mCommands.mRenderHeight)
         return invalidArgument("invalid OpenGL scissor rectangle");
+    if (mCommands.mScissor && *mCommands.mScissor == scissor)
+    {
+        mCommands.mScissorSet = true;
+        return Status::success();
+    }
     glEnable(GL_SCISSOR_TEST);
     glScissor(scissor.x, scissor.y, scissor.width, scissor.height);
+    if (glGetError() != GL_NO_ERROR)
+        return backendError("OpenGL scissor update failed");
+    mCommands.mScissor = scissor;
     mCommands.mScissorSet = true;
-    return glGetError() == GL_NO_ERROR ? Status::success() : backendError("OpenGL scissor update failed");
+    return Status::success();
 }
 
 Status OpenGLDevice::bindVertexBuffer(std::uint32_t slot, BufferHandle handle, std::uint64_t offset)
@@ -1961,10 +2080,66 @@ Status OpenGLDevice::bindIndexBuffer(BufferHandle handle, std::uint64_t offset, 
     if (!hasUsage(buffer->second.desc.usage, ResourceUsage::Index) ||
         offset >= buffer->second.desc.size || offset % alignment != 0)
         return invalidArgument("index buffer usage or offset is invalid");
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer->second.name);
+    auto pipeline = mPipelines.find(handleKey(mCommands.mPipeline));
+    if (pipeline->second.compiledIndexBuffer != handle)
+    {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer->second.name);
+        if (glGetError() != GL_NO_ERROR)
+        {
+            pipeline->second.compiledIndexBuffer = {};
+            return backendError("OpenGL index-buffer bind failed");
+        }
+        pipeline->second.compiledIndexBuffer = handle;
+    }
     mCommands.mIndexBuffer = handle;
     mCommands.mIndexOffset = offset;
     mCommands.mIndexType = type;
+    return Status::success();
+}
+
+Status OpenGLDevice::compileVertexInput(PipelineRecord& pipeline)
+{
+    for (const auto& layout : pipeline.desc.vertexBuffers)
+    {
+        const bool used = std::any_of(
+            pipeline.desc.vertexAttributes.begin(), pipeline.desc.vertexAttributes.end(),
+            [&](const VertexAttributeDesc& attribute)
+            { return attribute.bufferSlot == layout.slot; });
+        if (!used) continue;
+        const auto bound = mCommands.mVertexBuffers.find(layout.slot);
+        if (bound == mCommands.mVertexBuffers.end())
+            return invalidState("draw is missing a required vertex buffer");
+        const auto compiled = pipeline.compiledVertexBuffers.find(layout.slot);
+        if (compiled != pipeline.compiledVertexBuffers.end() &&
+            compiled->second == bound->second)
+            continue;
+        auto buffer = mBuffers.find(handleKey(bound->second.first));
+        if (buffer == mBuffers.end())
+            return invalidHandle("bound vertex buffer is stale");
+        glBindBuffer(GL_ARRAY_BUFFER, buffer->second.name);
+        for (const auto& attribute : pipeline.desc.vertexAttributes)
+        {
+            if (attribute.bufferSlot != layout.slot) continue;
+            const auto format = translateVertexFormat(attribute.format);
+            const auto pointer = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+                bound->second.second + attribute.offset));
+            glEnableVertexAttribArray(attribute.location);
+            if (format.integer)
+                glVertexAttribIPointer(attribute.location, format.components, format.type,
+                                       layout.stride, pointer);
+            else
+                glVertexAttribPointer(attribute.location, format.components, format.type,
+                                      format.normalized, layout.stride, pointer);
+            glVertexAttribDivisor(attribute.location,
+                layout.inputRate == VertexInputRate::PerInstance ? 1 : 0);
+        }
+        pipeline.compiledVertexBuffers[layout.slot] = bound->second;
+    }
+    if (glGetError() != GL_NO_ERROR)
+    {
+        pipeline.compiledVertexBuffers.clear();
+        return backendError("OpenGL vertex-input compilation failed");
+    }
     return Status::success();
 }
 
@@ -1981,33 +2156,17 @@ Status OpenGLDevice::draw(const DrawArguments& arguments)
     for (const auto& binding : shader->second.desc.bindings)
         if (!mCommands.mBindingSets.contains(binding.group))
             return invalidState("draw is missing a reflected binding group");
-    for (const auto& attribute : pipeline->second.desc.vertexAttributes)
-    {
-        const auto layout = std::find_if(pipeline->second.desc.vertexBuffers.begin(),
-            pipeline->second.desc.vertexBuffers.end(), [&](const auto& value)
-            { return value.slot == attribute.bufferSlot; });
-        auto bound = mCommands.mVertexBuffers.find(attribute.bufferSlot);
-        if (layout == pipeline->second.desc.vertexBuffers.end() || bound == mCommands.mVertexBuffers.end())
-            return invalidState("draw is missing a required vertex buffer");
-        auto buffer = mBuffers.find(handleKey(bound->second.first));
-        const auto format = translateVertexFormat(attribute.format);
-        glBindBuffer(GL_ARRAY_BUFFER, buffer->second.name);
-        const auto pointer = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
-            bound->second.second + attribute.offset));
-        glEnableVertexAttribArray(attribute.location);
-        if (format.integer)
-            glVertexAttribIPointer(attribute.location, format.components, format.type,
-                                   layout->stride, pointer);
-        else
-            glVertexAttribPointer(attribute.location, format.components, format.type,
-                                  format.normalized, layout->stride, pointer);
-        glVertexAttribDivisor(attribute.location,
-            layout->inputRate == VertexInputRate::PerInstance ? 1 : 0);
-    }
+    Status status = compileVertexInput(pipeline->second);
+    if (!status) return status;
     glDrawArraysInstanced(translateTopology(pipeline->second.desc.topology),
                           arguments.firstVertex, arguments.vertexCount,
                           arguments.instanceCount);
-    return glGetError() == GL_NO_ERROR ? Status::success() : backendError("OpenGL draw failed");
+    if (glGetError() != GL_NO_ERROR)
+    {
+        pipeline->second.compiledVertexBuffers.clear();
+        return backendError("OpenGL draw failed");
+    }
+    return Status::success();
 }
 
 Status OpenGLDevice::drawIndexed(const DrawIndexedArguments& arguments)
@@ -2031,35 +2190,30 @@ Status OpenGLDevice::drawIndexed(const DrawIndexedArguments& arguments)
     const std::uint64_t drawBytes = static_cast<std::uint64_t>(arguments.indexCount) * indexBytes;
     if (indexBuffer == mBuffers.end() || !rangeFits(firstByte, drawBytes, indexBuffer->second.desc.size))
         return invalidArgument("drawIndexed index range exceeds the bound buffer");
-    for (const auto& attribute : pipeline->second.desc.vertexAttributes)
+    if (pipeline->second.compiledIndexBuffer != mCommands.mIndexBuffer)
     {
-        const auto layout = std::find_if(pipeline->second.desc.vertexBuffers.begin(),
-            pipeline->second.desc.vertexBuffers.end(), [&](const auto& value)
-            { return value.slot == attribute.bufferSlot; });
-        auto bound = mCommands.mVertexBuffers.find(attribute.bufferSlot);
-        if (layout == pipeline->second.desc.vertexBuffers.end() || bound == mCommands.mVertexBuffers.end())
-            return invalidState("drawIndexed is missing a required vertex buffer");
-        auto buffer = mBuffers.find(handleKey(bound->second.first));
-        const auto format = translateVertexFormat(attribute.format);
-        glBindBuffer(GL_ARRAY_BUFFER, buffer->second.name);
-        const auto vertexPointer = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
-            bound->second.second + attribute.offset));
-        glEnableVertexAttribArray(attribute.location);
-        if (format.integer)
-            glVertexAttribIPointer(attribute.location, format.components, format.type,
-                                   layout->stride, vertexPointer);
-        else
-            glVertexAttribPointer(attribute.location, format.components, format.type,
-                                  format.normalized, layout->stride, vertexPointer);
-        glVertexAttribDivisor(attribute.location,
-            layout->inputRate == VertexInputRate::PerInstance ? 1 : 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuffer->second.name);
+        if (glGetError() != GL_NO_ERROR)
+        {
+            pipeline->second.compiledIndexBuffer = {};
+            return backendError("OpenGL index-buffer compilation failed");
+        }
+        pipeline->second.compiledIndexBuffer = mCommands.mIndexBuffer;
     }
+    Status status = compileVertexInput(pipeline->second);
+    if (!status) return status;
     const GLenum type = mCommands.mIndexType == IndexType::UInt16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
     const auto pointer = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
         firstByte));
     glDrawElementsInstancedBaseVertex(translateTopology(pipeline->second.desc.topology),
         arguments.indexCount, type, pointer, arguments.instanceCount, arguments.vertexOffset);
-    return glGetError() == GL_NO_ERROR ? Status::success() : backendError("OpenGL indexed draw failed");
+    if (glGetError() != GL_NO_ERROR)
+    {
+        pipeline->second.compiledVertexBuffers.clear();
+        pipeline->second.compiledIndexBuffer = {};
+        return backendError("OpenGL indexed draw failed");
+    }
+    return Status::success();
 }
 
 void OpenGLDevice::pollFences(bool wait)
@@ -2123,6 +2277,8 @@ void OpenGLCommandContext::resetDrawState()
     mRenderHeight = 0;
     mRenderColorFormats.clear();
     mRenderDepthFormat.reset();
+    mViewport.reset();
+    mScissor.reset();
     mPipeline = {};
     mBindingSets.clear();
     mVertexBuffers.clear();

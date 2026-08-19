@@ -325,6 +325,40 @@ and P0e2e still must perform same-frame capture alignment, bounded image
 comparison, lifecycle qualification, and steady-state resource-residency
 optimization. Visible world and UI rendering remain OpenGL.
 
+### P0e2d — explicit water execution boundary
+
+The shared production water executor consumes the recorded water geometry,
+normals, and environment state together with explicit shared-graph lighting,
+depth, reflection-color, and water-exclusion image views. Generation identity
+is checked before submission, and a missing, invalid, or stale dependency
+rejects the execution. The executor does not inspect a viewer render target or
+import an OpenGL texture, framebuffer, buffer, vertex-array, or program name.
+
+One deterministic shader package supplies OpenGL 4.1 and Vulkan GLSL variants.
+Both variants preserve the production reverse-Z occlusion direction explicitly
+while avoiding a Vulkan attachment-feedback hazard: the completed scene depth
+is sampled as a dependency rather than simultaneously attached for depth
+testing. The output is a separate RGBA16F composition target, so this private
+gate cannot alter the visible OpenGL frame.
+
+The current isolated harness supplies one-pixel reflection and exclusion
+fixtures solely to qualify resource binding, generation checks, draw
+submission, copying, and readback. Those fixtures are not production
+reflection or exclusion data and cannot support a visual-parity claim. Against
+the existing real-grid capture, both native peers execute all seven recorded
+water draws and report `water-modified=0`: no recorded water fragment survives
+depth in that camera. Vulkan validation reports no error. The differing
+OpenGL input/output hashes arise from copying the floating-point target and do
+not constitute evidence that water was visible; the explicit modified-pixel
+comparison is authoritative for this gate.
+
+P0e2d therefore establishes the fail-closed GHI water seam but remains
+provisional. Acceptance requires a same-frame, visibly above-water capture and
+an underwater capture, real reflection-color and exclusion resources from the
+P0e4 nested-view graph, replacement or bounded qualification of the provisional
+water shading model against production atmosphere/reflection behavior, and
+dual-peer image comparison. Visible world and UI rendering remain OpenGL.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid

@@ -42,6 +42,7 @@ set(llrender_SOURCE_FILES
     ghi/core/llghilightingpacketconsumer.cpp
     ghi/core/llghimaterialscenepacket.cpp
     ghi/core/llghiproductionenvironmentexecutor.cpp
+    ghi/core/llghiproductionwaterexecutor.cpp
     ghi/core/llghiproductionframeconsumer.cpp
     ghi/core/llghiproductiongbufferexecutor.cpp
     ghi/core/llghiproductionlightingexecutor.cpp
@@ -108,6 +109,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghipresentation.h
     ghi/include/llghiproductioncontract.h
     ghi/include/llghiproductionenvironmentexecutor.h
+    ghi/include/llghiproductionwaterexecutor.h
     ghi/include/llghiproductionframeconsumer.h
     ghi/include/llghiproductiongbufferexecutor.h
     ghi/include/llghiproductionlightingexecutor.h
@@ -411,6 +413,29 @@ if (USE_VULKAN_GHI)
               ${GHI_P0_ENVIRONMENT_SHADER_SOURCES}
       COMMENT "Building deterministic P0e2 environment GHI shader package"
       VERBATIM)
+  set(GHI_P0_WATER_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/p0_water")
+  set(GHI_P0_WATER_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/p0_water.llghisp")
+  set(GHI_P0_WATER_SHADER_SOURCES
+      "${GHI_P0_WATER_SHADER_ROOT}/package.json"
+      "${GHI_P0_WATER_SHADER_ROOT}/opengl41/water.vert.glsl"
+      "${GHI_P0_WATER_SHADER_ROOT}/opengl41/water.frag.glsl"
+      "${GHI_P0_WATER_SHADER_ROOT}/vulkan/water.vert.glsl"
+      "${GHI_P0_WATER_SHADER_ROOT}/vulkan/water.frag.glsl"
+      "${GHI_P0_WATER_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl")
+  add_custom_command(
+      OUTPUT "${GHI_P0_WATER_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_P0_WATER_SHADER_ROOT}/package.json"
+              --output "${GHI_P0_WATER_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_P0_WATER_SHADER_SOURCES}
+      COMMENT "Building deterministic P0e2d water GHI shader package"
+      VERBATIM)
   set(GHI_R6_PPLL_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r6_ppll")
   set(GHI_R6_PPLL_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r6_ppll.llghisp")
   set(GHI_R6_PPLL_SHADER_SOURCES
@@ -559,6 +584,7 @@ if (USE_VULKAN_GHI)
       "${GHI_I7_SHADOW_SHADER_PACKAGE}"
       "${GHI_R5_WORLD_SHADER_PACKAGE}"
       "${GHI_P0_ENVIRONMENT_SHADER_PACKAGE}"
+      "${GHI_P0_WATER_SHADER_PACKAGE}"
       "${GHI_R6_PPLL_SHADER_PACKAGE}"
       "${GHI_R6_PEEL_SHADER_PACKAGE}"
       "${GHI_R6_LEGACY_SHADER_PACKAGE}"
@@ -654,6 +680,20 @@ if (USE_VULKAN_GHI)
         DEPENDS llrender_ghi_shaders
                 "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
         COMMENT "Testing deterministic P0e2 environment GHI shader packaging"
+        VERBATIM)
+    add_custom_target(
+        llrender_ghi_p0_water_shader_packager_test
+        COMMAND "${PYTHON_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+                --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+                --manifest "${GHI_P0_WATER_SHADER_ROOT}/package.json"
+                --glslang "${GHI_GLSLANG_VALIDATOR}"
+                --spirv-val "${GHI_SPIRV_VAL}"
+                --spirv-opt "${GHI_SPIRV_OPT}"
+                --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        DEPENDS llrender_ghi_shaders
+                "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+        COMMENT "Testing deterministic P0e2d water GHI shader packaging"
         VERBATIM)
     add_custom_target(
         llrender_ghi_r7_shader_packager_test
@@ -1163,6 +1203,7 @@ if (LL_TESTS)
       ghi/core/llghilightingpacketconsumer.cpp
       ghi/core/llghimaterialscenepacket.cpp
       ghi/core/llghiproductionenvironmentexecutor.cpp
+      ghi/core/llghiproductionwaterexecutor.cpp
       ghi/core/llghiproductionframeconsumer.cpp
       ghi/core/llghiproductiongbufferexecutor.cpp
       ghi/core/llghiproductionlightingexecutor.cpp
@@ -1214,6 +1255,7 @@ if (LL_TESTS)
     add_dependencies(llrender_ghi_contract_test
         llrender_ghi_shader_packager_test
         llrender_ghi_p0_environment_shader_packager_test
+        llrender_ghi_p0_water_shader_packager_test
         llrender_ghi_i7_shader_packager_test
         llrender_ghi_i7_projector_shader_packager_test
         llrender_ghi_i7_shadow_shader_packager_test

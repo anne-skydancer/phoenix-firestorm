@@ -29,7 +29,6 @@
 
 // This file contains various stuff for handling gl extensions and other gl related stuff.
 
-#include <functional>
 #include <string>
 #include <unordered_map>
 #include <list>
@@ -39,7 +38,6 @@
 #include "llstring.h"
 #include "stdtypes.h"
 #include "v4math.h"
-#include "llplane.h"
 #include "llgltypes.h"
 #include "llinstancetracker.h"
 
@@ -240,7 +238,6 @@ public:
     static void initClass();
     static void restoreGL();
 
-    static void resetTextureStates();
     static void dumpStates();
 
     // make sure GL blend function, GL states, and GL color mask match
@@ -264,33 +261,6 @@ protected:
     bool mIsEnabled;
 };
 
-// New LLGLState class wrappers that don't depend on actual GL flags.
-class LLGLEnableBlending : public LLGLState
-{
-public:
-    LLGLEnableBlending(bool enable);
-};
-
-class LLGLEnableAlphaReject : public LLGLState
-{
-public:
-    LLGLEnableAlphaReject(bool enable);
-};
-
-// Enable with functor
-class LLGLEnableFunc : LLGLState
-{
-public:
-    LLGLEnableFunc(LLGLenum state, bool enable, std::function<void()> func)
-        : LLGLState(state, enable)
-    {
-        if (enable)
-        {
-            func();
-        }
-    }
-};
-
 /// TODO: Being deprecated.
 class LLGLEnable : public LLGLState
 {
@@ -303,35 +273,6 @@ class LLGLDisable : public LLGLState
 {
 public:
     LLGLDisable(LLGLenum state) : LLGLState(state, DISABLED_STATE) {}
-};
-
-/*
-  Store and modify projection matrix to create an oblique
-  projection that clips to the specified plane.  Oblique
-  projections alter values in the depth buffer, so this
-  class should not be used mid-renderpass.
-
-  Restores projection matrix on destruction.
-  GL_MODELVIEW_MATRIX is active whenever program execution
-  leaves this class.
-  Does not stack.
-  Caches inverse of projection matrix used in gGLObliqueProjectionInverse
-*/
-class LLGLUserClipPlane
-{
-public:
-
-    LLGLUserClipPlane(const LLPlane& plane, const glm::mat4& modelview, const glm::mat4& projection, bool apply = true);
-    ~LLGLUserClipPlane();
-
-    void setPlane(F32 a, F32 b, F32 c, F32 d);
-    void disable();
-
-private:
-    bool mApply;
-
-    glm::mat4 mProjection;
-    glm::mat4 mModelview;
 };
 
 /*
@@ -379,33 +320,6 @@ public:
         }
     }
     virtual void updateGL() = 0;
-};
-
-const U32 FENCE_WAIT_TIME_NANOSECONDS = 1000;  //1 ms
-
-class LLGLFence
-{
-public:
-    virtual ~LLGLFence()
-    {
-    }
-
-    virtual void placeFence() = 0;
-    virtual bool isCompleted() = 0;
-    virtual void wait() = 0;
-};
-
-class LLGLSyncFence : public LLGLFence
-{
-public:
-    GLsync mSync;
-
-    LLGLSyncFence();
-    virtual ~LLGLSyncFence();
-
-    void placeFence();
-    bool isCompleted();
-    void wait();
 };
 
 extern LLMatrix4 gGLObliqueProjectionInverse;

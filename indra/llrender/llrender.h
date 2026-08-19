@@ -402,7 +402,6 @@ public:
     eMatrixMode getMatrixMode();
 
     const glm::mat4& getModelviewMatrix();
-    const glm::mat4& getProjectionMatrix();
 
     void syncMatrices();
     void syncLightState();
@@ -472,12 +471,6 @@ public:
     LLTexUnit* getTexUnit(U32 index);
 
     U32 getCurrentTexUnitIndex(void) const { return mCurrTextureUnitIndex; }
-
-    bool verifyTexUnitActive(U32 unitToVerify);
-
-    void debugTexUnits(void);
-
-    void clearErrors();
 
     struct Vertex
     {

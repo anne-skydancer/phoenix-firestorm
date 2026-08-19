@@ -2513,22 +2513,6 @@ void LLGLState::restoreGL()
     initClass();
 }
 
-//static
-// Really shouldn't be needed, but seems we sometimes do.
-void LLGLState::resetTextureStates()
-{
-    gGL.flush();
-    GLint maxTextureUnits;
-
-    glGetIntegerv(GL_MAX_TEXTURE_UNITS_ARB, &maxTextureUnits);
-    for (S32 j = maxTextureUnits-1; j >=0; j--)
-    {
-        gGL.getTexUnit(j)->activate();
-        glClientActiveTexture(GL_TEXTURE0+j);
-        j == 0 ? gGL.getTexUnit(j)->enable(LLTexUnit::TT_TEXTURE) : gGL.getTexUnit(j)->disable();
-    }
-}
-
 void LLGLState::dumpStates()
 {
     LL_INFOS("RenderState") << "GL States:" << LL_ENDL;
@@ -2795,61 +2779,6 @@ void parse_glsl_version(S32& major, S32& minor)
     LLStringUtil::convertToS32(minor_str, minor);
 }
 
-LLGLUserClipPlane::LLGLUserClipPlane(const LLPlane& p, const glm::mat4& modelview, const glm::mat4& projection, bool apply)
-{
-    mApply = apply;
-
-    if (mApply)
-    {
-        mModelview = modelview;
-        mProjection = projection;
-
-        //flip incoming LLPlane to get consistent behavior compared to frustum culling
-        setPlane(-p[0], -p[1], -p[2], -p[3]);
-    }
-}
-
-void LLGLUserClipPlane::disable()
-{
-    if (mApply)
-    {
-        gGL.matrixMode(LLRender::MM_PROJECTION);
-        gGL.popMatrix();
-        gGL.matrixMode(LLRender::MM_MODELVIEW);
-    }
-    mApply = false;
-}
-
-void LLGLUserClipPlane::setPlane(F32 a, F32 b, F32 c, F32 d)
-{
-    const glm::mat4& P = mProjection;
-    const glm::mat4& M = mModelview;
-
-    glm::mat4 invtrans_MVP = glm::transpose(glm::inverse(P*M));
-    glm::vec4 oplane(a,b,c,d);
-    glm::vec4 cplane = invtrans_MVP * oplane;
-
-    cplane /= fabs(cplane[2]); // normalize such that depth is not scaled
-    cplane[3] -= 1;
-
-    if(cplane[2] < 0)
-        cplane *= -1;
-
-    glm::mat4 suffix = glm::identity<glm::mat4>();
-    suffix = glm::row(suffix, 2, cplane);
-    glm::mat4 newP = suffix * P;
-    gGL.matrixMode(LLRender::MM_PROJECTION);
-    gGL.pushMatrix();
-    gGL.loadMatrix(glm::value_ptr(newP));
-    gGLObliqueProjectionInverse = LLMatrix4(glm::value_ptr(glm::transpose(glm::inverse(newP))));
-    gGL.matrixMode(LLRender::MM_MODELVIEW);
-}
-
-LLGLUserClipPlane::~LLGLUserClipPlane()
-{
-    disable();
-}
-
 LLGLDepthTest::LLGLDepthTest(GLboolean depth_enabled, GLboolean write_enabled, GLenum depth_func)
 : mPrevDepthEnabled(sDepthEnabled), mPrevDepthFunc(sDepthFunc), mPrevWriteEnabled(sWriteEnabled)
 {
@@ -2971,54 +2900,6 @@ LLGLSquashToFarClip::~LLGLSquashToFarClip()
     gGL.popMatrix();
 
     gGL.matrixMode(last_matrix_mode);
-}
-
-
-
-LLGLSyncFence::LLGLSyncFence()
-{
-    mSync = 0;
-}
-
-LLGLSyncFence::~LLGLSyncFence()
-{
-    if (mSync)
-    {
-        glDeleteSync(mSync);
-    }
-}
-
-void LLGLSyncFence::placeFence()
-{
-    if (mSync)
-    {
-        glDeleteSync(mSync);
-    }
-    mSync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-}
-
-bool LLGLSyncFence::isCompleted()
-{
-    bool ret = true;
-    if (mSync)
-    {
-        GLenum status = glClientWaitSync(mSync, 0, 1);
-        if (status == GL_TIMEOUT_EXPIRED)
-        {
-            ret = false;
-        }
-    }
-    return ret;
-}
-
-void LLGLSyncFence::wait()
-{
-    if (mSync)
-    {
-        while (glClientWaitSync(mSync, 0, FENCE_WAIT_TIME_NANOSECONDS) == GL_TIMEOUT_EXPIRED)
-        { //track the number of times we've waited here
-        }
-    }
 }
 
 LLGLSPipelineSkyBox::LLGLSPipelineSkyBox()

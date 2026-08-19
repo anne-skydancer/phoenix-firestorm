@@ -1289,11 +1289,6 @@ const glm::mat4& LLRender::getModelviewMatrix()
     return mMatrix[MM_MODELVIEW][mMatIdx[MM_MODELVIEW]];
 }
 
-const glm::mat4& LLRender::getProjectionMatrix()
-{
-    return mMatrix[MM_PROJECTION][mMatIdx[MM_PROJECTION]];
-}
-
 void LLRender::translateUI(F32 x, F32 y, F32 z)
 {
     if (mUIOffset.empty())
@@ -1523,27 +1518,6 @@ void LLRender::setLineWidth(F32 line_width)
     }
 }
 // </FS>
-
-bool LLRender::verifyTexUnitActive(U32 unitToVerify)
-{
-    if (mCurrTextureUnitIndex == unitToVerify)
-    {
-        return true;
-    }
-    else
-    {
-        LL_WARNS() << "TexUnit currently active: " << mCurrTextureUnitIndex << " (expecting " << unitToVerify << ")" << LL_ENDL;
-        return false;
-    }
-}
-
-void LLRender::clearErrors()
-{
-    while (glGetError())
-    {
-        //loop until no more error flags left
-    }
-}
 
 void LLRender::beginList(std::list<LLVertexBufferData> *list)
 {
@@ -2043,38 +2017,6 @@ void LLRender::diffuseColor4ub(U8 r, U8 g, U8 b, U8 a)
     }
 }
 
-
-void LLRender::debugTexUnits(void)
-{
-    LL_INFOS("TextureUnit") << "Active TexUnit: " << mCurrTextureUnitIndex << LL_ENDL;
-    std::string active_enabled = "false";
-    for (U32 i = 0; i < mTexUnits.size(); i++)
-    {
-        if (getTexUnit(i)->mCurrTexType != LLTexUnit::TT_NONE)
-        {
-            if (i == mCurrTextureUnitIndex) active_enabled = "true";
-            LL_INFOS("TextureUnit") << "TexUnit: " << i << " Enabled" << LL_ENDL;
-            LL_INFOS("TextureUnit") << "Enabled As: " ;
-            switch (getTexUnit(i)->mCurrTexType)
-            {
-                case LLTexUnit::TT_TEXTURE:
-                    LL_CONT << "Texture 2D";
-                    break;
-                case LLTexUnit::TT_RECT_TEXTURE:
-                    LL_CONT << "Texture Rectangle";
-                    break;
-                case LLTexUnit::TT_CUBE_MAP:
-                    LL_CONT << "Cube Map";
-                    break;
-                default:
-                    LL_CONT << "ARGH!!! NONE!";
-                    break;
-            }
-            LL_CONT << ", Texture Bound: " << getTexUnit(i)->mCurrTexture << LL_ENDL;
-        }
-    }
-    LL_INFOS("TextureUnit") << "Active TexUnit Enabled : " << active_enabled << LL_ENDL;
-}
 
 glm::mat4 get_current_modelview()
 {

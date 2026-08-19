@@ -55,6 +55,30 @@ The existing API-boundary ratchet prevents growth. The P0 ledger supplies the
 additional semantic classification needed for measured burn-down. Neither
 tool proves runtime reachability.
 
+### Accepted P0a/P0b checkpoint
+
+The initial classified ledger recorded 4,452 `gGL` member uses, 554 references
+to the broader legacy-state symbol set, and 808 direct GL-shaped calls, with no
+unclassified symbol. The first sanitation slice removed only declarations,
+implementations, and inert construction sites with no executable caller:
+
+- the unused texture-state reset, user clip-plane, and GL sync-fence helpers;
+- three unused proposed `LLGLEnable` replacements and `LLGLSObjectSelect`;
+- four unreferenced `LLRender` access/diagnostic methods; and
+- fixed-function `LLGLSSpecular`, whose only construction supplied zero
+  shininess and could not execute its material-state calls.
+
+After regeneration the ledger contains 4,441 `gGL` uses, 516 broader state
+references, and 796 direct GL-shaped calls. The narrower API-boundary metric
+contains 408 legacy state-wrapper uses. All remaining state-wrapper symbols
+are classified as live migration work rather than deletion candidates.
+
+The Release `llrender` library and complete `vulkanstorm-bin.exe` target build,
+the API-boundary ratchet passes, and the deterministic GHI contract suite
+passes 36 of 36 tests. The obsolete pre-rename `firestorm-bin.vcxproj` remains
+stale in an existing build directory and is not a valid build target; project
+regeneration and all subsequent verification use `vulkanstorm-bin.vcxproj`.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

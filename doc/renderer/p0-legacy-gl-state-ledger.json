@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_revision": "1f31246e7ab8a749a8414354e4d8c55dec28ef42",
+  "source_revision": "f1c50bfca6a1c27e4bc6f014426fdf77aff45f57",
   "scope": {
     "roots": [
       "indra/llappearance",
@@ -16,9 +16,9 @@
     "note": "Static source classification; runtime reachability is a separate P0 gate."
   },
   "summary": {
-    "ggl_member_uses": 4423,
-    "legacy_state_symbol_uses": 512,
-    "direct_gl_shaped_calls": 779,
+    "ggl_member_uses": 4322,
+    "legacy_state_symbol_uses": 508,
+    "direct_gl_shaped_calls": 721,
     "unclassified_symbols": []
   },
   "surfaces": {
@@ -161,11 +161,10 @@
       "blendFunc": {
         "classification": "pipeline_and_dynamic_state",
         "disposition": "encode_in_ghi_pipeline_or_dynamic_state",
-        "count": 17,
+        "count": 15,
         "owners": {
           "alpha_and_particles": 4,
           "appearance_and_baking": 2,
-          "environment": 2,
           "offscreen_and_recursive": 1,
           "ui_hud_and_interaction": 2,
           "world_renderer": 6
@@ -174,7 +173,6 @@
           "indra/llappearance/lltexlayer.cpp": 1,
           "indra/llappearance/lltexlayerparams.cpp": 1,
           "indra/newview/lldrawpoolalpha.cpp": 4,
-          "indra/newview/lldrawpoolterrain.cpp": 2,
           "indra/newview/llface.cpp": 1,
           "indra/newview/llmaniptranslate.cpp": 1,
           "indra/newview/llmodelpreview.cpp": 1,
@@ -646,11 +644,11 @@
       "getTexUnit": {
         "classification": "resource_and_light_binding",
         "disposition": "replace_with_ghi_binding_sets",
-        "count": 632,
+        "count": 571,
         "owners": {
           "alpha_and_particles": 9,
           "appearance_and_baking": 33,
-          "environment": 159,
+          "environment": 98,
           "offscreen_and_recursive": 40,
           "renderer_core": 86,
           "ui_core": 18,
@@ -697,7 +695,7 @@
           "indra/newview/lldrawpoolavatar.cpp": 7,
           "indra/newview/lldrawpoolbump.cpp": 25,
           "indra/newview/lldrawpoolmaterials.cpp": 7,
-          "indra/newview/lldrawpoolterrain.cpp": 130,
+          "indra/newview/lldrawpoolterrain.cpp": 69,
           "indra/newview/lldrawpooltree.cpp": 2,
           "indra/newview/lldrawpoolwater.cpp": 2,
           "indra/newview/lldrawpoolwlsky.cpp": 19,
@@ -801,11 +799,11 @@
       "loadIdentity": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 55,
+        "count": 44,
         "owners": {
           "alpha_and_particles": 2,
           "appearance_and_baking": 2,
-          "environment": 12,
+          "environment": 1,
           "offscreen_and_recursive": 13,
           "renderer_core": 2,
           "ui_hud_and_interaction": 7,
@@ -818,7 +816,6 @@
           "indra/newview/lldrawpoolalpha.cpp": 2,
           "indra/newview/lldrawpoolbump.cpp": 1,
           "indra/newview/lldrawpoolmaterials.cpp": 1,
-          "indra/newview/lldrawpoolterrain.cpp": 11,
           "indra/newview/llfasttimerview.cpp": 2,
           "indra/newview/llfloaterbvhpreview.cpp": 2,
           "indra/newview/llfloaterimagepreview.cpp": 4,
@@ -926,11 +923,11 @@
       "matrixMode": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 180,
+        "count": 159,
         "owners": {
           "alpha_and_particles": 6,
           "appearance_and_baking": 4,
-          "environment": 29,
+          "environment": 8,
           "offscreen_and_recursive": 25,
           "renderer_core": 15,
           "ui_core": 2,
@@ -954,7 +951,7 @@
           "indra/newview/lldrawpoolalpha.cpp": 6,
           "indra/newview/lldrawpoolbump.cpp": 4,
           "indra/newview/lldrawpoolmaterials.cpp": 2,
-          "indra/newview/lldrawpoolterrain.cpp": 24,
+          "indra/newview/lldrawpoolterrain.cpp": 3,
           "indra/newview/lldrawpoolwlsky.cpp": 2,
           "indra/newview/llfasttimerview.cpp": 2,
           "indra/newview/llfloaterbvhpreview.cpp": 4,
@@ -1384,11 +1381,11 @@
       "setSceneBlendType": {
         "classification": "pipeline_and_dynamic_state",
         "disposition": "encode_in_ghi_pipeline_or_dynamic_state",
-        "count": 54,
+        "count": 52,
         "owners": {
           "alpha_and_particles": 1,
           "appearance_and_baking": 11,
-          "environment": 3,
+          "environment": 1,
           "offscreen_and_recursive": 1,
           "renderer_core": 4,
           "ui_core": 9,
@@ -1409,7 +1406,6 @@
           "indra/newview/lldrawpoolalpha.cpp": 1,
           "indra/newview/lldrawpoolbump.cpp": 2,
           "indra/newview/lldrawpoolsimple.cpp": 3,
-          "indra/newview/lldrawpoolterrain.cpp": 2,
           "indra/newview/lldrawpoolwlsky.cpp": 1,
           "indra/newview/llface.cpp": 1,
           "indra/newview/llfasttimerview.cpp": 1,
@@ -1527,9 +1523,9 @@
       "translatef": {
         "classification": "matrix_and_ui_transform",
         "disposition": "move_to_explicit_frame_pass_or_draw_data",
-        "count": 76,
+        "count": 72,
         "owners": {
-          "environment": 9,
+          "environment": 5,
           "offscreen_and_recursive": 3,
           "renderer_core": 2,
           "ui_hud_and_interaction": 40,
@@ -1542,7 +1538,6 @@
           "indra/newview/fsmaniptranslatejoint.cpp": 5,
           "indra/newview/llagent.cpp": 1,
           "indra/newview/lldrawpoolavatar.cpp": 1,
-          "indra/newview/lldrawpoolterrain.cpp": 4,
           "indra/newview/lldrawpoolwlsky.cpp": 5,
           "indra/newview/llglsandbox.cpp": 2,
           "indra/newview/llhudeffectbeam.cpp": 1,
@@ -1828,9 +1823,9 @@
       "LLGLEnable": {
         "classification": "live_implicit_state",
         "disposition": "replace_with_ghi_pipeline_state",
-        "count": 111,
+        "count": 107,
         "owners": {
-          "environment": 6,
+          "environment": 2,
           "offscreen_and_recursive": 2,
           "renderer_core": 8,
           "ui_core": 1,
@@ -1848,7 +1843,7 @@
           "indra/newview/lldrawpoolavatar.cpp": 1,
           "indra/newview/lldrawpoolbump.cpp": 3,
           "indra/newview/lldrawpoolsimple.cpp": 2,
-          "indra/newview/lldrawpoolterrain.cpp": 5,
+          "indra/newview/lldrawpoolterrain.cpp": 1,
           "indra/newview/llface.cpp": 2,
           "indra/newview/llfasttimerview.cpp": 3,
           "indra/newview/llfloaterimagepreview.cpp": 1,
@@ -2662,17 +2657,15 @@
       "glDisable": {
         "classification": "valid_modern_gl_state",
         "disposition": "express_through_ghi_and_confine",
-        "count": 17,
+        "count": 7,
         "owners": {
-          "environment": 10,
           "renderer_core": 5,
           "window_and_context": 2
         },
         "files": {
           "indra/llrender/llgl.cpp": 5,
           "indra/llwindow/llwindowsdl.cpp": 1,
-          "indra/llwindow/llwindowsdl2.cpp": 1,
-          "indra/newview/lldrawpoolterrain.cpp": 10
+          "indra/llwindow/llwindowsdl2.cpp": 1
         }
       },
       "glDisableVertexAttribArray": {
@@ -2736,16 +2729,14 @@
       "glEnable": {
         "classification": "valid_modern_gl_state",
         "disposition": "express_through_ghi_and_confine",
-        "count": 23,
+        "count": 7,
         "owners": {
-          "environment": 16,
           "renderer_core": 7
         },
         "files": {
           "indra/llrender/llcubemap.cpp": 1,
           "indra/llrender/llgl.cpp": 4,
-          "indra/llrender/llrender.cpp": 2,
-          "indra/newview/lldrawpoolterrain.cpp": 16
+          "indra/llrender/llrender.cpp": 2
         }
       },
       "glEnableVertexAttribArray": {
@@ -3681,28 +3672,6 @@
         "files": {
           "indra/llwindow/llwindowmacosx-objc.h": 1,
           "indra/llwindow/llwindowmacosx-objc.mm": 1
-        }
-      },
-      "glTexGenfv": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 16,
-        "owners": {
-          "environment": 16
-        },
-        "files": {
-          "indra/newview/lldrawpoolterrain.cpp": 16
-        }
-      },
-      "glTexGeni": {
-        "classification": "obsolete_fixed_function",
-        "disposition": "remove_or_semantically_replace",
-        "count": 16,
-        "owners": {
-          "environment": 16
-        },
-        "files": {
-          "indra/newview/lldrawpoolterrain.cpp": 16
         }
       },
       "glTexImage2D": {

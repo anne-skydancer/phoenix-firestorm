@@ -147,6 +147,14 @@ compatibility texture-residency probe that was compiled only by a dormant debug
 metric. The ledger is now 4,423 `gGL` uses, 512 broader state references, and
 779 direct GL-shaped calls, with no unclassified symbol.
 
+The last executable fixed-function calls belonged to three unreferenced
+pre-shader terrain methods. The active terrain entry point unconditionally
+uses `renderFullShader()`; no caller remained for the two- and four-texture-unit
+fallbacks or `renderSimple()`. Retiring those dormant methods removes all
+texture-generation state and leaves no executable call classified as obsolete
+fixed-function code. The current ledger is 4,322 `gGL` uses, 508 broader state
+references, and 721 direct GL-shaped calls.
+
 ## State-ownership invariant
 
 During incremental conversion there must not be two independently trusted

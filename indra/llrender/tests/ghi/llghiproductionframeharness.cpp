@@ -364,6 +364,13 @@ int main(int argc, char** argv)
         std::cerr << message << '\n';
         return 3;
     }
+    if (environmentPath && environmentPacket.frameId != frame.frameId)
+    {
+        std::cerr << "production and environment packets are from different frames: "
+                  << frame.frameId << " != " << environmentPacket.frameId
+                  << '\n';
+        return 3;
+    }
 
     IsolatedOpenGLContext context;
     if (!context.create())

@@ -81,6 +81,7 @@ std::uint32_t sLightingAttempts = 0;
 std::uint32_t sLightingSamples = 0;
 bool sLightingCaptureClaimed = false;
 bool sLightingDisabled = false;
+std::uint64_t sCapturedProductionFrameId = 0;
 
 const std::filesystem::path& productionFrameCapturePath()
 {
@@ -156,6 +157,7 @@ void captureProductionFrame(const LL::GHI::ProductionFramePacket& frame,
             << output.string() << LL_ENDL;
         return;
     }
+    sCapturedProductionFrameId = frame.frameId;
     LL_INFOS("GHIIntegration")
         << "P0e1 production-frame replay capture complete: frame="
         << frame.frameId << " bytes=" << encoded.size() << " sha256="
@@ -1301,6 +1303,7 @@ void shutdown()
     sLightingSamples = 0;
     sLightingCaptureClaimed = false;
     sLightingDisabled = false;
+    sCapturedProductionFrameId = 0;
     LL_INFOS("GHIIntegration")
         << "Native Vulkan coexistence device shut down."
         << LL_ENDL;
@@ -1314,6 +1317,16 @@ bool active()
 bool productionFrameCaptureRequested()
 {
     return ::productionFrameCaptureRequested();
+}
+
+bool productionFrameCaptureReadyForQualification()
+{
+    return ::productionFrameCaptureReady();
+}
+
+std::uint64_t capturedProductionFrameId()
+{
+    return sCapturedProductionFrameId;
 }
 
 bool shouldCaptureLiveOpaquePacket(std::uint64_t frame_id)

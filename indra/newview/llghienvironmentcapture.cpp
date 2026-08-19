@@ -7,6 +7,7 @@
 
 #include "llghienvironmentcapture.h"
 #include "llghimaterialcapture.h"
+#include "llghiruntime.h"
 
 #include "llenvironment.h"
 #include "llface.h"
@@ -104,18 +105,28 @@ public:
         }
         mState = State::Warming;
         mWarmupStart = std::chrono::steady_clock::now();
-        LL_INFOS("GHI") << "P0e2 environment capture armed; warmup="
-                         << mWarmup.count() << "ms output=" << mOutput.string()
-                         << LL_ENDL;
+        LL_INFOS("GHI") << "P0e2 environment capture armed; "
+                         << (LLGHIRuntime::productionFrameCaptureRequested()
+                                 ? "paired production-frame settle gate"
+                                 : "warmup=" + std::to_string(mWarmup.count()) +
+                                       "ms")
+                         << " output=" << mOutput.string() << LL_ENDL;
     }
 
     bool begin(std::uint32_t width, std::uint32_t height,
                std::uint64_t frameId)
     {
         configure();
-        if (mState == State::Warming &&
-            std::chrono::steady_clock::now() - mWarmupStart >= mWarmup)
-            mState = State::Recording;
+        if (mState == State::Warming)
+        {
+            const bool pairedReady =
+                LLGHIRuntime::productionFrameCaptureRequested() &&
+                LLGHIRuntime::productionFrameCaptureReadyForQualification();
+            const bool independentReady =
+                !LLGHIRuntime::productionFrameCaptureRequested() &&
+                std::chrono::steady_clock::now() - mWarmupStart >= mWarmup;
+            if (pairedReady || independentReady) mState = State::Recording;
+        }
         if (mState != State::Recording) return false;
         mPacket = {};
         mPacket.frameId = frameId;
@@ -663,6 +674,31 @@ public:
                              << LL_ENDL;
             return;
         }
+        if (LLGHIRuntime::productionFrameCaptureRequested())
+        {
+            const std::uint64_t pairedFrame =
+                LLGHIRuntime::capturedProductionFrameId();
+            if (!pairedFrame)
+            {
+                if (!mPairWaitLogged)
+                {
+                    mPairWaitLogged = true;
+                    LL_INFOS("GHI")
+                        << "P0e2 qualification is waiting for a successful production-frame capture before writing the environment packet."
+                        << LL_ENDL;
+                }
+                return;
+            }
+            if (pairedFrame != mPacket.frameId)
+            {
+                mState = State::Failed;
+                LL_WARNS("GHI")
+                    << "P0e2 qualification rejected a cross-frame pair: production="
+                    << pairedFrame << " environment=" << mPacket.frameId
+                    << LL_ENDL;
+                return;
+            }
+        }
         std::vector<std::byte> encoded;
         const LL::GHI::Status status =
             LL::GHI::encodeEnvironmentScenePacket(mPacket, encoded);
@@ -705,6 +741,7 @@ private:
     bool mSkyObserved = false;
     bool mWaterObserved = false;
     bool mBudgetLimited = false;
+    bool mPairWaitLogged = false;
     State mState = State::Disabled;
     std::chrono::steady_clock::time_point mWarmupStart;
     std::chrono::milliseconds mWarmup{0};

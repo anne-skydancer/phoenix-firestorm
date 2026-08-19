@@ -27,6 +27,8 @@ void initialize();
 void shutdown();
 bool active();
 bool productionFrameCaptureRequested();
+bool productionFrameCaptureReadyForQualification();
+std::uint64_t capturedProductionFrameId();
 bool shouldCaptureLiveOpaquePacket(std::uint64_t frame_id);
 void consumeLiveOpaquePacket(const LL::GHI::OpaqueScenePacket& packet,
                              bool budget_limited);

@@ -359,6 +359,40 @@ P0e4 nested-view graph, replacement or bounded qualification of the provisional
 water shading model against production atmosphere/reflection behavior, and
 dual-peer image comparison. Visible world and UI rendering remain OpenGL.
 
+### P0e2e — paired qualification gate
+
+When both production-frame and P0e2 environment output variables are set, the
+environment observer now uses the production-frame settle gate instead of its
+independent timer. It records on the same candidate frame and writes only after
+the production-frame file succeeds with that exact frame identity. A missing
+production capture keeps the environment observer waiting; any cross-frame
+pair fails closed and is not written. Independent environment-only capture
+retains its own configurable warmup behavior.
+
+The isolated peer harness rejects mismatched frame identities before creating a
+graphics device. The comparison driver accepts the optional environment file,
+passes both immutable packets to the OpenGL and Vulkan peers, verifies both
+packet hashes and structural evidence, compares environment and modified-water
+coverage under the existing bounded tolerance, and rejects captures in which
+water changed no pixels. This converts the previously manual same-frame rule
+into an executable gate.
+
+P0e2e is not yet accepted. It still requires paired real-grid above-water and
+underwater captures, and the water pass remains dependent on P0e4 production
+reflection and exclusion resources. The existing frame 4655/frame 4355 files
+are intentionally rejected as a cross-frame pair rather than reused as parity
+evidence.
+
+The first synchronized run captured both packets at frame 18246. The production
+packet identity is
+`6a702bcb6713c2879c6d8fa21e2013aeaeb8583b22cbb108e2e6d7ba67eeb64f` and
+the environment identity is
+`f10917e34b08fdc3aa81f7f20b94577f04f95f9eb60829329d80c3bc81cc7a03`.
+Both peers execute identical environment structure and coverage, but both
+report `water-modified=0`; the home camera contains recorded water geometry
+without a visible surviving fragment. The gate correctly refuses to treat
+this coordination proof as visible-water qualification.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid
@@ -482,7 +516,8 @@ Two standalone executables consume the exact saved bytes:
   as evidence but are not required to be bit-identical across APIs.
 
 The comparator rejects an empty required geometry G-buffer or lighting target;
-the optional emission target may be clear. It
+the legacy-specular and emission targets may be clear when the captured scene
+has no contribution for them. It
 requires covered work in each active shadow category, not every individual
 cascade, because a valid camera can leave one cascade clear. This preserves
 the corrected I7 acceptance rule while still detecting a missing directional

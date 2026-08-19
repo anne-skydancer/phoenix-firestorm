@@ -60,6 +60,7 @@ def compare_coverage(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--packet", type=pathlib.Path, required=True)
+    parser.add_argument("--environment", type=pathlib.Path)
     parser.add_argument("--opengl", type=pathlib.Path, required=True)
     parser.add_argument("--vulkan", type=pathlib.Path, required=True)
     parser.add_argument("--adapter", type=int, default=0)
@@ -68,7 +69,10 @@ def main() -> int:
     parser.add_argument("--no-validation", action="store_true")
     args = parser.parse_args()
 
-    for path in (args.packet, args.opengl, args.vulkan):
+    paths = [args.packet, args.opengl, args.vulkan]
+    if args.environment is not None:
+        paths.append(args.environment)
+    for path in paths:
         if not path.is_file():
             parser.error(f"file not found: {path}")
     if args.adapter < 0:
@@ -80,6 +84,10 @@ def main() -> int:
 
     packet_hash = hashlib.sha256(args.packet.read_bytes()).hexdigest()
     common = [str(args.packet), "--adapter", str(args.adapter)]
+    environment_hash = None
+    if args.environment is not None:
+        environment_hash = hashlib.sha256(args.environment.read_bytes()).hexdigest()
+        common.extend(["--environment", str(args.environment)])
     gl_output = run([str(args.opengl), *common])
     vk_command = [str(args.vulkan), *common]
     if not args.no_validation:
@@ -93,6 +101,9 @@ def main() -> int:
     for output in (gl_output, vk_output):
         if token(output, "packet-sha256") != packet_hash:
             raise RuntimeError("peer did not report the input packet identity")
+        if environment_hash is not None and \
+                token(output, "environment-sha256") != environment_hash:
+            raise RuntimeError("peer did not report the environment packet identity")
 
     for name in (
             "frame", "assembly-epoch", "extent", "draws", "residency",
@@ -109,7 +120,10 @@ def main() -> int:
     shadow_active = integers(gl_output, "shadow-active")
     lights = integers(gl_output, "lights")
 
-    if len(gl_gbuffer) != 4 or not all(gl_gbuffer[:3]) or not all(vk_gbuffer[:3]):
+    required_geometry_targets = (0, 2)
+    if len(gl_gbuffer) != 4 or len(vk_gbuffer) != 4 or not all(
+            gl_gbuffer[index] and vk_gbuffer[index]
+            for index in required_geometry_targets):
         raise RuntimeError("a required geometry G-buffer target contains no production work")
     if len(gl_lighting) != 1 or len(vk_lighting) != 1 or \
             not gl_lighting[0] or not vk_lighting[0]:
@@ -139,13 +153,36 @@ def main() -> int:
     passed &= compare_coverage(
         "shadow", gl_shadows, vk_shadows,
         args.absolute_coverage_tolerance, args.relative_coverage_tolerance)
+    if environment_hash is not None:
+        for name in ("environment-draws", "water-draws", "water-underwater"):
+            if token(gl_output, name) != token(vk_output, name):
+                raise RuntimeError(
+                    f"peer environment evidence differs for {name}")
+        gl_environment = integers(gl_output, "environment-coverage")
+        vk_environment = integers(vk_output, "environment-coverage")
+        gl_water_modified = integers(gl_output, "water-modified")
+        vk_water_modified = integers(vk_output, "water-modified")
+        if len(gl_environment) != 4 or len(vk_environment) != 4:
+            raise RuntimeError("environment evidence has an unexpected shape")
+        if len(gl_water_modified) != 1 or len(vk_water_modified) != 1:
+            raise RuntimeError("water evidence has an unexpected shape")
+        if not gl_water_modified[0] or not vk_water_modified[0]:
+            raise RuntimeError(
+                "the paired capture contains no visible water contribution")
+        passed &= compare_coverage(
+            "environment", gl_environment, vk_environment,
+            args.absolute_coverage_tolerance, args.relative_coverage_tolerance)
+        passed &= compare_coverage(
+            "water-modified", gl_water_modified, vk_water_modified,
+            args.absolute_coverage_tolerance, args.relative_coverage_tolerance)
     if not passed:
         print("P0e1 production-frame peer comparison FAIL", file=sys.stderr)
         return 1
 
     print(
-        "P0e1 production-frame peer comparison PASS "
+        "P0 production-frame peer comparison PASS "
         f"packet-sha256={packet_hash} "
+        f"environment-sha256={environment_hash or 'none'} "
         f"absolute-coverage-tolerance={args.absolute_coverage_tolerance} "
         f"relative-coverage-tolerance={args.relative_coverage_tolerance}")
     return 0

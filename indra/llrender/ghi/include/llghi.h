@@ -12,6 +12,7 @@
 #define LL_LLGHI_H
 
 #include "llghialphacontract.h"
+#include "llghialphascenepacket.h"
 #include "llghicommand.h"
 #include "llghidescriptors.h"
 #include "llghidevice.h"

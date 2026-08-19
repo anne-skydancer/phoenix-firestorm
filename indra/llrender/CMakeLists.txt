@@ -35,6 +35,7 @@ set(llrender_SOURCE_FILES
     llvertexbuffer.cpp
     llglcommonfunc.cpp
     ghi/backends/opengl/llghiopenglinfo.cpp
+    ghi/core/llghialphascenepacket.cpp
     ghi/core/llghidevice.cpp
     ghi/core/llghienvironmentscenepacket.cpp
     ghi/core/llghihash.cpp
@@ -96,6 +97,7 @@ set(llrender_HEADER_FILES
     ghi/backends/opengl/llghiopenglpresentation.h
     ghi/include/llghi.h
     ghi/include/llghialphacontract.h
+    ghi/include/llghialphascenepacket.h
     ghi/include/llghilightingscenepacket.h
     ghi/include/llghilightingpacketconsumer.h
     ghi/include/llghioffscreencontract.h
@@ -1201,6 +1203,7 @@ if (LL_TESTS)
       ghi/core/llghihash.cpp
       ghi/core/llghilightingscenepacket.cpp
       ghi/core/llghilightingpacketconsumer.cpp
+      ghi/core/llghialphascenepacket.cpp
       ghi/core/llghimaterialscenepacket.cpp
       ghi/core/llghiproductionenvironmentexecutor.cpp
       ghi/core/llghiproductionwaterexecutor.cpp

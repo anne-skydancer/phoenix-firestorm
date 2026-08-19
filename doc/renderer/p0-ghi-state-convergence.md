@@ -393,6 +393,43 @@ report `water-modified=0`; the home camera contains recorded water geometry
 without a visible surviving fragment. The gate correctly refuses to treat
 this coordination proof as visible-water qualification.
 
+### P0e3 alpha convergence plan
+
+P0e3 is split so that production routing policy cannot be confused with an
+algorithm fixture:
+
+1. **P0e3a — semantic packet.** Preserve production sort order, material and
+   skin inputs, view phase, selected method and bounded policy, standard,
+   custom-blend, and particle classification, independent color/alpha blend
+   state, full-bright and emissive intent, and minimum-alpha behavior.
+2. **P0e3b — live assembly.** Observe main post-water alpha without changing
+   visible ownership. Capture particles and custom blends as explicit residual
+   work and retain the established exclusions for pre-water, HUD, impostor,
+   reflection, cube-snapshot, dynamic-texture, and media views.
+3. **P0e3c — shared legacy execution.** Execute sorted and residual work on
+   GHI targets so a `LegacyResidual` route no longer means permission to issue
+   OpenGL calls. Replay each emissive contribution exactly once.
+4. **P0e3d — PPLL execution.** Replace the fixture geometry with production
+   standard-blend submissions, bounded overflow handling, exact-layer limits,
+   and deterministic resolve evidence. The existing OpenGL 4.4 gate remains.
+5. **P0e3e — depth-peeling execution.** Execute production standard-blend
+   submissions with the accepted four-layer, two-millisecond defaults and a
+   bounded legacy tail.
+6. **P0e3f — qualification.** Compare identical packets on both peers across
+   cards, decals, glass, plants, appliers, rigged PBR, full-bright alpha,
+   emissive replay, particles, custom blends, and lifecycle transitions.
+
+P0e3a is accepted. `AlphaScenePacket` embeds the established material/skin
+packet rather than defining a competing material model. Its per-draw policy is
+one-to-one with the material draw stream, and vector order is the captured
+legacy sort order. Validation fails closed on cross-frame identities, missing
+geometry, mismatched skin ownership, invalid route/material classification,
+unbounded PPLL or peeling settings, non-finite alpha thresholds, malformed
+blend state, truncation, and trailing data. The binary representation is
+deterministic and has no graphics-API handle. The contract suite passes 39 of
+39 tests. No production traversal or visible rendering ownership changes in
+this gate.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid

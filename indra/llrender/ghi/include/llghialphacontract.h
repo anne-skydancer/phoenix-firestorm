@@ -112,6 +112,9 @@ struct AlphaPPLLPolicy
     std::uint32_t nodesPerPixel = 8;
     std::uint32_t memoryMiB = 512;
     std::uint32_t exactLayersPerPixel = 24;
+
+    friend bool operator==(const AlphaPPLLPolicy&,
+                           const AlphaPPLLPolicy&) = default;
 };
 
 struct AlphaPPLLAllocation

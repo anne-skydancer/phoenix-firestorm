@@ -31,6 +31,7 @@
 #include "ghi/include/llghiterrainscenepacket.h"
 #include "ghi/include/llghiterrainoffscreenprobe.h"
 #include "ghi/include/llghialphacontract.h"
+#include "ghi/include/llghialphascenepacket.h"
 #include "ghi/include/llghioffscreencontract.h"
 #include "ghi/include/llghiopaqueoffscreenprobe.h"
 #include "ghi/include/llghiopaquepacketconsumer.h"
@@ -3322,6 +3323,87 @@ void LLGHIValidationObject::test<38>()
     first.pop_back();
     ensure("P0e2 truncated environment packets fail closed",
            !decodeEnvironmentScenePacket(first, decoded));
+}
+
+template<> template<>
+void LLGHIValidationObject::test<39>()
+{
+    using namespace LL::GHI;
+
+    AlphaScenePacket source;
+    source.frameId = 0x503065335f414c50ull; // "P0e3_ALP"
+    source.sceneEpoch = 4;
+    source.resourceEpoch = 7;
+    source.sourceWidth = 2560;
+    source.sourceHeight = 1350;
+    source.requestedMethod = AlphaMethod::PPLL;
+    source.materials.frameId = source.frameId;
+    source.materials.sceneEpoch = source.sceneEpoch;
+    source.materials.resourceEpoch = source.resourceEpoch;
+    source.materials.sourceWidth = source.sourceWidth;
+    source.materials.sourceHeight = source.sourceHeight;
+
+    MaterialTextureResource texture;
+    texture.sourceIdentity[0] = std::byte{1};
+    texture.contentIdentity[0] = std::byte{2};
+    texture.width = texture.height = 1;
+    texture.components = 4;
+    texture.colorSpace = TextureColorSpace::SRGB;
+    texture.decodedPixels = {
+        std::byte{255}, std::byte{255}, std::byte{255}, std::byte{128}};
+    source.materials.textures.push_back(texture);
+    MaterialResource material;
+    material.identity[0] = std::byte{3};
+    material.alphaMode = MaterialAlphaMode::Blend;
+    material.comparability = ResourceComparability::AlphaDeferred;
+    material.textures.push_back({TextureSemantic::BaseColor, 0});
+    source.materials.materials.push_back(material);
+    source.materials.vertices.resize(3);
+    source.materials.indices = {0, 1, 2};
+    MaterialSceneDraw materialDraw;
+    materialDraw.semanticId = 0x414c504841445241ull;
+    materialDraw.material = 0;
+    materialDraw.indexCount = 3;
+    source.materials.draws.push_back(materialDraw);
+    source.draws.push_back({AlphaSubmissionClass::StandardBlend});
+
+    ensure("P0e3 alpha scene validates",
+           validateAlphaScenePacket(source).ok());
+    std::vector<std::byte> first, second;
+    ensure("P0e3 alpha scene encodes",
+           encodeAlphaScenePacket(source, first).ok());
+    ensure("P0e3 alpha scene encoding is deterministic",
+           encodeAlphaScenePacket(source, second).ok() && first == second);
+    AlphaScenePacket decoded;
+    ensure("P0e3 alpha scene decodes",
+           decodeAlphaScenePacket(first, decoded).ok());
+    ensure("P0e3 alpha scene round trips", decoded == source);
+    ensure("P0e3 alpha scene has a stable identity",
+           !alphaScenePacketSha256(source).empty());
+
+    AlphaScenePacket invalid = source;
+    invalid.materials.frameId++;
+    ensure("P0e3 rejects cross-frame material work",
+           !validateAlphaScenePacket(invalid));
+    invalid = source;
+    invalid.draws[0].classification = AlphaSubmissionClass::Mask;
+    ensure("P0e3 rejects route/material disagreement",
+           !validateAlphaScenePacket(invalid));
+    invalid = source;
+    invalid.draws[0].classification = AlphaSubmissionClass::Particle;
+    ensure("P0e3 particles remain serializable on the residual route",
+           validateAlphaScenePacket(invalid).ok() &&
+           routeAlphaSubmission(
+               {invalid.phase, invalid.draws[0].classification},
+               {invalid.requestedMethod, true, true,
+                invalid.transientLoad}).route == AlphaRoute::LegacyResidual);
+    invalid = source;
+    invalid.depthPeelPolicy.maximumLayers = 0;
+    ensure("P0e3 rejects unbounded OIT policy",
+           !validateAlphaScenePacket(invalid));
+    first.pop_back();
+    ensure("P0e3 rejects truncated alpha scenes",
+           !decodeAlphaScenePacket(first, decoded));
 }
 
 } // namespace tut

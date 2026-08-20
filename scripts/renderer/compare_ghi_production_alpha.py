@@ -63,6 +63,7 @@ def main() -> int:
     parser.add_argument("--ppll-tail", action="store_true")
     parser.add_argument("--peel", action="store_true")
     parser.add_argument("--peel-stress", action="store_true")
+    parser.add_argument("--require-captured-method", action="store_true")
     parser.add_argument("--no-validation", action="store_true")
     args = parser.parse_args()
 
@@ -107,6 +108,9 @@ def main() -> int:
                 raise RuntimeError(f"peer output omitted {name}")
         if integer(record, "modified") <= 0:
             raise RuntimeError("peer alpha replay changed no pixels")
+        if args.require_captured_method and \
+                record.get("packet-sha256") != packet_hash:
+            raise RuntimeError("exact method was not selected in captured bytes")
 
     gl44 = next(record for record in gl_records if record.get("profile") == "OpenGL44")
     gl41 = next(record for record in gl_records if record.get("profile") == "OpenGL41")

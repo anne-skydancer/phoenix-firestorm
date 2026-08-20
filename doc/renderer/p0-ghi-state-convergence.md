@@ -647,6 +647,48 @@ source and effective identities separately. A fresh viewer capture with depth
 peeling selected, GPU timing/performance qualification, and selected-renderer
 visual comparison remain P0e3f work.
 
+### P0e3f — qualification progress
+
+Fresh System OpenGL sessions captured both exact methods from an alpha-rich
+real-grid scene after the full 120-second settle period. The comparator's
+`--require-captured-method` gate requires the source-file SHA-256 to equal the
+effective packet SHA-256, preventing post-decode policy mutation from being
+mistaken for live selected-method evidence. Both packets are main post-water,
+non-transient, independently decodable, and contain real bounded geometry,
+rigid and rigged work, legacy and PBR materials, masks, standard blends,
+full-bright and emissive intent, and one particle residual route.
+
+The PPLL-selected frame 7084 packet is 18,791,708 bytes with identity
+`4896efc7ef9a926069f36e824bea1885a3a49bd4f288b9cecf050e62b64ad137`.
+It contains 86 policy/material draw pairs: 32 masks, 53 standard blends, and
+one particle. OpenGL 4.4 and Vulkan route all 53 standards through PPLL,
+retain the particle residual, replay two blended emissive intents, defer no
+draw, allocate 268,165 and 268,178 fragments respectively from a 2,097,152-node
+pool, overflow zero, and modify the same 189,863 pixels. OpenGL 4.1 retains
+the exact candidates through its explicit sorted fallback. The login followed
+a teleport into the qualification scene; capture occurred only after mesh
+download quiescence and reports `transient_load=0`.
+
+The depth-peel-selected frame 4283 packet is 17,995,612 bytes with identity
+`3c579dee4d2a81a34af5b0408df153016845aa43569e28cd97d9fd7330f059ff`.
+It contains 88 policy/material pairs: 36 masks, 51 standard blends, and one
+particle. OpenGL 4.1 and 4.4 complete four layers within the accepted
+two-millisecond CPU submission budget; Vulkan completes two and reports budget
+exhaustion. Every peer retains the particle residual, replays two blended
+emissive intents, defers no draw, renders a nonempty filtered tail, and modifies
+143,997 or 144,003 final pixels within the bounded comparator tolerance. Vulkan
+validation is clean. This session also proves clean relog assembly after the
+PPLL capture.
+
+P0e3f is not yet accepted. The live scene has no non-particle custom-blend
+producer, and captured class names do not independently prove every requested
+content category such as decals, plants, glass, or appliers. Selected visible
+OpenGL output has not been read back and compared to private peer output;
+steady-state memory/GPU timing, resize, explicit device recovery, macOS OpenGL
+4.1, and Mesa+Zink provider evidence remain open. Native hashes remain evidence
+only: PPLL atomic append order and budget-local peel layer counts are not
+cross-API bit-identity contracts.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid

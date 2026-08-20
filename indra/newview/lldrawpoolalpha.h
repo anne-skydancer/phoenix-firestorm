@@ -59,7 +59,8 @@ public:
         ALPHA_OIT_RESIDUAL,
         ALPHA_DEPTH_PEEL_SELECT,
         ALPHA_DEPTH_PEEL_REPLAY,
-        ALPHA_DEPTH_PEEL_TAIL
+        ALPHA_DEPTH_PEEL_TAIL,
+        ALPHA_GHI_OBSERVE
     };
 
     LLDrawPoolAlpha(U32 type);

@@ -28,6 +28,7 @@
 
 #include "llghiopaquecapture.h"
 #include "llghimaterialcapture.h"
+#include "llghialphacapture.h"
 #include "llghienvironmentcapture.h"
 #include "llghiterraincapture.h"
 #include "llghiruntime.h"
@@ -4425,6 +4426,16 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
     LL_PROFILE_ZONE_SCOPED_CATEGORY_DRAWPOOL;
     LL_PROFILE_GPU_ZONE("renderGeomPostDeferred");
 
+    const bool capture_alpha = &camera == LLViewerCamera::getInstance() &&
+        mRT == &mMainRT && !gCubeSnapshot && !sRenderingHUDs &&
+        !sImpostorRender && !sReflectionRender && gAgent.getRegion() &&
+        gViewerWindow && LLGHIAlphaCapture::instance().beginFrame(
+            static_cast<U32>(gViewerWindow->getWorldViewWidthRaw()),
+            static_cast<U32>(gViewerWindow->getWorldViewHeightRaw()),
+            gFrameCount, LL::GHI::AlphaViewPhase::MainPostWater);
+    if (capture_alpha)
+        LLGHIAlphaCapture::instance().recordMasks();
+
     if (gUseWireframe)
     {
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -4564,6 +4575,8 @@ void LLPipeline::renderGeomPostDeferred(LLCamera& camera)
     if (&camera == LLViewerCamera::getInstance() &&
         LLGHIEnvironmentCapture::active())
         LLGHIEnvironmentCapture::instance().endFrame();
+    if (capture_alpha)
+        LLGHIAlphaCapture::instance().endFrame();
 }
 
 void LLPipeline::renderGeomShadow(LLCamera& camera)

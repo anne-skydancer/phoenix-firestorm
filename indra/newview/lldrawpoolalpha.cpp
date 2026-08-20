@@ -52,6 +52,7 @@
 #include "llglcommonfunc.h"
 #include "llvoavatar.h"
 #include "gltfscenemanager.h"
+#include "llghialphacapture.h"
 
 #include "llenvironment.h"
 
@@ -140,6 +141,33 @@ static void prepare_alpha_shader(LLGLSLShader* shader, bool deferredEnvironment,
 }
 
 extern bool gCubeSnapshot;
+
+namespace
+{
+bool alphaBlendFactor(LLRender::eBlendFactor source,
+                      LL::GHI::AlphaBlendFactor& output)
+{
+    using Factor = LL::GHI::AlphaBlendFactor;
+    switch (source)
+    {
+    case LLRender::BF_ZERO: output = Factor::Zero; return true;
+    case LLRender::BF_ONE: output = Factor::One; return true;
+    case LLRender::BF_SOURCE_COLOR: output = Factor::SourceColor; return true;
+    case LLRender::BF_ONE_MINUS_SOURCE_COLOR:
+        output = Factor::OneMinusSourceColor; return true;
+    case LLRender::BF_DEST_COLOR: output = Factor::DestinationColor; return true;
+    case LLRender::BF_ONE_MINUS_DEST_COLOR:
+        output = Factor::OneMinusDestinationColor; return true;
+    case LLRender::BF_SOURCE_ALPHA: output = Factor::SourceAlpha; return true;
+    case LLRender::BF_ONE_MINUS_SOURCE_ALPHA:
+        output = Factor::OneMinusSourceAlpha; return true;
+    case LLRender::BF_DEST_ALPHA: output = Factor::DestinationAlpha; return true;
+    case LLRender::BF_ONE_MINUS_DEST_ALPHA:
+        output = Factor::OneMinusDestinationAlpha; return true;
+    default: return false;
+    }
+}
+} // namespace
 
 void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
 {
@@ -252,6 +280,14 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     }
     use_depth_peel = use_depth_peel && !depth_peel_recovering;
 
+    if (LLGHIAlphaCapture::active() &&
+        getType() == LLDrawPool::POOL_ALPHA_POST_WATER)
+    {
+        LLGHIAlphaCapture::instance().setTransientLoad(transient_load);
+        forwardRender(true, ALPHA_GHI_OBSERVE);
+        forwardRender(false, ALPHA_GHI_OBSERVE);
+    }
+
     if (use_ppll)
     {
         drawGLTFScene();
@@ -281,8 +317,8 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
     else if (use_depth_peel)
     {
         drawGLTFScene();
-        static LLCachedControl<U32> peel_layers(gSavedSettings, "RenderAlphaDepthPeelLayers", 8);
-        static LLCachedControl<U32> peel_budget_ms(gSavedSettings, "RenderAlphaDepthPeelTimeBudgetMS", 4);
+        static LLCachedControl<U32> peel_layers(gSavedSettings, "RenderAlphaDepthPeelLayers", 4);
+        static LLCachedControl<U32> peel_budget_ms(gSavedSettings, "RenderAlphaDepthPeelTimeBudgetMS", 2);
         const U32 layer_count = llclamp((U32)peel_layers, 1u, 32u);
         const F32 time_budget = (F32)llclamp((U32)peel_budget_ms, 1u, 50u) * 0.001f;
         bool valid = true;
@@ -374,6 +410,20 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
 
 void LLDrawPoolAlpha::forwardRender(bool rigged, EAlphaOITPhase oit_phase)
 {
+    if (oit_phase == ALPHA_GHI_OBSERVE)
+    {
+        mColorSFactor = LLRender::BF_SOURCE_ALPHA;
+        mColorDFactor = LLRender::BF_ONE_MINUS_SOURCE_ALPHA;
+        mAlphaSFactor = LLRender::BF_ZERO;
+        mAlphaDFactor = LLRender::BF_ONE_MINUS_SOURCE_ALPHA;
+        renderAlpha(getVertexDataMask() | LLVertexBuffer::MAP_TEXTURE_INDEX |
+                        LLVertexBuffer::MAP_TANGENT |
+                        LLVertexBuffer::MAP_TEXCOORD1 |
+                        LLVertexBuffer::MAP_TEXCOORD2,
+                    false, rigged, oit_phase);
+        return;
+    }
+
     gPipeline.enableLightsDynamic();
 
     LLGLSPipelineAlpha gls_pipeline_alpha;
@@ -913,6 +963,43 @@ void LLDrawPoolAlpha::renderAlpha(U32 mask, bool depth_only, bool rigged, EAlpha
                     params.mBlendFuncSrc != LLRender::BF_SOURCE_ALPHA ||
                     params.mBlendFuncDst != LLRender::BF_ONE_MINUS_SOURCE_ALPHA;
                 const bool residual_draw = is_particle_or_hud_particle || custom_blend;
+
+                if (oit_phase == ALPHA_GHI_OBSERVE)
+                {
+                    LL::GHI::AlphaSceneDraw policy;
+                    policy.classification = custom_blend
+                        ? LL::GHI::AlphaSubmissionClass::CustomBlend
+                        : LL::GHI::AlphaSubmissionClass::StandardBlend;
+                    if (is_particle_or_hud_particle)
+                        policy.classification = LL::GHI::AlphaSubmissionClass::Particle;
+                    policy.rigged = rigged;
+                    policy.fullbright = params.mFullbright;
+                    policy.emissive = params.mVertexBuffer->hasDataType(
+                        LLVertexBuffer::TYPE_EMISSIVE);
+                    policy.minimumAlpha = LLPipeline::sImpostorRender
+                        ? MINIMUM_IMPOSTOR_ALPHA : MINIMUM_ALPHA;
+                    if (!LLPipeline::sImpostorRender &&
+                        params.mBlendFuncDst != LLRender::BF_SOURCE_ALPHA &&
+                        params.mBlendFuncSrc != LLRender::BF_SOURCE_ALPHA)
+                        policy.minimumAlpha = 0.f;
+                    if (alphaBlendFactor(
+                            static_cast<LLRender::eBlendFactor>(params.mBlendFuncSrc),
+                            policy.blend.sourceColor) &&
+                        alphaBlendFactor(
+                            static_cast<LLRender::eBlendFactor>(params.mBlendFuncDst),
+                            policy.blend.destinationColor) &&
+                        alphaBlendFactor(mAlphaSFactor, policy.blend.sourceAlpha) &&
+                        alphaBlendFactor(mAlphaDFactor,
+                                         policy.blend.destinationAlpha))
+                    {
+                        LLGHIAlphaCapture::instance().record(
+                            params,
+                            rigged ? LLRenderPass::PASS_ALPHA_RIGGED
+                                   : LLRenderPass::PASS_ALPHA,
+                            rigged, policy);
+                    }
+                    continue;
+                }
 
                 if (oit_phase == ALPHA_OIT_CAPTURE && residual_draw)
                 {

@@ -11936,7 +11936,7 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>Type</key>
     <string>U32</string>
     <key>Value</key>
-    <integer>8</integer>
+    <integer>4</integer>
   </map>
 
   <key>RenderAlphaDepthPeelTimeBudgetMS</key>
@@ -11948,7 +11948,7 @@ Change of this parameter will affect the layout of buttons in notification toast
     <key>Type</key>
     <string>U32</string>
     <key>Value</key>
-    <integer>4</integer>
+    <integer>2</integer>
   </map>
 
   <key>RenderAlphaPPLLAvailable</key>

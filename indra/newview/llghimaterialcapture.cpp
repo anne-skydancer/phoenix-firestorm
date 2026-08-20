@@ -275,11 +275,15 @@ public:
             std::getenv("VULKANSTORM_GHI_P0E2_CAPTURE");
         const bool environmentConfigured =
             environmentOutput && *environmentOutput;
+        const char* alphaOutput =
+            std::getenv("VULKANSTORM_GHI_P0E3_CAPTURE");
+        const bool alphaConfigured = alphaOutput && *alphaOutput;
         if ((mState == State::Disabled &&
              !materialConfigured && !lightingConfigured &&
              !terrainConfigured && !terrainLightingConfigured &&
              !projectorLightingConfigured && !shadowConfigured &&
-             !frameAssemblyConfigured && !environmentConfigured) ||
+             !frameAssemblyConfigured && !environmentConfigured &&
+             !alphaConfigured) ||
             mState == State::Complete || mState == State::Failed ||
             !image.getData() || image.getDataSize() <= 0)
             return;
@@ -299,7 +303,7 @@ public:
             (materialConfigured || lightingConfigured || terrainConfigured ||
              terrainLightingConfigured || projectorLightingConfigured ||
              shadowConfigured || frameAssemblyConfigured ||
-             environmentConfigured) &&
+             environmentConfigured || alphaConfigured) &&
             mState == State::Disabled;
         std::uint32_t observedWidth = sourceWidth;
         std::uint32_t observedHeight = sourceHeight;
@@ -404,6 +408,30 @@ public:
         return true;
     }
 
+    bool beginAssembly(std::uint32_t width, std::uint32_t height,
+                       std::uint64_t frameId)
+    {
+        if (mInFrame || !width || !height || !frameId) return false;
+        mPacket = {};
+        mPacket.frameId = frameId;
+        mPacket.sceneEpoch = ++mAssemblySceneEpoch;
+        mPacket.sourceWidth = width;
+        mPacket.sourceHeight = height;
+        mTextureIndices.clear();
+        mMaterialIndices.clear();
+        mSkinIndices.clear();
+        mRuntimeBudgetLimited = false;
+        mRuntimeRigidDraws = 0;
+        mRuntimeRiggedDraws = 0;
+        mRuntimeLightingReceiverDraws = 0;
+        mRuntimeShadowOpaqueRigidDraws = 0;
+        mRuntimeTextureBytes = 0;
+        mPacketAssembly = true;
+        mCaptureRuntime = true;
+        mInFrame = true;
+        return true;
+    }
+
     void record(LLDrawInfo& draw, std::uint32_t renderType, bool rigged)
     {
         if (!mInFrame) return;
@@ -428,7 +456,7 @@ public:
             (opaquePbrPass && draw.mGLTFMaterial.notNull() &&
              alphaMode(draw.mGLTFMaterial->mAlphaMode) ==
                  LL::GHI::MaterialAlphaMode::Opaque);
-        const bool runtimeGeometry = lightingReceiver || shadowPass;
+        const bool runtimeGeometry = mPacketAssembly || lightingReceiver || shadowPass;
         if (mCaptureRuntime && !mCaptureFile && !runtimeGeometry) return;
 
         // A live I5 sample is useful only when its production skin path is
@@ -437,7 +465,8 @@ public:
         // rigged draws in the consumer is too late. Let the first rigged draw
         // preempt the provisional rigid-only sample so its geometry, palette,
         // and texture set receive first claim on the same fixed budgets.
-        if (mCaptureRuntime && !mCaptureFile && !mCaptureShadowRuntime &&
+        if (!mPacketAssembly && mCaptureRuntime && !mCaptureFile &&
+            !mCaptureShadowRuntime &&
             rigged && lightingReceiver &&
             !mRuntimeRiggedDraws && mRuntimeRigidDraws)
         {
@@ -470,9 +499,11 @@ public:
         GeometryReject geometryReject = GeometryReject::None;
         const bool shadowOnly = mCaptureShadowRuntime && !mCaptureFile &&
             shadowPass && !lightingReceiver;
+        const bool alphaMasked = shadowMaskPass(renderType) ||
+            (mPacketAssembly && renderType == LLRenderPass::PASS_GRASS);
         const bool geometryCaptured = !runtimeGeometry ||
             (!missingSkin && captureGeometry(
-                draw, output, capturedSkin, shadowMaskPass(renderType),
+                draw, output, capturedSkin, alphaMasked,
                 shadowOnly, geometryReject));
         if (mCaptureRuntime && rigged && runtimeGeometry && !geometryCaptured)
         {
@@ -490,8 +521,8 @@ public:
         if (mCaptureRuntime && geometryCaptured && lightingReceiver)
             ++mRuntimeLightingReceiverDraws;
         output.material = material(draw, renderType, capturedSkin != nullptr,
-                                   shadowOnly,
-                                   shadowMaskPass(renderType));
+                       shadowOnly, alphaMasked,
+                       mPacketAssembly);
         if (output.material != LL::GHI::NO_RESOURCE)
             output.comparability = output.comparability |
                 mPacket.materials[output.material].comparability;
@@ -502,6 +533,28 @@ public:
             output.comparability = output.comparability |
                 LL::GHI::ResourceComparability::MissingSkinPalette;
         mPacket.draws.push_back(output);
+    }
+
+    bool recordAssembly(LLDrawInfo& draw, std::uint32_t renderType, bool rigged)
+    {
+        if (!mPacketAssembly) return false;
+        const std::size_t before = mPacket.draws.size();
+        record(draw, renderType, rigged);
+        return mPacket.draws.size() == before + 1;
+    }
+
+    bool endAssembly(LL::GHI::MaterialScenePacket& output,
+                     bool& budgetLimited)
+    {
+        if (!mInFrame || !mPacketAssembly) return false;
+        mInFrame = false;
+        mPacketAssembly = false;
+        mCaptureRuntime = false;
+        canonicalizeResources();
+        updateResourceEpoch(true);
+        budgetLimited = mRuntimeBudgetLimited;
+        output = std::move(mPacket);
+        return !output.draws.empty();
     }
 
     void end()
@@ -546,30 +599,7 @@ public:
 
         canonicalizeResources();
 
-        // An epoch changes only when the exact resource set changes, not merely
-        // because a frame was observed.
-        std::ostringstream signature;
-        for (const auto& texture : mPacket.textures)
-            signature << digestKey(texture.sourceIdentity)
-                      << digestKey(texture.contentIdentity) << ':'
-                      << texture.width << ':' << texture.height << ':'
-                      << texture.components << ':' << texture.discardLevel << ':'
-                      << static_cast<std::uint32_t>(texture.colorSpace) << ':'
-                      << static_cast<std::uint32_t>(texture.comparability) << ';';
-        for (const auto& material : mPacket.materials)
-            signature << digestKey(material.identity) << ':'
-                      << static_cast<std::uint32_t>(material.comparability) << ';';
-        for (const auto& skin : mPacket.skins)
-            signature << digestKey(skin.identity) << ':'
-                      << static_cast<std::uint32_t>(skin.comparability) << ';';
-        const std::string resourceSignature =
-            digestKey(digestString(signature.str()));
-        if (resourceSignature != mLastResourceSignature)
-        {
-            ++mResourceEpoch;
-            mLastResourceSignature = resourceSignature;
-        }
-        mPacket.resourceEpoch = mResourceEpoch;
+        updateResourceEpoch(false);
 
         if (captureRuntime)
         {
@@ -606,6 +636,37 @@ public:
     }
 
 private:
+    void updateResourceEpoch(bool assembly)
+    {
+        // An epoch changes only when the exact resource set changes, not merely
+        // because a frame was observed.
+        std::ostringstream signature;
+        for (const auto& texture : mPacket.textures)
+            signature << digestKey(texture.sourceIdentity)
+                      << digestKey(texture.contentIdentity) << ':'
+                      << texture.width << ':' << texture.height << ':'
+                      << texture.components << ':' << texture.discardLevel << ':'
+                      << static_cast<std::uint32_t>(texture.colorSpace) << ':'
+                      << static_cast<std::uint32_t>(texture.comparability) << ';';
+        for (const auto& material : mPacket.materials)
+            signature << digestKey(material.identity) << ':'
+                      << static_cast<std::uint32_t>(material.comparability) << ';';
+        for (const auto& skin : mPacket.skins)
+            signature << digestKey(skin.identity) << ':'
+                      << static_cast<std::uint32_t>(skin.comparability) << ';';
+        const std::string resourceSignature =
+            digestKey(digestString(signature.str()));
+        std::uint64_t& resourceEpoch = assembly
+            ? mAssemblyResourceEpoch : mResourceEpoch;
+        std::string& lastResourceSignature = assembly
+            ? mLastAssemblyResourceSignature : mLastResourceSignature;
+        if (resourceSignature != lastResourceSignature)
+        {
+            ++resourceEpoch;
+            lastResourceSignature = resourceSignature;
+        }
+        mPacket.resourceEpoch = resourceEpoch;
+    }
     bool captureGeometry(const LLDrawInfo& source,
                          LL::GHI::MaterialSceneDraw& output,
                          const LL::GHI::SkinResource* skinResource,
@@ -674,10 +735,12 @@ private:
             return false;
         }
 
-        const std::size_t maxDraws = mCaptureShadowRuntime ? 64 : 32;
-        const std::size_t maxRigidDraws = mCaptureShadowRuntime ? 48 : 24;
-        constexpr std::size_t maxVertices = 65536;
-        constexpr std::size_t maxIndices = 196608;
+        const std::size_t maxDraws = mPacketAssembly ? 4096 :
+            (mCaptureShadowRuntime ? 64 : 32);
+        const std::size_t maxRigidDraws = mPacketAssembly ? 4096 :
+            (mCaptureShadowRuntime ? 48 : 24);
+        const std::size_t maxVertices = mPacketAssembly ? 1048576 : 65536;
+        const std::size_t maxIndices = mPacketAssembly ? 3145728 : 196608;
         constexpr std::size_t receiverDrawReserve = 4;
         constexpr std::size_t receiverVertexReserve = 8192;
         constexpr std::size_t receiverIndexReserve = 32768;
@@ -1089,7 +1152,7 @@ private:
 
     std::uint32_t material(LLDrawInfo& draw, std::uint32_t renderType,
                            bool priority, bool shadowOnly,
-                           bool alphaMasked)
+                           bool alphaMasked, bool forceAlphaBlend)
     {
         LL::GHI::MaterialResource resource;
         std::ostringstream identity;
@@ -1154,6 +1217,10 @@ private:
                             LL::GHI::TextureColorSpace::SRGB, priority);
             }
         }
+        if (alphaMasked)
+            resource.alphaMode = LL::GHI::MaterialAlphaMode::Mask;
+        else if (forceAlphaBlend)
+            resource.alphaMode = LL::GHI::MaterialAlphaMode::Blend;
         if (resource.alphaMode == LL::GHI::MaterialAlphaMode::Blend)
             resource.comparability = resource.comparability |
                 LL::GHI::ResourceComparability::AlphaDeferred;
@@ -1212,6 +1279,7 @@ private:
     bool mCaptureFile = false;
     bool mCaptureRuntime = false;
     bool mCaptureShadowRuntime = false;
+    bool mPacketAssembly = false;
     bool mRuntimeBudgetLimited = false;
     std::size_t mRuntimeRigidDraws = 0;
     std::size_t mRuntimeRiggedDraws = 0;
@@ -1232,6 +1300,9 @@ private:
     std::uint64_t mSceneEpoch = 0;
     std::uint64_t mResourceEpoch = 0;
     std::string mLastResourceSignature;
+    std::uint64_t mAssemblySceneEpoch = 0;
+    std::uint64_t mAssemblyResourceEpoch = 0;
+    std::string mLastAssemblyResourceSignature;
     std::map<std::string, std::uint32_t> mTextureIndices;
     std::map<std::string, std::uint32_t> mMaterialIndices;
     std::map<std::string, std::uint32_t> mSkinIndices;
@@ -1268,6 +1339,21 @@ bool LLGHIMaterialCapture::copyDecodedTexture(
     LL::GHI::MaterialTextureResource& output) const
 {
     return mImpl->copyObservation(texture, output);
+}
+bool LLGHIMaterialCapture::beginPacketAssembly(
+    std::uint32_t width, std::uint32_t height, std::uint64_t frame_id)
+{
+    return mImpl->beginAssembly(width, height, frame_id);
+}
+bool LLGHIMaterialCapture::recordPacketDraw(
+    LLDrawInfo& draw, std::uint32_t render_type, bool rigged)
+{
+    return mImpl->recordAssembly(draw, render_type, rigged);
+}
+bool LLGHIMaterialCapture::endPacketAssembly(
+    LL::GHI::MaterialScenePacket& output, bool& budget_limited)
+{
+    return mImpl->endAssembly(output, budget_limited);
 }
 void LLGHIMaterialCapture::record(LLDrawInfo& draw,
                                   std::uint32_t render_type, bool rigged)

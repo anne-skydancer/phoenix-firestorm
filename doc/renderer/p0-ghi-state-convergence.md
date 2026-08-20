@@ -430,6 +430,86 @@ deterministic and has no graphics-API handle. The contract suite passes 39 of
 39 tests. No production traversal or visible rendering ownership changes in
 this gate.
 
+P0e3b live assembly is implemented. `LLGHIAlphaCapture` owns a narrowly scoped,
+main-view observation
+lifecycle around `renderGeomPostDeferred`; it never extends the R5 material
+observer through post-deferred rendering and never creates a second GHI
+OpenGL device. The existing material capture owner exposes one sequential,
+bounded packet-assembly session so alpha capture reuses the same decoded
+texture, material, skin, vertex, index, and draw construction. Assembly has
+independent scene and resource epochs and therefore does not perturb R5 or
+production-frame epoch tracking.
+
+When `VULKANSTORM_GHI_P0E3_CAPTURE` names an output file, decoder-time texture
+observation is armed from process startup. Capture waits 120 seconds by
+default; `VULKANSTORM_GHI_P0E3_WARMUP_SECONDS` accepts a bounded override from
+zero through 3600 seconds. No persistent setting is added. The observer first
+records the already-culled alpha-mask render maps as `Mask`, then performs one
+non-drawing walk of the actual post-water rigged and rigid alpha group order
+before any selected PPLL or depth-peeling replay. That walk records particles,
+custom blends, standard blends, full-bright and independent emissive intent,
+actual color factors, the alpha pool's `ZERO` / `ONE_MINUS_SOURCE_ALPHA`
+separate alpha factors, and the effective minimum-alpha threshold. The normal
+OpenGL traversal remains the only visible renderer.
+
+The owner is admitted only for the world camera, main render target, and
+non-HUD, non-impostor, non-reflection, non-cube-snapshot path. Pre-water alpha
+is not collected into the exact-method packet. Dynamic-texture and media
+offscreen rendering do not enter this owner. These exclusions preserve the
+existing routing contract; P0e4 and P0e5 must supply their explicit nested and
+media view ownership rather than having P0e3 infer it from ambient OpenGL
+state. The accepted depth-peeling defaults are now four layers and a
+two-millisecond CPU submission budget.
+
+`llrender_alpha_packet_inspector` independently decodes a saved packet and
+reports identity, extent, policy/material draw counts, class and route counts,
+rigged/full-bright/emissive coverage, decoded texture bytes, and bounded
+geometry. Contract coverage includes deterministic round trip, cross-frame
+identity rejection, route/material disagreement, production separate-alpha
+factors, malformed blend state, bounded policy rejection, truncation, and
+trailing-data rejection. A real packet still must demonstrate standard and
+residual routes, particles, custom blend work, rigid and rigged alpha, legacy
+and PBR materials, masks, full-bright work, and emissive replay intent where
+the scene contains them. Missing scene categories must be reported rather than
+fabricated. Shared legacy execution remains P0e3c work; `LegacyResidual` in
+this packet is routing data and grants no backend permission to issue OpenGL
+calls.
+
+The first real-grid packet recorded frame 3931 at 2560 by 1350 after the full
+120-second settle period. Independent decode reports 147 alpha policies and
+147 material draws, 195,084 bounded vertices, 913,119 indices, 70 textures
+containing 2,894,224 decoded bytes, 21 masks, 126 standard blends, 36 rigged
+draws, 23 full-bright draws, and 21 independent emissive intents. Material
+coverage is 144 legacy and three PBR draws; 69 of 70 texture resources are
+comparable. All 126 standard blends preserve the active production color
+factors and separate `ZERO` / `ONE_MINUS_SOURCE_ALPHA` alpha factors. Its
+21,471,776-byte identity is
+`fbb791dc1806fb73b99b34d29027489f4716691951c521d962affb18ecba479e`.
+The packet is non-transient and records the selected legacy-sorted method.
+The visible System OpenGL viewer remained responsive throughout capture.
+
+That scene contained no particle or custom-blend submission, so it provides no
+`LegacyResidual` coverage. P0e3b category qualification therefore remains
+open until a settled scene deliberately supplies particles and a second
+independent decode confirms their route. Current production assignment sites
+leave non-particle draw-info on standard factors; only particle draw-info sets
+custom factors, and particle classification intentionally takes precedence.
+The separate `CustomBlend` route remains contract-tested but has no live
+non-particle producer to capture. No validation rule is weakened to compensate
+for the missing scene content.
+
+A second settled real-grid capture deliberately placed a visible particle
+emitter in view. Frame 3580 contains 46 policy/material draw pairs, 134,248
+vertices, 616,200 indices, 16 masks, 28 standard blends, and two real particle
+draws. Independent routing reports two `LegacyResidual` entries, with all
+other blended work remaining `LegacySorted` for the selected method. The
+packet also includes 36 rigged draws, 42 legacy and four PBR draws, three
+full-bright and three emissive intents, and 45 of 46 comparable textures with
+1,995,152 decoded bytes. Its 14,734,812-byte identity is
+`92f1b53a398f2b17e0a84e62dd1c1239f72c74f9e6a7c6aa3c8fe2914ce2e47a`.
+The packet is non-transient and the visible System OpenGL viewer remained
+responsive throughout capture.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid

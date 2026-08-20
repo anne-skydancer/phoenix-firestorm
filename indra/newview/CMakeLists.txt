@@ -284,6 +284,7 @@ set(viewer_SOURCE_FILES
     lldonotdisturbnotificationstorage.cpp
     lldndbutton.cpp
     lldrawable.cpp
+      llghialphacapture.cpp
     llghiopaquecapture.cpp
       llghimaterialcapture.cpp
       llghienvironmentcapture.cpp
@@ -1160,6 +1161,7 @@ set(viewer_HEADER_FILES
     lldndbutton.h
     lldrawable.h
     lldrawpool.h
+      llghialphacapture.h
     llghiopaquecapture.h
       llghimaterialcapture.h
       llghienvironmentcapture.h

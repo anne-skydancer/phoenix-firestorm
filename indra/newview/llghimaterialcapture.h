@@ -17,6 +17,7 @@ class LLViewerFetchedTexture;
 
 namespace LL::GHI
 {
+struct MaterialScenePacket;
 struct MaterialTextureResource;
 }
 
@@ -37,6 +38,14 @@ public:
     // caller supplies its own semantic source identity and color space.
     bool copyDecodedTexture(const LLViewerFetchedTexture& texture,
                             LL::GHI::MaterialTextureResource& output) const;
+    // Reuse the production material/resource/geometry builder for a separate,
+    // sequential observer. The caller owns the surrounding frame lifecycle.
+    bool beginPacketAssembly(std::uint32_t width, std::uint32_t height,
+                             std::uint64_t frame_id);
+    bool recordPacketDraw(LLDrawInfo& draw, std::uint32_t render_type,
+                          bool rigged);
+    bool endPacketAssembly(LL::GHI::MaterialScenePacket& output,
+                           bool& budget_limited);
     void record(LLDrawInfo& draw, std::uint32_t render_type, bool rigged);
     void endFrame();
 

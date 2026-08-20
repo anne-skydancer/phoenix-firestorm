@@ -3365,7 +3365,15 @@ void LLGHIValidationObject::test<39>()
     materialDraw.material = 0;
     materialDraw.indexCount = 3;
     source.materials.draws.push_back(materialDraw);
-    source.draws.push_back({AlphaSubmissionClass::StandardBlend});
+    AlphaSceneDraw alphaDraw;
+    alphaDraw.classification = AlphaSubmissionClass::StandardBlend;
+    alphaDraw.blend.sourceColor = AlphaBlendFactor::SourceAlpha;
+    alphaDraw.blend.destinationColor =
+        AlphaBlendFactor::OneMinusSourceAlpha;
+    alphaDraw.blend.sourceAlpha = AlphaBlendFactor::Zero;
+    alphaDraw.blend.destinationAlpha =
+        AlphaBlendFactor::OneMinusSourceAlpha;
+    source.draws.push_back(alphaDraw);
 
     ensure("P0e3 alpha scene validates",
            validateAlphaScenePacket(source).ok());
@@ -3378,6 +3386,10 @@ void LLGHIValidationObject::test<39>()
     ensure("P0e3 alpha scene decodes",
            decodeAlphaScenePacket(first, decoded).ok());
     ensure("P0e3 alpha scene round trips", decoded == source);
+    ensure("P0e3 preserves production separate alpha blend factors",
+           decoded.draws[0].blend.sourceAlpha == AlphaBlendFactor::Zero &&
+           decoded.draws[0].blend.destinationAlpha ==
+               AlphaBlendFactor::OneMinusSourceAlpha);
     ensure("P0e3 alpha scene has a stable identity",
            !alphaScenePacketSha256(source).empty());
 
@@ -3401,6 +3413,15 @@ void LLGHIValidationObject::test<39>()
     invalid.depthPeelPolicy.maximumLayers = 0;
     ensure("P0e3 rejects unbounded OIT policy",
            !validateAlphaScenePacket(invalid));
+        invalid = source;
+        invalid.draws[0].blend.sourceColor =
+         static_cast<AlphaBlendFactor>(0xff);
+        ensure("P0e3 rejects malformed blend state",
+            !validateAlphaScenePacket(invalid));
+        first.push_back(std::byte{0});
+        ensure("P0e3 rejects trailing alpha scene data",
+            !decodeAlphaScenePacket(first, decoded));
+        first.pop_back();
     first.pop_back();
     ensure("P0e3 rejects truncated alpha scenes",
            !decodeAlphaScenePacket(first, decoded));

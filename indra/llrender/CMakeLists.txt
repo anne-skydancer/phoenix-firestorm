@@ -1193,6 +1193,12 @@ if (WINDOWS)
     target_include_directories(llrender_environment_packet_inspector PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
     target_link_libraries(llrender_environment_packet_inspector llrender)
+
+    add_executable(llrender_alpha_packet_inspector
+        tests/ghi/llghialphapacketinspector.cpp)
+    target_include_directories(llrender_alpha_packet_inspector PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+    target_link_libraries(llrender_alpha_packet_inspector llrender)
   endif ()
 endif ()
 

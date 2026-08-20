@@ -46,6 +46,9 @@ struct ProductionAlphaResult
     std::uint32_t sortedDraws = 0;
     std::uint32_t residualDraws = 0;
     std::uint32_t ppllDraws = 0;
+    std::uint32_t depthPeelDraws = 0;
+    std::uint32_t depthPeelLayers = 0;
+    std::uint64_t depthPeelTailModifiedPixels = 0;
     std::uint32_t emissiveReplays = 0;
     std::uint32_t deferredDraws = 0;
     std::uint32_t deferredRouteOrMaterialDraws = 0;
@@ -56,8 +59,11 @@ struct ProductionAlphaResult
     std::uint32_t ppllExactLayers = 0;
     std::uint32_t ppllAllocatedNodes = 0;
     std::uint32_t ppllOverflowFragments = 0;
+    bool depthPeelTailRendered = false;
+    bool depthPeelBudgetExhausted = false;
     std::uint64_t modifiedPixels = 0;
     bool ppllAvailable = false;
+    bool depthPeelingAvailable = false;
     std::string packetSha256;
     std::string colorSha256;
 };

@@ -603,6 +603,50 @@ than a bit-identity requirement. A fresh viewer capture with PPLL actually
 selected, steady-state memory/performance qualification, and comparison to
 the selected visible renderer remain P0e3f work. Depth peeling remains P0e3e.
 
+### P0e3e — production bounded depth peeling
+
+The production executor now routes eligible main post-water standard blends
+through a storage-free depth-peel package shared by OpenGL 4.1, OpenGL 4.4,
+and Vulkan. The package preserves the production material, texture, skin,
+minimum-alpha, full-bright, transform, lighting, particle residual, and
+once-only emissive ownership established by P0e3c. It samples the completed
+shared opaque depth rather than attaching it while sampling, and owns one
+bounded private depth image per selected layer so exact replay never reads an
+overwritten ping-pong result.
+
+Each pass selects the next reverse-Z layer into depth only. After selection,
+work beyond the last selected layer executes once in captured legacy order,
+then retained exact layers replay farthest-to-nearest over that tail. Particles
+and custom blends remain residual routes, masks remain upstream, and emissive
+intent replays once after alpha composition. The packet's validated policy
+bounds layers from 1 through 32; accepted defaults remain four layers and a
+two-millisecond CPU submission budget. Result evidence records selected layer
+count, budget exhaustion, tail execution, and pixels modified before exact
+replay.
+
+The frame-3580 particle capture routes all 28 standard draws through four
+layers on all peers, preserves both residual particle draws and two emissive
+replays, defers nothing, and renders a nonempty filtered tail. OpenGL modifies
+1,155 final pixels and Vulkan 1,156. A deterministic 64-by-64 layered transform
+retains four exact layers plus a 3,721-pixel tail and modifies all 4,096 pixels;
+OpenGL 4.1, OpenGL 4.4, and Vulkan produce identical hashes with validation
+clean.
+
+The larger frame-3931 capture executes all 126 standard draws and 19 emissive
+replays with no deferral. OpenGL completes four layers within two milliseconds;
+Vulkan completes two and reports budget exhaustion. Both render a nonempty
+filtered tail and modify the same 21,281 final pixels, although tail coverage
+and hashes differ because the accepted budget deliberately permits a
+backend-local number of exact layers. The comparator requires strict route,
+identity, no-deferral, policy, tail-presence, and budget consistency, and keeps
+tight pixel tolerances whenever layer counts match.
+
+P0e3e remains private and non-presenting. The archived captures selected legacy
+sorting, so isolated `--peel` replay changes only requested policy and reports
+source and effective identities separately. A fresh viewer capture with depth
+peeling selected, GPU timing/performance qualification, and selected-renderer
+visual comparison remain P0e3f work.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid

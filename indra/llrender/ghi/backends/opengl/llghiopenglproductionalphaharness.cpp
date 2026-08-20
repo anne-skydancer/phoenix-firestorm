@@ -18,6 +18,9 @@
 #ifndef LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE
 #error LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE must name the legacy alpha package
 #endif
+#ifndef LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE
+#error LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE must name the depth-peel package
+#endif
 
 namespace
 {
@@ -60,6 +63,11 @@ void report(const LL::GHI::Test::ProductionAlphaHarnessResult& result,
               << ',' << value.ppllNodeCapacity << ',' << value.ppllExactLayers
               << ',' << value.ppllAllocatedNodes << ','
               << value.ppllOverflowFragments
+              << " peel=" << value.depthPeelingAvailable << ','
+              << value.depthPeelDraws << ',' << value.depthPeelLayers << ','
+              << value.depthPeelTailRendered << ','
+              << value.depthPeelBudgetExhausted << ','
+              << value.depthPeelTailModifiedPixels
               << " modified=" << value.modifiedPixels
               << " color-sha256=" << value.colorSha256 << '\n';
 }
@@ -71,6 +79,8 @@ int main(int argc, char** argv)
     bool forcePPLL = false;
     bool stressPPLL = false;
     bool tailPPLL = false;
+    bool forcePeel = false;
+    bool stressPeel = false;
     for (int index = 1; index < argc; ++index)
         if (std::string(argv[index]) == "--packet" && index + 1 < argc)
             packetPath = argv[++index];
@@ -79,6 +89,9 @@ int main(int argc, char** argv)
         { forcePPLL = true; stressPPLL = true; }
         else if (std::string(argv[index]) == "--ppll-tail")
         { forcePPLL = true; tailPPLL = true; }
+        else if (std::string(argv[index]) == "--peel") forcePeel = true;
+        else if (std::string(argv[index]) == "--peel-stress")
+        { forcePeel = true; stressPeel = true; }
     if (packetPath.empty())
     {
         std::cerr << "usage: llrender_opengl_production_alpha_harness --packet <file>\n";
@@ -93,8 +106,11 @@ int main(int argc, char** argv)
         return 3;
     }
     if (forcePPLL) packet.requestedMethod = LL::GHI::AlphaMethod::PPLL;
+    if (forcePeel) packet.requestedMethod = LL::GHI::AlphaMethod::DepthPeeling;
     if (stressPPLL || tailPPLL)
         LL::GHI::Test::stressProductionAlphaPacket(packet, stressPPLL);
+    if (stressPeel)
+        LL::GHI::Test::stressProductionDepthPeelPacket(packet);
 
     HINSTANCE instance = GetModuleHandle(nullptr);
     const wchar_t* className = L"VulkanstormProductionAlphaOpenGLHarness";
@@ -124,7 +140,8 @@ int main(int argc, char** argv)
     LL::GHI::ShaderPackageDesc package;
     status = LL::GHI::loadShaderPackage(forcePPLL
         ? LL_GHI_P0_ALPHA_SHADER_PACKAGE
-        : LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE, package);
+        : forcePeel ? LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE
+                    : LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE, package);
     int exitCode = 0;
     if (!status) { std::cerr << status.message() << '\n'; exitCode = 6; }
     else
@@ -139,8 +156,9 @@ int main(int argc, char** argv)
             if (!result.passed) { std::cerr << result.message << '\n'; exitCode = 8; }
             else report(result, "OpenGL44", sourceHash);
             LL::GHI::ShaderPackageDesc fallback;
-            status = LL::GHI::loadShaderPackage(
-                LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE, fallback);
+            status = LL::GHI::loadShaderPackage(forcePeel
+                ? LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE
+                : LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE, fallback);
             for (auto& stage : fallback.stages)
                 std::erase_if(stage.artifacts, [](const auto& artifact)
                 { return artifact.target == LL::GHI::ShaderPackageDesc::TargetProfile::OpenGL44; });

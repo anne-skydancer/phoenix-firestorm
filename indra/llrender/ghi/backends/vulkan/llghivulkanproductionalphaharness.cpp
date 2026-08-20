@@ -15,6 +15,9 @@
 #ifndef LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE
 #error LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE must name the legacy alpha package
 #endif
+#ifndef LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE
+#error LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE must name the depth-peel package
+#endif
 
 int main(int argc, char** argv)
 {
@@ -23,6 +26,8 @@ int main(int argc, char** argv)
     bool forcePPLL = false;
     bool stressPPLL = false;
     bool tailPPLL = false;
+    bool forcePeel = false;
+    bool stressPeel = false;
     for (int index = 1; index < argc; ++index)
     {
         const std::string argument = argv[index];
@@ -34,6 +39,9 @@ int main(int argc, char** argv)
         { forcePPLL = true; stressPPLL = true; }
         else if (argument == "--ppll-tail")
         { forcePPLL = true; tailPPLL = true; }
+        else if (argument == "--peel") forcePeel = true;
+        else if (argument == "--peel-stress")
+        { forcePeel = true; stressPeel = true; }
     }
     if (packetPath.empty())
     {
@@ -54,12 +62,16 @@ int main(int argc, char** argv)
     }
     const std::string sourceHash = LL::GHI::sha256(encoded);
     if (forcePPLL) packet.requestedMethod = LL::GHI::AlphaMethod::PPLL;
+    if (forcePeel) packet.requestedMethod = LL::GHI::AlphaMethod::DepthPeeling;
     if (stressPPLL || tailPPLL)
         LL::GHI::Test::stressProductionAlphaPacket(packet, stressPPLL);
+    if (stressPeel)
+        LL::GHI::Test::stressProductionDepthPeelPacket(packet);
     LL::GHI::ShaderPackageDesc package;
     status = LL::GHI::loadShaderPackage(forcePPLL
         ? LL_GHI_P0_ALPHA_SHADER_PACKAGE
-        : LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE, package);
+        : forcePeel ? LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE
+                    : LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE, package);
     if (!status) { std::cerr << status.message() << '\n'; return 4; }
     LL::GHI::DeviceCreationResult creation = LL::GHI::createDevice(
         {LL::GHI::Backend::Vulkan, 0, 2, validation});
@@ -84,6 +96,11 @@ int main(int argc, char** argv)
               << ',' << value.ppllNodeCapacity << ',' << value.ppllExactLayers
               << ',' << value.ppllAllocatedNodes << ','
               << value.ppllOverflowFragments
+              << " peel=" << value.depthPeelingAvailable << ','
+              << value.depthPeelDraws << ',' << value.depthPeelLayers << ','
+              << value.depthPeelTailRendered << ','
+              << value.depthPeelBudgetExhausted << ','
+              << value.depthPeelTailModifiedPixels
               << " modified=" << value.modifiedPixels
               << " color-sha256=" << value.colorSha256 << '\n';
     creation.device.reset();

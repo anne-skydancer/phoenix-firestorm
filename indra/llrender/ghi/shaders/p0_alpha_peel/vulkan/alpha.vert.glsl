@@ -1,0 +1,34 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "ghi_vulkan_clip.glsl"
+layout(set = 0, binding = 0, std140) uniform FrameData { mat4 viewProjection; } frameData;
+layout(set = 1, binding = 0, std140) uniform ObjectData { mat4 modelTransform; mat4 normalTransform; } objectData;
+layout(set = 1, binding = 1, std140) uniform SkinData { mat3x4 jointTransforms[110]; uvec4 skinMeta; } skinData;
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec3 inNormal;
+layout(location = 3) in vec2 inTexCoord;
+layout(location = 4) in vec4 inColor;
+layout(location = 5) in uvec4 inJoints;
+layout(location = 6) in vec4 inWeights;
+layout(location = 0) out vec2 texCoord;
+layout(location = 1) out vec4 vertexColor;
+layout(location = 2) out vec3 worldNormal;
+void main()
+{
+    vec4 weights = max(inWeights, vec4(0.0));
+    weights /= max(dot(weights, vec4(1.0)), 0.000001);
+    uint lastJoint = max(skinData.skinMeta.x, 1u) - 1u;
+    uvec4 joints = min(inJoints, uvec4(lastJoint));
+    mat3x4 packedSkin = skinData.jointTransforms[joints.x] * weights.x
+                      + skinData.jointTransforms[joints.y] * weights.y
+                      + skinData.jointTransforms[joints.z] * weights.z
+                      + skinData.jointTransforms[joints.w] * weights.w;
+    mat3 skinLinear = mat3(packedSkin);
+    vec3 translation = vec3(packedSkin[0].w, packedSkin[1].w, packedSkin[2].w);
+    mat4 skin = mat4(vec4(skinLinear[0], 0.0), vec4(skinLinear[1], 0.0),
+                     vec4(skinLinear[2], 0.0), vec4(translation, 1.0));
+    gl_Position = ghiToVulkanClip(frameData.viewProjection * objectData.modelTransform
+                                  * skin * vec4(inPosition, 1.0));
+    texCoord = inTexCoord; vertexColor = inColor;
+    worldNormal = normalize(mat3(objectData.normalTransform) * skinLinear * inNormal);
+}

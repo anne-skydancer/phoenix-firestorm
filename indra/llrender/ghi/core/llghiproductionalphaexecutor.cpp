@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -89,6 +90,31 @@ bool hasPPLLArtifact(const ShaderPackageDesc& package, Backend backend)
         binding(0, ShaderPackageDesc::BindingType::StorageImage) &&
         binding(1, ShaderPackageDesc::BindingType::StorageBuffer) &&
         binding(2, ShaderPackageDesc::BindingType::StorageBuffer);
+}
+
+bool hasDepthPeelArtifact(const ShaderPackageDesc& package, Backend backend)
+{
+    const ShaderPackageDesc::TargetProfile required = backend == Backend::OpenGL
+        ? ShaderPackageDesc::TargetProfile::OpenGL41
+        : ShaderPackageDesc::TargetProfile::VulkanSpirV13;
+    const auto fragment = std::find_if(package.stages.begin(), package.stages.end(),
+        [](const ShaderPackageDesc::StageArtifact& stage)
+        { return stage.stage == ShaderPackageDesc::Stage::Fragment; });
+    const auto binding = [&](std::uint16_t index,
+                             ShaderPackageDesc::BindingType type)
+    {
+        return std::any_of(package.bindings.begin(), package.bindings.end(),
+            [index, type](const ShaderPackageDesc::Binding& value)
+            { return value.group == 3 && value.binding == index &&
+                     value.type == type; });
+    };
+    return fragment != package.stages.end() &&
+        std::any_of(fragment->artifacts.begin(), fragment->artifacts.end(),
+            [required](const ShaderPackageDesc::CodeArtifact& artifact)
+            { return artifact.target == required; }) &&
+        binding(0, ShaderPackageDesc::BindingType::UniformBuffer) &&
+        binding(1, ShaderPackageDesc::BindingType::CombinedImageSampler) &&
+        binding(2, ShaderPackageDesc::BindingType::CombinedImageSampler);
 }
 
 std::uint64_t alignUp(std::uint64_t value, std::uint64_t alignment)
@@ -310,6 +336,8 @@ public:
         const bool ppllAvailable = supportsPPLL(mDevice.capabilities()) &&
             hasPPLLArtifact(mShaderPackage, mDevice.backend()) &&
             ppllAllocation.usable;
+        const bool depthPeelingAvailable =
+            hasDepthPeelArtifact(mShaderPackage, mDevice.backend());
 
         struct Draw
         {
@@ -323,6 +351,8 @@ public:
             BindingSetHandle materialSet;
             PipelineHandle pipeline;
             PipelineHandle replayPipeline;
+            PipelineHandle peelPipeline;
+            PipelineHandle tailPipeline;
         };
 
         std::vector<Texture> textures(packet.materials.textures.size());
@@ -348,7 +378,8 @@ public:
         if (!status) return status;
 
         const AlphaRoutingState routing{
-            packet.requestedMethod, ppllAvailable, false, packet.transientLoad};
+            packet.requestedMethod, ppllAvailable, depthPeelingAvailable,
+            packet.transientLoad};
         std::vector<Draw> draws;
         std::uint32_t maskDraws = 0;
         std::uint32_t deferredDraws = 0;
@@ -358,6 +389,7 @@ public:
         std::uint32_t sortedDraws = 0;
         std::uint32_t residualDraws = 0;
         std::uint32_t ppllDraws = 0;
+        std::uint32_t depthPeelDraws = 0;
         std::uint32_t emissiveReplays = 0;
         for (std::size_t source = 0; source < packet.draws.size(); ++source)
         {
@@ -373,7 +405,8 @@ public:
             }
             if (route != AlphaRoute::LegacySorted &&
                 route != AlphaRoute::LegacyResidual &&
-                route != AlphaRoute::PPLLCapture)
+                route != AlphaRoute::PPLLCapture &&
+                route != AlphaRoute::DepthPeelExact)
             {
                 ++deferredDraws;
                 ++deferredRouteOrMaterialDraws;
@@ -438,6 +471,7 @@ public:
             }
             if (route == AlphaRoute::LegacyResidual) ++residualDraws;
             else if (route == AlphaRoute::PPLLCapture) ++ppllDraws;
+            else if (route == AlphaRoute::DepthPeelExact) ++depthPeelDraws;
             else ++sortedDraws;
             emissiveReplays += alpha.emissive;
             draws.push_back(executable);
@@ -508,6 +542,14 @@ public:
         if (ppllDraws) total = alignUp(total + headBytes, alignment);
         const std::uint64_t counterOffset = total;
         if (ppllDraws) total = alignUp(total + 2u * sizeof(std::uint32_t), alignment);
+        const std::uint32_t maximumPeelLayers = depthPeelDraws
+            ? packet.depthPeelPolicy.maximumLayers : 0u;
+        const std::size_t peelSlots = depthPeelDraws
+            ? static_cast<std::size_t>(maximumPeelLayers) * 3u + 1u : 0u;
+        const std::uint64_t peelStride = alignUp(4u * sizeof(std::uint32_t), alignment);
+        const std::uint64_t peelOffset = total;
+        if (depthPeelDraws)
+            total = alignUp(total + peelStride * peelSlots, alignment);
         if (total == std::numeric_limits<std::uint64_t>::max() ||
             total > limits.maxUploadBytes ||
             total > mDevice.capabilities().maxBufferSize)
@@ -617,17 +659,47 @@ public:
             std::fill_n(reinterpret_cast<std::uint32_t*>(
                             bytes.data() + counterOffset), 2, 0u);
         }
+        if (depthPeelDraws)
+        {
+            for (std::uint32_t layer = 0; layer < maximumPeelLayers; ++layer)
+            {
+                const std::array<std::uint32_t, 4> selection{{layer, 0u, 0u, 0u}};
+                const std::array<std::uint32_t, 4> replay{{layer, 1u, 0u, 0u}};
+                const std::array<std::uint32_t, 4> tail{{layer + 1u, 2u, 0u, 0u}};
+                std::memcpy(bytes.data() + peelOffset + peelStride * layer,
+                            selection.data(), sizeof(selection));
+                std::memcpy(bytes.data() + peelOffset + peelStride *
+                                (maximumPeelLayers + layer),
+                            replay.data(), sizeof(replay));
+                std::memcpy(bytes.data() + peelOffset + peelStride *
+                                (maximumPeelLayers * 2u + layer),
+                            tail.data(), sizeof(tail));
+            }
+            const std::array<std::uint32_t, 4> bypass{{0u, 3u, 0u, 0u}};
+            std::memcpy(bytes.data() + peelOffset + peelStride *
+                            (maximumPeelLayers * 3u),
+                        bypass.data(), sizeof(bypass));
+        }
         for (const Texture& texture : textures)
             if (!texture.pixels.empty())
                 std::memcpy(bytes.data() + texture.uploadOffset,
                             texture.pixels.data(), texture.pixels.size());
 
         BufferHandle staging, vertices, indices, frames, alphaData,
-                 objects, skins, materials, ppllNodes, ppllCounter;
+                 objects, skins, materials, ppllNodes, ppllCounter,
+                 peelUniforms;
         ImageHandle ppllHead;
         ImageViewHandle ppllHeadView;
         BindingSetHandle ppllSet, resolveFrameSet;
         PipelineHandle resolvePipeline;
+        std::vector<ImageHandle> peelDepth(maximumPeelLayers);
+        std::vector<ImageViewHandle> peelDepthViews(maximumPeelLayers);
+        std::vector<ImageViewHandle> peelSampledViews(maximumPeelLayers);
+        SamplerHandle peelSampler;
+        std::vector<BindingSetHandle> peelSelectionSets;
+        std::vector<BindingSetHandle> peelReplaySets;
+        std::vector<BindingSetHandle> peelTailSets;
+        BindingSetHandle peelBypassSet;
         auto cleanup = [&]()
         {
             Status first = Status::success();
@@ -639,12 +711,21 @@ public:
                 destroy(draw.materialSet, first);
             }
             destroy(resolveFrameSet, first); destroy(ppllSet, first);
+            for (auto& set : peelSelectionSets) destroy(set, first);
+            for (auto& set : peelReplaySets) destroy(set, first);
+            for (auto& set : peelTailSets) destroy(set, first);
+            destroy(peelBypassSet, first);
             destroy(staging, first); destroy(vertices, first);
             destroy(indices, first); destroy(frames, first);
             destroy(alphaData, first); destroy(objects, first);
             destroy(skins, first); destroy(materials, first);
+            destroy(peelUniforms, first);
             destroy(ppllHeadView, first); destroy(ppllHead, first);
             destroy(ppllNodes, first); destroy(ppllCounter, first);
+            destroy(peelSampler, first);
+            for (auto& view : peelSampledViews) destroy(view, first);
+            for (auto& view : peelDepthViews) destroy(view, first);
+            for (auto& image : peelDepth) destroy(image, first);
             destroyTextures(textures, first);
             return first;
         };
@@ -684,6 +765,31 @@ public:
         if (status && ppllDraws) ppllHeadView = mDevice.createImageView(
             {ppllHead, Format::R32UInt,
              {ImageAspect::Color, 0, 1, 0, 1}}, status);
+        if (status && depthPeelDraws) peelUniforms = mDevice.createBuffer(
+            {peelStride * peelSlots, ResourceUsage::Uniform |
+             ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
+        for (std::size_t index = 0;
+             status && depthPeelDraws && index < peelDepth.size(); ++index)
+        {
+            peelDepth[index] = mDevice.createImage(
+                {{targets.width, targets.height, 1}, DEPTH_FORMAT,
+                 ResourceUsage::DepthStencilAttachment | ResourceUsage::Sampled,
+                 1, 1, 1}, status);
+            if (status) peelDepthViews[index] = mDevice.createImageView(
+                {peelDepth[index], DEPTH_FORMAT,
+                 {ImageAspect::Depth, 0, 1, 0, 1}}, status);
+            if (status) peelSampledViews[index] = mDevice.createImageView(
+                {peelDepth[index], DEPTH_FORMAT,
+                 {ImageAspect::Depth, 0, 1, 0, 1}}, status);
+        }
+        if (status && depthPeelDraws)
+        {
+            SamplerDesc nearest;
+            nearest.minFilter = nearest.magFilter = nearest.mipFilter =
+                Filter::Nearest;
+            nearest.addressU = nearest.addressV = AddressMode::ClampToEdge;
+            peelSampler = mDevice.createSampler(nearest, status);
+        }
         if (status) status = mDevice.writeBuffer(staging, 0, bytes);
 
         if (status && ppllDraws)
@@ -710,6 +816,45 @@ public:
             if (status) resolvePipeline = pipelineFor(
                 resolveBlend, true, false, status);
         }
+        if (status && depthPeelDraws)
+        {
+            peelSelectionSets.resize(maximumPeelLayers);
+            peelReplaySets.resize(maximumPeelLayers);
+            peelTailSets.resize(maximumPeelLayers);
+            const auto makePeelSet = [&](std::uint64_t uniformOffset,
+                                         ImageViewHandle prior)
+            {
+                BindingSetDesc desc;
+                desc.shader = mShader;
+                desc.group = 3;
+                desc.resources = {
+                    {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                     peelUniforms, uniformOffset, 4u * sizeof(std::uint32_t),
+                     {}, {}},
+                    {1, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+                     {}, 0, 0, prior, peelSampler},
+                    {2, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
+                     {}, 0, 0, targets.depthView, peelSampler}};
+                return mDevice.createBindingSet(desc, status);
+            };
+            for (std::uint32_t layer = 0;
+                 status && layer < maximumPeelLayers; ++layer)
+            {
+                const ImageViewHandle prior = layer == 0u
+                    ? targets.depthView : peelSampledViews[layer - 1u];
+                peelSelectionSets[layer] = makePeelSet(
+                    peelStride * layer, prior);
+                if (status) peelReplaySets[layer] = makePeelSet(
+                    peelStride * (maximumPeelLayers + layer),
+                    peelSampledViews[layer]);
+                if (status) peelTailSets[layer] = makePeelSet(
+                    peelStride * (maximumPeelLayers * 2u + layer),
+                    peelSampledViews[layer]);
+            }
+            if (status) peelBypassSet = makePeelSet(
+                peelStride * (maximumPeelLayers * 3u),
+                peelSampledViews[0]);
+        }
 
         for (std::size_t item = 0; status && item < draws.size(); ++item)
         {
@@ -721,10 +866,19 @@ public:
             const bool noCull = material.doubleSided ||
                 alpha.classification == AlphaSubmissionClass::Particle;
             draws[item].pipeline = pipelineFor(
-                blendState(alpha.blend), noCull, true, status);
+                blendState(alpha.blend), noCull, !depthPeelDraws, status);
             if (alpha.emissive)
                 draws[item].replayPipeline = pipelineFor(
-                    emissiveBlendState(), noCull, true, status);
+                    emissiveBlendState(), noCull, !depthPeelDraws, status);
+            if (draws[item].route == AlphaRoute::DepthPeelExact)
+            {
+                BlendState selection;
+                selection.colorWriteMask = 0u;
+                draws[item].peelPipeline = pipelineFor(
+                    selection, noCull, true, status, true, CompareOp::Greater);
+                draws[item].tailPipeline = pipelineFor(
+                    blendState(alpha.blend), noCull, false, status);
+            }
             BindingSetDesc frameDesc;
             frameDesc.shader = mShader;
             frameDesc.group = 0;
@@ -783,6 +937,9 @@ public:
         CommandContext& commands = mDevice.commandContext();
         bool frame = false;
         bool rendering = false;
+        std::uint32_t depthPeelLayers = 0;
+        bool depthPeelTailRendered = false;
+        bool depthPeelBudgetExhausted = false;
         status = commands.beginFrame();
         frame = status.ok();
         const auto copy = [&](BufferHandle target, std::uint64_t offset,
@@ -801,6 +958,9 @@ public:
         if (status) status = copy(skins, skinOffset, skinStride * draws.size());
         if (status) status = copy(materials, materialOffset,
                                   materialStride * draws.size());
+        if (status && depthPeelDraws)
+            status = copy(peelUniforms, peelOffset,
+                          peelStride * peelSlots);
         for (Texture& texture : textures)
         {
             if (!status || !texture.image) continue;
@@ -858,12 +1018,16 @@ public:
             rendering = false;
             return commands.endRendering();
         };
-        const auto issue = [&](const Draw& executable, bool replay)
+        const auto issue = [&](const Draw& executable, bool replay,
+                       BindingSetHandle routeSet = {},
+                       PipelineHandle pipelineOverride = {})
         {
             const MaterialSceneDraw& draw =
                 packet.materials.draws[executable.source];
-            Status issued = commands.bindPipeline(
-                replay ? executable.replayPipeline : executable.pipeline);
+            const PipelineHandle pipeline = pipelineOverride
+                ? pipelineOverride
+                : replay ? executable.replayPipeline : executable.pipeline;
+            Status issued = commands.bindPipeline(pipeline);
             if (issued) issued = commands.bindVertexBuffer(0, vertices, 0);
             if (issued) issued = commands.bindIndexBuffer(
                 indices, 0, IndexType::UInt32);
@@ -871,7 +1035,9 @@ public:
                 0, replay ? executable.replayFrameSet : executable.frameSet);
             if (issued) issued = commands.bindBindingSet(1, executable.objectSet);
             if (issued) issued = commands.bindBindingSet(2, executable.materialSet);
-            if (issued && ppllDraws)
+            if (issued && routeSet)
+                issued = commands.bindBindingSet(3, routeSet);
+            else if (issued && ppllDraws)
                 issued = commands.bindBindingSet(3, ppllSet);
             if (issued) issued = commands.drawIndexed(
                 {draw.indexCount, 1, draw.firstIndex, 0, 0});
@@ -904,13 +1070,101 @@ public:
             if (status && !resolved) status = resolved;
         }
 
-        if (status) status = beginPass(true, 0x50306533645f4c52ull); // "P0e3d_LR"
+        if (status && depthPeelDraws)
+        {
+            status = commands.resourceBarrier(
+                ResourceBarrier::DepthAttachmentWriteToSampledRead);
+            const auto started = std::chrono::steady_clock::now();
+            const auto budget = std::chrono::milliseconds(
+                packet.depthPeelPolicy.submissionBudgetMilliseconds);
+            for (std::uint32_t layer = 0;
+                 status && layer < maximumPeelLayers; ++layer)
+            {
+                RenderingInfo peel;
+                peel.semanticId = 0x50306533655f504cull + layer; // "P0e3e_PL"
+                peel.width = targets.width;
+                peel.height = targets.height;
+                peel.colors.push_back({targets.lightingView, COLOR_FORMAT,
+                    LoadOp::Load, StoreOp::Store, {}});
+                peel.depthStencil = AttachmentDesc{
+                    peelDepthViews[layer], DEPTH_FORMAT,
+                    LoadOp::Clear, StoreOp::Store, {}};
+                status = commands.beginRendering(peel);
+                rendering = status.ok();
+                if (status) status = commands.setViewport({
+                    0.f, 0.f, static_cast<float>(targets.width),
+                    static_cast<float>(targets.height), 0.f, 1.f});
+                if (status) status = commands.setScissor(
+                    {0, 0, targets.width, targets.height});
+                for (const Draw& draw : draws)
+                    if (status && draw.route == AlphaRoute::DepthPeelExact)
+                        status = issue(draw, false, peelSelectionSets[layer],
+                                       draw.peelPipeline);
+                const Status selected = endPass();
+                if (status && !selected) status = selected;
+                if (status) status = commands.resourceBarrier(
+                    ResourceBarrier::DepthAttachmentWriteToSampledRead);
+                if (!status) break;
+                ++depthPeelLayers;
+                if (std::chrono::steady_clock::now() - started >= budget)
+                {
+                    depthPeelBudgetExhausted =
+                        depthPeelLayers < maximumPeelLayers;
+                    break;
+                }
+            }
+            if (status && depthPeelLayers)
+            {
+                status = beginPass(false, 0x50306533655f544cull); // "P0e3e_TL"
+                const BindingSetHandle tailSet =
+                    peelTailSets[depthPeelLayers - 1u];
+                for (const Draw& draw : draws)
+                    if (status && draw.route == AlphaRoute::DepthPeelExact)
+                        status = issue(draw, false, tailSet,
+                                       draw.tailPipeline);
+                const Status tailed = endPass();
+                if (status && !tailed) status = tailed;
+                depthPeelTailRendered = status.ok();
+                if (status)
+                {
+                    BufferImageCopyRegion region;
+                    region.imageSubresource = {ImageAspect::Color, 0, 0, 1};
+                    region.imageExtent = {targets.width, targets.height, 1};
+                    const std::array<BufferImageCopyRegion, 1> regions{{region}};
+                    status = commands.copyImageToBuffer(
+                        targets.lightingImage, mDepthPeelTailReadback, regions);
+                }
+            }
+            if (status && depthPeelLayers)
+            {
+                status = beginPass(false, 0x50306533655f5250ull); // "P0e3e_RP"
+                for (std::uint32_t reverse = depthPeelLayers;
+                     status && reverse > 0u; --reverse)
+                {
+                    const std::uint32_t layer = reverse - 1u;
+                    for (const Draw& draw : draws)
+                        if (status && draw.route == AlphaRoute::DepthPeelExact)
+                            status = issue(draw, false, peelReplaySets[layer],
+                                           draw.pipeline);
+                }
+                const Status replayed = endPass();
+                if (status && !replayed) status = replayed;
+            }
+        }
+
+        if (status) status = beginPass(
+            !depthPeelDraws, 0x50306533645f4c52ull); // "P0e3d_LR"
         for (const Draw& draw : draws)
-            if (status && draw.route != AlphaRoute::PPLLCapture)
-                status = issue(draw, false);
+            if (status && draw.route != AlphaRoute::PPLLCapture &&
+                draw.route != AlphaRoute::DepthPeelExact)
+                status = issue(draw, false,
+                               depthPeelDraws ? peelBypassSet
+                                              : BindingSetHandle{});
         for (const Draw& draw : draws)
             if (status && packet.draws[draw.source].emissive)
-                status = issue(draw, true);
+                status = issue(draw, true,
+                               depthPeelDraws ? peelBypassSet
+                                              : BindingSetHandle{});
         const Status legacyEnded = endPass();
         if (status && !legacyEnded) status = legacyEnded;
 
@@ -947,6 +1201,8 @@ public:
         mResult.sortedDraws = sortedDraws;
         mResult.residualDraws = residualDraws;
         mResult.ppllDraws = ppllDraws;
+        mResult.depthPeelDraws = depthPeelDraws;
+        mResult.depthPeelLayers = depthPeelLayers;
         mResult.emissiveReplays = emissiveReplays;
         mResult.deferredDraws = deferredDraws;
         mResult.deferredRouteOrMaterialDraws = deferredRouteOrMaterialDraws;
@@ -958,6 +1214,9 @@ public:
         mResult.ppllExactLayers = ppllDraws
             ? ppllAllocation.exactLayersPerPixel : 0;
         mResult.ppllAvailable = ppllAvailable;
+        mResult.depthPeelingAvailable = depthPeelingAvailable;
+        mResult.depthPeelTailRendered = depthPeelTailRendered;
+        mResult.depthPeelBudgetExhausted = depthPeelBudgetExhausted;
         mResult.packetSha256 = alphaScenePacketSha256(packet);
         mPending = true;
         return Status::success();
@@ -985,6 +1244,14 @@ public:
             std::memcpy(&mResult.ppllOverflowFragments,
                         counters.data() + 4u, 4u);
         }
+        std::vector<std::byte> tailPixels;
+        if (mResult.depthPeelDraws)
+        {
+            tailPixels.resize(input.size());
+            status = mDevice.readBuffer(
+                mDepthPeelTailReadback, 0, tailPixels);
+            if (!status) return status;
+        }
         if (mDevice.backend() == Backend::OpenGL)
         {
             const std::size_t row =
@@ -997,6 +1264,10 @@ public:
                 std::swap_ranges(input.begin() + y * row,
                     input.begin() + (y + 1) * row,
                     input.begin() + (mHeight - 1 - y) * row);
+                if (!tailPixels.empty())
+                    std::swap_ranges(tailPixels.begin() + y * row,
+                        tailPixels.begin() + (y + 1) * row,
+                        tailPixels.begin() + (mHeight - 1 - y) * row);
             }
         }
         mResult.colorSha256 = sha256(pixels);
@@ -1007,6 +1278,12 @@ public:
             const auto before = input.begin() + pixel * COLOR_BYTES;
             if (!std::equal(begin, begin + COLOR_BYTES, before))
                 ++mResult.modifiedPixels;
+            if (!tailPixels.empty())
+            {
+                const auto tail = tailPixels.begin() + pixel * COLOR_BYTES;
+                if (!std::equal(tail, tail + COLOR_BYTES, before))
+                    ++mResult.depthPeelTailModifiedPixels;
+            }
         }
         result = std::move(mResult);
         mResult = {};
@@ -1024,6 +1301,7 @@ public:
         Status first = Status::success();
         destroy(mReadback, first); destroy(mInputReadback, first);
         destroy(mPPLLCounterReadback, first);
+        destroy(mDepthPeelTailReadback, first);
         for (Pipeline& pipeline : mPipelines) destroy(pipeline.handle, first);
         destroy(mSampler, first); destroy(mShader, first);
         for (auto& view : mFallbackViews) destroy(view, first);
@@ -1037,6 +1315,8 @@ private:
         BlendState blend;
         bool noCull = false;
         bool depthTest = true;
+        bool depthWrite = false;
+        CompareOp depthCompare = CompareOp::GreaterEqual;
         PipelineHandle handle;
     };
 
@@ -1087,19 +1367,23 @@ private:
     }
 
     PipelineHandle pipelineFor(const BlendState& blend, bool noCull,
-                               bool depthTest, Status& status)
+                               bool depthTest, Status& status,
+                               bool depthWrite = false,
+                               CompareOp depthCompare = CompareOp::GreaterEqual)
     {
         const auto found = std::find_if(mPipelines.begin(), mPipelines.end(),
             [&](const Pipeline& pipeline)
             { return pipeline.blend == blend && pipeline.noCull == noCull &&
-                     pipeline.depthTest == depthTest; });
+                     pipeline.depthTest == depthTest &&
+                     pipeline.depthWrite == depthWrite &&
+                     pipeline.depthCompare == depthCompare; });
         if (found != mPipelines.end()) return found->handle;
         PipelineDesc desc;
         desc.shader = mShader;
         desc.cullMode = noCull ? CullMode::None : CullMode::Back;
         desc.depthTest = depthTest;
-        desc.depthWrite = false;
-        desc.depthCompare = CompareOp::GreaterEqual;
+        desc.depthWrite = depthWrite;
+        desc.depthCompare = depthCompare;
         desc.colorFormats = {COLOR_FORMAT};
         if (depthTest) desc.depthStencilFormat = DEPTH_FORMAT;
         desc.blendStates = {blend};
@@ -1118,7 +1402,7 @@ private:
              offsetof(MaterialSceneVertex, joints)},
             {6, 0, VertexFormat::Float32x4,
              offsetof(MaterialSceneVertex, weights)}};
-        Pipeline created{blend, noCull, depthTest,
+        Pipeline created{blend, noCull, depthTest, depthWrite, depthCompare,
                          mDevice.createPipeline(desc, status)};
         if (!status) return {};
         mPipelines.push_back(created);
@@ -1133,6 +1417,7 @@ private:
         Status first = Status::success();
         destroy(mReadback, first); destroy(mInputReadback, first);
         destroy(mPPLLCounterReadback, first);
+        destroy(mDepthPeelTailReadback, first);
         if (!first) return first;
         const std::uint64_t bytes =
             static_cast<std::uint64_t>(targets.width) * targets.height *
@@ -1147,11 +1432,15 @@ private:
         if (status) mPPLLCounterReadback = mDevice.createBuffer(
             {8u, ResourceUsage::TransferDestination,
              MemoryClass::Readback}, status);
+        if (status) mDepthPeelTailReadback = mDevice.createBuffer(
+            {bytes, ResourceUsage::TransferDestination,
+             MemoryClass::Readback}, status);
         if (!status)
         {
             Status ignored = Status::success();
             destroy(mReadback, ignored); destroy(mInputReadback, ignored);
             destroy(mPPLLCounterReadback, ignored);
+            destroy(mDepthPeelTailReadback, ignored);
             return status;
         }
         mGeneration = targets.generation;
@@ -1238,6 +1527,7 @@ private:
     BufferHandle mReadback;
     BufferHandle mInputReadback;
     BufferHandle mPPLLCounterReadback;
+    BufferHandle mDepthPeelTailReadback;
     std::uint64_t mGeneration = 0;
     std::uint32_t mWidth = 0;
     std::uint32_t mHeight = 0;

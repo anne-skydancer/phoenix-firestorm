@@ -3469,7 +3469,8 @@ void LLGHIValidationObject::test<39>()
              {ImageAspect::Color, 0, 1, 0, 1}}, alphaStatus);
         alphaTargets.depthImage = alphaDevice.device->createImage(
             {{32, 32, 1}, Format::Depth32Float,
-             ResourceUsage::DepthStencilAttachment, 1, 1, 1}, alphaStatus);
+             ResourceUsage::DepthStencilAttachment | ResourceUsage::Sampled,
+             1, 1, 1}, alphaStatus);
         alphaTargets.depthView = alphaDevice.device->createImageView(
             {alphaTargets.depthImage, Format::Depth32Float,
              {ImageAspect::Depth, 0, 1, 0, 1}}, alphaStatus);
@@ -3554,6 +3555,42 @@ void LLGHIValidationObject::test<39>()
                       ppllResult.deferredDraws, std::uint32_t{0});
         ensure("P0e3d destroys exact-method resources explicitly",
                ppllExecutor.shutdown().ok());
+    #endif
+    #if defined(LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE)
+        AlphaScenePacket peelExecution = execution;
+        peelExecution.requestedMethod = AlphaMethod::DepthPeeling;
+        ShaderPackageDesc peelPackage;
+        alphaStatus = loadShaderPackage(
+            LL_GHI_P0_ALPHA_PEEL_SHADER_PACKAGE, peelPackage);
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ProductionAlphaExecutor peelExecutor(
+            *alphaDevice.device, std::move(peelPackage));
+        alphaStatus = peelExecutor.submit(
+            peelExecution, alphaTargets, alphaLighting,
+            ProductionAlphaLimits{});
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ProductionAlphaResult peelResult;
+        alphaStatus = peelExecutor.poll(peelResult);
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ensure("P0e3e publishes depth-peel availability",
+               peelResult.depthPeelingAvailable);
+        ensure_equals("P0e3e peels only standard alpha",
+                      peelResult.depthPeelDraws, std::uint32_t{1});
+        ensure_equals("P0e3e removes exact work from sorted fallback",
+                      peelResult.sortedDraws, std::uint32_t{0});
+        ensure_equals("P0e3e preserves particle residual work",
+                      peelResult.residualDraws, std::uint32_t{1});
+        ensure_equals("P0e3e uses the accepted maximum layer count",
+                      peelResult.depthPeelLayers,
+                      peelExecution.depthPeelPolicy.maximumLayers);
+        ensure("P0e3e renders the filtered legacy tail",
+               peelResult.depthPeelTailRendered);
+         ensure("P0e3e synthetic submission stays within budget",
+             !peelResult.depthPeelBudgetExhausted);
+        ensure_equals("P0e3e defers no synthetic production work",
+                      peelResult.deferredDraws, std::uint32_t{0});
+        ensure("P0e3e destroys peel resources explicitly",
+               peelExecutor.shutdown().ok());
     #endif
         ensure("P0e3c destroys shared alpha views",
                alphaDevice.device->destroy(alphaTargets.depthView).ok() &&

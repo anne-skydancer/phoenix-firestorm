@@ -27,7 +27,8 @@ def records(output: str, backend: str) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     for line in output.splitlines():
         if "production alpha replay PASS" not in line and \
-            "production PPLL replay PASS" not in line:
+            "production PPLL replay PASS" not in line and \
+            "production depth-peel replay PASS" not in line:
             continue
         values: dict[str, str] = {}
         for item in line.split():
@@ -60,6 +61,8 @@ def main() -> int:
     parser.add_argument("--ppll", action="store_true")
     parser.add_argument("--ppll-stress", action="store_true")
     parser.add_argument("--ppll-tail", action="store_true")
+    parser.add_argument("--peel", action="store_true")
+    parser.add_argument("--peel-stress", action="store_true")
     parser.add_argument("--no-validation", action="store_true")
     args = parser.parse_args()
 
@@ -74,9 +77,13 @@ def main() -> int:
     packet_hash = hashlib.sha256(args.packet.read_bytes()).hexdigest()
     gl_command = [str(args.opengl), "--packet", str(args.packet)]
     vk_command = [str(args.vulkan), "--packet", str(args.packet)]
-    exact_requested = args.ppll or args.ppll_stress or args.ppll_tail
+    ppll_requested = args.ppll or args.ppll_stress or args.ppll_tail
+    peel_requested = args.peel or args.peel_stress
+    exact_requested = ppll_requested or peel_requested
     if exact_requested:
-        option = "--ppll-stress" if args.ppll_stress else \
+        option = "--peel-stress" if args.peel_stress else \
+            "--peel" if args.peel else \
+            "--ppll-stress" if args.ppll_stress else \
             "--ppll-tail" if args.ppll_tail else "--ppll"
         gl_command.append(option)
         vk_command.append(option)
@@ -94,7 +101,8 @@ def main() -> int:
     for record in (*gl_records, vk_record):
         if record.get("source-sha256") != packet_hash:
             raise RuntimeError("peer did not report the source packet identity")
-        for name in ("frame", "packet-sha256", "routes", "deferred-reasons", "ppll"):
+        for name in ("frame", "packet-sha256", "routes", "deferred-reasons",
+                 "ppll", "peel"):
             if name not in record:
                 raise RuntimeError(f"peer output omitted {name}")
         if integer(record, "modified") <= 0:
@@ -103,8 +111,8 @@ def main() -> int:
     gl44 = next(record for record in gl_records if record.get("profile") == "OpenGL44")
     gl41 = next(record for record in gl_records if record.get("profile") == "OpenGL41")
     legacy_equal = ("frame", "packet-sha256", "routes", "deferred-reasons",
-                    "ppll", "modified", "color-sha256")
-    if not exact_requested:
+                    "ppll", "peel", "modified", "color-sha256")
+    if not exact_requested or peel_requested:
         for name in legacy_equal:
             if gl44[name] != gl41[name]:
                 raise RuntimeError(f"OpenGL 4.1/4.4 evidence differs for {name}")
@@ -117,14 +125,17 @@ def main() -> int:
         reasons = [int(value) for value in gl44["deferred-reasons"].split(",")]
         ppll = [int(value) for value in gl44["ppll"].split(",")]
         vk_ppll = [int(value) for value in vk_record["ppll"].split(",")]
+        peel = [int(value) for value in gl44["peel"].split(",")]
+        vk_peel = [int(value) for value in vk_record["peel"].split(",")]
         fallback_routes = [int(value) for value in gl41["routes"].split(",")]
         fallback_ppll = [int(value) for value in gl41["ppll"].split(",")]
     except ValueError as error:
         raise RuntimeError("peer route evidence is malformed") from error
-    if len(routes) != 5 or len(reasons) != 3 or len(ppll) != 6 or len(vk_ppll) != 6:
+    if len(routes) != 5 or len(reasons) != 3 or len(ppll) != 6 or \
+            len(vk_ppll) != 6 or len(peel) != 6 or len(vk_peel) != 6:
         raise RuntimeError("peer route evidence has an unexpected shape")
     mask, sorted_draws, residual, emissive, deferred = routes
-    exact_draws = ppll[1]
+    exact_draws = ppll[1] + peel[1]
     if not mask or not (sorted_draws or exact_draws):
         raise RuntimeError("packet lacks executable mask or alpha evidence")
     if args.require_residual and not residual:
@@ -135,7 +146,7 @@ def main() -> int:
         raise RuntimeError("deferred reason counts do not match deferred draws")
     if deferred and not args.allow_deferred:
         raise RuntimeError("production alpha replay deferred captured draws")
-    if exact_requested:
+    if ppll_requested:
         available, exact_draws, capacity, exact_layers, allocated, overflow = ppll
         vk_available, vk_exact_draws, vk_capacity, vk_exact_layers, \
             vk_allocated, vk_overflow = vk_ppll
@@ -172,6 +183,35 @@ def main() -> int:
                 f"delta={delta} allowed={allowed}")
             if delta > allowed:
                 raise RuntimeError(f"native {name} evidence exceeds tolerance")
+    if peel_requested:
+        available, peel_draws, layers, tail, budget_exhausted, tail_modified = peel
+        vk_available, vk_draws, vk_layers, vk_tail, vk_budget, \
+            vk_tail_modified = vk_peel
+        if (available, peel_draws) != (vk_available, vk_draws):
+            raise RuntimeError("native depth-peel route evidence differs")
+        if not available or not peel_draws or not layers or layers > 4 or not tail:
+            raise RuntimeError("depth-peel replay omitted exact work or bounded tail")
+        if not vk_layers or vk_layers > 4 or not vk_tail:
+            raise RuntimeError("Vulkan depth-peel replay omitted bounded layers or tail")
+        if budget_exhausted != int(layers < 4) or vk_budget != int(vk_layers < 4):
+            raise RuntimeError("depth-peel budget evidence disagrees with layer count")
+        if not tail_modified or not vk_tail_modified:
+            raise RuntimeError("depth-peel filtered tail changed no pixels")
+        if args.peel_stress and (layers != 4 or budget_exhausted):
+            raise RuntimeError("depth-peel stress did not complete four layers")
+        if args.peel_stress and (vk_layers != 4 or vk_budget):
+            raise RuntimeError("Vulkan depth-peel stress did not complete four layers")
+        delta = abs(tail_modified - vk_tail_modified)
+        allowed = max(
+            args.absolute_coverage_tolerance,
+            math.ceil(max(tail_modified, vk_tail_modified) *
+                      args.relative_coverage_tolerance),
+        )
+        print(
+            f"peel-tail-modified: opengl={tail_modified} "
+            f"vulkan={vk_tail_modified} delta={delta} allowed={allowed}")
+        if args.peel_stress and delta > allowed:
+            raise RuntimeError("native peel-tail coverage exceeds tolerance")
 
     gl_modified = integer(gl44, "modified")
     vk_modified = integer(vk_record, "modified")
@@ -183,14 +223,18 @@ def main() -> int:
     print(
         f"modified: opengl={gl_modified} vulkan={vk_modified} "
         f"delta={delta} allowed={allowed}")
-    if delta > allowed:
+    comparable_modified = not peel_requested or peel[2] == vk_peel[2]
+    if delta > allowed and comparable_modified:
         print("P0e3c production alpha peer comparison FAIL", file=sys.stderr)
         return 1
+    if delta > allowed and not comparable_modified:
+        print("modified coverage differs under backend-local peel layer budgets")
 
     print(
-        f"P0e3{'d' if exact_requested else 'c'} production alpha peer comparison PASS "
+        f"P0e3{'e' if peel_requested else 'd' if ppll_requested else 'c'} "
+        "production alpha peer comparison PASS "
         f"source-sha256={packet_hash} packet-sha256={gl44['packet-sha256']} "
-        f"routes={gl44['routes']} ppll={gl44['ppll']} "
+        f"routes={gl44['routes']} ppll={gl44['ppll']} peel={gl44['peel']} "
         f"deferred-reasons={gl44['deferred-reasons']} "
         f"absolute-coverage-tolerance={args.absolute_coverage_tolerance} "
         f"relative-coverage-tolerance={args.relative_coverage_tolerance}")

@@ -48,6 +48,44 @@ inline void stressProductionAlphaPacket(AlphaScenePacket& packet,
     }
 }
 
+inline void stressProductionDepthPeelPacket(AlphaScenePacket& packet)
+{
+    packet.sourceWidth = packet.sourceHeight = 64;
+    packet.materials.sourceWidth = packet.materials.sourceHeight = 64;
+    packet.depthPeelPolicy.maximumLayers = 4;
+    packet.depthPeelPolicy.submissionBudgetMilliseconds = 50;
+    const std::size_t drawCount = packet.draws.size();
+    packet.materials.vertices.resize(drawCount * 3u);
+    packet.materials.indices.resize(drawCount * 3u);
+    constexpr std::array<float, 16> identity{{
+        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+    for (std::size_t index = 0; index < drawCount; ++index)
+    {
+        const float depth = 0.9f - 0.8f * static_cast<float>(index) /
+            static_cast<float>(std::max<std::size_t>(1, drawCount - 1));
+        auto* vertices = packet.materials.vertices.data() + index * 3u;
+        vertices[0].position = {{-1.f, -1.f, depth}};
+        vertices[1].position = {{3.f, -1.f, depth}};
+        vertices[2].position = {{-1.f, 3.f, depth}};
+        for (std::size_t vertex = 0; vertex < 3; ++vertex)
+        {
+            vertices[vertex].normal = {{0.f, 0.f, 1.f}};
+            vertices[vertex].joints = {};
+            vertices[vertex].weights = {{1.f, 0.f, 0.f, 0.f}};
+            packet.materials.indices[index * 3u + vertex] =
+                static_cast<std::uint32_t>(index * 3u + vertex);
+        }
+        packet.draws[index].rigged = false;
+        auto& draw = packet.materials.draws[index];
+        draw.skin = NO_RESOURCE;
+        draw.firstIndex = static_cast<std::uint32_t>(index * 3u);
+        draw.indexCount = 3;
+        draw.transform = identity;
+        draw.modelTransform = identity;
+    }
+}
+
 struct ProductionAlphaHarnessResult
 {
     bool passed = false;
@@ -80,7 +118,8 @@ inline ProductionAlphaHarnessResult runProductionAlphaHarness(
         {ImageAspect::Color, 0, 1, 0, 1}}, status);
     if (status) targets.depthImage = device.createImage({
         {targets.width, targets.height, 1}, Format::Depth32Float,
-        ResourceUsage::DepthStencilAttachment, 1, 1, 1}, status);
+        ResourceUsage::DepthStencilAttachment | ResourceUsage::Sampled,
+        1, 1, 1}, status);
     if (status) targets.depthView = device.createImageView({
         targets.depthImage, Format::Depth32Float,
         {ImageAspect::Depth, 0, 1, 0, 1}}, status);
@@ -142,7 +181,9 @@ inline ProductionAlphaHarnessResult runProductionAlphaHarness(
     result.passed = true;
     result.message = result.execution.ppllDraws
         ? "P0e3d production PPLL replay PASS"
-        : "P0e3c production alpha replay PASS";
+        : result.execution.depthPeelDraws
+            ? "P0e3e production depth-peel replay PASS"
+            : "P0e3c production alpha replay PASS";
     return result;
 }
 } // namespace LL::GHI::Test

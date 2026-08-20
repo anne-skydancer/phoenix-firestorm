@@ -22,6 +22,7 @@
 #include "llghimaterialoffscreenprobe.h"
 #include "llghiopaquepacketconsumer.h"
 #include "llghiproductioncontract.h"
+#include "llghiproductionalphaexecutor.h"
 #include "llghiproductionenvironmentexecutor.h"
 #include "llghiproductionwaterexecutor.h"
 #include "llghirendererinfo.h"

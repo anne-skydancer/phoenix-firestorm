@@ -510,6 +510,51 @@ full-bright and three emissive intents, and 45 of 46 comparable textures with
 The packet is non-transient and the visible System OpenGL viewer remained
 responsive throughout capture.
 
+### P0e3c — shared legacy alpha execution
+
+`ProductionAlphaExecutor` consumes the immutable `AlphaScenePacket` without
+viewer objects or native graphics handles. It loads the private shared
+RGBA16F lighting and reverse-Z depth attachments, preserves the packet's
+blended draw order, compiles every captured independent color/alpha factor and
+operation into an explicit GHI pipeline, and executes standard and residual
+routes on both native peers. Alpha masks remain with their existing
+G-buffer/depth owner and are counted rather than redrawn. Each blended draw
+with emissive intent is replayed once in a separate alpha-only additive pass.
+Neither `LegacySorted` nor `LegacyResidual` permits a backend to call OpenGL.
+
+The production shader package accepts the established material/skin vertex
+contract, decoded base-color and emissive resources, minimum-alpha threshold,
+full-bright intent, explicit model and skin transforms, and bounded directional
+lighting. OpenGL 4.1, OpenGL 4.4, and Vulkan variants share reflected bindings
+and deterministic packaging. The executor fails closed on stale target or
+lighting generations, malformed packets, singular transforms, invalid skins,
+unresolved alpha-consumed textures, unsupported routes, and draw, geometry,
+texture, or upload-budget excess. It reports route and defer-reason counts,
+packet identity, modified pixels, and private-target hash.
+
+Both real P0e3b packets replay successfully through isolated peers. Frame
+3931 executes all 126 standard draws, retains 21 masks upstream, replays 19
+blended emissive intents, defers no draw, and modifies 21,281 pixels on both
+OpenGL profiles and Vulkan. Frame 3580 executes all 28 standard draws and both
+particle residual draws, retains 16 masks, replays two blended emissive
+intents, and defers no draw. OpenGL modifies 1,155 pixels and Vulkan 1,156,
+within the explicit four-pixel/0.1-percent comparator bound. OpenGL 4.1 and 4.4
+produce identical hashes and coverage for each packet; Vulkan validation is
+clean. Native hashes are retained as evidence and are not required to be
+bit-identical across APIs.
+
+This remains private, non-presenting execution. The current alpha lighting is
+a bounded explicit directional approximation because `AlphaScenePacket` does
+not embed the complete production light/environment record; visual
+qualification against the selected OpenGL renderer remains P0e3f work. The
+packet also preserves legacy emissive replay intent but not a separate
+per-vertex emissive magnitude, so P0e3c proves one replay owner and count while
+final glow-value parity may require a contract extension before P0e3f. PPLL
+capture/resolve remains P0e3d, depth peeling remains P0e3e, and custom-blend
+live coverage remains unavailable until production has a non-particle custom
+blend producer. No visible renderer selection or ownership changes in this
+checkpoint.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid

@@ -2386,6 +2386,7 @@ if (WINDOWS)
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_shadow.llghisp
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_environment.llghisp
            ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_water.llghisp
+           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_alpha.llghisp
           )
     endif ()
 

@@ -32,6 +32,7 @@
 #include "ghi/include/llghiterrainoffscreenprobe.h"
 #include "ghi/include/llghialphacontract.h"
 #include "ghi/include/llghialphascenepacket.h"
+#include "ghi/include/llghiproductionalphaexecutor.h"
 #include "ghi/include/llghioffscreencontract.h"
 #include "ghi/include/llghiopaqueoffscreenprobe.h"
 #include "ghi/include/llghiopaquepacketconsumer.h"
@@ -3422,6 +3423,113 @@ void LLGHIValidationObject::test<39>()
         ensure("P0e3 rejects trailing alpha scene data",
             !decodeAlphaScenePacket(first, decoded));
         first.pop_back();
+    #if defined(LL_GHI_P0_ALPHA_SHADER_PACKAGE)
+        AlphaScenePacket execution = source;
+        execution.materials.vertices[0].position = {{-.5f, -.5f, .5f}};
+        execution.materials.vertices[1].position = {{.5f, -.5f, .5f}};
+        execution.materials.vertices[2].position = {{0.f, .5f, .5f}};
+        for (auto& vertex : execution.materials.vertices)
+            vertex.normal = {{0.f, 0.f, 1.f}};
+        execution.draws[0].emissive = true;
+        execution.draws.push_back(execution.draws[0]);
+        execution.draws.back().classification = AlphaSubmissionClass::Particle;
+        execution.materials.draws.push_back(execution.materials.draws[0]);
+        MaterialResource maskMaterial = execution.materials.materials[0];
+        maskMaterial.identity[0] = std::byte{4};
+        maskMaterial.alphaMode = MaterialAlphaMode::Mask;
+        maskMaterial.comparability = ResourceComparability::Comparable;
+        execution.materials.materials.push_back(maskMaterial);
+        MaterialSceneDraw maskGeometry = execution.materials.draws[0];
+        maskGeometry.material = 1;
+        execution.materials.draws.push_back(maskGeometry);
+        AlphaSceneDraw maskPolicy;
+        maskPolicy.classification = AlphaSubmissionClass::Mask;
+        maskPolicy.minimumAlpha = .5f;
+        execution.draws.push_back(maskPolicy);
+        ensure("P0e3c synthetic production alpha packet validates",
+               validateAlphaScenePacket(execution).ok());
+
+        DeviceCreationResult alphaDevice = createDevice(
+            {Backend::Validation, 0, 2, true});
+        ensure("P0e3c validation device",
+               alphaDevice.status.ok() && alphaDevice.device);
+        ShaderPackageDesc alphaPackage;
+        Status alphaStatus = loadShaderPackage(
+            LL_GHI_P0_ALPHA_SHADER_PACKAGE, alphaPackage);
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ProductionFrameTargetSet alphaTargets;
+        alphaTargets.width = alphaTargets.height = 32;
+        alphaTargets.generation = 7;
+        alphaTargets.lightingImage = alphaDevice.device->createImage(
+            {{32, 32, 1}, Format::RGBA16Float,
+             ResourceUsage::ColorAttachment | ResourceUsage::TransferSource,
+             1, 1, 1}, alphaStatus);
+        alphaTargets.lightingView = alphaDevice.device->createImageView(
+            {alphaTargets.lightingImage, Format::RGBA16Float,
+             {ImageAspect::Color, 0, 1, 0, 1}}, alphaStatus);
+        alphaTargets.depthImage = alphaDevice.device->createImage(
+            {{32, 32, 1}, Format::Depth32Float,
+             ResourceUsage::DepthStencilAttachment, 1, 1, 1}, alphaStatus);
+        alphaTargets.depthView = alphaDevice.device->createImageView(
+            {alphaTargets.depthImage, Format::Depth32Float,
+             {ImageAspect::Depth, 0, 1, 0, 1}}, alphaStatus);
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ProductionAlphaExecutor alphaExecutor(
+            *alphaDevice.device, std::move(alphaPackage));
+        ProductionAlphaLighting alphaLighting;
+        alphaLighting.generation = alphaTargets.generation;
+        alphaStatus = alphaExecutor.submit(
+            execution, alphaTargets, alphaLighting, ProductionAlphaLimits{});
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ensure("P0e3c execution is asynchronous", alphaExecutor.pending());
+        ProductionAlphaResult alphaResult;
+        alphaStatus = alphaExecutor.poll(alphaResult);
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ensure_equals("P0e3c leaves masks with the G-buffer owner",
+                      alphaResult.maskDraws, std::uint32_t{1});
+        ensure_equals("P0e3c executes standard alpha in captured order",
+                      alphaResult.sortedDraws, std::uint32_t{1});
+        ensure_equals("P0e3c executes particles on the residual route",
+                      alphaResult.residualDraws, std::uint32_t{1});
+        ensure_equals("P0e3c replays each emissive intent once",
+                      alphaResult.emissiveReplays, std::uint32_t{2});
+        ensure_equals("P0e3c has no deferred executable work",
+                      alphaResult.deferredDraws, std::uint32_t{0});
+        ensure_equals("P0e3c has no material-route deferrals",
+                      alphaResult.deferredRouteOrMaterialDraws, std::uint32_t{0});
+        ensure_equals("P0e3c has no skin deferrals",
+                      alphaResult.deferredSkinDraws, std::uint32_t{0});
+        ensure_equals("P0e3c has no texture deferrals",
+                      alphaResult.deferredTextureDraws, std::uint32_t{0});
+        ensure_equals("P0e3c preserves packet identity",
+                      alphaResult.packetSha256,
+                      alphaScenePacketSha256(execution));
+        ProductionAlphaLighting staleLighting = alphaLighting;
+        ++staleLighting.generation;
+        ensure("P0e3c rejects stale lighting dependencies",
+               !alphaExecutor.submit(execution, alphaTargets, staleLighting,
+                                     ProductionAlphaLimits{}));
+            ProductionAlphaLighting invalidLighting = alphaLighting;
+            invalidLighting.ambient[0] = 17.f;
+            ensure("P0e3c rejects out-of-range lighting",
+                !alphaExecutor.submit(execution, alphaTargets, invalidLighting,
+                             ProductionAlphaLimits{}));
+        ProductionAlphaLimits alphaLimits;
+        alphaLimits.maxDraws = 1;
+        ensure("P0e3c rejects over-budget alpha work",
+               alphaExecutor.submit(execution, alphaTargets, alphaLighting,
+                                    alphaLimits).code() == StatusCode::Unsupported);
+        ensure("P0e3c destroys executor resources explicitly",
+               alphaExecutor.shutdown().ok());
+        ensure("P0e3c destroys shared alpha views",
+               alphaDevice.device->destroy(alphaTargets.depthView).ok() &&
+               alphaDevice.device->destroy(alphaTargets.lightingView).ok());
+        ensure("P0e3c destroys shared alpha images",
+               alphaDevice.device->destroy(alphaTargets.depthImage).ok() &&
+               alphaDevice.device->destroy(alphaTargets.lightingImage).ok());
+        ensure("P0e3c drains deferred resources",
+               alphaDevice.device->waitIdle().ok());
+    #endif
     first.pop_back();
     ensure("P0e3 rejects truncated alpha scenes",
            !decodeAlphaScenePacket(first, decoded));

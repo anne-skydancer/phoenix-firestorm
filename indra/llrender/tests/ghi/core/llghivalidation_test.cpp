@@ -3423,7 +3423,7 @@ void LLGHIValidationObject::test<39>()
         ensure("P0e3 rejects trailing alpha scene data",
             !decodeAlphaScenePacket(first, decoded));
         first.pop_back();
-    #if defined(LL_GHI_P0_ALPHA_SHADER_PACKAGE)
+    #if defined(LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE)
         AlphaScenePacket execution = source;
         execution.materials.vertices[0].position = {{-.5f, -.5f, .5f}};
         execution.materials.vertices[1].position = {{.5f, -.5f, .5f}};
@@ -3455,7 +3455,7 @@ void LLGHIValidationObject::test<39>()
                alphaDevice.status.ok() && alphaDevice.device);
         ShaderPackageDesc alphaPackage;
         Status alphaStatus = loadShaderPackage(
-            LL_GHI_P0_ALPHA_SHADER_PACKAGE, alphaPackage);
+            LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE, alphaPackage);
         ensure(alphaStatus.message(), alphaStatus.ok());
         ProductionFrameTargetSet alphaTargets;
         alphaTargets.width = alphaTargets.height = 32;
@@ -3521,6 +3521,40 @@ void LLGHIValidationObject::test<39>()
                                     alphaLimits).code() == StatusCode::Unsupported);
         ensure("P0e3c destroys executor resources explicitly",
                alphaExecutor.shutdown().ok());
+    #if defined(LL_GHI_P0_ALPHA_SHADER_PACKAGE)
+        ShaderPackageDesc ppllPackage;
+        alphaStatus = loadShaderPackage(
+            LL_GHI_P0_ALPHA_SHADER_PACKAGE, ppllPackage);
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ProductionAlphaExecutor ppllExecutor(
+            *alphaDevice.device, std::move(ppllPackage));
+        alphaStatus = ppllExecutor.submit(
+            execution, alphaTargets, alphaLighting, ProductionAlphaLimits{});
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ProductionAlphaResult ppllResult;
+        alphaStatus = ppllExecutor.poll(ppllResult);
+        ensure(alphaStatus.message(), alphaStatus.ok());
+        ensure("P0e3d publishes exact-method availability",
+               ppllResult.ppllAvailable);
+        ensure_equals("P0e3d captures only standard alpha",
+                      ppllResult.ppllDraws, std::uint32_t{1});
+        ensure_equals("P0e3d removes exact work from sorted fallback",
+                      ppllResult.sortedDraws, std::uint32_t{0});
+        ensure_equals("P0e3d preserves particle residual work",
+                      ppllResult.residualDraws, std::uint32_t{1});
+        ensure_equals("P0e3d retains mask ownership upstream",
+                      ppllResult.maskDraws, std::uint32_t{1});
+        ensure_equals("P0e3d uses the bounded packet exact-layer policy",
+                      ppllResult.ppllExactLayers,
+                      execution.ppllPolicy.exactLayersPerPixel);
+        ensure_equals("P0e3d plans the requested node capacity",
+                      ppllResult.ppllNodeCapacity,
+                      std::uint64_t{32 * 32 * 8});
+        ensure_equals("P0e3d defers no synthetic production work",
+                      ppllResult.deferredDraws, std::uint32_t{0});
+        ensure("P0e3d destroys exact-method resources explicitly",
+               ppllExecutor.shutdown().ok());
+    #endif
         ensure("P0e3c destroys shared alpha views",
                alphaDevice.device->destroy(alphaTargets.depthView).ok() &&
                alphaDevice.device->destroy(alphaTargets.lightingView).ok());

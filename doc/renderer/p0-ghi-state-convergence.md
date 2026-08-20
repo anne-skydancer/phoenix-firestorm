@@ -555,6 +555,54 @@ live coverage remains unavailable until production has a non-particle custom
 blend producer. No visible renderer selection or ownership changes in this
 checkpoint.
 
+### P0e3d — production PPLL capture and resolve
+
+The production alpha shader and executor now add a bounded PPLL route for
+eligible main post-water standard blends. Material, texture, skin,
+minimum-alpha, full-bright, transform, and lighting inputs are identical to
+the shared legacy executor. Masks remain with the G-buffer owner; particles
+and any custom blend remain legacy residual work after exact resolve; each
+emissive intent still has one replay owner. Head pointers and counters reset
+through existing backend-neutral buffer transfers, so no GL-shaped clear
+operation was added to GHI.
+
+PPLL availability requires storage-image atomics, two storage buffers, a
+usable policy allocation, and the exact-method shader profile. OpenGL exact
+execution requires the packaged OpenGL 4.4 artifact. A separate
+`p0_alpha_legacy` package retains storage-free OpenGL 4.1/macOS fallback, where
+the same requested PPLL packet routes standard work to legacy sorting. Vulkan
+uses the Vulkan 1.3 artifact and passes with validation enabled. The exact
+package records compact 16-byte nodes, a per-pixel head image, allocation and
+overflow counters, the packet's 4-to-32 exact-layer limit, depth sorting under
+reverse-Z, weighted tail composition, and straight-alpha overflow fallback.
+
+Because both archived P0e3b captures recorded `LegacySorted` as their selected
+method, isolated `--ppll` replay changes only the decoded requested-method
+field and reports both the immutable source identity and the effective packet
+identity. The larger frame-3931 packet routes all 126 standard draws to PPLL,
+retains 21 masks, replays 19 emissive intents, and defers nothing. OpenGL and
+Vulkan modify the same 21,320 pixels, allocate 131,772 and 131,777 fragments
+respectively from a 2,097,152-node pool, and overflow zero fragments. The
+frame-3580 particle packet routes all 28 standard draws to PPLL, preserves both
+particle residual draws, retains 16 masks, replays two emissive intents, and
+defers nothing. Both exact peers modify 2,749 pixels; allocation differs by
+three fragments and overflow is zero. OpenGL 4.1 executes all exact candidates
+through its explicit sorted fallback.
+
+Two deterministic 64-by-64 transforms of the particle packet exercise bounds
+without being represented as captured runtime evidence. With eight nodes per
+pixel and four exact layers, both peers allocate 27,000 fragments, overflow
+zero, exceed the 16,384-fragment global four-layer bound, and therefore execute
+the weighted-tail path. With one node per pixel, both allocate 27,000 fragments
+into 4,096 nodes and report exactly 22,904 overflow fragments. Both stress
+routes preserve particle residual work, modify all 4,096 pixels, and converge
+with clean Vulkan validation.
+
+P0e3d remains private and non-presenting. Native hashes are evidence rather
+than a bit-identity requirement. A fresh viewer capture with PPLL actually
+selected, steady-state memory/performance qualification, and comparison to
+the selected visible renderer remain P0e3f work. Depth peeling remains P0e3e.
+
 ### P0e1a — coherent generic opaque adoption
 
 The production-frame contract is version 2 and includes the existing rigid

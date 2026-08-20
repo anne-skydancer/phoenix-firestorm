@@ -26,7 +26,8 @@ def run(command: list[str]) -> str:
 def records(output: str, backend: str) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     for line in output.splitlines():
-        if "P0e3c production alpha replay PASS" not in line:
+        if "production alpha replay PASS" not in line and \
+            "production PPLL replay PASS" not in line:
             continue
         values: dict[str, str] = {}
         for item in line.split():
@@ -56,6 +57,9 @@ def main() -> int:
     parser.add_argument("--relative-coverage-tolerance", type=float, default=0.001)
     parser.add_argument("--require-residual", action="store_true")
     parser.add_argument("--allow-deferred", action="store_true")
+    parser.add_argument("--ppll", action="store_true")
+    parser.add_argument("--ppll-stress", action="store_true")
+    parser.add_argument("--ppll-tail", action="store_true")
     parser.add_argument("--no-validation", action="store_true")
     args = parser.parse_args()
 
@@ -68,8 +72,15 @@ def main() -> int:
         parser.error("--relative-coverage-tolerance must be between 0 and 1")
 
     packet_hash = hashlib.sha256(args.packet.read_bytes()).hexdigest()
-    gl_output = run([str(args.opengl), "--packet", str(args.packet)])
+    gl_command = [str(args.opengl), "--packet", str(args.packet)]
     vk_command = [str(args.vulkan), "--packet", str(args.packet)]
+    exact_requested = args.ppll or args.ppll_stress or args.ppll_tail
+    if exact_requested:
+        option = "--ppll-stress" if args.ppll_stress else \
+            "--ppll-tail" if args.ppll_tail else "--ppll"
+        gl_command.append(option)
+        vk_command.append(option)
+    gl_output = run(gl_command)
     if not args.no_validation:
         vk_command.append("--validation")
     vk_output = run(vk_command)
@@ -79,44 +90,90 @@ def main() -> int:
             "OpenGL41", "OpenGL44"}:
         raise RuntimeError("OpenGL peer did not execute both 4.1 and 4.4 profiles")
     vk_record = records(vk_output, "Vulkan")[0]
-    gl_record = gl_records[0]
 
     for record in (*gl_records, vk_record):
-        if record.get("packet-sha256") != packet_hash:
-            raise RuntimeError("peer did not report the input packet identity")
-        for name in ("frame", "routes", "deferred-reasons"):
+        if record.get("source-sha256") != packet_hash:
+            raise RuntimeError("peer did not report the source packet identity")
+        for name in ("frame", "packet-sha256", "routes", "deferred-reasons", "ppll"):
             if name not in record:
                 raise RuntimeError(f"peer output omitted {name}")
         if integer(record, "modified") <= 0:
             raise RuntimeError("peer alpha replay changed no pixels")
 
-    for name in ("frame", "routes", "deferred-reasons", "modified", "color-sha256"):
-        if gl_records[0][name] != gl_records[1][name]:
-            raise RuntimeError(f"OpenGL 4.1/4.4 evidence differs for {name}")
-    for name in ("frame", "routes", "deferred-reasons"):
-        if gl_record[name] != vk_record[name]:
+    gl44 = next(record for record in gl_records if record.get("profile") == "OpenGL44")
+    gl41 = next(record for record in gl_records if record.get("profile") == "OpenGL41")
+    legacy_equal = ("frame", "packet-sha256", "routes", "deferred-reasons",
+                    "ppll", "modified", "color-sha256")
+    if not exact_requested:
+        for name in legacy_equal:
+            if gl44[name] != gl41[name]:
+                raise RuntimeError(f"OpenGL 4.1/4.4 evidence differs for {name}")
+    for name in ("frame", "packet-sha256", "routes", "deferred-reasons"):
+        if gl44[name] != vk_record[name]:
             raise RuntimeError(f"native peer structural evidence differs for {name}")
 
     try:
-        routes = [int(value) for value in gl_record["routes"].split(",")]
-        reasons = [int(value) for value in gl_record["deferred-reasons"].split(",")]
+        routes = [int(value) for value in gl44["routes"].split(",")]
+        reasons = [int(value) for value in gl44["deferred-reasons"].split(",")]
+        ppll = [int(value) for value in gl44["ppll"].split(",")]
+        vk_ppll = [int(value) for value in vk_record["ppll"].split(",")]
+        fallback_routes = [int(value) for value in gl41["routes"].split(",")]
+        fallback_ppll = [int(value) for value in gl41["ppll"].split(",")]
     except ValueError as error:
         raise RuntimeError("peer route evidence is malformed") from error
-    if len(routes) != 5 or len(reasons) != 3:
+    if len(routes) != 5 or len(reasons) != 3 or len(ppll) != 6 or len(vk_ppll) != 6:
         raise RuntimeError("peer route evidence has an unexpected shape")
     mask, sorted_draws, residual, emissive, deferred = routes
-    if not mask or not sorted_draws:
-        raise RuntimeError("packet lacks executable mask or sorted-alpha evidence")
+    exact_draws = ppll[1]
+    if not mask or not (sorted_draws or exact_draws):
+        raise RuntimeError("packet lacks executable mask or alpha evidence")
     if args.require_residual and not residual:
         raise RuntimeError("packet lacks required residual alpha evidence")
-    if emissive > sorted_draws + residual:
+    if emissive > sorted_draws + exact_draws + residual:
         raise RuntimeError("emissive replay count exceeds executable alpha draws")
     if sum(reasons) != deferred:
         raise RuntimeError("deferred reason counts do not match deferred draws")
     if deferred and not args.allow_deferred:
         raise RuntimeError("production alpha replay deferred captured draws")
+    if exact_requested:
+        available, exact_draws, capacity, exact_layers, allocated, overflow = ppll
+        vk_available, vk_exact_draws, vk_capacity, vk_exact_layers, \
+            vk_allocated, vk_overflow = vk_ppll
+        if (available, exact_draws, capacity, exact_layers) != \
+                (vk_available, vk_exact_draws, vk_capacity, vk_exact_layers):
+            raise RuntimeError("native PPLL policy or route evidence differs")
+        if not available or not exact_draws or not capacity or not exact_layers:
+            raise RuntimeError("PPLL replay omitted exact-method work or bounds")
+        if allocated < exact_draws or overflow > allocated:
+            raise RuntimeError("PPLL allocation/overflow evidence is invalid")
+        if args.ppll_stress and not overflow:
+            raise RuntimeError("PPLL stress replay produced no overflow")
+        if args.ppll_tail:
+            if overflow:
+                raise RuntimeError("PPLL weighted-tail replay unexpectedly overflowed")
+            if exact_layers != 4 or allocated <= 64 * 64 * exact_layers:
+                raise RuntimeError("PPLL weighted-tail replay did not exceed exact layers")
+        if len(fallback_routes) != 5 or len(fallback_ppll) != 6:
+            raise RuntimeError("OpenGL 4.1 fallback evidence is malformed")
+        if fallback_ppll[0] or fallback_ppll[1]:
+            raise RuntimeError("OpenGL 4.1 fallback incorrectly enabled PPLL")
+        if fallback_routes[1] != routes[1] + exact_draws:
+            raise RuntimeError("OpenGL 4.1 fallback did not retain exact draws as sorted")
+        for name, gl_value, vk_value in (
+                ("ppll-allocated", allocated, vk_allocated),
+                ("ppll-overflow", overflow, vk_overflow)):
+            delta = abs(gl_value - vk_value)
+            allowed = max(
+                args.absolute_coverage_tolerance,
+                math.ceil(max(gl_value, vk_value) * args.relative_coverage_tolerance),
+            )
+            print(
+                f"{name}: opengl={gl_value} vulkan={vk_value} "
+                f"delta={delta} allowed={allowed}")
+            if delta > allowed:
+                raise RuntimeError(f"native {name} evidence exceeds tolerance")
 
-    gl_modified = integer(gl_record, "modified")
+    gl_modified = integer(gl44, "modified")
     vk_modified = integer(vk_record, "modified")
     delta = abs(gl_modified - vk_modified)
     allowed = max(
@@ -131,9 +188,10 @@ def main() -> int:
         return 1
 
     print(
-        "P0e3c production alpha peer comparison PASS "
-        f"packet-sha256={packet_hash} routes={gl_record['routes']} "
-        f"deferred-reasons={gl_record['deferred-reasons']} "
+        f"P0e3{'d' if exact_requested else 'c'} production alpha peer comparison PASS "
+        f"source-sha256={packet_hash} packet-sha256={gl44['packet-sha256']} "
+        f"routes={gl44['routes']} ppll={gl44['ppll']} "
+        f"deferred-reasons={gl44['deferred-reasons']} "
         f"absolute-coverage-tolerance={args.absolute_coverage_tolerance} "
         f"relative-coverage-tolerance={args.relative_coverage_tolerance}")
     return 0

@@ -1,6 +1,11 @@
 #version 410 core
 
 layout(std140) uniform FrameData { mat4 viewProjection; };
+layout(std140) uniform AlphaData
+{
+    vec4 lightDirectionMode; vec4 ambientMinimumAlpha;
+    vec4 directionalModel; uvec4 ppllConfig; vec4 opaqueDepth;
+};
 layout(std140) uniform ObjectData { mat4 modelTransform; mat4 normalTransform; };
 layout(std140) uniform SkinData { mat3x4 jointTransforms[110]; uvec4 skinMeta; };
 
@@ -17,6 +22,12 @@ layout(location = 2) out vec3 worldNormal;
 
 void main()
 {
+    if (ppllConfig.x == 2u)
+    {
+        gl_Position = vec4(inPosition, 1.0);
+        texCoord = inTexCoord; vertexColor = inColor; worldNormal = inNormal;
+        return;
+    }
     vec4 weights = max(inWeights, vec4(0.0));
     weights /= max(dot(weights, vec4(1.0)), 0.000001);
     uint lastJoint = max(skinMeta.x, 1u) - 1u;

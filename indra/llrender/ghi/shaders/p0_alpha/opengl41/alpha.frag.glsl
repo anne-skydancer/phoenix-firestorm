@@ -5,6 +5,8 @@ layout(std140) uniform AlphaData
     vec4 lightDirectionMode;
     vec4 ambientMinimumAlpha;
     vec4 directionalModel;
+    uvec4 ppllConfig;
+    vec4 opaqueDepth;
 };
 layout(std140) uniform MaterialData
 {
@@ -38,7 +40,7 @@ void main()
               * baseColorFactor * vertexColor;
     if (base.a <= ambientMinimumAlpha.a) discard;
     bool legacy = directionalModel.a > 0.5;
-    bool replay = lightDirectionMode.a > 0.5;
+    bool replay = ppllConfig.x == 3u;
     if (replay)
     {
         float glow = legacy ? base.a : max(max(emissiveMetallic.r,

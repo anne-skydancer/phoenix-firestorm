@@ -548,6 +548,33 @@ if (USE_VULKAN_GHI)
               ${GHI_P0_ALPHA_SHADER_SOURCES}
           COMMENT "Building deterministic production alpha GHI shader package"
           VERBATIM)
+  set(GHI_P0_ALPHA_LEGACY_SHADER_ROOT
+      "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/p0_alpha_legacy")
+  set(GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE
+      "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/p0_alpha_legacy.llghisp")
+  set(GHI_P0_ALPHA_LEGACY_SHADER_SOURCES
+      "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/package.json"
+      "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/opengl41/alpha.vert.glsl"
+      "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/opengl41/alpha.frag.glsl"
+      "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/opengl44/alpha.vert.glsl"
+      "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/opengl44/alpha.frag.glsl"
+      "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/vulkan/alpha.vert.glsl"
+      "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/vulkan/alpha.frag.glsl"
+      "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/vulkan/ghi_vulkan_clip.glsl")
+  add_custom_command(
+      OUTPUT "${GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE}"
+      COMMAND "${PYTHON_EXECUTABLE}"
+              "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              --manifest "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/package.json"
+              --output "${GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE}"
+              --glslang "${GHI_GLSLANG_VALIDATOR}"
+              --spirv-val "${GHI_SPIRV_VAL}"
+              --spirv-opt "${GHI_SPIRV_OPT}"
+              --spirv-reflect "${GHI_SPIRV_REFLECT}"
+      DEPENDS "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+              ${GHI_P0_ALPHA_LEGACY_SHADER_SOURCES}
+      COMMENT "Building deterministic production legacy alpha GHI shader package"
+      VERBATIM)
   set(GHI_R7_OFFSCREEN_SHADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/ghi/shaders/r7_offscreen")
   set(GHI_R7_OFFSCREEN_SHADER_PACKAGE "${CMAKE_CURRENT_BINARY_DIR}/ghi_shaders/r7_offscreen.llghisp")
   set(GHI_R7_OFFSCREEN_SHADER_SOURCES
@@ -618,6 +645,7 @@ if (USE_VULKAN_GHI)
       "${GHI_R6_PEEL_SHADER_PACKAGE}"
       "${GHI_R6_LEGACY_SHADER_PACKAGE}"
     "${GHI_P0_ALPHA_SHADER_PACKAGE}"
+    "${GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE}"
       "${GHI_R7_OFFSCREEN_SHADER_PACKAGE}"
       "${GHI_R8_INTERACTION_SHADER_PACKAGE}"
       )
@@ -738,6 +766,20 @@ if (USE_VULKAN_GHI)
         DEPENDS llrender_ghi_shaders
             "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
         COMMENT "Testing deterministic P0e3 alpha GHI shader packaging"
+        VERBATIM)
+        add_custom_target(
+        llrender_ghi_p0_alpha_legacy_shader_packager_test
+        COMMAND "${PYTHON_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+            --packer "${CMAKE_SOURCE_DIR}/../scripts/renderer/pack_ghi_shader.py"
+            --manifest "${GHI_P0_ALPHA_LEGACY_SHADER_ROOT}/package.json"
+            --glslang "${GHI_GLSLANG_VALIDATOR}"
+            --spirv-val "${GHI_SPIRV_VAL}"
+            --spirv-opt "${GHI_SPIRV_OPT}"
+            --spirv-reflect "${GHI_SPIRV_REFLECT}"
+        DEPENDS llrender_ghi_shaders
+            "${CMAKE_SOURCE_DIR}/../scripts/renderer/test_ghi_shader_determinism.py"
+        COMMENT "Testing deterministic production legacy alpha shader packaging"
         VERBATIM)
     add_custom_target(
         llrender_ghi_r7_shader_packager_test
@@ -1022,7 +1064,8 @@ if (USE_VULKAN_GHI)
   target_include_directories(llrender_vulkan_production_alpha_harness PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
   target_compile_definitions(llrender_vulkan_production_alpha_harness PRIVATE
-      LL_GHI_P0_ALPHA_SHADER_PACKAGE="${GHI_P0_ALPHA_SHADER_PACKAGE}")
+      LL_GHI_P0_ALPHA_SHADER_PACKAGE="${GHI_P0_ALPHA_SHADER_PACKAGE}"
+      LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE="${GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE}")
   target_link_libraries(llrender_vulkan_production_alpha_harness
       llrender Vulkan::Vulkan)
   add_dependencies(llrender_vulkan_production_alpha_harness llrender_ghi_shaders)
@@ -1211,7 +1254,8 @@ if (WINDOWS)
     target_include_directories(llrender_opengl_production_alpha_harness PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
     target_compile_definitions(llrender_opengl_production_alpha_harness PRIVATE
-        LL_GHI_P0_ALPHA_SHADER_PACKAGE="${GHI_P0_ALPHA_SHADER_PACKAGE}")
+        LL_GHI_P0_ALPHA_SHADER_PACKAGE="${GHI_P0_ALPHA_SHADER_PACKAGE}"
+        LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE="${GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE}")
     target_link_libraries(llrender_opengl_production_alpha_harness
         llrender OpenGL::GL)
     add_dependencies(llrender_opengl_production_alpha_harness llrender_ghi_shaders)
@@ -1322,6 +1366,7 @@ if (LL_TESTS)
         LL_GHI_R6_PEEL_SHADER_PACKAGE="${GHI_R6_PEEL_SHADER_PACKAGE}"
         LL_GHI_R6_LEGACY_SHADER_PACKAGE="${GHI_R6_LEGACY_SHADER_PACKAGE}"
         LL_GHI_P0_ALPHA_SHADER_PACKAGE="${GHI_P0_ALPHA_SHADER_PACKAGE}"
+        LL_GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE="${GHI_P0_ALPHA_LEGACY_SHADER_PACKAGE}"
         LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE="${GHI_R7_OFFSCREEN_SHADER_PACKAGE}"
         LL_GHI_R8_INTERACTION_SHADER_PACKAGE="${GHI_R8_INTERACTION_SHADER_PACKAGE}"
         )
@@ -1330,6 +1375,7 @@ if (LL_TESTS)
         llrender_ghi_p0_environment_shader_packager_test
         llrender_ghi_p0_water_shader_packager_test
         llrender_ghi_p0_alpha_shader_packager_test
+        llrender_ghi_p0_alpha_legacy_shader_packager_test
         llrender_ghi_i7_shader_packager_test
         llrender_ghi_i7_projector_shader_packager_test
         llrender_ghi_i7_shadow_shader_packager_test

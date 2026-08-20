@@ -25,7 +25,7 @@ namespace
 constexpr Format COLOR_FORMAT = Format::RGBA16Float;
 constexpr Format DEPTH_FORMAT = Format::Depth32Float;
 constexpr std::uint32_t COLOR_BYTES = 8;
-constexpr std::size_t ALPHA_FLOATS = 12;
+constexpr std::size_t ALPHA_FLOATS = 20;
 constexpr std::size_t OBJECT_FLOATS = 32;
 constexpr std::size_t MATERIAL_FLOATS = 48;
 using SkinData = std::array<float, MATERIAL_SKIN_FLOATS>;
@@ -64,6 +64,31 @@ bool boundedLighting(const ProductionAlphaLighting& lighting)
             [](float value) { return value >= 0.f && value <= 16.f; });
     };
     return color(lighting.ambient) && color(lighting.directional);
+}
+
+bool hasPPLLArtifact(const ShaderPackageDesc& package, Backend backend)
+{
+    const ShaderPackageDesc::TargetProfile required = backend == Backend::OpenGL
+        ? ShaderPackageDesc::TargetProfile::OpenGL44
+        : ShaderPackageDesc::TargetProfile::VulkanSpirV13;
+    const auto fragment = std::find_if(package.stages.begin(), package.stages.end(),
+        [](const ShaderPackageDesc::StageArtifact& stage)
+        { return stage.stage == ShaderPackageDesc::Stage::Fragment; });
+    const auto binding = [&](std::uint16_t index,
+                             ShaderPackageDesc::BindingType type)
+    {
+        return std::any_of(package.bindings.begin(), package.bindings.end(),
+            [index, type](const ShaderPackageDesc::Binding& value)
+            { return value.group == 3 && value.binding == index &&
+                     value.type == type; });
+    };
+    return fragment != package.stages.end() &&
+        std::any_of(fragment->artifacts.begin(), fragment->artifacts.end(),
+            [required](const ShaderPackageDesc::CodeArtifact& artifact)
+            { return artifact.target == required; }) &&
+        binding(0, ShaderPackageDesc::BindingType::StorageImage) &&
+        binding(1, ShaderPackageDesc::BindingType::StorageBuffer) &&
+        binding(2, ShaderPackageDesc::BindingType::StorageBuffer);
 }
 
 std::uint64_t alignUp(std::uint64_t value, std::uint64_t alignment)
@@ -279,6 +304,13 @@ public:
         if (!(status = initialize())) return status;
         if (!(status = ensureReadbacks(targets))) return status;
 
+        const AlphaPPLLAllocation ppllAllocation = planAlphaPPLLAllocation(
+            targets.width, targets.height,
+            mDevice.capabilities().maxBufferSize, packet.ppllPolicy);
+        const bool ppllAvailable = supportsPPLL(mDevice.capabilities()) &&
+            hasPPLLArtifact(mShaderPackage, mDevice.backend()) &&
+            ppllAllocation.usable;
+
         struct Draw
         {
             std::size_t source = 0;
@@ -316,7 +348,7 @@ public:
         if (!status) return status;
 
         const AlphaRoutingState routing{
-            packet.requestedMethod, false, false, packet.transientLoad};
+            packet.requestedMethod, ppllAvailable, false, packet.transientLoad};
         std::vector<Draw> draws;
         std::uint32_t maskDraws = 0;
         std::uint32_t deferredDraws = 0;
@@ -325,6 +357,7 @@ public:
         std::uint32_t deferredTextureDraws = 0;
         std::uint32_t sortedDraws = 0;
         std::uint32_t residualDraws = 0;
+        std::uint32_t ppllDraws = 0;
         std::uint32_t emissiveReplays = 0;
         for (std::size_t source = 0; source < packet.draws.size(); ++source)
         {
@@ -339,7 +372,8 @@ public:
                 continue;
             }
             if (route != AlphaRoute::LegacySorted &&
-                route != AlphaRoute::LegacyResidual)
+                route != AlphaRoute::LegacyResidual &&
+                route != AlphaRoute::PPLLCapture)
             {
                 ++deferredDraws;
                 ++deferredRouteOrMaterialDraws;
@@ -402,8 +436,9 @@ public:
                 ++deferredTextureDraws;
                 continue;
             }
-            route == AlphaRoute::LegacyResidual
-                ? ++residualDraws : ++sortedDraws;
+            if (route == AlphaRoute::LegacyResidual) ++residualDraws;
+            else if (route == AlphaRoute::PPLLCapture) ++ppllDraws;
+            else ++sortedDraws;
             emissiveReplays += alpha.emissive;
             draws.push_back(executable);
         }
@@ -415,10 +450,31 @@ public:
 
         const std::uint64_t alignment = std::max<std::uint64_t>(
             16, mDevice.capabilities().uniformBufferOffsetAlignment);
+        std::vector<MaterialSceneVertex> uploadVertices =
+            packet.materials.vertices;
+        std::vector<std::uint32_t> uploadIndices = packet.materials.indices;
+        const std::uint32_t resolveFirstIndex =
+            static_cast<std::uint32_t>(uploadIndices.size());
+        if (ppllDraws)
+        {
+            const std::uint32_t firstVertex =
+                static_cast<std::uint32_t>(uploadVertices.size());
+            std::array<MaterialSceneVertex, 3> fullscreen{};
+            fullscreen[0].position = {{-1.f, -1.f, 0.f}};
+            fullscreen[1].position = {{3.f, -1.f, 0.f}};
+            fullscreen[2].position = {{-1.f, 3.f, 0.f}};
+            for (auto& vertex : fullscreen)
+            {
+                vertex.normal = {{0.f, 0.f, 1.f}};
+                uploadVertices.push_back(vertex);
+            }
+            uploadIndices.insert(uploadIndices.end(),
+                {firstVertex, firstVertex + 1u, firstVertex + 2u});
+        }
         const std::uint64_t vertexBytes =
-            packet.materials.vertices.size() * sizeof(MaterialSceneVertex);
+            uploadVertices.size() * sizeof(MaterialSceneVertex);
         const std::uint64_t indexBytes =
-            packet.materials.indices.size() * sizeof(std::uint32_t);
+            uploadIndices.size() * sizeof(std::uint32_t);
         const std::uint64_t frameStride = alignUp(16 * sizeof(float), alignment);
         const std::uint64_t alphaStride = alignUp(ALPHA_FLOATS * sizeof(float), alignment);
         const std::uint64_t objectStride = alignUp(OBJECT_FLOATS * sizeof(float), alignment);
@@ -429,8 +485,9 @@ public:
         const std::uint64_t frameOffset = alignUp(indexOffset + indexBytes, alignment);
         const std::uint64_t alphaOffset = alignUp(
             frameOffset + frameStride * draws.size(), alignment);
+        const std::size_t alphaSlots = draws.size() * 2 + (ppllDraws ? 1 : 0);
         const std::uint64_t objectOffset = alignUp(
-            alphaOffset + alphaStride * draws.size() * 2, alignment);
+            alphaOffset + alphaStride * alphaSlots, alignment);
         const std::uint64_t skinOffset = alignUp(
             objectOffset + objectStride * draws.size(), alignment);
         const std::uint64_t materialOffset = alignUp(
@@ -444,6 +501,13 @@ public:
             texture.uploadOffset = total;
             total = alignUp(total + texture.pixels.size(), alignment);
         }
+        const std::uint64_t headOffset = total;
+        const std::uint64_t headBytes = ppllDraws
+            ? static_cast<std::uint64_t>(targets.width) * targets.height *
+                sizeof(std::uint32_t) : 0;
+        if (ppllDraws) total = alignUp(total + headBytes, alignment);
+        const std::uint64_t counterOffset = total;
+        if (ppllDraws) total = alignUp(total + 2u * sizeof(std::uint32_t), alignment);
         if (total == std::numeric_limits<std::uint64_t>::max() ||
             total > limits.maxUploadBytes ||
             total > mDevice.capabilities().maxBufferSize)
@@ -453,9 +517,9 @@ public:
         }
 
         std::vector<std::byte> bytes(static_cast<std::size_t>(total));
-        std::memcpy(bytes.data() + vertexOffset, packet.materials.vertices.data(),
+        std::memcpy(bytes.data() + vertexOffset, uploadVertices.data(),
                     static_cast<std::size_t>(vertexBytes));
-        std::memcpy(bytes.data() + indexOffset, packet.materials.indices.data(),
+        std::memcpy(bytes.data() + indexOffset, uploadIndices.data(),
                     static_cast<std::size_t>(indexBytes));
         for (std::size_t item = 0; item < draws.size(); ++item)
         {
@@ -518,12 +582,40 @@ public:
                 alpha.minimumAlpha,
                 lighting.directional[0], lighting.directional[1],
                 lighting.directional[2], legacy ? 1.f : 0.f}};
+            const std::array<std::uint32_t, 4> config{{
+                draws[item].route == AlphaRoute::PPLLCapture ? 1u : 0u,
+                static_cast<std::uint32_t>(ppllAllocation.nodeCapacity),
+                ppllAllocation.exactLayersPerPixel, 0u}};
+            std::memcpy(alphaData.data() + 12, config.data(), sizeof(config));
+            alphaData[16] = 0.f;
             std::memcpy(bytes.data() + alphaOffset + alphaStride * item,
                         alphaData.data(), sizeof(alphaData));
-            alphaData[3] = 1.f;
+            const std::array<std::uint32_t, 4> replayConfig{{
+                3u, config[1], config[2], 0u}};
+            std::memcpy(alphaData.data() + 12, replayConfig.data(),
+                        sizeof(replayConfig));
             std::memcpy(bytes.data() + alphaOffset +
                             alphaStride * (draws.size() + item),
                         alphaData.data(), sizeof(alphaData));
+        }
+        if (ppllDraws)
+        {
+            std::array<float, ALPHA_FLOATS> resolveData{};
+            const std::array<std::uint32_t, 4> resolveConfig{{
+                2u, static_cast<std::uint32_t>(ppllAllocation.nodeCapacity),
+                ppllAllocation.exactLayersPerPixel, 0u}};
+            std::memcpy(resolveData.data() + 12, resolveConfig.data(),
+                        sizeof(resolveConfig));
+            resolveData[16] = 0.f;
+            std::memcpy(bytes.data() + alphaOffset +
+                            alphaStride * (draws.size() * 2),
+                        resolveData.data(), sizeof(resolveData));
+            std::fill_n(reinterpret_cast<std::uint32_t*>(
+                            bytes.data() + headOffset),
+                        static_cast<std::size_t>(targets.width) * targets.height,
+                        0xffffffffu);
+            std::fill_n(reinterpret_cast<std::uint32_t*>(
+                            bytes.data() + counterOffset), 2, 0u);
         }
         for (const Texture& texture : textures)
             if (!texture.pixels.empty())
@@ -531,7 +623,11 @@ public:
                             texture.pixels.data(), texture.pixels.size());
 
         BufferHandle staging, vertices, indices, frames, alphaData,
-                     objects, skins, materials;
+                 objects, skins, materials, ppllNodes, ppllCounter;
+        ImageHandle ppllHead;
+        ImageViewHandle ppllHeadView;
+        BindingSetHandle ppllSet, resolveFrameSet;
+        PipelineHandle resolvePipeline;
         auto cleanup = [&]()
         {
             Status first = Status::success();
@@ -542,10 +638,13 @@ public:
                 destroy(draw.objectSet, first);
                 destroy(draw.materialSet, first);
             }
+            destroy(resolveFrameSet, first); destroy(ppllSet, first);
             destroy(staging, first); destroy(vertices, first);
             destroy(indices, first); destroy(frames, first);
             destroy(alphaData, first); destroy(objects, first);
             destroy(skins, first); destroy(materials, first);
+            destroy(ppllHeadView, first); destroy(ppllHead, first);
+            destroy(ppllNodes, first); destroy(ppllCounter, first);
             destroyTextures(textures, first);
             return first;
         };
@@ -561,7 +660,7 @@ public:
             {frameStride * draws.size(), ResourceUsage::Uniform |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
         if (status) alphaData = mDevice.createBuffer(
-            {alphaStride * draws.size() * 2, ResourceUsage::Uniform |
+            {alphaStride * alphaSlots, ResourceUsage::Uniform |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
         if (status) objects = mDevice.createBuffer(
             {objectStride * draws.size(), ResourceUsage::Uniform |
@@ -572,7 +671,45 @@ public:
         if (status) materials = mDevice.createBuffer(
             {materialStride * draws.size(), ResourceUsage::Uniform |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
+        if (status && ppllDraws) ppllNodes = mDevice.createBuffer(
+            {ppllAllocation.nodeCapacity * ALPHA_PPLL_NODE_BYTES,
+             ResourceUsage::Storage, MemoryClass::DeviceLocal}, status);
+        if (status && ppllDraws) ppllCounter = mDevice.createBuffer(
+            {8u, ResourceUsage::Storage | ResourceUsage::TransferDestination |
+                 ResourceUsage::TransferSource, MemoryClass::DeviceLocal}, status);
+        if (status && ppllDraws) ppllHead = mDevice.createImage(
+            {{targets.width, targets.height, 1}, Format::R32UInt,
+             ResourceUsage::Storage | ResourceUsage::TransferDestination,
+             1, 1, 1}, status);
+        if (status && ppllDraws) ppllHeadView = mDevice.createImageView(
+            {ppllHead, Format::R32UInt,
+             {ImageAspect::Color, 0, 1, 0, 1}}, status);
         if (status) status = mDevice.writeBuffer(staging, 0, bytes);
+
+        if (status && ppllDraws)
+        {
+            BindingSetDesc ppllDesc;
+            ppllDesc.shader = mShader;
+            ppllDesc.group = 3;
+            ppllDesc.resources = {
+                {0, 0, ShaderPackageDesc::BindingType::StorageImage,
+                 {}, 0, 0, ppllHeadView, {}},
+                {1, 0, ShaderPackageDesc::BindingType::StorageBuffer,
+                 ppllNodes, 0,
+                 ppllAllocation.nodeCapacity * ALPHA_PPLL_NODE_BYTES,
+                 {}, {}},
+                {2, 0, ShaderPackageDesc::BindingType::StorageBuffer,
+                 ppllCounter, 0, 8u, {}, {}}};
+            ppllSet = mDevice.createBindingSet(ppllDesc, status);
+            BlendState resolveBlend;
+            resolveBlend.enabled = true;
+            resolveBlend.sourceColor = BlendFactor::One;
+            resolveBlend.destinationColor = BlendFactor::OneMinusSourceAlpha;
+            resolveBlend.sourceAlpha = BlendFactor::One;
+            resolveBlend.destinationAlpha = BlendFactor::OneMinusSourceAlpha;
+            if (status) resolvePipeline = pipelineFor(
+                resolveBlend, true, false, status);
+        }
 
         for (std::size_t item = 0; status && item < draws.size(); ++item)
         {
@@ -583,10 +720,11 @@ public:
                 packet.materials.materials[geometry.material];
             const bool noCull = material.doubleSided ||
                 alpha.classification == AlphaSubmissionClass::Particle;
-            draws[item].pipeline = pipelineFor(blendState(alpha.blend), noCull, status);
+            draws[item].pipeline = pipelineFor(
+                blendState(alpha.blend), noCull, true, status);
             if (alpha.emissive)
                 draws[item].replayPipeline = pipelineFor(
-                    emissiveBlendState(), noCull, status);
+                    emissiveBlendState(), noCull, true, status);
             BindingSetDesc frameDesc;
             frameDesc.shader = mShader;
             frameDesc.group = 0;
@@ -627,6 +765,19 @@ public:
             if (status) draws[item].materialSet =
                 mDevice.createBindingSet(materialDesc, status);
         }
+        if (status && ppllDraws)
+        {
+            BindingSetDesc resolveDesc;
+            resolveDesc.shader = mShader;
+            resolveDesc.group = 0;
+            resolveDesc.resources = {
+                {0, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                 frames, 0, 16 * sizeof(float), {}, {}},
+                {1, 0, ShaderPackageDesc::BindingType::UniformBuffer,
+                 alphaData, alphaStride * (draws.size() * 2),
+                 ALPHA_FLOATS * sizeof(float), {}, {}}};
+            resolveFrameSet = mDevice.createBindingSet(resolveDesc, status);
+        }
         if (!status) { cleanup(); return status; }
 
         CommandContext& commands = mDevice.commandContext();
@@ -644,7 +795,7 @@ public:
         if (status) status = copy(indices, indexOffset, indexBytes);
         if (status) status = copy(frames, frameOffset, frameStride * draws.size());
         if (status) status = copy(alphaData, alphaOffset,
-                                  alphaStride * draws.size() * 2);
+                                  alphaStride * alphaSlots);
         if (status) status = copy(objects, objectOffset,
                                   objectStride * draws.size());
         if (status) status = copy(skins, skinOffset, skinStride * draws.size());
@@ -660,6 +811,17 @@ public:
             const std::array<BufferImageCopyRegion, 1> regions{{region}};
             status = commands.copyBufferToImage(staging, texture.image, regions);
         }
+        if (status && ppllDraws)
+        {
+            status = copy(ppllCounter, counterOffset, 8u);
+            BufferImageCopyRegion headCopy;
+            headCopy.bufferOffset = headOffset;
+            headCopy.imageSubresource = {ImageAspect::Color, 0, 0, 1};
+            headCopy.imageExtent = {targets.width, targets.height, 1};
+            const std::array<BufferImageCopyRegion, 1> copies{{headCopy}};
+            if (status) status = commands.copyBufferToImage(
+                staging, ppllHead, copies);
+        }
         if (status)
         {
             BufferImageCopyRegion region;
@@ -669,26 +831,33 @@ public:
             status = commands.copyImageToBuffer(
                 targets.lightingImage, mInputReadback, regions);
         }
-        RenderingInfo renderingInfo;
-        renderingInfo.semanticId = 0x50306533635f414cull; // "P0e3c_AL"
-        renderingInfo.width = targets.width;
-        renderingInfo.height = targets.height;
-        renderingInfo.colors.push_back({
-            targets.lightingView, COLOR_FORMAT, LoadOp::Load,
-            StoreOp::Store, {}});
-        renderingInfo.depthStencil = AttachmentDesc{
-            targets.depthView, DEPTH_FORMAT, LoadOp::Load,
-            StoreOp::Store, {}};
-        if (status)
+        const auto beginPass = [&](bool depth, std::uint64_t semanticId)
         {
-            status = commands.beginRendering(renderingInfo);
-            rendering = status.ok();
-        }
-        if (status) status = commands.setViewport({
-            0.f, 0.f, static_cast<float>(targets.width),
-            static_cast<float>(targets.height), 0.f, 1.f});
-        if (status) status = commands.setScissor(
-            {0, 0, targets.width, targets.height});
+            RenderingInfo info;
+            info.semanticId = semanticId;
+            info.width = targets.width;
+            info.height = targets.height;
+            info.colors.push_back({targets.lightingView, COLOR_FORMAT,
+                LoadOp::Load, StoreOp::Store, {}});
+            if (depth)
+                info.depthStencil = AttachmentDesc{
+                    targets.depthView, DEPTH_FORMAT, LoadOp::Load,
+                    StoreOp::Store, {}};
+            Status begun = commands.beginRendering(info);
+            if (begun) begun = commands.setViewport({
+                0.f, 0.f, static_cast<float>(targets.width),
+                static_cast<float>(targets.height), 0.f, 1.f});
+            if (begun) begun = commands.setScissor(
+                {0, 0, targets.width, targets.height});
+            rendering = begun.ok();
+            return begun;
+        };
+        const auto endPass = [&]()
+        {
+            if (!rendering) return Status::success();
+            rendering = false;
+            return commands.endRendering();
+        };
         const auto issue = [&](const Draw& executable, bool replay)
         {
             const MaterialSceneDraw& draw =
@@ -702,20 +871,49 @@ public:
                 0, replay ? executable.replayFrameSet : executable.frameSet);
             if (issued) issued = commands.bindBindingSet(1, executable.objectSet);
             if (issued) issued = commands.bindBindingSet(2, executable.materialSet);
+            if (issued && ppllDraws)
+                issued = commands.bindBindingSet(3, ppllSet);
             if (issued) issued = commands.drawIndexed(
                 {draw.indexCount, 1, draw.firstIndex, 0, 0});
             return issued;
         };
+
+        if (status && ppllDraws)
+        {
+            status = beginPass(true, 0x50306533645f4341ull); // "P0e3d_CA"
+            for (const Draw& draw : draws)
+                if (status && draw.route == AlphaRoute::PPLLCapture)
+                    status = issue(draw, false);
+            const Status captured = endPass();
+            if (status && !captured) status = captured;
+            if (status) status = commands.resourceBarrier(
+                ResourceBarrier::StorageWriteToRead);
+
+            if (status) status = beginPass(false, 0x50306533645f5253ull); // "P0e3d_RS"
+            if (status) status = commands.bindPipeline(resolvePipeline);
+            if (status) status = commands.bindVertexBuffer(0, vertices, 0);
+            if (status) status = commands.bindIndexBuffer(
+                indices, 0, IndexType::UInt32);
+            if (status) status = commands.bindBindingSet(0, resolveFrameSet);
+            if (status) status = commands.bindBindingSet(1, draws[0].objectSet);
+            if (status) status = commands.bindBindingSet(2, draws[0].materialSet);
+            if (status) status = commands.bindBindingSet(3, ppllSet);
+            if (status) status = commands.drawIndexed(
+                {3, 1, resolveFirstIndex, 0, 0});
+            const Status resolved = endPass();
+            if (status && !resolved) status = resolved;
+        }
+
+        if (status) status = beginPass(true, 0x50306533645f4c52ull); // "P0e3d_LR"
         for (const Draw& draw : draws)
-            if (status) status = issue(draw, false);
+            if (status && draw.route != AlphaRoute::PPLLCapture)
+                status = issue(draw, false);
         for (const Draw& draw : draws)
             if (status && packet.draws[draw.source].emissive)
                 status = issue(draw, true);
-        if (rendering)
-        {
-            const Status ended = commands.endRendering();
-            if (status && !ended) status = ended;
-        }
+        const Status legacyEnded = endPass();
+        if (status && !legacyEnded) status = legacyEnded;
+
         if (status)
         {
             BufferImageCopyRegion region;
@@ -725,6 +923,12 @@ public:
             status = commands.copyImageToBuffer(
                 targets.lightingImage, mReadback, regions);
         }
+            if (status && ppllDraws)
+            {
+                const std::array<BufferCopyRegion, 1> counterCopy{{{0, 0, 8u}}};
+                status = commands.copyBuffer(
+                ppllCounter, mPPLLCounterReadback, counterCopy);
+            }
         if (frame)
         {
             const Status ended = commands.endFrame();
@@ -742,12 +946,18 @@ public:
         mResult.maskDraws = maskDraws;
         mResult.sortedDraws = sortedDraws;
         mResult.residualDraws = residualDraws;
+        mResult.ppllDraws = ppllDraws;
         mResult.emissiveReplays = emissiveReplays;
         mResult.deferredDraws = deferredDraws;
         mResult.deferredRouteOrMaterialDraws = deferredRouteOrMaterialDraws;
         mResult.deferredSkinDraws = deferredSkinDraws;
         mResult.deferredTextureDraws = deferredTextureDraws;
         mResult.uploadBytes = total;
+        mResult.ppllNodeCapacity = ppllDraws
+            ? ppllAllocation.nodeCapacity : 0;
+        mResult.ppllExactLayers = ppllDraws
+            ? ppllAllocation.exactLayersPerPixel : 0;
+        mResult.ppllAvailable = ppllAvailable;
         mResult.packetSha256 = alphaScenePacketSha256(packet);
         mPending = true;
         return Status::success();
@@ -766,6 +976,15 @@ public:
         if (!status) return status;
         status = mDevice.readBuffer(mReadback, 0, pixels);
         if (!status) return status;
+        if (mResult.ppllDraws)
+        {
+            std::array<std::byte, 8> counters{};
+            status = mDevice.readBuffer(mPPLLCounterReadback, 0, counters);
+            if (!status) return status;
+            std::memcpy(&mResult.ppllAllocatedNodes, counters.data(), 4u);
+            std::memcpy(&mResult.ppllOverflowFragments,
+                        counters.data() + 4u, 4u);
+        }
         if (mDevice.backend() == Backend::OpenGL)
         {
             const std::size_t row =
@@ -804,6 +1023,7 @@ public:
         mPending = false;
         Status first = Status::success();
         destroy(mReadback, first); destroy(mInputReadback, first);
+        destroy(mPPLLCounterReadback, first);
         for (Pipeline& pipeline : mPipelines) destroy(pipeline.handle, first);
         destroy(mSampler, first); destroy(mShader, first);
         for (auto& view : mFallbackViews) destroy(view, first);
@@ -816,6 +1036,7 @@ private:
     {
         BlendState blend;
         bool noCull = false;
+        bool depthTest = true;
         PipelineHandle handle;
     };
 
@@ -866,20 +1087,21 @@ private:
     }
 
     PipelineHandle pipelineFor(const BlendState& blend, bool noCull,
-                               Status& status)
+                               bool depthTest, Status& status)
     {
         const auto found = std::find_if(mPipelines.begin(), mPipelines.end(),
             [&](const Pipeline& pipeline)
-            { return pipeline.blend == blend && pipeline.noCull == noCull; });
+            { return pipeline.blend == blend && pipeline.noCull == noCull &&
+                     pipeline.depthTest == depthTest; });
         if (found != mPipelines.end()) return found->handle;
         PipelineDesc desc;
         desc.shader = mShader;
         desc.cullMode = noCull ? CullMode::None : CullMode::Back;
-        desc.depthTest = true;
+        desc.depthTest = depthTest;
         desc.depthWrite = false;
         desc.depthCompare = CompareOp::GreaterEqual;
         desc.colorFormats = {COLOR_FORMAT};
-        desc.depthStencilFormat = DEPTH_FORMAT;
+        if (depthTest) desc.depthStencilFormat = DEPTH_FORMAT;
         desc.blendStates = {blend};
         desc.vertexBuffers = {{
             0, sizeof(MaterialSceneVertex), VertexInputRate::PerVertex}};
@@ -896,7 +1118,7 @@ private:
              offsetof(MaterialSceneVertex, joints)},
             {6, 0, VertexFormat::Float32x4,
              offsetof(MaterialSceneVertex, weights)}};
-        Pipeline created{blend, noCull,
+        Pipeline created{blend, noCull, depthTest,
                          mDevice.createPipeline(desc, status)};
         if (!status) return {};
         mPipelines.push_back(created);
@@ -910,6 +1132,7 @@ private:
             return Status::success();
         Status first = Status::success();
         destroy(mReadback, first); destroy(mInputReadback, first);
+        destroy(mPPLLCounterReadback, first);
         if (!first) return first;
         const std::uint64_t bytes =
             static_cast<std::uint64_t>(targets.width) * targets.height *
@@ -921,10 +1144,14 @@ private:
         if (status) mInputReadback = mDevice.createBuffer(
             {bytes, ResourceUsage::TransferDestination,
              MemoryClass::Readback}, status);
+        if (status) mPPLLCounterReadback = mDevice.createBuffer(
+            {8u, ResourceUsage::TransferDestination,
+             MemoryClass::Readback}, status);
         if (!status)
         {
             Status ignored = Status::success();
             destroy(mReadback, ignored); destroy(mInputReadback, ignored);
+            destroy(mPPLLCounterReadback, ignored);
             return status;
         }
         mGeneration = targets.generation;
@@ -1010,6 +1237,7 @@ private:
     std::vector<Pipeline> mPipelines;
     BufferHandle mReadback;
     BufferHandle mInputReadback;
+    BufferHandle mPPLLCounterReadback;
     std::uint64_t mGeneration = 0;
     std::uint32_t mWidth = 0;
     std::uint32_t mHeight = 0;

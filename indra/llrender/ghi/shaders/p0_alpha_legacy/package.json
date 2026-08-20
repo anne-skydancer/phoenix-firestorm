@@ -1,5 +1,5 @@
 {
-  "name": "p0_alpha",
+  "name": "p0_alpha_legacy",
   "schema_version": 3,
   "toolchain": {
     "glslang_version": "11:16.2.0",
@@ -11,15 +11,12 @@
   "expected": {
     "bindings": [
       {"group": 0, "binding": 0, "type": "uniform_buffer", "name": "FrameData", "stages": ["vertex"]},
-      {"group": 0, "binding": 1, "type": "uniform_buffer", "name": "AlphaData", "stages": ["vertex", "fragment"]},
+      {"group": 0, "binding": 1, "type": "uniform_buffer", "name": "AlphaData", "stages": ["fragment"]},
       {"group": 1, "binding": 0, "type": "uniform_buffer", "name": "ObjectData", "stages": ["vertex"]},
       {"group": 1, "binding": 1, "type": "uniform_buffer", "name": "SkinData", "stages": ["vertex"]},
       {"group": 2, "binding": 0, "type": "uniform_buffer", "name": "MaterialData", "stages": ["fragment"]},
       {"group": 2, "binding": 1, "type": "combined_image_sampler", "name": "baseColorMap", "stages": ["fragment"]},
-      {"group": 2, "binding": 4, "type": "combined_image_sampler", "name": "emissiveMap", "stages": ["fragment"]},
-      {"group": 3, "binding": 0, "type": "storage_image", "name": "ppllHead", "stages": ["fragment"]},
-      {"group": 3, "binding": 1, "type": "storage_buffer", "name": "PPLLNodes", "stages": ["fragment"]},
-      {"group": 3, "binding": 2, "type": "storage_buffer", "name": "PPLLCounter", "stages": ["fragment"]}
+      {"group": 2, "binding": 4, "type": "combined_image_sampler", "name": "emissiveMap", "stages": ["fragment"]}
     ],
     "vertex_inputs": [
       {"location": 0, "type": "float3"},

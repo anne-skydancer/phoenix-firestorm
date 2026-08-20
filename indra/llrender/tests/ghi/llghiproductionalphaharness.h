@@ -15,6 +15,39 @@
 
 namespace LL::GHI::Test
 {
+inline void stressProductionAlphaPacket(AlphaScenePacket& packet,
+                                        bool forceOverflow)
+{
+    packet.sourceWidth = packet.sourceHeight = 64;
+    packet.materials.sourceWidth = packet.materials.sourceHeight = 64;
+    packet.ppllPolicy.nodesPerPixel = forceOverflow ? 1u : 8u;
+    packet.ppllPolicy.exactLayersPerPixel = forceOverflow ? 24u : 4u;
+    packet.materials.vertices.resize(3);
+    packet.materials.vertices[0].position = {{-1.f, -1.f, 0.f}};
+    packet.materials.vertices[1].position = {{3.f, -1.f, 0.f}};
+    packet.materials.vertices[2].position = {{-1.f, 3.f, 0.f}};
+    for (auto& vertex : packet.materials.vertices)
+    {
+        vertex.normal = {{0.f, 0.f, 1.f}};
+        vertex.joints = {};
+        vertex.weights = {{1.f, 0.f, 0.f, 0.f}};
+    }
+    packet.materials.indices = {0, 1, 2};
+    constexpr std::array<float, 16> identity{{
+        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+        0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f}};
+    for (std::size_t index = 0; index < packet.draws.size(); ++index)
+    {
+        packet.draws[index].rigged = false;
+        auto& draw = packet.materials.draws[index];
+        draw.skin = NO_RESOURCE;
+        draw.firstIndex = 0;
+        draw.indexCount = 3;
+        draw.transform = identity;
+        draw.modelTransform = identity;
+    }
+}
+
 struct ProductionAlphaHarnessResult
 {
     bool passed = false;
@@ -107,7 +140,9 @@ inline ProductionAlphaHarnessResult runProductionAlphaHarness(
         return fail("destroy production alpha resources");
     }
     result.passed = true;
-    result.message = "P0e3c production alpha replay PASS";
+    result.message = result.execution.ppllDraws
+        ? "P0e3d production PPLL replay PASS"
+        : "P0e3c production alpha replay PASS";
     return result;
 }
 } // namespace LL::GHI::Test

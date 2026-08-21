@@ -333,8 +333,10 @@ public:
         const AlphaPPLLAllocation ppllAllocation = planAlphaPPLLAllocation(
             targets.width, targets.height,
             mDevice.capabilities().maxBufferSize, packet.ppllPolicy);
+        const bool ppllBindingsRequired =
+            hasPPLLArtifact(mShaderPackage, mDevice.backend());
         const bool ppllAvailable = supportsPPLL(mDevice.capabilities()) &&
-            hasPPLLArtifact(mShaderPackage, mDevice.backend()) &&
+            ppllBindingsRequired &&
             ppllAllocation.usable;
         const bool depthPeelingAvailable =
             hasDepthPeelArtifact(mShaderPackage, mDevice.backend());
@@ -752,17 +754,22 @@ public:
         if (status) materials = mDevice.createBuffer(
             {materialStride * draws.size(), ResourceUsage::Uniform |
              ResourceUsage::TransferDestination, MemoryClass::DeviceLocal}, status);
-        if (status && ppllDraws) ppllNodes = mDevice.createBuffer(
-            {ppllAllocation.nodeCapacity * ALPHA_PPLL_NODE_BYTES,
+        const std::uint64_t ppllNodeBytes = ppllDraws
+            ? ppllAllocation.nodeCapacity * ALPHA_PPLL_NODE_BYTES
+            : ALPHA_PPLL_NODE_BYTES;
+        const std::uint32_t ppllHeadWidth = ppllDraws ? targets.width : 1u;
+        const std::uint32_t ppllHeadHeight = ppllDraws ? targets.height : 1u;
+        if (status && ppllBindingsRequired) ppllNodes = mDevice.createBuffer(
+            {ppllNodeBytes,
              ResourceUsage::Storage, MemoryClass::DeviceLocal}, status);
-        if (status && ppllDraws) ppllCounter = mDevice.createBuffer(
+        if (status && ppllBindingsRequired) ppllCounter = mDevice.createBuffer(
             {8u, ResourceUsage::Storage | ResourceUsage::TransferDestination |
                  ResourceUsage::TransferSource, MemoryClass::DeviceLocal}, status);
-        if (status && ppllDraws) ppllHead = mDevice.createImage(
-            {{targets.width, targets.height, 1}, Format::R32UInt,
+        if (status && ppllBindingsRequired) ppllHead = mDevice.createImage(
+            {{ppllHeadWidth, ppllHeadHeight, 1}, Format::R32UInt,
              ResourceUsage::Storage | ResourceUsage::TransferDestination,
              1, 1, 1}, status);
-        if (status && ppllDraws) ppllHeadView = mDevice.createImageView(
+        if (status && ppllBindingsRequired) ppllHeadView = mDevice.createImageView(
             {ppllHead, Format::R32UInt,
              {ImageAspect::Color, 0, 1, 0, 1}}, status);
         if (status && depthPeelDraws) peelUniforms = mDevice.createBuffer(
@@ -792,7 +799,7 @@ public:
         }
         if (status) status = mDevice.writeBuffer(staging, 0, bytes);
 
-        if (status && ppllDraws)
+        if (status && ppllBindingsRequired)
         {
             BindingSetDesc ppllDesc;
             ppllDesc.shader = mShader;
@@ -801,20 +808,22 @@ public:
                 {0, 0, ShaderPackageDesc::BindingType::StorageImage,
                  {}, 0, 0, ppllHeadView, {}},
                 {1, 0, ShaderPackageDesc::BindingType::StorageBuffer,
-                 ppllNodes, 0,
-                 ppllAllocation.nodeCapacity * ALPHA_PPLL_NODE_BYTES,
+                 ppllNodes, 0, ppllNodeBytes,
                  {}, {}},
                 {2, 0, ShaderPackageDesc::BindingType::StorageBuffer,
                  ppllCounter, 0, 8u, {}, {}}};
             ppllSet = mDevice.createBindingSet(ppllDesc, status);
-            BlendState resolveBlend;
-            resolveBlend.enabled = true;
-            resolveBlend.sourceColor = BlendFactor::One;
-            resolveBlend.destinationColor = BlendFactor::OneMinusSourceAlpha;
-            resolveBlend.sourceAlpha = BlendFactor::One;
-            resolveBlend.destinationAlpha = BlendFactor::OneMinusSourceAlpha;
-            if (status) resolvePipeline = pipelineFor(
-                resolveBlend, true, false, status);
+            if (ppllDraws)
+            {
+                BlendState resolveBlend;
+                resolveBlend.enabled = true;
+                resolveBlend.sourceColor = BlendFactor::One;
+                resolveBlend.destinationColor = BlendFactor::OneMinusSourceAlpha;
+                resolveBlend.sourceAlpha = BlendFactor::One;
+                resolveBlend.destinationAlpha = BlendFactor::OneMinusSourceAlpha;
+                if (status) resolvePipeline = pipelineFor(
+                    resolveBlend, true, false, status);
+            }
         }
         if (status && depthPeelDraws)
         {
@@ -1037,7 +1046,7 @@ public:
             if (issued) issued = commands.bindBindingSet(2, executable.materialSet);
             if (issued && routeSet)
                 issued = commands.bindBindingSet(3, routeSet);
-            else if (issued && ppllDraws)
+            else if (issued && ppllSet)
                 issued = commands.bindBindingSet(3, ppllSet);
             if (issued) issued = commands.drawIndexed(
                 {draw.indexCount, 1, draw.firstIndex, 0, 0});

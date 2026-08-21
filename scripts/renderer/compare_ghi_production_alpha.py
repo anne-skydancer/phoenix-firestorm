@@ -57,6 +57,7 @@ def main() -> int:
     parser.add_argument("--absolute-coverage-tolerance", type=int, default=4)
     parser.add_argument("--relative-coverage-tolerance", type=float, default=0.001)
     parser.add_argument("--require-residual", action="store_true")
+    parser.add_argument("--residual-only", action="store_true")
     parser.add_argument("--allow-deferred", action="store_true")
     parser.add_argument("--ppll", action="store_true")
     parser.add_argument("--ppll-stress", action="store_true")
@@ -81,6 +82,8 @@ def main() -> int:
     ppll_requested = args.ppll or args.ppll_stress or args.ppll_tail
     peel_requested = args.peel or args.peel_stress
     exact_requested = ppll_requested or peel_requested
+    if args.residual_only and (peel_requested or args.ppll_stress or args.ppll_tail):
+        parser.error("--residual-only supports only legacy or --ppll replay")
     if exact_requested:
         option = "--peel-stress" if args.peel_stress else \
             "--peel" if args.peel else \
@@ -116,8 +119,10 @@ def main() -> int:
     gl41 = next(record for record in gl_records if record.get("profile") == "OpenGL41")
     legacy_equal = ("frame", "packet-sha256", "routes", "deferred-reasons",
                     "ppll", "peel", "modified", "color-sha256")
-    if not exact_requested or peel_requested:
+    if not exact_requested or peel_requested or args.residual_only:
         for name in legacy_equal:
+            if args.residual_only and ppll_requested and name == "ppll":
+                continue
             if gl44[name] != gl41[name]:
                 raise RuntimeError(f"OpenGL 4.1/4.4 evidence differs for {name}")
     for name in ("frame", "packet-sha256", "routes", "deferred-reasons"):
@@ -140,7 +145,11 @@ def main() -> int:
         raise RuntimeError("peer route evidence has an unexpected shape")
     mask, sorted_draws, residual, emissive, deferred = routes
     exact_draws = ppll[1] + peel[1]
-    if not mask or not (sorted_draws or exact_draws):
+    if args.residual_only:
+        if mask or sorted_draws or exact_draws or not residual:
+            raise RuntimeError(
+                "packet is not exclusively residual alpha work")
+    elif not mask or not (sorted_draws or exact_draws):
         raise RuntimeError("packet lacks executable mask or alpha evidence")
     if args.require_residual and not residual:
         raise RuntimeError("packet lacks required residual alpha evidence")
@@ -157,9 +166,18 @@ def main() -> int:
         if (available, exact_draws, capacity, exact_layers) != \
                 (vk_available, vk_exact_draws, vk_capacity, vk_exact_layers):
             raise RuntimeError("native PPLL policy or route evidence differs")
-        if not available or not exact_draws or not capacity or not exact_layers:
+        if not available:
+            raise RuntimeError("PPLL replay omitted exact-method availability")
+        if args.residual_only:
+            if any((exact_draws, capacity, exact_layers, allocated, overflow)):
+                raise RuntimeError("residual-only PPLL replay reported exact work")
+            if any((vk_exact_draws, vk_capacity, vk_exact_layers,
+                    vk_allocated, vk_overflow)):
+                raise RuntimeError("Vulkan residual-only replay reported exact work")
+        elif not exact_draws or not capacity or not exact_layers:
             raise RuntimeError("PPLL replay omitted exact-method work or bounds")
-        if allocated < exact_draws or overflow > allocated:
+        if not args.residual_only and \
+                (allocated < exact_draws or overflow > allocated):
             raise RuntimeError("PPLL allocation/overflow evidence is invalid")
         if args.ppll_stress and not overflow:
             raise RuntimeError("PPLL stress replay produced no overflow")
@@ -174,9 +192,9 @@ def main() -> int:
             raise RuntimeError("OpenGL 4.1 fallback incorrectly enabled PPLL")
         if fallback_routes[1] != routes[1] + exact_draws:
             raise RuntimeError("OpenGL 4.1 fallback did not retain exact draws as sorted")
-        for name, gl_value, vk_value in (
+        for name, gl_value, vk_value in (() if args.residual_only else (
                 ("ppll-allocated", allocated, vk_allocated),
-                ("ppll-overflow", overflow, vk_overflow)):
+            ("ppll-overflow", overflow, vk_overflow))):
             delta = abs(gl_value - vk_value)
             allowed = max(
                 args.absolute_coverage_tolerance,

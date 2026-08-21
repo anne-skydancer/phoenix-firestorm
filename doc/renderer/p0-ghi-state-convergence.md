@@ -680,14 +680,36 @@ emissive intents, defers no draw, renders a nonempty filtered tail, and modifies
 validation is clean. This session also proves clean relog assembly after the
 PPLL capture.
 
-P0e3f is not yet accepted. The live scene has no non-particle custom-blend
-producer, and captured class names do not independently prove every requested
-content category such as decals, plants, glass, or appliers. Selected visible
-OpenGL output has not been read back and compared to private peer output;
-steady-state memory/GPU timing, resize, explicit device recovery, macOS OpenGL
-4.1, and Mesa+Zink provider evidence remain open. Native hashes remain evidence
-only: PPLL atomic append order and budget-local peel layer counts are not
-cross-API bit-identity contracts.
+A dedicated in-world particle emitter now supplies real custom-factor evidence
+without fabricating `CustomBlend` classification. It uses the Second Life
+particle blend equation `SOURCE_ALPHA + ONE`; the uploadable source is
+`doc/renderer/p0e3-custom-blend-particles.lsl`. A settled, non-transient
+PPLL-selected frame 6535 capture has identity
+`775b8f437d81411b43d5f645c629de926fcc182b98ae26bb43019d906e40e33a`.
+Its four draws are all full-bright, emissive particle residuals. Two retain the
+requested additive equation and two retain ordinary production factors. The
+packet inspector's independent gates require both nonstandard particle factors
+and the exact `SOURCE_ALPHA + ONE` color pair; the archived ordinary-particle
+capture fails the latter gate as expected.
+
+This residual-only packet exposed a package compatibility edge: the exact PPLL
+shader reflects binding group 3 even when routing produces zero exact draws.
+The shared executor now binds a one-pixel head image, one inert node, and one
+counter for that case instead of allocating the full PPLL pool or dropping the
+captured method. OpenGL 4.4 and Vulkan validation report PPLL available with
+zero exact draws, allocation, or overflow; OpenGL 4.1 retains its explicit
+legacy fallback. All peers preserve four residual routes, replay four emissive
+intents, defer nothing, and modify exactly 8,489 pixels. The strict comparator
+requires residual-only composition, preserved source/effective packet identity,
+zero exact work, and the expected per-profile capability distinction.
+
+P0e3f is not yet accepted. Captured class names do not independently prove
+every requested content category such as decals, plants, glass, or appliers.
+Selected visible OpenGL output has not been read back and compared to private
+peer output; steady-state memory/GPU timing, resize, explicit device recovery,
+macOS OpenGL 4.1, and Mesa+Zink provider evidence remain open. Native hashes
+remain evidence only: PPLL atomic append order and budget-local peel layer
+counts are not cross-API bit-identity contracts.
 
 ### P0e1a — coherent generic opaque adoption
 

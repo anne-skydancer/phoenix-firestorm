@@ -16,9 +16,26 @@
 int main(int argc, char** argv)
 {
     using namespace LL::GHI;
-    if (argc != 2)
+    bool requireNonstandardBlend = false;
+    bool requireParticleSourceAlphaOne = false;
+    for (int index = 2; index < argc; ++index)
     {
-        std::cerr << "usage: llrender_alpha_packet_inspector <packet>\n";
+        const std::string_view option(argv[index]);
+        if (option == "--require-nonstandard-blend")
+            requireNonstandardBlend = true;
+        else if (option == "--require-particle-source-alpha-one")
+            requireParticleSourceAlphaOne = true;
+        else
+        {
+            std::cerr << "unknown option: " << option << '\n';
+            return 2;
+        }
+    }
+    if (argc < 2)
+    {
+        std::cerr << "usage: llrender_alpha_packet_inspector <packet> "
+                     "[--require-nonstandard-blend] "
+                     "[--require-particle-source-alpha-one]\n";
         return 2;
     }
     std::ifstream input(argv[1], std::ios::binary);
@@ -49,6 +66,9 @@ int main(int argc, char** argv)
     std::uint64_t legacy = 0;
     std::uint64_t pbr = 0;
     std::uint64_t productionBlend = 0;
+    std::uint64_t nonstandardBlend = 0;
+    std::uint64_t particleNonstandardBlend = 0;
+    std::uint64_t particleSourceAlphaOne = 0;
     const AlphaRoutingState routing{packet.requestedMethod, true, true,
                                     packet.transientLoad};
     for (const auto& draw : packet.draws)
@@ -66,13 +86,35 @@ int main(int argc, char** argv)
             packet.materials.draws[&draw - packet.draws.data()].material];
         legacy += material.model == MaterialModel::Legacy;
         pbr += material.model == MaterialModel::MetallicRoughness;
-        productionBlend +=
+        const bool usesProductionBlend =
             draw.blend.sourceColor == AlphaBlendFactor::SourceAlpha &&
             draw.blend.destinationColor ==
                 AlphaBlendFactor::OneMinusSourceAlpha &&
             draw.blend.sourceAlpha == AlphaBlendFactor::Zero &&
             draw.blend.destinationAlpha ==
                 AlphaBlendFactor::OneMinusSourceAlpha;
+        const bool blended =
+            draw.classification != AlphaSubmissionClass::Mask;
+        productionBlend += blended && usesProductionBlend;
+        nonstandardBlend += blended && !usesProductionBlend;
+        particleNonstandardBlend +=
+            blended && !usesProductionBlend &&
+            draw.classification == AlphaSubmissionClass::Particle;
+        particleSourceAlphaOne +=
+            draw.classification == AlphaSubmissionClass::Particle &&
+            draw.blend.sourceColor == AlphaBlendFactor::SourceAlpha &&
+            draw.blend.destinationColor == AlphaBlendFactor::One &&
+            draw.blend.colorOperation == AlphaBlendOperation::Add;
+    }
+    if (requireNonstandardBlend && !nonstandardBlend)
+    {
+        std::cerr << "alpha packet lacks nonstandard blend-factor evidence\n";
+        return 1;
+    }
+    if (requireParticleSourceAlphaOne && !particleSourceAlphaOne)
+    {
+        std::cerr << "alpha packet lacks SOURCE_ALPHA + ONE particle evidence\n";
+        return 1;
     }
     std::uint64_t textureBytes = 0;
     std::uint64_t comparableTextures = 0;
@@ -109,6 +151,11 @@ int main(int argc, char** argv)
         << "  \"legacy_draws\": " << legacy << ",\n"
         << "  \"pbr_draws\": " << pbr << ",\n"
         << "  \"production_blend_state\": " << productionBlend << ",\n"
+        << "  \"nonstandard_blend_state\": " << nonstandardBlend << ",\n"
+        << "  \"particle_nonstandard_blend_state\": "
+        << particleNonstandardBlend << ",\n"
+        << "  \"particle_source_alpha_one_blend_state\": "
+        << particleSourceAlphaOne << ",\n"
         << "  \"textures\": " << packet.materials.textures.size() << ",\n"
         << "  \"comparable_textures\": " << comparableTextures << ",\n"
         << "  \"texture_bytes\": " << textureBytes << ",\n"

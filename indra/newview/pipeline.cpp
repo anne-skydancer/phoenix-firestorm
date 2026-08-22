@@ -10710,6 +10710,9 @@ void LLPipeline::doWaterExclusionMask()
     mWaterExclusionPool->render();
 
     mWaterExclusionMask.flush();
+    if (LLGHIEnvironmentCapture::active())
+        LLGHIEnvironmentCapture::instance().observeWaterExclusionMask(
+            mWaterExclusionMask);
     glClearColor(0, 0, 0, 0);
 }
 

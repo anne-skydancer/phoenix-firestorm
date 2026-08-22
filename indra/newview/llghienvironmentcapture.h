@@ -13,6 +13,7 @@
 #include <vector>
 
 class LLFace;
+class LLRenderTarget;
 class LLVector3;
 class LLViewerTexture;
 
@@ -31,6 +32,8 @@ public:
                       LLViewerTexture* normal_map,
                       LLViewerTexture* next_normal_map,
                       bool normal_mip_filtering);
+    void observeReflectionColor(LLRenderTarget& target);
+    void observeWaterExclusionMask(LLRenderTarget& target);
     void endFrame();
 
 private:

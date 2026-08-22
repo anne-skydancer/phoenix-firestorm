@@ -47,6 +47,7 @@ set(llrender_SOURCE_FILES
     ghi/core/llghiproductionalphaexecutor.cpp
     ghi/core/llghiproductionenvironmentexecutor.cpp
     ghi/core/llghiproductionwaterexecutor.cpp
+    ghi/core/llghiproductionwaterresources.cpp
     ghi/core/llghiproductionframeconsumer.cpp
     ghi/core/llghiproductiongbufferexecutor.cpp
     ghi/core/llghiproductionlightingexecutor.cpp
@@ -117,6 +118,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghiproductionalphaexecutor.h
     ghi/include/llghiproductionenvironmentexecutor.h
     ghi/include/llghiproductionwaterexecutor.h
+    ghi/include/llghiproductionwaterresources.h
     ghi/include/llghiproductionframeconsumer.h
     ghi/include/llghiproductiongbufferexecutor.h
     ghi/include/llghiproductionlightingexecutor.h
@@ -1391,6 +1393,7 @@ if (LL_TESTS)
     ghi/core/llghiproductionalphaexecutor.cpp
       ghi/core/llghiproductionenvironmentexecutor.cpp
       ghi/core/llghiproductionwaterexecutor.cpp
+    ghi/core/llghiproductionwaterresources.cpp
       ghi/core/llghiproductionframeconsumer.cpp
       ghi/core/llghiproductiongbufferexecutor.cpp
       ghi/core/llghiproductionlightingexecutor.cpp

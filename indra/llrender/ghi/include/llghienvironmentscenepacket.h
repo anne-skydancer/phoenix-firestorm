@@ -18,7 +18,7 @@
 namespace LL::GHI
 {
 
-inline constexpr std::uint32_t ENVIRONMENT_SCENE_PACKET_VERSION = 2;
+inline constexpr std::uint32_t ENVIRONMENT_SCENE_PACKET_VERSION = 3;
 
 enum class EnvironmentViewKind : std::uint32_t
 {
@@ -77,6 +77,8 @@ enum class EnvironmentTextureSemantic : std::uint32_t
     CloudNoiseNext,
     WaterNormal,
     WaterNormalNext,
+    ReflectionColor,
+    WaterExclusionMask,
 };
 
 struct EnvironmentTextureBinding

@@ -185,13 +185,15 @@ bool hasBinding(const std::vector<EnvironmentTextureBinding>& bindings,
 bool validBindings(const std::vector<EnvironmentTextureBinding>& bindings,
                    std::size_t textureCount)
 {
-    if (bindings.size() > static_cast<std::size_t>(EnvironmentTextureSemantic::WaterNormalNext) + 1)
+    if (bindings.size() > static_cast<std::size_t>(
+            EnvironmentTextureSemantic::WaterExclusionMask) + 1)
         return false;
     for (std::size_t index = 0; index < bindings.size(); ++index)
     {
         const auto& binding = bindings[index];
         if (static_cast<std::uint32_t>(binding.semantic) >
-                static_cast<std::uint32_t>(EnvironmentTextureSemantic::WaterNormalNext) ||
+                static_cast<std::uint32_t>(
+                    EnvironmentTextureSemantic::WaterExclusionMask) ||
             binding.texture >= textureCount ||
             std::any_of(bindings.begin(),
                         bindings.begin() + static_cast<std::ptrdiff_t>(index),
@@ -331,7 +333,8 @@ bool decodeBindings(Reader& reader,
 
 Status validateEnvironmentScenePacket(const EnvironmentScenePacket& packet)
 {
-    if (packet.version != ENVIRONMENT_SCENE_PACKET_VERSION || !packet.frameId ||
+    if ((packet.version != 2 &&
+         packet.version != ENVIRONMENT_SCENE_PACKET_VERSION) || !packet.frameId ||
         !packet.sourceWidth || !packet.sourceHeight ||
         packet.sourceWidth > 32768 || packet.sourceHeight > 32768 ||
         static_cast<std::uint32_t>(packet.viewKind) >
@@ -419,6 +422,12 @@ Status validateEnvironmentScenePacket(const EnvironmentScenePacket& packet)
          packet.waterVertices.empty() || packet.waterIndices.empty() ||
          packet.waterDraws.empty()))
         return invalid("water route is missing dependencies, normals, or geometry");
+    if (hasWater && packet.version >= 3 &&
+        (!hasBinding(packet.water.textures,
+                     EnvironmentTextureSemantic::ReflectionColor) ||
+         !hasBinding(packet.water.textures,
+                     EnvironmentTextureSemantic::WaterExclusionMask)))
+        return invalid("water route is missing captured dependency resources");
     if (!hasWater && (!packet.waterVertices.empty() || !packet.waterIndices.empty() ||
                       !packet.waterDraws.empty()))
         return invalid("water geometry supplied without an active water route");

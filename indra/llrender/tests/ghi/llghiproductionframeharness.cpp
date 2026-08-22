@@ -8,6 +8,7 @@
 #include "ghi/include/llghiproductionframepacket.h"
 #include "ghi/include/llghiproductionenvironmentexecutor.h"
 #include "ghi/include/llghiproductionwaterexecutor.h"
+#include "ghi/include/llghiproductionwaterresources.h"
 #include "ghi/include/llghiproductionframetargets.h"
 #include "ghi/include/llghiproductiongbufferexecutor.h"
 #include "ghi/include/llghiproductionlightingexecutor.h"
@@ -124,107 +125,6 @@ private:
     HDC mDc = nullptr;
     HGLRC mContext = nullptr;
 #endif
-};
-
-class WaterDependencyFixture
-{
-public:
-    explicit WaterDependencyFixture(Device& device) : mDevice(device) {}
-
-    Status create(std::uint64_t generation)
-    {
-        Status status = createTexture(
-            Format::RGBA8UNorm,
-            std::array<std::byte, 4>{std::byte{80}, std::byte{112},
-                                     std::byte{144}, std::byte{255}},
-            mReflectionImage, mReflectionView);
-        if (status)
-            status = createTexture(
-                Format::R8UNorm,
-                std::array<std::byte, 1>{std::byte{255}},
-                mExclusionImage, mExclusionView);
-        if (!status)
-        {
-            shutdown();
-            return status;
-        }
-        mDependencies.generation = generation;
-        mDependencies.reflectionColorView = mReflectionView;
-        mDependencies.exclusionMaskView = mExclusionView;
-        return Status::success();
-    }
-
-    const ProductionWaterDependencies& dependencies() const
-    {
-        return mDependencies;
-    }
-
-    Status shutdown()
-    {
-        Status first = Status::success();
-        destroy(mExclusionView, first);
-        destroy(mExclusionImage, first);
-        destroy(mReflectionView, first);
-        destroy(mReflectionImage, first);
-        mDependencies = {};
-        return first;
-    }
-
-private:
-    template<std::size_t Size>
-    Status createTexture(Format format,
-                         const std::array<std::byte, Size>& pixels,
-                         ImageHandle& image, ImageViewHandle& view)
-    {
-        Status status = Status::success();
-        image = mDevice.createImage(
-            {{1, 1, 1}, format,
-             ResourceUsage::Sampled | ResourceUsage::TransferDestination,
-             1, 1, 1}, status);
-        if (status)
-            view = mDevice.createImageView(
-                {image, format, {ImageAspect::Color, 0, 1, 0, 1}}, status);
-        BufferHandle staging;
-        if (status)
-            staging = mDevice.createBuffer(
-                {Size, ResourceUsage::TransferSource, MemoryClass::Upload},
-                status);
-        if (status) status = mDevice.writeBuffer(staging, 0, pixels);
-        if (status)
-        {
-            CommandContext& commands = mDevice.commandContext();
-            status = commands.beginFrame();
-            BufferImageCopyRegion copy;
-            copy.imageSubresource = {ImageAspect::Color, 0, 0, 1};
-            copy.imageExtent = {1, 1, 1};
-            const std::array<BufferImageCopyRegion, 1> copies{{copy}};
-            if (status) status = commands.copyBufferToImage(staging, image, copies);
-            const Status ended = commands.endFrame();
-            if (status && !ended) status = ended;
-        }
-        if (staging)
-        {
-            const Status destroyed = mDevice.destroy(staging);
-            if (status && !destroyed) status = destroyed;
-        }
-        return status;
-    }
-
-    template<typename Handle>
-    void destroy(Handle& handle, Status& first)
-    {
-        if (!handle) return;
-        const Status status = mDevice.destroy(handle);
-        if (first && !status) first = status;
-        handle = {};
-    }
-
-    Device& mDevice;
-    ProductionWaterDependencies mDependencies;
-    ImageHandle mReflectionImage;
-    ImageViewHandle mReflectionView;
-    ImageHandle mExclusionImage;
-    ImageViewHandle mExclusionView;
 };
 
 bool parseAdapterIndex(const char* value, std::uint32_t& adapterIndex)
@@ -418,6 +318,7 @@ int main(int argc, char** argv)
 
     ProductionTextureResidency residency(*creation.device);
     ProductionFrameTargets targets(*creation.device);
+    ProductionWaterResources waterResources(*creation.device);
     ProductionGBufferExecutor gbuffer(
         *creation.device, std::move(opaquePackage),
         std::move(materialPackage), std::move(terrainPackage));
@@ -441,9 +342,11 @@ int main(int argc, char** argv)
     if (status)
         status = targets.ensure(
             frame, ProductionFrameTargetLimits{}, targetResult);
-    WaterDependencyFixture waterDependencies(*creation.device);
+    ProductionWaterResourceResult waterResourceResult;
     if (status && water)
-        status = waterDependencies.create(targets.targets().generation);
+        status = waterResources.update(
+            environmentPacket, targets.targets().generation,
+            ProductionWaterResourceLimits{}, waterResourceResult);
     if (status)
         status = gbuffer.submit(
             frame, targets.targets(), residency, ProductionGBufferLimits{});
@@ -455,7 +358,7 @@ int main(int argc, char** argv)
             frame, targets.targets(), residency, ProductionLightingLimits{});
     if (status && water)
         status = water->submit(environmentPacket, targets.targets(),
-                               waterDependencies.dependencies(),
+                               waterResources.dependencies(),
                                ProductionWaterLimits{});
     if (!status)
     {
@@ -524,7 +427,12 @@ int main(int argc, char** argv)
                   << " water-underwater=" << waterResult.underwater
                   << " water-coverage=" << waterResult.nonClearPixels
                   << " water-modified=" << waterResult.modifiedPixels
-                  << " water-sha256=" << waterResult.colorSha256;
+                  << " water-sha256=" << waterResult.colorSha256
+                  << " water-resource-bytes=" << waterResourceResult.uploadBytes
+                  << " reflection-sha256="
+                  << waterResourceResult.reflectionSha256
+                  << " exclusion-sha256="
+                  << waterResourceResult.exclusionSha256;
     }
     std::cout << " lighting-coverage=" << lightingResult.litNonClearPixels
               << " lighting-sha256=" << lightingResult.lightingSha256;
@@ -540,7 +448,7 @@ int main(int argc, char** argv)
     retainFirstFailure(lighting.shutdown());
     if (water) retainFirstFailure(water->shutdown());
     if (environment) retainFirstFailure(environment->shutdown());
-    retainFirstFailure(waterDependencies.shutdown());
+    retainFirstFailure(waterResources.shutdown());
     retainFirstFailure(gbuffer.shutdown());
     retainFirstFailure(targets.shutdown());
     retainFirstFailure(residency.shutdown());

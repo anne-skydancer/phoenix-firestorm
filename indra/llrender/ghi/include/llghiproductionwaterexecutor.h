@@ -8,6 +8,7 @@
 #include "llghienvironmentscenepacket.h"
 #include "llghidescriptors.h"
 #include "llghiproductionframetargets.h"
+#include "llghiproductionwaterresources.h"
 
 #include <cstdint>
 #include <memory>
@@ -16,16 +17,6 @@
 namespace LL::GHI
 {
 class Device;
-
-// Reflection generation and exclusion-mask rendering are separate graph
-// owners. The water pass consumes their views but never imports native API
-// handles or silently substitutes another attachment.
-struct ProductionWaterDependencies
-{
-    std::uint64_t generation = 0;
-    ImageViewHandle reflectionColorView;
-    ImageViewHandle exclusionMaskView;
-};
 
 struct ProductionWaterLimits
 {

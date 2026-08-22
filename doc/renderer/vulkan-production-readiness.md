@@ -173,7 +173,7 @@ tracked separately.
 | P0e3d PPLL executor | Validated private; acceptance not recorded | Revalidate selected-method capture, bounded/overflow stress, visible reference, timing, and memory. |
 | P0e3e depth-peel executor | Validated private; acceptance not recorded | Revalidate selected-method capture, tail/layer policy, visible reference, timing, and memory. |
 | P0e3f alpha qualification | Explicitly unaccepted | Close content breadth, visible comparison, resize/relog/teleport/recovery, provider, performance, and memory evidence. |
-| P0e4 recursive/offscreen views | In progress; P0e4a replay accepted on revision `e921ced8be25bd6fe55c2f28944276abed20a861`, expanded production capture and peer replay validated | The authenticated 23-pass packet SHA-256 `d7149541445ff4d118e300e29937d0767cfdd447b7101874125272469a243802` retains six ReflectionProbe, six Mirror, and six CubeSnapshot passes independently plus all five required single views. Packet-driven Vulkan validation and OpenGL peers cover all 1,472 pixels with matching normalized image SHA-256 `c88c79c1fe9b9ff495a4817c99eae2acf05ef879a150fad038e239383bb9fdb2`. Preserve this evidence in an immutable manifest, then acquire same-frame production/environment evidence, replace semantic clear imagery with real scene content, and export reflection/exclusion resources for P0e2. |
+| P0e4 recursive/offscreen views | Accepted; P0.2 closure validated | The authenticated 23-pass packet SHA-256 `d7149541445ff4d118e300e29937d0767cfdd447b7101874125272469a243802` retains six ReflectionProbe, six Mirror, and six CubeSnapshot passes independently plus all five required single views; bounded Vulkan/OpenGL replay covers all 1,472 pixels with normalized image SHA-256 `c88c79c1fe9b9ff495a4817c99eae2acf05ef879a150fad038e239383bb9fdb2`. Environment packet v3 exports real 2560x1350 reflection-color and water-exclusion content through GHI-owned resources. The same-frame production/environment pair at frame 1702 has SHA-256 `501d645e5b9dcd43ace510218380df0793457531c82d9a6738f2ae2e439d3a0e` / `0b44fde72074ffb00bb2146891498f4776121497b41419213fe5ae3174b2376a`; both peers consume reflection SHA-256 `cb5e96126fc0367aa4e5a59874f1d77777b89ba0238a1c4012d091a771627045` and exclusion SHA-256 `d096a8b2da1f3628450de6280b72da0a30a44f5b3967c5e7799b54b91df48e24`, execute seven water draws, and modify exactly 100,352 pixels. P0e2d/P0e2e remain provisional until P0.3 above-water/underwater and visible-reference qualification. |
 | P0e5 UI/HUD/interaction/snapshots | Open; no acceptance checkpoint | Execute UI0-UI6 semantics in a headless complete-frame compositor, including fonts, media, HUD ordering, picking, snapshots, DPI, and shipped skins. |
 | P0e6 appearance/baking | Open; no acceptance checkpoint | Add backend-neutral layer/mask/composition/readback contracts and private peer bake execution. |
 | P0f legacy confinement | Open; no acceptance checkpoint | Burn down migrated coupling and prove complete-frame Vulkan reachability without an OpenGL context. |
@@ -257,7 +257,7 @@ and every later gate can emit the common manifest format.
 Pass: accepted historical slices have current-revision manifests; no completed
 packet/executor work is reimplemented.
 
-##### P0.2: Implement P0e4 recursive/offscreen semantics
+##### P0.2: Implement P0e4 recursive/offscreen semantics (closed)
 
 1. Add a versioned nested-view packet and production observer for reflection and
    hero probes, mirrors, six-face cube snapshots, impostors, previews, and
@@ -270,6 +270,12 @@ packet/executor work is reimplemented.
 
 Pass: every production nested-view class has semantic and image evidence, and
 the generated reflection/exclusion dependencies satisfy the water executor.
+
+Accepted: the expanded production packet covers every required nested-view
+class, and packet v3 carries full-size production reflection/exclusion content
+into generation-matched GHI resources. The frame-1702 Vulkan validation and
+OpenGL peers each modify 100,352 water pixels from those resources. The
+remaining above-water/underwater visual-model qualification is P0.3 scope.
 
 ##### P0.3: Close P0e2d/P0e2e environment and water
 

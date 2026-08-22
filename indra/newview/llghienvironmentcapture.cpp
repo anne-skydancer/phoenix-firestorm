@@ -12,6 +12,7 @@
 #include "llenvironment.h"
 #include "llface.h"
 #include "llrender.h"
+#include "llrendertarget.h"
 #include "llsettingssky.h"
 #include "llsettingswater.h"
 #include "llsky.h"
@@ -174,13 +175,15 @@ public:
         return index;
     }
 
-    void bind(std::vector<LL::GHI::EnvironmentTextureBinding>& bindings,
+    bool bind(std::vector<LL::GHI::EnvironmentTextureBinding>& bindings,
               LLViewerTexture* source,
               LL::GHI::EnvironmentTextureSemantic semantic,
               LL::GHI::TextureColorSpace colorSpace)
     {
         const std::uint32_t index = texture(source, semantic, colorSpace);
-        if (index != LL::GHI::NO_RESOURCE) bindings.push_back({semantic, index});
+        if (index == LL::GHI::NO_RESOURCE) return false;
+        bindings.push_back({semantic, index});
+        return true;
     }
 
     void bindHdriPlaceholder()
@@ -462,11 +465,12 @@ public:
         LLFace* moonFace = gSky.mVOSkyp->mFace[LLVOSky::FACE_MOON];
         if (gSky.mVOSkyp->getSun().getDraw() && sunFace && sunFace->getGeomCount())
         {
-            mPacket.passMask |= LL::GHI::environmentPassBit(
-                LL::GHI::EnvironmentPass::Sun);
-            bind(skyState.textures, sunFace->getTexture(LLRender::DIFFUSE_MAP),
-                 LL::GHI::EnvironmentTextureSemantic::Sun,
-                 LL::GHI::TextureColorSpace::SRGB);
+            if (bind(skyState.textures,
+                     sunFace->getTexture(LLRender::DIFFUSE_MAP),
+                     LL::GHI::EnvironmentTextureSemantic::Sun,
+                     LL::GHI::TextureColorSpace::SRGB))
+                mPacket.passMask |= LL::GHI::environmentPassBit(
+                    LL::GHI::EnvironmentPass::Sun);
             bind(skyState.textures,
                  sunFace->getTexture(LLRender::ALTERNATE_DIFFUSE_MAP),
                  LL::GHI::EnvironmentTextureSemantic::SunNext,
@@ -474,11 +478,12 @@ public:
         }
         if (gSky.mVOSkyp->getMoon().getDraw() && moonFace && moonFace->getGeomCount())
         {
-            mPacket.passMask |= LL::GHI::environmentPassBit(
-                LL::GHI::EnvironmentPass::Moon);
-            bind(skyState.textures, moonFace->getTexture(LLRender::DIFFUSE_MAP),
-                 LL::GHI::EnvironmentTextureSemantic::Moon,
-                 LL::GHI::TextureColorSpace::SRGB);
+            if (bind(skyState.textures,
+                     moonFace->getTexture(LLRender::DIFFUSE_MAP),
+                     LL::GHI::EnvironmentTextureSemantic::Moon,
+                     LL::GHI::TextureColorSpace::SRGB))
+                mPacket.passMask |= LL::GHI::environmentPassBit(
+                    LL::GHI::EnvironmentPass::Moon);
             bind(skyState.textures,
                  moonFace->getTexture(LLRender::ALTERNATE_DIFFUSE_MAP),
                  LL::GHI::EnvironmentTextureSemantic::MoonNext,
@@ -488,11 +493,11 @@ public:
             skyState.starBrightness >= .001f &&
             gSky.mVOSkyp->getBloomTex())
         {
-            mPacket.passMask |= LL::GHI::environmentPassBit(
-                LL::GHI::EnvironmentPass::Stars);
-            bind(skyState.textures, gSky.mVOSkyp->getBloomTex(),
-                 LL::GHI::EnvironmentTextureSemantic::StarBloom,
-                 LL::GHI::TextureColorSpace::Linear);
+            if (bind(skyState.textures, gSky.mVOSkyp->getBloomTex(),
+                     LL::GHI::EnvironmentTextureSemantic::StarBloom,
+                     LL::GHI::TextureColorSpace::Linear))
+                mPacket.passMask |= LL::GHI::environmentPassBit(
+                    LL::GHI::EnvironmentPass::Stars);
             bind(skyState.textures, gSky.mVOSkyp->getBloomTexNext(),
                  LL::GHI::EnvironmentTextureSemantic::StarBloomNext,
                  LL::GHI::TextureColorSpace::Linear);
@@ -500,11 +505,11 @@ public:
         if (gPipeline.hasRenderType(LLPipeline::RENDER_TYPE_CLOUDS) &&
             gSky.mVOSkyp->getCloudNoiseTex())
         {
-            mPacket.passMask |= LL::GHI::environmentPassBit(
-                LL::GHI::EnvironmentPass::Clouds);
-            bind(skyState.textures, gSky.mVOSkyp->getCloudNoiseTex(),
-                 LL::GHI::EnvironmentTextureSemantic::CloudNoise,
-                 LL::GHI::TextureColorSpace::Linear);
+            if (bind(skyState.textures, gSky.mVOSkyp->getCloudNoiseTex(),
+                     LL::GHI::EnvironmentTextureSemantic::CloudNoise,
+                     LL::GHI::TextureColorSpace::Linear))
+                mPacket.passMask |= LL::GHI::environmentPassBit(
+                    LL::GHI::EnvironmentPass::Clouds);
             bind(skyState.textures, gSky.mVOSkyp->getCloudNoiseTexNext(),
                  LL::GHI::EnvironmentTextureSemantic::CloudNoiseNext,
                  LL::GHI::TextureColorSpace::Linear);
@@ -576,8 +581,7 @@ public:
             static_cast<std::uint64_t>(mPacket.waterDraws.size());
         draw.firstIndex = static_cast<std::uint32_t>(mPacket.waterIndices.size());
         draw.indexCount = count;
-        std::copy_n(&face.getRenderMatrix().mMatrix[0][0], 16,
-                    draw.modelTransform.begin());
+        draw.modelTransform = identityMatrix();
         if (const auto* water = dynamic_cast<const LLVOWater*>(face.getViewerObject()))
             draw.edgePatch = water->getIsEdgePatch();
         for (std::uint32_t item = 0; item < count; ++item)
@@ -657,6 +661,65 @@ public:
              LL::GHI::TextureColorSpace::Linear);
         for (LLFace* face : faces)
             if (face) geometry(*face);
+    }
+
+    void dependency(LLRenderTarget& target,
+                    LL::GHI::EnvironmentTextureSemantic semantic,
+                    std::uint32_t components)
+    {
+        if (!mInFrame || !target.isComplete() || !target.getNumTextures() ||
+            !target.getWidth() || !target.getHeight() ||
+            (components != 1 && components != 4) ||
+            mPacket.textures.size() >= 64)
+            return;
+        if (std::any_of(
+                mPacket.water.textures.begin(), mPacket.water.textures.end(),
+                [semantic](const auto& binding)
+                { return binding.semantic == semantic; }))
+            return;
+
+        const std::uint64_t pixels =
+            static_cast<std::uint64_t>(target.getWidth()) * target.getHeight();
+        if (pixels > std::numeric_limits<std::size_t>::max() / components ||
+            pixels * components > 256ull * 1024ull * 1024ull)
+        {
+            mBudgetLimited = true;
+            return;
+        }
+
+        LL::GHI::MaterialTextureResource resource;
+        const std::string identity = std::to_string(
+            static_cast<std::uint32_t>(semantic)) + ':' +
+            std::to_string(target.getAllocationGeneration());
+        resource.sourceIdentity = digestString(identity);
+        resource.width = target.getWidth();
+        resource.height = target.getHeight();
+        resource.components = components;
+        resource.colorSpace = LL::GHI::TextureColorSpace::Linear;
+        resource.comparability = LL::GHI::ResourceComparability::Comparable;
+        resource.decodedPixels.resize(
+            static_cast<std::size_t>(pixels * components));
+
+        target.bindTexture(0, 0, LLTexUnit::TFO_BILINEAR);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glGetTexImage(GL_TEXTURE_2D, 0,
+                      components == 1 ? GL_RED : GL_RGBA,
+                      GL_UNSIGNED_BYTE, resource.decodedPixels.data());
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        const GLenum error = glGetError();
+        if (error != GL_NO_ERROR)
+        {
+            LL_WARNS("GHI") << "P0e2 dependency readback failed for semantic="
+                             << static_cast<U32>(semantic) << " error=0x"
+                             << std::hex << error << std::dec << LL_ENDL;
+            return;
+        }
+        resource.contentIdentity = digestFromHex(
+            LL::GHI::sha256(resource.decodedPixels));
+        const std::uint32_t index =
+            static_cast<std::uint32_t>(mPacket.textures.size());
+        mPacket.textures.push_back(std::move(resource));
+        mPacket.water.textures.push_back({semantic, index});
     }
 
     void end()
@@ -778,6 +841,18 @@ void LLGHIEnvironmentCapture::observeWater(
     LLViewerTexture* next_normal_map, bool normal_mip_filtering)
 {
     mImpl->water(faces, normal_map, next_normal_map, normal_mip_filtering);
+}
+
+void LLGHIEnvironmentCapture::observeReflectionColor(LLRenderTarget& target)
+{
+    mImpl->dependency(
+        target, LL::GHI::EnvironmentTextureSemantic::ReflectionColor, 4);
+}
+
+void LLGHIEnvironmentCapture::observeWaterExclusionMask(LLRenderTarget& target)
+{
+    mImpl->dependency(
+        target, LL::GHI::EnvironmentTextureSemantic::WaterExclusionMask, 1);
 }
 
 void LLGHIEnvironmentCapture::endFrame()

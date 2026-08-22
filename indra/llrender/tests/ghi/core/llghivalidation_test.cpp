@@ -27,6 +27,7 @@
 #include "ghi/include/llghiproductiongbufferexecutor.h"
 #include "ghi/include/llghiproductionlightingexecutor.h"
 #include "ghi/include/llghiproductiontextureresidency.h"
+#include "ghi/include/llghiproductionwaterresources.h"
 #include "ghi/include/llghilightingscenepacket.h"
 #include "ghi/include/llghilightingpacketconsumer.h"
 #include "ghi/include/llghiterrainscenepacket.h"
@@ -3379,13 +3380,25 @@ void LLGHIValidationObject::test<38>()
             std::byte{128}, std::byte{255}};
         source.textures.push_back(std::move(texture));
     }
+    MaterialTextureResource reflection = source.textures.front();
+    reflection.sourceIdentity[0] = std::byte{6};
+    reflection.contentIdentity[0] = std::byte{22};
+    source.textures.push_back(std::move(reflection));
+    MaterialTextureResource exclusion = source.textures.front();
+    exclusion.sourceIdentity[0] = std::byte{7};
+    exclusion.contentIdentity[0] = std::byte{23};
+    exclusion.components = 1;
+    exclusion.decodedPixels = {std::byte{255}};
+    source.textures.push_back(std::move(exclusion));
     source.sky.textures = {
         {EnvironmentTextureSemantic::Sun, 0},
         {EnvironmentTextureSemantic::Moon, 1},
         {EnvironmentTextureSemantic::StarBloom, 2},
         {EnvironmentTextureSemantic::CloudNoise, 3}};
     source.water.textures = {
-        {EnvironmentTextureSemantic::WaterNormal, 4}};
+        {EnvironmentTextureSemantic::WaterNormal, 4},
+        {EnvironmentTextureSemantic::ReflectionColor, 5},
+        {EnvironmentTextureSemantic::WaterExclusionMask, 6}};
     source.skyVertices = {
         {{{-1.f, -1.f, 0.f}}, {{0.f, 0.f}}, {{1.f, 1.f, 1.f, 1.f}}},
         {{{ 1.f, -1.f, 0.f}}, {{1.f, 0.f}}, {{1.f, 1.f, 1.f, 1.f}}},
@@ -3417,6 +3430,40 @@ void LLGHIValidationObject::test<38>()
     ensure("P0e2 environment packet has a stable identity",
            !environmentScenePacketSha256(source).empty());
 
+        EnvironmentScenePacket version2 = source;
+        version2.version = 2;
+        version2.water.textures.resize(1);
+        version2.textures.resize(5);
+        std::vector<std::byte> version2Encoded;
+        EnvironmentScenePacket version2Decoded;
+        ensure("P0e2 packet v2 remains encodable",
+            encodeEnvironmentScenePacket(version2, version2Encoded).ok());
+        ensure("P0e2 packet v2 remains decodable",
+            decodeEnvironmentScenePacket(version2Encoded, version2Decoded).ok() &&
+            version2Decoded == version2);
+
+    DeviceCreationResult created = createDevice(
+        {Backend::Validation, 0, 2, true});
+    ensure("P0e2 water resource validation device creation",
+           created.status.ok() && created.device);
+    ProductionWaterResources resources(*created.device);
+    ProductionWaterResourceResult resourceResult;
+    Status status = resources.update(
+        source, 9, ProductionWaterResourceLimits{}, resourceResult);
+    ensure(status.message(), status.ok());
+    ensure("P0e2 water resources publish both GHI views",
+           resources.dependencies().reflectionColorView &&
+           resources.dependencies().exclusionMaskView);
+    ensure_equals("P0e2 water resources publish the target generation",
+                  resources.dependencies().generation, std::uint64_t{9});
+    ensure("P0e2 water resources report content identities",
+           !resourceResult.reflectionSha256.empty() &&
+           !resourceResult.exclusionSha256.empty());
+    status = resources.update(
+        source, 10, ProductionWaterResourceLimits{}, resourceResult);
+    ensure("P0e2 water resources reject a stale resource epoch", !status);
+    ensure("P0e2 water resources shut down", resources.shutdown().ok());
+
     EnvironmentScenePacket invalid = source;
     invalid.passMask |= environmentPassBit(EnvironmentPass::HdriSky);
     ensure("P0e2 atmosphere and HDRI are exclusive",
@@ -3424,6 +3471,14 @@ void LLGHIValidationObject::test<38>()
     invalid = source;
     invalid.dependencyMask = 0;
     ensure("P0e2 water requires explicit shared-target dependencies",
+           !validateEnvironmentScenePacket(invalid));
+    invalid = source;
+    invalid.water.textures.pop_back();
+    ensure("P0e2 v3 water requires captured exclusion content",
+           !validateEnvironmentScenePacket(invalid));
+    invalid = source;
+    invalid.water.textures.erase(invalid.water.textures.begin() + 1);
+    ensure("P0e2 v3 water requires captured reflection content",
            !validateEnvironmentScenePacket(invalid));
     invalid = source;
     invalid.sky.textures.push_back(

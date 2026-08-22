@@ -137,6 +137,8 @@ void LLDrawPoolWater::beginPostDeferredPass(S32 pass)
         gPipeline.mScreenTriangleVB->drawArrays(LLRender::TRIANGLES, 0, 3);
 
         dst.flush();
+        if (LLGHIEnvironmentCapture::active())
+            LLGHIEnvironmentCapture::instance().observeReflectionColor(dst);
     }
 }
 

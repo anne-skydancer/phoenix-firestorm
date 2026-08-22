@@ -20,6 +20,7 @@
 #include "ghi/include/llghienvironmentscenepacket.h"
 #include "ghi/include/llghimaterialscenepacket.h"
 #include "ghi/include/llghimaterialoffscreenprobe.h"
+#include "ghi/include/llghinestedviewscenepacket.h"
 #include "ghi/include/llghiproductionframeconsumer.h"
 #include "ghi/include/llghiproductionframepacket.h"
 #include "ghi/include/llghiproductionframetargets.h"
@@ -1590,6 +1591,7 @@ void LLGHIValidationObject::test<28>()
              RenderViewClass::ReflectionProbe, RenderViewClass::HeroProbe,
              RenderViewClass::Mirror, RenderViewClass::CubeSnapshot,
              RenderViewClass::Impostor, RenderViewClass::DynamicTexture,
+             RenderViewClass::Preview, RenderViewClass::PreWaterAlpha,
              RenderViewClass::MediaSurface})
     {
         ensure("R7 offscreen alpha remains on the legacy path",
@@ -1597,6 +1599,95 @@ void LLGHIValidationObject::test<28>()
                                   AlphaSubmissionClass::StandardBlend}, ppll).route ==
                 AlphaRoute::LegacySorted);
     }
+
+            NestedViewScenePacket nestedPacket;
+            nestedPacket.frameId = 91;
+            nestedPacket.sceneGeneration = 17;
+            nestedPacket.resourceGeneration = 23;
+            for (std::uint8_t faceIndex = 0; faceIndex < 6; ++faceIndex)
+            {
+             NestedViewPass nested;
+             nested.resourceGeneration = nestedPacket.resourceGeneration;
+             nested.pass.view = RenderViewClass::ReflectionProbe;
+             nested.pass.recursionDepth = 1;
+             nested.pass.face = static_cast<CubeFace>(faceIndex);
+             nested.pass.probePhase = ProbePhase::DirectLighting;
+             nested.pass.arrayLayer = static_cast<std::uint16_t>(6 + faceIndex);
+             nested.pass.updateEpoch = nestedPacket.sceneGeneration;
+             nested.semanticId = offscreenSemanticId(nested.pass);
+             nestedPacket.passes.push_back(nested);
+            }
+            NestedViewPass dynamicTexture;
+            dynamicTexture.resourceGeneration = 29;
+            dynamicTexture.pass.view = RenderViewClass::DynamicTexture;
+            dynamicTexture.pass.recursionDepth = 1;
+            dynamicTexture.pass.updateEpoch = nestedPacket.sceneGeneration;
+            dynamicTexture.semanticId = offscreenSemanticId(dynamicTexture.pass);
+            nestedPacket.passes.push_back(dynamicTexture);
+            NestedViewPass preview;
+            preview.resourceGeneration = 31;
+            preview.pass.view = RenderViewClass::Preview;
+            preview.pass.recursionDepth = 1;
+            preview.pass.updateEpoch = nestedPacket.sceneGeneration;
+            preview.semanticId = offscreenSemanticId(preview.pass);
+            nestedPacket.passes.push_back(preview);
+            NestedViewPass preWaterAlpha;
+            preWaterAlpha.resourceGeneration = 37;
+            preWaterAlpha.pass.view = RenderViewClass::PreWaterAlpha;
+            preWaterAlpha.pass.recursionDepth = 1;
+            preWaterAlpha.pass.updateEpoch = nestedPacket.sceneGeneration;
+            preWaterAlpha.semanticId = offscreenSemanticId(preWaterAlpha.pass);
+            nestedPacket.passes.push_back(preWaterAlpha);
+            ensure("P0e4 nested-view schedule accepted",
+                validateNestedViewScenePacket(nestedPacket).ok());
+            std::vector<std::byte> nestedFirst;
+            std::vector<std::byte> nestedSecond;
+            ensure("P0e4 nested-view schedule encodes",
+                encodeNestedViewScenePacket(nestedPacket, nestedFirst).ok());
+            ensure("P0e4 nested-view encoding is deterministic",
+                encodeNestedViewScenePacket(nestedPacket, nestedSecond).ok() &&
+                 nestedFirst == nestedSecond);
+            NestedViewScenePacket nestedDecoded;
+            ensure("P0e4 nested-view schedule round trips",
+                decodeNestedViewScenePacket(nestedFirst, nestedDecoded).ok() &&
+                 nestedDecoded == nestedPacket);
+            ensure("P0e4 nested-view packet has a stable digest",
+                !nestedViewScenePacketSha256(nestedPacket).empty());
+
+            NestedViewScenePacket invalidNested = nestedPacket;
+            invalidNested.passes[6].resourceGeneration = 0;
+            ensure("P0e4 zero resource generation rejected",
+                !validateNestedViewScenePacket(invalidNested));
+            invalidNested = nestedPacket;
+            ++invalidNested.passes[0].pass.updateEpoch;
+            invalidNested.passes[0].semanticId =
+             offscreenSemanticId(invalidNested.passes[0].pass);
+            ensure("P0e4 stale scene generation rejected",
+                !validateNestedViewScenePacket(invalidNested));
+            invalidNested = nestedPacket;
+            invalidNested.passes[6].pass.recursionDepth = 2;
+            invalidNested.passes[6].semanticId =
+             offscreenSemanticId(invalidNested.passes[6].pass);
+            ensure("P0e4 recursive nested view rejected",
+                !validateNestedViewScenePacket(invalidNested));
+            invalidNested = nestedPacket;
+            invalidNested.passes[1].semanticId = invalidNested.passes[0].semanticId;
+            ensure("P0e4 duplicate semantic identity rejected",
+                !validateNestedViewScenePacket(invalidNested));
+            invalidNested = nestedPacket;
+            ++invalidNested.passes[3].pass.arrayLayer;
+            invalidNested.passes[3].semanticId =
+             offscreenSemanticId(invalidNested.passes[3].pass);
+            ensure("P0e4 cube face/layer mismatch rejected",
+                !validateNestedViewScenePacket(invalidNested));
+            invalidNested = nestedPacket;
+            invalidNested.passes.erase(invalidNested.passes.begin() + 5);
+            ensure("P0e4 incomplete cube face group rejected",
+                !validateNestedViewScenePacket(invalidNested));
+            invalidNested = nestedPacket;
+            std::swap(invalidNested.passes[0], invalidNested.passes[1]);
+            ensure("P0e4 noncanonical cube face order rejected",
+                !validateNestedViewScenePacket(invalidNested));
 
     DeviceCreationResult created = createDevice({Backend::Validation, 0, 2, true});
     auto* device = dynamic_cast<ValidationDevice*>(created.device.get());

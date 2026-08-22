@@ -27,8 +27,13 @@ enum class RenderViewClass : std::uint8_t
     CubeSnapshot,
     Impostor,
     DynamicTexture,
+    Preview,
+    PreWaterAlpha,
     MediaSurface,
 };
+
+inline constexpr std::size_t RENDER_VIEW_CLASS_COUNT =
+    static_cast<std::size_t>(RenderViewClass::MediaSurface) + 1;
 
 // Layer order is shared by OpenGL cube arrays, Vulkan cube-compatible arrays,
 // production probe packets, and the R7 native-peer fixture.
@@ -86,6 +91,8 @@ constexpr std::uint16_t cubeArrayLayer(std::uint16_t cubeIndex, CubeFace face)
 
 constexpr bool validOffscreenPass(const OffscreenPassDesc& pass)
 {
+    if (static_cast<std::size_t>(pass.view) >= RENDER_VIEW_CLASS_COUNT)
+        return false;
     if (pass.view == RenderViewClass::Main)
         return pass.recursionDepth == 0 && pass.face == CubeFace::None &&
                pass.probePhase == ProbePhase::None && pass.arrayLayer == 0 &&
@@ -116,6 +123,8 @@ constexpr AlphaViewPhase alphaPhaseForView(RenderViewClass view)
     case RenderViewClass::CubeSnapshot: return AlphaViewPhase::CubeSnapshot;
     case RenderViewClass::Impostor: return AlphaViewPhase::Impostor;
     case RenderViewClass::DynamicTexture: return AlphaViewPhase::DynamicTexture;
+    case RenderViewClass::Preview: return AlphaViewPhase::DynamicTexture;
+    case RenderViewClass::PreWaterAlpha: return AlphaViewPhase::PreWater;
     case RenderViewClass::MediaSurface: return AlphaViewPhase::MediaSurface;
     }
     return AlphaViewPhase::MainPostWater;

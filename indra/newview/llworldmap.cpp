@@ -451,7 +451,15 @@ void LLWorldMap::reloadItems(bool force)
 // Insert a region in the region map
 // returns true if region inserted, false otherwise
 // <FS:CR> Aurora Sim
-//bool LLWorldMap::insertRegion(U32 x_world, U32 y_world, std::string& name, LLUUID& image_id, U32 accesscode, U64 region_flags)
+bool LLWorldMap::insertRegion(U32 x_world, U32 y_world, std::string& name,
+                              LLUUID& image_id, U32 accesscode,
+                              U64 region_flags)
+{
+    return insertRegion(x_world, y_world, REGION_WIDTH_UNITS,
+                        REGION_WIDTH_UNITS, name, image_id, accesscode,
+                        region_flags);
+}
+
 bool LLWorldMap::insertRegion(U32 x_world, U32 y_world, U16 x_size, U16 y_size, std::string& name, LLUUID& image_id, U32 accesscode, U64 region_flags)
 // </FS:CR> Aurora Sim
 {

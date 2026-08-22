@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulkanstorm.example/schemas/ghi-evidence-manifest-v1.json",
+  "title": "VulkanStorm GHI qualification evidence manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "gate",
+    "result",
+    "revision",
+    "created_at_utc",
+    "environment",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "gate": { "type": "string", "pattern": "^(?:P0[a-g](?:[0-9a-z.]*)?|P0\\.8)$" },
+    "result": { "enum": ["accepted", "failed", "pending", "skipped"] },
+    "revision": { "type": "string", "minLength": 1 },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+    "environment": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean", "null"] },
+      "required": ["backend", "adapter", "driver", "resolution", "toolchain"]
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "passed"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "passed": { "type": "boolean" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "size"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "size": { "type": "integer", "minimum": 0 },
+          "kind": { "type": "string" }
+        }
+      }
+    }
+  }
+}

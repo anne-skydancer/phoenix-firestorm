@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llheroprobemanager.h"
+#include "llghinestedviewcapture.h"
 #include "llreflectionmapmanager.h"
 #include "llviewercamera.h"
 #include "llspatialpartition.h"
@@ -319,6 +320,17 @@ void LLHeroProbeManager::updateProbeFace(LLReflectionMap* probe, U32 face, bool 
     gPipeline.mRT = &gPipeline.mHeroProbeRT;
 
     probe->update(mRenderTarget.getWidth(), face, is_dynamic, near_clip);
+
+    if (probe->mCubeIndex >= 0 && face < 6)
+    {
+        LLGHINestedViewCapture::instance().observeCubeView(
+            mRenderingMirror ? LL::GHI::RenderViewClass::Mirror
+                             : LL::GHI::RenderViewClass::HeroProbe,
+            static_cast<U32>(probe->mCubeIndex),
+            static_cast<LL::GHI::CubeFace>(face),
+            LL::GHI::ProbePhase::Radiance,
+            gFrameCount, mRenderTarget.getAllocationGeneration());
+    }
 
     gPipeline.mRT = &gPipeline.mMainRT;
 

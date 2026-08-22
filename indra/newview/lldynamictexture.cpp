@@ -27,6 +27,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "lldynamictexture.h"
+#include "llghinestedviewcapture.h"
 
 // Linden library includes
 #include "llglheaders.h"
@@ -213,7 +214,9 @@ bool LLViewerDynamicTexture::updateAllInstances()
 
     bool result = false;
     bool ret = false ;
-    auto update_func = [&](LLViewerDynamicTexture* dynamicTexture, LLRenderTarget& renderTarget, S32 width, S32 height)
+    auto update_func = [&](LLViewerDynamicTexture* dynamicTexture,
+                           LLRenderTarget& renderTarget, S32 width, S32 height,
+                           LL::GHI::RenderViewClass view)
         {
             LL_PROFILE_ZONE_SCOPED_CATEGORY_TEXTURE;
             if (dynamicTexture->needsRender())
@@ -235,6 +238,9 @@ bool LLViewerDynamicTexture::updateAllInstances()
                     ret = true;
                     result = true;
                     sNumRenders++;
+                    LLGHINestedViewCapture::instance().observeSingleView(
+                        view, gFrameCount,
+                        renderTarget.getAllocationGeneration());
                 }
                 }
                 {
@@ -252,7 +258,12 @@ bool LLViewerDynamicTexture::updateAllInstances()
     {
         for (LLViewerDynamicTexture* dynamicTexture : LLViewerDynamicTexture::sInstances[order])
         {
-            update_func(dynamicTexture, preview_target, LLPipeline::MAX_PREVIEW_WIDTH, LLPipeline::MAX_PREVIEW_WIDTH);
+            const auto view = order == ORDER_MIDDLE
+                ? LL::GHI::RenderViewClass::Preview
+                : LL::GHI::RenderViewClass::DynamicTexture;
+            update_func(dynamicTexture, preview_target,
+                        LLPipeline::MAX_PREVIEW_WIDTH,
+                        LLPipeline::MAX_PREVIEW_WIDTH, view);
         }
     }
     preview_target.flush();
@@ -267,7 +278,10 @@ bool LLViewerDynamicTexture::updateAllInstances()
     {
         for (LLViewerDynamicTexture* dynamicTexture : LLViewerDynamicTexture::sInstances[order])
         {
-            update_func(dynamicTexture, bake_target, LLAvatarAppearanceDefines::SCRATCH_TEX_WIDTH, LLAvatarAppearanceDefines::SCRATCH_TEX_HEIGHT);
+            update_func(dynamicTexture, bake_target,
+                        LLAvatarAppearanceDefines::SCRATCH_TEX_WIDTH,
+                        LLAvatarAppearanceDefines::SCRATCH_TEX_HEIGHT,
+                        LL::GHI::RenderViewClass::DynamicTexture);
         }
     }
     bake_target.flush();

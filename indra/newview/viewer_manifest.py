@@ -1094,10 +1094,10 @@ class Windows_x86_64_Manifest(ViewerManifest):
 
         substitution_strings = self.fs_splice_grid_substitution_strings( substitution_strings ) #<FS:ND/> Add grid args
 
-        # <FS:ND> Properly name OS version, also add Phoenix- in front of installer name
-        #installer_file = self.installer_base_name() + '_Setup.exe'
-        installer_file = self.fs_installer_basename() + "_Setup.exe"
-        # </FS:ND>
+        installer_basename = self.fs_installer_basename()
+        if installer_basename.startswith("Phoenix-"):
+            installer_basename = installer_basename[len("Phoenix-"):]
+        installer_file = installer_basename + "_Setup.exe"
         
         substitution_strings['installer_file'] = installer_file
         substitution_strings['isavx2'] = '1' if self.fs_is_avx2() else '0'
@@ -1106,7 +1106,7 @@ class Windows_x86_64_Manifest(ViewerManifest):
         substitution_strings['icon_suffix'] = "_os" if self.fs_is_opensim() else ""
         substitution_strings['source'] = self.get_src_prefix()
 
-        tempfile = "firestorm_setup_tmp.iss"
+        tempfile = "vulkanstorm_setup_tmp.iss"
 
         self.fs_sign_win_binaries() # <FS:ND/> Sign files, step one. Sign compiled binaries
 

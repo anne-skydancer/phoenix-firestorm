@@ -125,8 +125,9 @@ Phase 0 follows the complete P0a-P0g convergence sequence in
    backend-neutral state contract and OpenGL compiler.
 2. Express every Vulkan-reachable production family through GHI: world,
    environment, alpha, recursive views, UI/interaction, and appearance/baking.
-3. Confine remaining OpenGL implementation to the native OpenGL backend or a
-   reviewed, structurally unreachable exception.
+3. Remove OpenGL-owned behavior and resource lifecycle from shared production
+   code, and confine OpenGL implementation to the native OpenGL backend and
+   context bootstrap.
 4. Qualify semantic, image, lifecycle-contract, performance, memory, provider,
    hardware, recovery, and coupling evidence.
 5. Preserve representative OpenGL references and immutable evidence bundles.
@@ -137,11 +138,11 @@ frame harness may execute production semantics on one selected GHI device and
 compare them with visible OpenGL references without changing viewer startup or
 production presentation ownership. Those changes begin only in Phase 1.
 
-Exit gate: every P0a-P0g row in the closure manifest is accepted; all Vulkan-
+Exit gate: every P0a-P0g row and P0.8 in the closure manifest is accepted; all Vulkan-
 reachable production semantics replay through GHI; image, correctness,
 lifecycle-contract, CPU/GPU time, memory, provider, hardware, recovery, and
-coupling evidence passes; and remaining OpenGL is backend-confined or approved
-as structurally unreachable.
+coupling evidence passes; and production code has no OpenGL-owned rendering
+behavior or resource lifecycle.
 
 #### Phase 0 completion assessment
 
@@ -159,8 +160,8 @@ tracked separately.
 | Gate | Current status | Closure boundary |
 | --- | --- | --- |
 | P0a/P0b ledger and sanitation | Accepted | Revalidate the current merged revision and preserve the generated ledger. |
-| P0c state-contract completion | Implemented/evidenced; acceptance not recorded | Run the deterministic contract suite and record explicit acceptance. |
-| P0d OpenGL state compiler/cache | Implemented/evidenced; acceptance not recorded | Revalidate OpenGL 4.1/4.4 compilation, cache invalidation, and boundary behavior and record acceptance. |
+| P0c state-contract completion | Accepted on current revision | The registered deterministic `ghi-contract` CTest passes with nested-view packet positive and negative validation coverage. Preserve its immutable evidence manifest. |
+| P0d OpenGL state compiler/cache | Accepted on current revision | Native OpenGL compiler/cache/sRGB validation and OpenGL 4.1/4.4 canonical-hash parity with Vulkan pass. Preserve their immutable evidence manifests. |
 | P0e1 opaque production frame | Accepted for private, non-presenting execution | Replay the accepted packet on the current OpenGL/Vulkan peers and preserve current-revision evidence. |
 | P0e2a/P0e2b environment packet/live assembly | Accepted | Revalidate codec and same-frame assembly while closing downstream water dependencies. |
 | P0e2c sky executor | Accepted for private, non-presenting execution | Revalidate current peers; retain fail-closed HDRI behavior unless comparable decoded HDRI data is available. |
@@ -172,19 +173,20 @@ tracked separately.
 | P0e3d PPLL executor | Validated private; acceptance not recorded | Revalidate selected-method capture, bounded/overflow stress, visible reference, timing, and memory. |
 | P0e3e depth-peel executor | Validated private; acceptance not recorded | Revalidate selected-method capture, tail/layer policy, visible reference, timing, and memory. |
 | P0e3f alpha qualification | Explicitly unaccepted | Close content breadth, visible comparison, resize/relog/teleport/recovery, provider, performance, and memory evidence. |
-| P0e4 recursive/offscreen views | Open; no acceptance checkpoint | Add production-semantic nested-view capture/replay for probes, mirrors, cube snapshots, impostors, previews, and pre-water alpha. Produce the real resources required by P0e2. |
+| P0e4 recursive/offscreen views | In progress; deterministic contract accepted, production capture unaccepted | Packet v2 and the independent inspector preserve per-pass production resource generations. Production observers cover reflection/hero/mirror cube groups, dynamic textures, previews, pre-water alpha, and impostors. Add distinct cube-snapshot and media-surface ownership, capture an authenticated production session, and produce the real resources required by P0e2. |
 | P0e5 UI/HUD/interaction/snapshots | Open; no acceptance checkpoint | Execute UI0-UI6 semantics in a headless complete-frame compositor, including fonts, media, HUD ordering, picking, snapshots, DPI, and shipped skins. |
 | P0e6 appearance/baking | Open; no acceptance checkpoint | Add backend-neutral layer/mask/composition/readback contracts and private peer bake execution. |
 | P0f legacy confinement | Open; no acceptance checkpoint | Burn down migrated coupling and prove complete-frame Vulkan reachability without an OpenGL context. |
 | P0g qualification | Open; no acceptance checkpoint | Produce one complete immutable eligibility manifest with no failed or pending P0 gate. |
+| P0.8 production decoupling | Open; dependent on P0g qualification | Remove production-side `gGL`, legacy state-wrapper, direct OpenGL, native-handle, and resource-lifecycle ownership; amend the closure manifest before Phase 1. |
 
 | Requirement | Historical Phase 0 status | Current evidence/revalidation status |
 | --- | --- | --- |
 | Representative OpenGL baselines | Partial. Production-derived packets, selected-method captures, deterministic fixtures, and private peer comparisons were acquired. The final selected visible OpenGL readback comparison and complete content-category coverage remained open. | Checkpoint records and exact fixture hashes remain. Restore the raw corpus where possible and reacquire the missing visible references. |
 | Performance and memory baselines | Partial. Individual stress and timing evidence was recorded, but P0e3f explicitly left steady-state memory/GPU timing open. | Preserve surviving measurements and collect the missing current-revision distributions before accepting performance-sensitive lifecycle changes. |
 | Backend-neutral lifecycle contracts | Partial but substantially exercised by validation and native harnesses. | Resize, explicit device recovery, unified production ownership, and visible presentation remained open; Phase 1 owns their completion. |
-| Checked GL-coupling budget | Established and used during Phase 0. | The current merged tree now exceeds the accepted baseline in `llreflectionmapmanager.cpp` by two direct GL calls and in `llreflectionmapmanager.h` by three GL types. This is a current regression to correct, not a retroactive Phase 0 failure. |
-| Deterministic GHI tests | Completed and repeatedly executed before reset. | Checkpoints record passing contract suites and native stress runs. The current build was configured with `LL_TESTS` disabled and reports zero CTest tests; registration and CI coverage should be improved so future evidence survives machine loss. |
+| Checked GL-coupling budget | Established and used during Phase 0. | The reflection-map query regression is backend-confined through the GHI query bridge, and the current boundary ratchet passes without increasing its baseline. |
+| Deterministic GHI tests | Completed and repeatedly executed before reset. | `LL_TESTS=ON` now enables CTest globally and the registered `llrender_ghi_contract` test passes with `ghi-contract`, `deterministic`, and `qualification` labels. A complete `ALL_BUILD` qualification run remains blocked by the legacy isolated `llprimitive.cpp` test's unresolved `LLPrimTextureList` linkage; the renderer qualification target itself is green. |
 | Supported-hardware evidence | Partial. The development hardware and OpenGL 4.1/4.4/Vulkan peers were exercised, but macOS OpenGL 4.1, Mesa+Zink, broader Windows coverage, and Linux qualification remained open. | Reconstruct the surviving machine manifest and publish a complete qualification matrix before production eligibility decisions. |
 
 #### Alpha validation boundary
@@ -221,7 +223,7 @@ feature requiring production qualification today.
 #### P0 closure plan
 
 **P0 is a hard prerequisite. Phase 1 production-lifecycle work must not begin
-until the P0 closure manifest records every P0a-P0g gate accepted.** Validation
+until the P0 closure manifest records every P0a-P0g gate and P0.8 accepted.** Validation
 may use headless/private selected-device harnesses; it must not take visible
 production ownership early.
 
@@ -341,13 +343,30 @@ Pass: every Vulkan-reachable path traverses GHI, remaining OpenGL is confined or
 approved unreachable, and P0g records all semantic, visual, lifecycle,
 performance, provider, recovery, and coupling evidence as accepted.
 
+##### P0.8: Complete production decoupling
+
+1. Remove production-side `gGL` draw assembly, matrix, binding, dynamic-state,
+   and lifecycle ownership from shared renderer, world, recursive/offscreen,
+   environment, alpha, UI, and appearance paths.
+2. Replace live `LLGLState` wrappers and state bundles with GHI pipeline,
+   binding, pass, draw-data, and lifecycle contracts. Confine direct OpenGL
+   calls and native handles to the OpenGL backend and context bootstrap only.
+3. Regenerate the legacy-state and API-boundary ledgers with no production
+   exceptions, then rerun complete-frame OpenGL and Vulkan qualification,
+   including no-OpenGL-context Vulkan reachability.
+4. Amend the immutable P0 closure manifest with production-decoupling evidence
+   and require P0.8 acceptance before Phase 1 begins.
+
+Pass: production code has no OpenGL-owned rendering behavior or resource
+lifecycle; backend selection changes only the GHI implementation.
+
 ##### P0 dependency order
 
 ```text
 P0.0 foundation -> P0.1 revalidation -> P0.2 recursive/offscreen
                                       -> P0.3 environment/water
                     P0.4 alpha --------------------------+
-                    P0.5 UI/interaction -----------------+-> P0.7 confinement/qualification
+                    P0.5 UI/interaction -----------------+-> P0.7 confinement/qualification -> P0.8 production decoupling
                     P0.6 appearance/baking --------------+
 ```
 
@@ -510,7 +529,8 @@ P0 closure -> P1.1 -> P1.2 -> P1.3 -> P1.4 -> P1.5 -> P1.6
                           +----------------+
 ```
 
-P1.1 begins only after the immutable P0 closure manifest passes. P1.4 must not
+P1.1 begins only after the immutable P0 closure manifest passes with P0.8
+accepted. P1.4 must not
 begin until the OpenGL adapter proves the lifecycle contract in production
 startup. P1.5 requires both native adapters. Diagnostic integration in P1.6
 may be developed incrementally but closes last.

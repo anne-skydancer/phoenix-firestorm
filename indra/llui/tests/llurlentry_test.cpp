@@ -33,6 +33,7 @@
 #include "../lluicolortable.h"
 #include "../llrender/lluiimage.h"
 #include "../llmessage/llexperiencecache.h"
+#include "../llxml/llcontrol.h"
 
 #include <boost/regex.hpp>
 
@@ -40,6 +41,13 @@
 // because something pulls in window and lldxdiag dependencies which in turn need wbemuuid.lib
     #pragma comment(lib, "wbemuuid.lib")
 #endif
+
+LLControlGroup gSavedSettings("test");
+
+std::string rlvGetAnonym(const LLAvatarName&)
+{
+    return {};
+}
 
 
 // namespace LLExperienceCache

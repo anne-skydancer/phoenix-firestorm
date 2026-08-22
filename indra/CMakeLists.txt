@@ -51,6 +51,10 @@ set(CMAKE_XCODE_GENERATE_TOP_LEVEL_PROJECT_ONLY ON)
 include(Variables)
 include(BuildVersion)
 
+if (LL_TESTS)
+  enable_testing()
+endif ()
+
 # VulkanStorm is distributed under GPLv3 and links against AGPLv3 Grok.
 # Proprietary libraries may not be linked into or bundled with this build.
 foreach(_forbidden_option INSTALL_PROPRIETARY USE_FMODSTUDIO FMODSTUDIO HAVOK HAVOK_TPV USE_KDU USE_BUGSPLAT)

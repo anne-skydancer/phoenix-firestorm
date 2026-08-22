@@ -67,6 +67,7 @@ LLSD LLSecAPIBasicHandler::getProtectedData(const std::string& data_type, const 
 void LLSecAPIBasicHandler::deleteProtectedData(const std::string& data_type, const std::string& data_id) {}
 LLPointer<LLCredential> LLSecAPIBasicHandler::createCredential(const std::string& grid, const LLSD& identifier, const LLSD& authenticator) { return NULL; }
 LLPointer<LLCredential> LLSecAPIBasicHandler::loadCredential(const std::string& grid) { return NULL; }
+std::vector<std::string> LLSecAPIBasicHandler::listCredentials() { return {}; }
 void LLSecAPIBasicHandler::saveCredential(LLPointer<LLCredential> cred, bool save_authenticator) {}
 void LLSecAPIBasicHandler::deleteCredential(LLPointer<LLCredential> cred) {}
 bool LLSecAPIBasicHandler::hasCredentialMap(const std::string& storage, const std::string& grid) { return false; }

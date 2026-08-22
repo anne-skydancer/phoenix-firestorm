@@ -467,6 +467,7 @@ set(viewer_SOURCE_FILES
     llgltfmaterialpreviewmgr.cpp
     llghialphacapture.cpp
     llghienvironmentcapture.cpp
+    llghinestedviewcapture.cpp
     llghimaterialcapture.cpp
     llghiopaquecapture.cpp
     llghiruntime.cpp
@@ -1341,6 +1342,7 @@ set(viewer_HEADER_FILES
     llgltfmaterialpreviewmgr.h
     llghialphacapture.h
     llghienvironmentcapture.h
+    llghinestedviewcapture.h
     llghimaterialcapture.h
     llghiopaquecapture.h
     llghiruntime.h

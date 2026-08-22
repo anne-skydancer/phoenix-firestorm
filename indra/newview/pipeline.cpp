@@ -30,6 +30,7 @@
 #include "llghimaterialcapture.h"
 #include "llghialphacapture.h"
 #include "llghienvironmentcapture.h"
+#include "llghinestedviewcapture.h"
 #include "llghiterraincapture.h"
 #include "llghiruntime.h"
 #include "ghi/include/llghilightingscenepacket.h"
@@ -12758,6 +12759,9 @@ void LLPipeline::generateImpostor(LLVOAvatar* avatar, bool preview_avatar, bool 
         avatar->mNeedsImpostorUpdate = false;
         avatar->cacheImpostorValues();
         avatar->mLastImpostorUpdateFrameTime = gFrameTimeSeconds;
+        LLGHINestedViewCapture::instance().observeSingleView(
+            LL::GHI::RenderViewClass::Impostor, gFrameCount,
+            avatar->mImpostor.getAllocationGeneration());
     }
 
     LLVertexBuffer::unbind();

@@ -35,6 +35,7 @@ set(llrender_SOURCE_FILES
     llvertexbuffer.cpp
     llglcommonfunc.cpp
     ghi/backends/opengl/llghiopenglinfo.cpp
+    ghi/backends/opengl/llghiopenglquery.cpp
     ghi/core/llghialphascenepacket.cpp
     ghi/core/llghidevice.cpp
     ghi/core/llghienvironmentscenepacket.cpp
@@ -42,6 +43,7 @@ set(llrender_SOURCE_FILES
     ghi/core/llghilightingscenepacket.cpp
     ghi/core/llghilightingpacketconsumer.cpp
     ghi/core/llghimaterialscenepacket.cpp
+    ghi/core/llghinestedviewscenepacket.cpp
     ghi/core/llghiproductionalphaexecutor.cpp
     ghi/core/llghiproductionenvironmentexecutor.cpp
     ghi/core/llghiproductionwaterexecutor.cpp
@@ -108,6 +110,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghicommand.h
     ghi/include/llghidescriptors.h
     ghi/include/llghidevice.h
+    ghi/include/llghilegacyquery.h
     ghi/include/llghienvironmentscenepacket.h
     ghi/include/llghipresentation.h
     ghi/include/llghiproductioncontract.h
@@ -121,6 +124,7 @@ set(llrender_HEADER_FILES
     ghi/include/llghiproductionframetargets.h
     ghi/include/llghiproductiontextureresidency.h
     ghi/include/llghimaterialscenepacket.h
+    ghi/include/llghinestedviewscenepacket.h
     ghi/include/llghiterrainscenepacket.h
     ghi/include/llghiterrainoffscreenprobe.h
     ghi/include/llghiopaquescenepacket.h
@@ -1344,6 +1348,12 @@ if (WINDOWS)
         ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
     target_link_libraries(llrender_environment_packet_inspector llrender)
 
+    add_executable(llrender_nested_view_packet_inspector
+        tests/ghi/llghinestedviewpacketinspector.cpp)
+    target_include_directories(llrender_nested_view_packet_inspector PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+    target_link_libraries(llrender_nested_view_packet_inspector llrender)
+
     add_executable(llrender_alpha_packet_inspector
         tests/ghi/llghialphapacketinspector.cpp)
     target_include_directories(llrender_alpha_packet_inspector PRIVATE
@@ -1361,6 +1371,7 @@ if (LL_TESTS)
       ghi/core/llghilightingpacketconsumer.cpp
       ghi/core/llghialphascenepacket.cpp
       ghi/core/llghimaterialscenepacket.cpp
+            ghi/core/llghinestedviewscenepacket.cpp
     ghi/core/llghiproductionalphaexecutor.cpp
       ghi/core/llghiproductionenvironmentexecutor.cpp
       ghi/core/llghiproductionwaterexecutor.cpp
@@ -1434,4 +1445,6 @@ if (LL_TESTS)
       ll::openssl
       )
   add_test(NAME llrender_ghi_contract COMMAND llrender_ghi_contract_test)
+    set_tests_properties(llrender_ghi_contract PROPERTIES
+            LABELS "ghi-contract;deterministic;qualification")
 endif (LL_TESTS)

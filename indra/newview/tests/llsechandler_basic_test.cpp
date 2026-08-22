@@ -758,28 +758,25 @@ namespace tut
     template<> template<>
     void sechandler_basic_test_object::test<3>()
     {
-        std::string protected_data = "sUSh3wj77NG9oAMyt3XIhaej3KLZhLZWFZvI6rIGmwUUOmmelrRg0NI9rkOj8ZDpTPxpwToaBT5u"
-        "GQhakdaGLJznr9bHr4/6HIC1bouKj4n2rs4TL6j2WSjto114QdlNfLsE8cbbE+ghww58g8SeyLQO"
-        "nyzXoz+/PBz0HD5SMFDuObccoPW24gmqYySz8YoEWhSwO0pUtEEqOjVRsAJgF5wLAtJZDeuilGsq"
-        "4ZT9Y4wZ9Rh8nnF3fDUL6IGamHe1ClXM1jgBu10F6UMhZbnH4C3aJ2E9+LiOntU+l3iCb2MpkEpr"
-        "82r2ZAMwIrpnirL/xoYoyz7MJQYwUuMvBPToZJrxNSsjI+S2Z+I3iEJAELMAAA==";
-
-        std::vector<U8> binary_data(apr_base64_decode_len(protected_data.c_str()));
-        apr_base64_decode_binary(&binary_data[0], protected_data.c_str());
-
-        LLXORCipher cipher(gMACAddress, MAC_ADDRESS_BYTES);
-        cipher.decrypt(&binary_data[0], 16);
-        unsigned char unique_id[MAC_ADDRESS_BYTES];
-        LLMachineID::getUniqueID(unique_id, sizeof(unique_id));
-        LLXORCipher cipher2(unique_id, sizeof(unique_id));
-        cipher2.encrypt(&binary_data[0], 16);
-        std::ofstream temp_file("sechandler_settings.tmp", std::ofstream::binary);
-        temp_file.write((const char *)&binary_data[0], binary_data.size());
-        temp_file.close();
-
         LLPointer<LLSecAPIBasicHandler> handler = new LLSecAPIBasicHandler("sechandler_settings.tmp",
                                                                            "test_password.dat");
         handler->init();
+
+              LLSD initial_data = LLSD::emptyMap();
+              initial_data["data1"] = "test_data_1";
+              initial_data["data2"] = "test_data_2";
+              initial_data["data3"]["elem1"] = "test element1";
+              handler->setProtectedData("test_data_type", "test_data_id", initial_data);
+              handler->syncProtectedMap();
+              handler = NULL;
+
+              std::ifstream fixture_file("sechandler_settings.tmp", std::ifstream::binary);
+              std::vector<U8> binary_data((std::istreambuf_iterator<char>(fixture_file)),
+                                                               std::istreambuf_iterator<char>());
+              fixture_file.close();
+
+              handler = new LLSecAPIBasicHandler("sechandler_settings.tmp", "test_password.dat");
+              handler->init();
         // data retrieval for existing data
         LLSD data = handler->getProtectedData("test_data_type", "test_data_id");
 
@@ -834,7 +831,8 @@ namespace tut
         data = handler->getProtectedData("test_data_type1", "test_data_not_found");
         ensure("not found", data.isUndefined());
 
-        // cause a 'write' by using 'LLPointer' to delete then instantiate a handler
+       // Persist explicitly before deleting and reconstructing the handler.
+       handler->syncProtectedMap();
         handler = NULL;
         handler = new LLSecAPIBasicHandler("sechandler_settings.tmp", "test_password.dat");
         handler->init();
@@ -850,7 +848,6 @@ namespace tut
         temp_file2.write((const char *)&binary_data[0], binary_data.size());
         temp_file2.close();
 
-        // cause a 'write'
         handler = new LLSecAPIBasicHandler("sechandler_settings.tmp", "test_password.dat");
         handler->init();
         data = handler->getProtectedData("test_data_type1", "test_data_id");
@@ -866,7 +863,8 @@ namespace tut
         ensure("not found", data.isUndefined());
         handler = NULL;
 
-        ensure(LLFile::isfile("sechandler_settings.tmp"));
+        ensure("destruction does not create a protected store",
+               !LLFile::isfile("sechandler_settings.tmp"));
     }
 
     // test credenitals
@@ -889,7 +887,7 @@ namespace tut
         // test retrieval of credential components
         ensure_equals("basic credential creation: identifier", my_id, my_cred->getIdentifier());
         ensure_equals("basic credential creation: authenticator", my_authenticator, my_cred->getAuthenticator());
-        ensure_equals("basic credential creation: grid", "my_grid", my_cred->getGrid());
+       ensure_equals("basic credential creation: grid", "my_grid", my_cred->getCredentialName());
 
         // test setting/overwriting of credential components
         my_id["first_name"] = "firstname";
@@ -900,7 +898,7 @@ namespace tut
         my_cred->setCredentialData(my_id, my_authenticator);
         ensure_equals("set credential data: identifier", my_id, my_cred->getIdentifier());
         ensure_equals("set credential data: authenticator", my_authenticator, my_cred->getAuthenticator());
-        ensure_equals("set credential data: grid", "my_grid", my_cred->getGrid());
+       ensure_equals("set credential data: grid", "my_grid", my_cred->getCredentialName());
 
         // test loading of a credential, that hasn't been saved, without
         // any legacy saved credential data
@@ -916,14 +914,14 @@ namespace tut
         my_new_cred = handler->loadCredential("my_grid");
         ensure_equals("load a known credential: identifier", my_id, my_new_cred->getIdentifier());
         ensure_equals("load a known credential: authenticator",my_authenticator, my_new_cred->getAuthenticator());
-        ensure_equals("load a known credential: grid", "my_grid", my_cred->getGrid());
+       ensure_equals("load a known credential: grid", "my_grid", my_cred->getCredentialName());
 
         // test deletion of a credential
         handler->deleteCredential(my_new_cred);
 
         ensure("delete credential: identifier", my_new_cred->getIdentifier().isUndefined());
         ensure("delete credentialt: authenticator", my_new_cred->getIdentifier().isUndefined());
-        ensure_equals("delete credential: grid", "my_grid", my_cred->getGrid());
+       ensure_equals("delete credential: grid", "my_grid", my_cred->getCredentialName());
         // load unknown cred
 
         my_new_cred = handler->loadCredential("my_grid");

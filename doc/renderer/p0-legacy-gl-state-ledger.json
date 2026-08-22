@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_revision": "f3f21dda096bd6b117b2fa7baba264e9bdaa745f",
+  "source_revision": "b306280764a1caa0b5f5c0043f5f9e498822e90f",
   "scope": {
     "roots": [
       "indra/llappearance",
@@ -18,7 +18,7 @@
   "summary": {
     "ggl_member_uses": 4322,
     "legacy_state_symbol_uses": 508,
-    "direct_gl_shaped_calls": 721,
+    "direct_gl_shaped_calls": 719,
     "unclassified_symbols": [],
     "legacy_extension_alias_violations": []
   },
@@ -2576,13 +2576,11 @@
       "glDeleteQueries": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 2,
+        "count": 1,
         "owners": {
-          "offscreen_and_recursive": 1,
           "world_renderer": 1
         },
         "files": {
-          "indra/newview/llreflectionmap.cpp": 1,
           "indra/newview/pipeline.cpp": 1
         }
       },
@@ -2910,13 +2908,11 @@
       "glGenQueries": {
         "classification": "valid_or_reviewed_native_gl",
         "disposition": "confine_to_opengl_backend",
-        "count": 3,
+        "count": 2,
         "owners": {
-          "offscreen_and_recursive": 1,
           "world_renderer": 2
         },
         "files": {
-          "indra/newview/llreflectionmap.cpp": 1,
           "indra/newview/llvieweroctree.cpp": 1,
           "indra/newview/llvoavatar.cpp": 1
         }

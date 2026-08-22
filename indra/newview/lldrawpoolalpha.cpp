@@ -53,6 +53,7 @@
 #include "llvoavatar.h"
 #include "gltfscenemanager.h"
 #include "llghialphacapture.h"
+#include "llghinestedviewcapture.h"
 
 #include "llenvironment.h"
 
@@ -405,6 +406,13 @@ void LLDrawPoolAlpha::renderPostDeferred(S32 pass)
             true); // <--- discard mostly transparent faces
 
         gGL.setColorMask(true, false);
+    }
+
+    if (getType() == LLDrawPool::POOL_ALPHA_PRE_WATER && gPipeline.mRT)
+    {
+        LLGHINestedViewCapture::instance().observeSingleView(
+            LL::GHI::RenderViewClass::PreWaterAlpha, gFrameCount,
+            gPipeline.mRT->screen.getAllocationGeneration());
     }
 }
 

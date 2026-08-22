@@ -31,6 +31,7 @@
 #include "../llviewercontrol.h"
 // Class to test
 #include "../llworldmipmap.h"
+#include "../lfsimfeaturehandler.h"
 // Tut header
 #include "../test/lltut.h"
 
@@ -50,6 +51,8 @@ LLControlGroup::LLControlGroup(const std::string& name) : LLInstanceTracker<LLCo
 LLControlGroup::~LLControlGroup() { }
 std::string LLControlGroup::getString(std::string_view) { return std::string("test_url"); }
 LLControlGroup gSavedSettings("test_settings");
+
+LFSimFeatureHandler::LFSimFeatureHandler() = default;
 
 // End Stubbing
 // -------------------------------------------------------------------------------------------

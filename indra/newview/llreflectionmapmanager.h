@@ -164,9 +164,9 @@ public:
     U32 probeCount();
     U32 probeMemory();
 
-    // glDeleteQueries is expensive, so we maintain a pool of queries
-    GLuint allocateQuery();
-    void recycleQuery(GLuint query);
+    // Deleting native queries is expensive, so we maintain a pool of identities.
+    U32 allocateQuery();
+    void recycleQuery(U32 query);
 
 private:
     friend class LLPipeline;
@@ -194,7 +194,7 @@ private:
     // bind UBO used for rendering
     void setUniforms();
 
-    std::deque<GLuint>                                    mQueryPool;
+    std::deque<U32>                                       mQueryPool;
 
     // render target for cube snapshots
     // used to generate mipmaps without doing a copy-to-texture

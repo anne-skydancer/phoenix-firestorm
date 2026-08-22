@@ -142,6 +142,8 @@ public:
     //get Y resolution
     U32 getHeight() const { return mResY; }
 
+    U64 getAllocationGeneration() const { return mAllocationGeneration; }
+
     LLTexUnit::eTextureType getUsage(void) const { return mUsage; }
 
     U32 getTexture(U32 attachment = 0) const;
@@ -175,6 +177,8 @@ public:
     static LLRenderTarget* sBoundTarget;
 
 protected:
+    static U64 sAllocationGeneration;
+
     U32 mResX;
     U32 mResY;
     std::vector<U32> mTex;
@@ -188,6 +192,7 @@ protected:
     U32 mMipLevels;
 
     LLTexUnit::eTextureType mUsage;
+    U64 mAllocationGeneration = 0;
 };
 
 #endif

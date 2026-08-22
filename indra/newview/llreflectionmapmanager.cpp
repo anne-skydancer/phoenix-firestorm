@@ -30,6 +30,8 @@
 
 #include <vector>
 
+#include "ghi/include/llghilegacyquery.h"
+#include "llghinestedviewcapture.h"
 #include "llviewercamera.h"
 #include "llspatialpartition.h"
 #include "llviewerregion.h"
@@ -573,21 +575,19 @@ U32 LLReflectionMapManager::probeMemory()
     return (mDynamicProbeCount * 6 * (mProbeResolution * mProbeResolution) * 4) / 1024 / 1024 + (mDynamicProbeCount * 6 * (LL_IRRADIANCE_MAP_RESOLUTION * LL_IRRADIANCE_MAP_RESOLUTION) * 4) / 1024 / 1024;
 }
 
-GLuint LLReflectionMapManager::allocateQuery()
+U32 LLReflectionMapManager::allocateQuery()
 {
     if (mQueryPool.empty())
     {
-        GLuint query;
-        glGenQueries(1, &query);
-        return query;
+        return LL::GHI::allocateLegacyQuery();
     }
 
-    GLuint query = mQueryPool.front();
+    U32 query = mQueryPool.front();
     mQueryPool.pop_front();
     return query;
 }
 
-void LLReflectionMapManager::recycleQuery(GLuint query)
+void LLReflectionMapManager::recycleQuery(U32 query)
 {
     mQueryPool.push_back(query);
 }
@@ -823,6 +823,17 @@ void LLReflectionMapManager::updateProbeFace(LLReflectionMap* probe, U32 face)
     {
         llassert(mRenderReflectionProbeLevel > 0); // should never update a probe that's not the default probe if reflection coverage is none
         probe->update(mRenderTarget.getWidth(), face);
+    }
+
+    if (probe->mCubeIndex >= 0 && face < 6)
+    {
+        LLGHINestedViewCapture::instance().observeCubeView(
+            LL::GHI::RenderViewClass::ReflectionProbe,
+            static_cast<U32>(probe->mCubeIndex),
+            static_cast<LL::GHI::CubeFace>(face),
+            isRadiancePass() ? LL::GHI::ProbePhase::Radiance
+                             : LL::GHI::ProbePhase::DirectLighting,
+            gFrameCount, mRenderTarget.getAllocationGeneration());
     }
 
     gPipeline.mRT = &gPipeline.mMainRT;
@@ -1641,8 +1652,8 @@ void LLReflectionMapManager::cleanupQueryPool()
     if (!mQueryPool.empty())
     {
         LL_PROFILE_ZONE_NAMED_CATEGORY_DISPLAY("cleanup query pool");
-        std::vector<GLuint> queries(mQueryPool.begin(), mQueryPool.end());
-        glDeleteQueries(static_cast<GLsizei>(queries.size()), queries.data());
+        std::vector<U32> queries(mQueryPool.begin(), mQueryPool.end());
+        LL::GHI::destroyLegacyQueries(queries);
         mQueryPool.clear();
     }
 }

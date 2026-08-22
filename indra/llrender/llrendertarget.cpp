@@ -52,6 +52,7 @@ void check_framebuffer_status()
 
 bool LLRenderTarget::sUseFBO = false;
 U32 LLRenderTarget::sCurFBO = 0;
+U64 LLRenderTarget::sAllocationGeneration = 0;
 
 
 extern S32 gGLViewport[4];
@@ -99,6 +100,8 @@ void LLRenderTarget::resize(U32 resx, U32 resy)
 
         sBytesAllocated += pix_diff*4;
     }
+
+    mAllocationGeneration = ++sAllocationGeneration;
 }
 
 
@@ -150,7 +153,12 @@ bool LLRenderTarget::allocate(U32 resx, U32 resy, U32 color_fmt, bool depth, LLT
         glBindFramebuffer(GL_FRAMEBUFFER, sCurFBO);
     }
 
-    return addColorAttachment(color_fmt);
+    const bool allocated = addColorAttachment(color_fmt);
+    if (allocated)
+    {
+        mAllocationGeneration = ++sAllocationGeneration;
+    }
+    return allocated;
 }
 
 void LLRenderTarget::setColorAttachment(LLImageGL* img, LLGLuint use_name)
@@ -186,6 +194,7 @@ void LLRenderTarget::setColorAttachment(LLImageGL* img, LLGLuint use_name)
     check_framebuffer_status();
 
     glBindFramebuffer(GL_FRAMEBUFFER, sCurFBO);
+    mAllocationGeneration = ++sAllocationGeneration;
 }
 
 void LLRenderTarget::releaseColorAttachment()
@@ -200,6 +209,7 @@ void LLRenderTarget::releaseColorAttachment()
     glBindFramebuffer(GL_FRAMEBUFFER, sCurFBO);
 
     mTex.clear();
+    mAllocationGeneration = 0;
 }
 
 bool LLRenderTarget::addColorAttachment(U32 color_fmt)
@@ -415,6 +425,7 @@ void LLRenderTarget::release()
     mInternalFormat.clear();
 
     mResX = mResY = 0;
+    mAllocationGeneration = 0;
 }
 
 void LLRenderTarget::bindTarget()
@@ -586,4 +597,5 @@ void LLRenderTarget::swapFBORefs(LLRenderTarget& other)
 
     std::swap(mFBO, other.mFBO);
     std::swap(mTex, other.mTex);
+    std::swap(mAllocationGeneration, other.mAllocationGeneration);
 }

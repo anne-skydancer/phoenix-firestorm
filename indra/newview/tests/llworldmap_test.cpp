@@ -33,6 +33,8 @@
 #include "lluistring.h"
 #include "../llviewertexture.h"
 #include "../llviewercontrol.h"
+#include "../llappviewer.h"
+#include "../lltexturecache.h"
 #include "../llworldmapmessage.h"
 // Class to test
 #include "../llworldmap.h"
@@ -52,6 +54,9 @@ void LLGLTexture::setBoostLevel(S32 ) { }
 void LLGLTexture::setAddressMode(LLTexUnit::eTextureAddressMode ) { }
 LLViewerFetchedTexture* LLViewerTextureManager::getFetchedTexture(const LLUUID&, FTType, bool, LLGLTexture::EBoostLevel, S8,
                                                                   LLGLint, LLGLenum, LLHost ) { return NULL; }
+LLViewerFetchedTexture* LLViewerTextureManager::findFetchedTexture(const LLUUID&, S32) { return NULL; }
+bool LLTextureCache::removeFromCache(const LLUUID&) { return false; }
+LLTextureCache* LLAppViewer::sTextureCache = NULL;
 
 // Stub related map calls
 

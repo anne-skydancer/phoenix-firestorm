@@ -1126,6 +1126,14 @@ if (USE_VULKAN_GHI)
   target_link_libraries(llrender_vulkan_offscreen_harness llrender Vulkan::Vulkan)
   add_dependencies(llrender_vulkan_offscreen_harness llrender_ghi_shaders)
 
+  add_executable(llrender_vulkan_nested_view_harness
+      tests/ghi/llghinestedviewharness.cpp)
+  target_include_directories(llrender_vulkan_nested_view_harness PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+  target_compile_definitions(llrender_vulkan_nested_view_harness PRIVATE
+      LL_GHI_NESTED_VULKAN=1)
+  target_link_libraries(llrender_vulkan_nested_view_harness llrender Vulkan::Vulkan)
+
   add_executable(llrender_vulkan_interaction_harness
       ghi/backends/vulkan/llghivulkaninteractionharness.cpp)
   target_include_directories(llrender_vulkan_interaction_harness PRIVATE
@@ -1316,6 +1324,14 @@ if (WINDOWS)
         LL_GHI_R7_OFFSCREEN_SHADER_PACKAGE="${GHI_R7_OFFSCREEN_SHADER_PACKAGE}")
     target_link_libraries(llrender_opengl_offscreen_harness llrender OpenGL::GL)
     add_dependencies(llrender_opengl_offscreen_harness llrender_ghi_shaders)
+
+    add_executable(llrender_opengl_nested_view_harness
+        tests/ghi/llghinestedviewharness.cpp)
+    target_include_directories(llrender_opengl_nested_view_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/ghi/include)
+    target_compile_definitions(llrender_opengl_nested_view_harness PRIVATE
+        LL_GHI_NESTED_OPENGL=1)
+    target_link_libraries(llrender_opengl_nested_view_harness llrender OpenGL::GL)
 
     add_executable(llrender_opengl_interaction_harness
         ghi/backends/opengl/llghiopenglinteractionharness.cpp)

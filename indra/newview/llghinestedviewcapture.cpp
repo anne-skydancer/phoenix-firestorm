@@ -26,6 +26,17 @@ class LLGHINestedViewCapture::Impl
 public:
     enum class State { Disabled, Recording, Complete, Failed };
 
+    struct CubeGroup
+    {
+        bool started = false;
+        bool complete = false;
+        std::array<bool, 6> faces{};
+        std::uint32_t cubeIndex = 0;
+        LL::GHI::ProbePhase phase = LL::GHI::ProbePhase::None;
+        std::uint64_t resourceGeneration = 0;
+        std::uint64_t lastFrameId = 0;
+    };
+
     void observeCubeView(LL::GHI::RenderViewClass view,
                                 std::uint32_t cubeIndex,
                                 LL::GHI::CubeFace face,
@@ -37,26 +48,30 @@ public:
         if (mState != State::Recording || !resourceGeneration ||
             !LL::GHI::isValidCubeFace(face)) return;
         if (!LL::GHI::isCubeView(view)) return;
-        if (!mGroupStarted || view != mView || cubeIndex != mCubeIndex ||
-            phase != mProbePhase || resourceGeneration != mResourceGeneration)
+        CubeGroup& group = mCubeGroups[static_cast<std::size_t>(view)];
+        if (group.complete) return;
+        if (!group.started || cubeIndex != group.cubeIndex ||
+            phase != group.phase || resourceGeneration != group.resourceGeneration)
         {
-            mGroupStarted = true;
-            mView = view;
-            mCubeIndex = cubeIndex;
-            mProbePhase = phase;
-            mResourceGeneration = resourceGeneration;
-            mFaces.fill(false);
+            group.started = true;
+            group.cubeIndex = cubeIndex;
+            group.phase = phase;
+            group.resourceGeneration = resourceGeneration;
+            group.faces.fill(false);
             ++mSceneGeneration;
         }
         const std::size_t faceIndex = static_cast<std::size_t>(face);
-        if (!mFaces[faceIndex])
+        if (!group.faces[faceIndex])
         {
             LL_INFOS("GHI") << "P0e4 observed cube view="
                              << static_cast<U32>(view) << " face=" << faceIndex
                              << " resource-generation=" << resourceGeneration
                              << LL_ENDL;
         }
-        mFaces[faceIndex] = true;
+        group.faces[faceIndex] = true;
+        group.complete = std::all_of(
+            group.faces.begin(), group.faces.end(), [](bool value) { return value; });
+        group.lastFrameId = std::max(group.lastFrameId, frameId);
         mLastFrameId = std::max(mLastFrameId, frameId);
         writeIfComplete();
     }
@@ -109,27 +124,40 @@ private:
             {
                 return mSingleViewGenerations[static_cast<std::size_t>(view)] != 0;
             });
-        if (!singleViewsComplete || mView != LL::GHI::RenderViewClass::CubeSnapshot ||
-            !std::all_of(mFaces.begin(), mFaces.end(), [](bool value) { return value; }))
+        const CubeGroup& reflection = mCubeGroups[static_cast<std::size_t>(
+            LL::GHI::RenderViewClass::ReflectionProbe)];
+        const CubeGroup& snapshot = mCubeGroups[static_cast<std::size_t>(
+            LL::GHI::RenderViewClass::CubeSnapshot)];
+        if (!singleViewsComplete || !reflection.complete || !snapshot.complete)
             return;
 
         LL::GHI::NestedViewScenePacket packet;
         packet.frameId = mLastFrameId;
         packet.sceneGeneration = mSceneGeneration;
-        packet.resourceGeneration = mResourceGeneration;
-        for (std::uint8_t faceIndex = 0; faceIndex < 6; ++faceIndex)
+        packet.resourceGeneration = reflection.resourceGeneration;
+        for (std::uint8_t viewIndex = static_cast<std::uint8_t>(
+                 LL::GHI::RenderViewClass::ReflectionProbe);
+             viewIndex <= static_cast<std::uint8_t>(
+                 LL::GHI::RenderViewClass::CubeSnapshot);
+             ++viewIndex)
         {
-            LL::GHI::NestedViewPass nested;
-            nested.resourceGeneration = mResourceGeneration;
-            nested.pass.view = mView;
-            nested.pass.recursionDepth = 1;
-            nested.pass.face = static_cast<LL::GHI::CubeFace>(faceIndex);
-            nested.pass.probePhase = mProbePhase;
-            nested.pass.arrayLayer = LL::GHI::cubeArrayLayer(
-                static_cast<std::uint16_t>(mCubeIndex), nested.pass.face);
-            nested.pass.updateEpoch = packet.sceneGeneration;
-            nested.semanticId = LL::GHI::offscreenSemanticId(nested.pass);
-            packet.passes.push_back(nested);
+            const auto view = static_cast<LL::GHI::RenderViewClass>(viewIndex);
+            const CubeGroup& group = mCubeGroups[viewIndex];
+            if (!group.complete) continue;
+            for (std::uint8_t faceIndex = 0; faceIndex < 6; ++faceIndex)
+            {
+                LL::GHI::NestedViewPass nested;
+                nested.resourceGeneration = group.resourceGeneration;
+                nested.pass.view = view;
+                nested.pass.recursionDepth = 1;
+                nested.pass.face = static_cast<LL::GHI::CubeFace>(faceIndex);
+                nested.pass.probePhase = group.phase;
+                nested.pass.arrayLayer = LL::GHI::cubeArrayLayer(
+                    static_cast<std::uint16_t>(group.cubeIndex), nested.pass.face);
+                nested.pass.updateEpoch = packet.sceneGeneration;
+                nested.semanticId = LL::GHI::offscreenSemanticId(nested.pass);
+                packet.passes.push_back(nested);
+            }
         }
         for (std::uint8_t viewIndex =
                  static_cast<std::uint8_t>(LL::GHI::RenderViewClass::Impostor);
@@ -170,8 +198,9 @@ private:
         mState = State::Complete;
         LL_INFOS("GHI") << "P0e4 nested-view capture PASS: completion-frame="
                          << packet.frameId << " scene-generation="
-                         << packet.sceneGeneration << " cube=" << mCubeIndex
-                         << " phase=" << static_cast<U32>(mProbePhase)
+                         << packet.sceneGeneration << " reflection-cube="
+                         << reflection.cubeIndex << " snapshot-cube="
+                         << snapshot.cubeIndex
                          << " passes=" << packet.passes.size()
                          << " bytes=" << encoded.size() << " sha256="
                          << LL::GHI::sha256(encoded) << LL_ENDL;
@@ -185,17 +214,12 @@ private:
     }
 
     bool mConfigured = false;
-    bool mGroupStarted = false;
     State mState = State::Disabled;
     std::filesystem::path mOutput;
-    std::array<bool, 6> mFaces{};
+    std::array<CubeGroup, LL::GHI::RENDER_VIEW_CLASS_COUNT> mCubeGroups{};
     std::array<std::uint64_t, LL::GHI::RENDER_VIEW_CLASS_COUNT>
         mSingleViewGenerations{};
-    std::uint32_t mCubeIndex = 0;
-    LL::GHI::RenderViewClass mView = LL::GHI::RenderViewClass::ReflectionProbe;
-    LL::GHI::ProbePhase mProbePhase = LL::GHI::ProbePhase::None;
     std::uint64_t mSceneGeneration = 0;
-    std::uint64_t mResourceGeneration = 0;
     std::uint64_t mLastFrameId = 0;
 };
 

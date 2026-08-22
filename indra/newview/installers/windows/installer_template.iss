@@ -33,11 +33,11 @@ CloseApplications=yes
 CloseApplicationsFilter={#ViewerExe}
 RestartApplications=no
 ChangesAssociations=yes
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion=%%VERSION_INFO%%
 VersionInfoCompany=The Phoenix Firestorm Project, Inc.
 VersionInfoDescription={#AppName} installer
 VersionInfoProductName={#AppName}
-VersionInfoProductVersion={#AppVersion}
+VersionInfoProductVersion=%%VERSION_INFO%%
 WizardStyle=modern
 
 [Languages]

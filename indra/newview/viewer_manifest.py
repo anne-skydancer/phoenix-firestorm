@@ -97,7 +97,7 @@ class ViewerManifest(LLManifest,FSViewerManifest):
         # the configuration directory.  Keep its runtime configuration, shaders,
         # and XUI in sync with the source tree even when we are not producing an
         # installer package.  Previously these paths were packaging-only, which
-        # left stale settings and preference panels beside firestorm-bin.exe.
+        # left stale settings and preference panels beside vulkanstorm-bin.exe.
         with self.prefix(src_dst="app_settings"):
             self.exclude("logcontrol.xml")
             self.exclude("logcontrol-dev.xml")
@@ -632,8 +632,8 @@ class Windows_x86_64_Manifest(ViewerManifest):
         debpkgdir = os.path.join(pkgdir, "lib", "debug")
 
         if self.is_packaging_viewer():
-            # Find firestorm-bin.exe in the 'configuration' dir, then rename it to the result of final_exe.
-            self.path(src='%s/firestorm-bin.exe' % self.args['configuration'], dst=self.final_exe())
+            # Find vulkanstorm-bin.exe in the 'configuration' dir, then rename it to the result of final_exe.
+            self.path(src='%s/vulkanstorm-bin.exe' % self.args['configuration'], dst=self.final_exe())
 
             # <FS:Ansariel> Undo Github-Build stuff - I don't think we need this
             # GITHUB_OUTPUT = os.getenv('GITHUB_OUTPUT')
@@ -976,7 +976,7 @@ class Windows_x86_64_Manifest(ViewerManifest):
         #installer_base = self.installer_base_name()
         #exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|secondlife-bin\..*|.*_Setup\.exe|.*-Setup\.exe'
         installer_base = self.fs_installer_basename()
-        exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|firestorm-bin\..*|.*_Setup\.exe|.*-Setup\.exe'
+        exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|vulkanstorm-bin\..*|.*_Setup\.exe|.*-Setup\.exe'
         # </FS:TJ>
 
         # Channel-specific icon for the Velopack installer.
@@ -1115,6 +1115,7 @@ class Windows_x86_64_Manifest(ViewerManifest):
                 "%%APP_NAME_ONEWORD%%":substitution_strings['app_name_oneword'],
                 "%%FRIENDLY_APP_NAME%%":substitution_strings['friendly_app_name'],
                 "%%VERSION%%":substitution_strings['version'],
+                "%%VERSION_INFO%%":substitution_strings['version_short'],
                 "%%FINAL_EXE%%":substitution_strings['final_exe'],
                 "%%INSTALLER_BASENAME%%":os.path.splitext(installer_file)[0],
                 "%%OUTPUT_DIR%%":self.get_dst_prefix(),
@@ -2097,7 +2098,7 @@ class LinuxManifest(ViewerManifest):
 
         with self.prefix(dst="bin"):
             self.path( os.path.join(os.pardir,'build_data.json'), "build_data.json" )
-            self.path("firestorm-bin","do-not-directly-run-firestorm-bin")
+            self.path("vulkanstorm-bin","do-not-directly-run-vulkanstorm-bin")
             self.path("../linux_crash_logger/linux-crash-logger","linux-crash-logger.bin")
             self.path2basename("../llplugin/slplugin", "SLPlugin")
             #this copies over the python wrapper script, associated utilities and required libraries, see SL-321, SL-322 and SL-323

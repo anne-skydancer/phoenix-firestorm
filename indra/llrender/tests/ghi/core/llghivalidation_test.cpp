@@ -1617,6 +1617,25 @@ void LLGHIValidationObject::test<28>()
              nested.semanticId = offscreenSemanticId(nested.pass);
              nestedPacket.passes.push_back(nested);
             }
+            for (std::uint8_t faceIndex = 0; faceIndex < 6; ++faceIndex)
+            {
+             NestedViewPass nested;
+             nested.resourceGeneration = 27;
+             nested.pass.view = RenderViewClass::CubeSnapshot;
+             nested.pass.recursionDepth = 1;
+             nested.pass.face = static_cast<CubeFace>(faceIndex);
+             nested.pass.arrayLayer = faceIndex;
+             nested.pass.updateEpoch = nestedPacket.sceneGeneration;
+             nested.semanticId = offscreenSemanticId(nested.pass);
+             nestedPacket.passes.push_back(nested);
+            }
+            NestedViewPass impostor;
+            impostor.resourceGeneration = 28;
+            impostor.pass.view = RenderViewClass::Impostor;
+            impostor.pass.recursionDepth = 1;
+            impostor.pass.updateEpoch = nestedPacket.sceneGeneration;
+            impostor.semanticId = offscreenSemanticId(impostor.pass);
+            nestedPacket.passes.push_back(impostor);
             NestedViewPass dynamicTexture;
             dynamicTexture.resourceGeneration = 29;
             dynamicTexture.pass.view = RenderViewClass::DynamicTexture;
@@ -1638,6 +1657,13 @@ void LLGHIValidationObject::test<28>()
             preWaterAlpha.pass.updateEpoch = nestedPacket.sceneGeneration;
             preWaterAlpha.semanticId = offscreenSemanticId(preWaterAlpha.pass);
             nestedPacket.passes.push_back(preWaterAlpha);
+            NestedViewPass mediaSurface;
+            mediaSurface.resourceGeneration = 41;
+            mediaSurface.pass.view = RenderViewClass::MediaSurface;
+            mediaSurface.pass.recursionDepth = 1;
+            mediaSurface.pass.updateEpoch = nestedPacket.sceneGeneration;
+            mediaSurface.semanticId = offscreenSemanticId(mediaSurface.pass);
+            nestedPacket.passes.push_back(mediaSurface);
             ensure("P0e4 nested-view schedule accepted",
                 validateNestedViewScenePacket(nestedPacket).ok());
             std::vector<std::byte> nestedFirst;
@@ -1655,7 +1681,7 @@ void LLGHIValidationObject::test<28>()
                 !nestedViewScenePacketSha256(nestedPacket).empty());
 
             NestedViewScenePacket invalidNested = nestedPacket;
-            invalidNested.passes[6].resourceGeneration = 0;
+            invalidNested.passes[13].resourceGeneration = 0;
             ensure("P0e4 zero resource generation rejected",
                 !validateNestedViewScenePacket(invalidNested));
             invalidNested = nestedPacket;
@@ -1665,9 +1691,9 @@ void LLGHIValidationObject::test<28>()
             ensure("P0e4 stale scene generation rejected",
                 !validateNestedViewScenePacket(invalidNested));
             invalidNested = nestedPacket;
-            invalidNested.passes[6].pass.recursionDepth = 2;
-            invalidNested.passes[6].semanticId =
-             offscreenSemanticId(invalidNested.passes[6].pass);
+            invalidNested.passes[13].pass.recursionDepth = 2;
+            invalidNested.passes[13].semanticId =
+             offscreenSemanticId(invalidNested.passes[13].pass);
             ensure("P0e4 recursive nested view rejected",
                 !validateNestedViewScenePacket(invalidNested));
             invalidNested = nestedPacket;

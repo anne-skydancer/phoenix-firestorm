@@ -28,6 +28,7 @@
 #include "llviewerprecompiledheaders.h"
 
 #include "llfloater360capture.h"
+#include "llghinestedviewcapture.h"
 
 #include "llagent.h"
 #include "llagentui.h"
@@ -452,6 +453,7 @@ void LLFloater360Capture::mockSnapShot(LLImageRaw* raw)
 // coroutine so it can be suspended at certain points.
 void LLFloater360Capture::capture360Images()
 {
+    const U64 capture_generation = ++mCaptureGeneration;
     // recheck the size of the cube map source images in case it changed
     // since it was set when we opened the floater
     setSourceImageSize();
@@ -536,6 +538,15 @@ void LLFloater360Capture::capture360Images()
         "posx", "posz", "posy",
         "negx", "negz", "negy",
     };
+    static constexpr LL::GHI::CubeFace cube_faces[6] =
+    {
+        LL::GHI::CubeFace::PositiveX,
+        LL::GHI::CubeFace::PositiveY,
+        LL::GHI::CubeFace::PositiveZ,
+        LL::GHI::CubeFace::NegativeX,
+        LL::GHI::CubeFace::NegativeY,
+        LL::GHI::CubeFace::NegativeZ,
+    };
 
     // number of times to render the scene (display(..) inside
     // the simple snapshot function in llViewerWindow.
@@ -584,6 +595,9 @@ void LLFloater360Capture::capture360Images()
         // with a single image, no sub-images etc. but is very fast
         gViewerWindow->simpleSnapshot(mRawImages[i],
                                       mSourceImageSize, mSourceImageSize, num_render_passes);
+        LLGHINestedViewCapture::instance().observeCubeView(
+            LL::GHI::RenderViewClass::CubeSnapshot, 0, cube_faces[i],
+            LL::GHI::ProbePhase::None, gFrameCount, capture_generation);
 
         // encode each image and write to disk while saving how long it took to do so
         auto t_start = std::chrono::high_resolution_clock::now();

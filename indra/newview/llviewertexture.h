@@ -584,6 +584,8 @@ public:
     void setPlaying(bool playing) ;
     bool isPlaying() const {return mIsPlaying;}
     void setMediaImpl() ;
+    U64 advanceResourceGeneration() { return ++mResourceGeneration; }
+    U64 getResourceGeneration() const { return mResourceGeneration; }
 
     virtual bool isViewerMediaTexture() const { return true; }
 
@@ -617,6 +619,7 @@ private:
     LLViewerMediaImpl* mMediaImplp ;
     bool mIsPlaying ;
     U32  mUpdateVirtualSizeTime ;
+    U64  mResourceGeneration = 0;
 
 public:
     static void updateClass() ;

@@ -48,7 +48,15 @@ public:
             mFaces.fill(false);
             ++mSceneGeneration;
         }
-        mFaces[static_cast<std::size_t>(face)] = true;
+        const std::size_t faceIndex = static_cast<std::size_t>(face);
+        if (!mFaces[faceIndex])
+        {
+            LL_INFOS("GHI") << "P0e4 observed cube view="
+                             << static_cast<U32>(view) << " face=" << faceIndex
+                             << " resource-generation=" << resourceGeneration
+                             << LL_ENDL;
+        }
+        mFaces[faceIndex] = true;
         mLastFrameId = std::max(mLastFrameId, frameId);
         writeIfComplete();
     }
@@ -61,8 +69,15 @@ public:
         if (mState != State::Recording || !resourceGeneration) return;
         if (view == LL::GHI::RenderViewClass::Main || LL::GHI::isCubeView(view))
             return;
-        mSingleViewGenerations[static_cast<std::size_t>(view)] =
-            resourceGeneration;
+        const std::size_t viewIndex = static_cast<std::size_t>(view);
+        if (!mSingleViewGenerations[viewIndex])
+        {
+            LL_INFOS("GHI") << "P0e4 observed single view="
+                             << static_cast<U32>(view)
+                             << " resource-generation=" << resourceGeneration
+                             << LL_ENDL;
+        }
+        mSingleViewGenerations[viewIndex] = resourceGeneration;
         mLastFrameId = std::max(mLastFrameId, frameId);
         writeIfComplete();
     }
@@ -82,9 +97,19 @@ private:
 
     void writeIfComplete()
     {
-        if (!std::any_of(mSingleViewGenerations.begin(),
-                 mSingleViewGenerations.end(),
-                 [](std::uint64_t value) { return value != 0; }) ||
+        constexpr std::array REQUIRED_SINGLE_VIEWS{
+            LL::GHI::RenderViewClass::Impostor,
+            LL::GHI::RenderViewClass::DynamicTexture,
+            LL::GHI::RenderViewClass::Preview,
+            LL::GHI::RenderViewClass::PreWaterAlpha,
+            LL::GHI::RenderViewClass::MediaSurface};
+        const bool singleViewsComplete = std::all_of(
+            REQUIRED_SINGLE_VIEWS.begin(), REQUIRED_SINGLE_VIEWS.end(),
+            [this](LL::GHI::RenderViewClass view)
+            {
+                return mSingleViewGenerations[static_cast<std::size_t>(view)] != 0;
+            });
+        if (!singleViewsComplete || mView != LL::GHI::RenderViewClass::CubeSnapshot ||
             !std::all_of(mFaces.begin(), mFaces.end(), [](bool value) { return value; }))
             return;
 

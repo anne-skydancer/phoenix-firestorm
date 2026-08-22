@@ -39,6 +39,7 @@
 #include "llfilepicker.h"
 #include "llfloaterwebcontent.h"    // for handling window close requests and geometry change requests in media browser windows.
 #include "llfocusmgr.h"
+#include "llghinestedviewcapture.h"
 #include "llimagegl.h"
 #include "llkeyboard.h"
 #include "lllogininstance.h"
@@ -85,6 +86,13 @@ extern bool gCubeSnapshot;
 constexpr bool USE_MIPMAPS = false;
 constexpr S32 MAX_MEDIA_INSTANCES_DEFAULT = 8;
 constexpr S32 MEDIA_INSTANCES_MIN_LIMIT = 6; // 4 'permanent' floaters plus reserve for dynamic ones
+
+void observeMediaTextureUpdate(LLViewerMediaTexture* media_tex)
+{
+    LLGHINestedViewCapture::instance().observeSingleView(
+        LL::GHI::RenderViewClass::MediaSurface, gFrameCount,
+        media_tex->advanceResourceGeneration());
+}
 
 void init_threaded_picker_load_dialog(LLPluginClassMedia* plugin, LLFilePicker::ELoadFilter filter, bool get_multiple)
 {
@@ -3063,6 +3071,7 @@ void LLViewerMediaImpl::update()
                     media_tex->getGLTexture()->mActiveThread = LLThread::currentID();
 #endif
                     mTextureUpdatePending = false;
+                    observeMediaTextureUpdate(media_tex);
                     media_tex->unref();
                     unref();
                 });
@@ -3070,6 +3079,7 @@ void LLViewerMediaImpl::update()
         else
         {
             doMediaTexUpdate(media_tex, data, data_width, data_height, x_pos, y_pos, width, height, false); // otherwise, update on main thread
+            observeMediaTextureUpdate(media_tex);
         }
     }
 }

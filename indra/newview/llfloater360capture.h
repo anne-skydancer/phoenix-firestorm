@@ -88,6 +88,7 @@ class LLFloater360Capture:
         float mInitialHeadingDeg;
         int mOutputImageWidth;
         int mOutputImageHeight;
+        U64 mCaptureGeneration = 0;
         std::string mImageSaveDir;
 
         LLPointer<LLImageRaw> mRawImages[6];

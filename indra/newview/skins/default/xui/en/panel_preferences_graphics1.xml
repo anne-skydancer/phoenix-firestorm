@@ -1298,7 +1298,7 @@ If you do not understand the distinction then leave this control alone."
          layout="topleft"
          left_delta="5"
          name="WorldPause"
-         top_pad="5"
+         top_pad="4"
          width="256"/>
 
          <check_box
@@ -1362,7 +1362,7 @@ If you do not understand the distinction then leave this control alone."
          layout="topleft"
          left_delta="10"
          name="FSRestrictMaxTextureSize"
-         top_pad="2"
+         top_pad="5"
          width="250">
             Restrict maximum texture resolution to:
         </text>
@@ -1400,7 +1400,7 @@ If you do not understand the distinction then leave this control alone."
          width="250"
          word_wrap="true"
          layout="topleft"
-         left="22"
+         left="20"
          name="TextureDetailLabel">
             Max Texture Quality Level:
         </text>

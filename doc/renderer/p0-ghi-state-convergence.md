@@ -221,6 +221,56 @@ resource-lifetime or presentation reference can be more consequential than
 many immediate-mode debug draws. P0e progress is accepted by semantic route
 coverage and per-slice gates, not by raw count alone.
 
+### P0e1 opaque production-frame convergence plan
+
+P0e1 is the first production migration slice because the opaque world path is
+already the best-validated shared GHI contract and the existing I8c3 work has
+private live coverage on both peers. It deliberately keeps the visible OpenGL
+frame authoritative until the complete opaque production route passes the same
+structural, parity, and lifecycle gates on Vulkan.
+
+1. **P0e1a — semantic frame packet.** Capture the production opaque world as a
+   single bounded packet that includes rigid and rigged material draws, terrain
+   and light inputs, shared target dependencies, semantic pass selection, and
+   decode-resource identity without exposing viewer pointers, native GL names,
+   or Vulkan handles.
+2. **P0e1b — live assembly and validation.** Observe the actual main-view
+   deferred frame, reject cross-frame or out-of-epoch work, and assert that the
+   same frame carries the required opaque, material, and terrain components.
+   This is the acceptance gate for frame assembly and deterministic identity.
+3. **P0e1c — shared G-buffer ownership.** Reuse the accepted I8c1/I8c2 target
+   topology and explicit GHI image ownership so opaque, material, terrain, and
+   deferred-lighting work all write to the same hardware-owned attachments.
+4. **P0e1d — opaque execution.** Execute the rigid/rigged material and terrain
+   draws against shared G-buffer targets with explicit depth, blend, topology,
+   and binding state. The visible OpenGL frame remains canonical until the
+   Vulkan opaque execution reproduces the same semantic pass structure and
+   bounded output.
+5. **P0e1e — deferred-lighting boundary.** Insert the accepted lighting state
+   and explicit shadow-projection dependencies into the same production frame
+   without leaking rendered-resource ownership into the viewer layer.
+6. **P0e1f — qualification.** Replay the captured packet on isolated OpenGL and
+   Vulkan peers, compare pass structure and bounded image outputs under the
+   existing tolerance model, then verify the live lifecycle without presenting
+   the Vulkan path.
+
+The accepted production opaque contract is intentionally additive. It does not
+replace world rendering or UI rendering on OpenGL, and it does not open the
+Vulkan selector. P0e1 proves that the backend-neutral production frame can be
+assembled, transferred, targeted, and executed without ambient `gGL` ownership
+inside the renderer-facing pipeline.
+
+The critical execution rule is that opaque-pipeline ownership remains attached
+only to the GHI packet, pass, and target contracts. Any step that still reaches
+into `gGL` state, mutable OpenGL object names, or implicit viewport/bind state
+is treated as a failed migration and is intentionally deferred to P0f.
+
+The first implementation slice should therefore focus on the explicit opaque
+frame packet, the G-buffer target ownership, and the opaque draw submission path
+that already has deterministic and private-live coverage in the project's I8
+checkpoints. Once those pass in both peers, the same discipline repeats for
+P0e2, P0e3, and the later nested-view and UI slices.
+
 ### P0e2 environment convergence plan
 
 P0e2 is divided into five independently reversible gates. The visible

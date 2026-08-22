@@ -34,7 +34,8 @@ WANTS_PACKAGE=$FALSE
 WANTS_VELOPACK=$FALSE
 WANTS_VERSION=$FALSE
 WANTS_KDU=$FALSE
-WANTS_GROK=$TRUE
+WANTS_GROK=$FALSE
+VULKANSTORM_DISTRIBUTION="PUBLIC"
 WANTS_FMODSTUDIO=$FALSE
 WANTS_OPENAL=$FALSE
 WANTS_SOLOUD=$FALSE
@@ -75,9 +76,9 @@ showUsage()
     echo "  --version                : Update version number"
     echo "  --chan  [Release|Dev]            : Dev is the default, sets channel"
     echo "  --btype [Release|RelWithDebInfo] : Release is default, whether to use symbols"
-    echo "  --kdu                    : Build with KDU"
-    echo "  --grok                   : Build with Grok J2C (requires GROK_ROOT)"
-    echo "  --no-grok                : Build with OpenJPEG instead of Grok"
+    echo "  --public                 : Public build using OpenJPEG (safe default)"
+    echo "  --private-grok           : Explicit private/non-public Grok build (requires GROK_ROOT)"
+    echo "  --no-grok                : Build with OpenJPEG (same codec as --public)"
     echo "  --soloud                 : Build with the SoLoud audio engine backend"
     echo "  --package                : Build installer"
     echo "  --velopack               : Build with velopack (Overrides --package)"
@@ -108,7 +109,7 @@ getArgs()
 # $* = the options passed in from main
 {
     if [ $# -gt 0 ]; then
-      while getoptex "clean build config version package velopack no-package fmodstudio openal soloud ninja vscode compiler-cache jobs: platform: kdu grok no-grok opensim no-opensim singlegrid: havok avx avx2 tracy lto crashreporting testbuild: help chan: btype:" "$@" ; do
+      while getoptex "clean build config version package velopack no-package fmodstudio openal soloud ninja vscode compiler-cache jobs: platform: public private-grok kdu grok no-grok opensim no-opensim singlegrid: havok avx avx2 tracy lto crashreporting testbuild: help chan: btype:" "$@" ; do
 
           #ensure options are valid
           if [  -z "$OPTOPT"  ] ; then
@@ -125,8 +126,20 @@ getArgs()
                             BTYPE="$OPTARG"
                           fi
                           ;;
-          kdu)            WANTS_KDU=$TRUE;;
-          grok)           WANTS_GROK=$TRUE;;
+          public)         VULKANSTORM_DISTRIBUTION="PUBLIC"
+                          WANTS_GROK=$FALSE
+                          WANTS_KDU=$FALSE
+                          ;;
+          private-grok)   VULKANSTORM_DISTRIBUTION="PRIVATE"
+                          WANTS_GROK=$TRUE
+                          WANTS_KDU=$FALSE
+                          ;;
+          kdu)            echo "Kakadu is not an allowed Vulkan Storm backend; use --public or --private-grok." >&2
+                          exit 1
+                          ;;
+          grok)           echo "Use --private-grok to acknowledge that this build is private/non-public." >&2
+                          exit 1
+                          ;;
           no-grok)        WANTS_GROK=$FALSE;;
           soloud)         WANTS_SOLOUD=$TRUE;;
           fmodstudio)     WANTS_FMODSTUDIO=$TRUE;;
@@ -475,6 +488,7 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
     else
         GROK="-DUSE_GROK:BOOL=OFF"
     fi
+    DISTRIBUTION="-DVULKANSTORM_DISTRIBUTION:STRING=$VULKANSTORM_DISTRIBUTION"
     if [ $WANTS_SOLOUD -eq $TRUE ] ; then
         SOLOUD="-DUSE_SOLOUD:BOOL=ON"
     else
@@ -624,7 +638,7 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
         fi
     fi
 
-    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $SOLOUD $KDU $GROK $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
+    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $SOLOUD $KDU $GROK $DISTRIBUTION $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
           $UNATTENDED -DLL_TESTS:BOOL=OFF -DADDRESS_SIZE:STRING=$AUTOBUILD_ADDRSIZE -DCMAKE_BUILD_TYPE:STRING=$BTYPE $CACHE_OPT \
           $CRASH_REPORTING -DVIEWER_SYMBOL_FILE:STRING="${VIEWER_SYMBOL_FILE:-}" $LL_ARGS_PASSTHRU ${VSCODE_FLAGS:-} | tee "$LOG"
     configure_status=${PIPESTATUS[0]}

@@ -65,6 +65,7 @@ set(cmake_SOURCE_FILES
         UI.cmake
         UnixInstall.cmake
         Variables.cmake
+        VulkanStormCodecPolicy.cmake
         Velopack.cmake
         VHACD.cmake
         ViewerMiscLibs.cmake

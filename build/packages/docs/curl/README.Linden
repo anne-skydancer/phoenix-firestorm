@@ -1,0 +1,960 @@
+
+0.  Pre-Checkin Checklist
+
+    Performed from top of repo, default branch, head:
+
+    [ ]  Is tag 'current' at or near head of 'vendor'?
+
+         hg heads
+         hg tags
+
+    [ ]  Expected differences between vendor and default?  Very
+         little of the original source should be modified.
+
+         hg diff -rcurrent curl
+
+    [ ]  Are the 'vendor' and 'default' branch source directories
+         'curl' and not 'curl-<version>'?
+
+    [ ]  Is curlbuild.h identical to distribution?
+
+         hg diff -rcurrent curl/include/curl/curlbuild.h
+
+    [ ]  Is Makefile identical to distribution?  Not strictly
+         required but a good idea.
+
+         hg diff -rcurrent curl/Makefile
+
+    [ ]  Examine the build logs to make certain that the data type
+         primitives and their formats are in agreement.  Good 
+         example from a 32-bit Linux build:
+
+         checking size of long... 4
+         checking size of void*... 4
+         checking for 64-bit curl_off_t data type... int64_t
+         checking size of curl_off_t... 8
+         checking formatting string directive for curl_off_t... "lld"
+         checking formatting string directive for unsigned curl_off_t... "llu"
+         checking constant suffix string for curl_off_t... LL
+         checking constant suffix string for unsigned curl_off_t... ULL
+
+
+    [ ]  The curl configuration procedure has trouble locating custom
+         versions of support libraries (zlib, ssl, ssh2, etc.).  So
+         examing the build log and verify that the right libraries are
+         being picked up.  Example from Linux:
+
+         checking for OpenSSL headers version... 1.0.1 - 0x1000107fL
+         checking for OpenSSL library version... 1.0.1
+         checking for OpenSSL headers and library versions matching... yes
+
+         Example from Linux of zlib detection:
+
+         checking zlib.h usability... yes
+         checking zlib.h presence... yes
+         checking for zlib.h... yes
+         checking for gzread in -lz... yes
+         configure: found both libz and libz.h header
+
+         During development, you might find it useful to rename any
+         system version of the zlib.h header so that it isn't picked
+         up accidentally.
+
+         In addition to the 'curl --version' command, you can look
+         for version strings in the 'curl' program itself:
+
+         $ strings stage/bin/curl | grep 1\\.[0-9]\\.
+              --dns-servers    DNS server addrs to use: 1.1.1.1;2.2.2.2
+         1.2.8
+         1.2.0.4
+         SSLv2 part of OpenSSL 1.0.1g 7 Apr 2014
+         SSLv3 part of OpenSSL 1.0.1g 7 Apr 2014
+         ...
+         \CAST part of OpenSSL 1.0.1g 7 Apr 2014
+          deflate 1.2.8 Copyright 1995-2013 Jean-loup Gailly and Mark Adler 
+          inflate 1.2.8 Copyright 1995-2013 Mark Adler 
+
+         With the '1.2.8' indicating the targeted libz (1.2.3.4
+         typically means a platform libz).
+
+         Static archives will show even less version information:
+
+         $ strings stage/lib/release/libcurl.a | grep 1\\.[0-9]\\.
+         1.2.8
+         1.2.0.4
+
+    [ ]  Examine build logs or run the built 'curl' executable to
+         verify function.  The '--version' option will give useful
+         library information:
+
+         $ stage/bin/curl --version
+         curl 7.42.0 (x86_64-unknown-linux-gnu) libcurl/7.47.0 OpenSSL/1.0.1g zlib/1.2.8
+         Protocols: dict file ftp ftps gopher http https imap imaps pop3 pop3s rtsp smtp smtps telnet tftp 
+         Features: AsynchDNS IPv6 Largefile NTLM NTLM_WB SSL libz TLS-SRP 
+
+         Run a few curl commands to a website.  You may need to copy
+         DLLs, create a Resources peer directory with symlinks to
+         .dylibs or set LD_LIBRARY_PATH to locate OpenSSL shared
+         libraries at runtime.  (build-cmd.sh does this for its own
+         operations.)
+
+         Confirm a fetch and the progress display works as expected:
+
+         $ stage/bin/curl -o /dev/null http://example.com/
+           % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                          Dload  Upload   Total   Spent    Left  Speed
+         100  1270  100  1270    0     0  55548      0 --:--:-- --:--:-- --:--:-- 57727
+
+    [ ]  On Mac, unit tests are disabled by default because they invoke
+         a lot of network activity that triggers the OS X firewall.
+         Inhibit the disable ('export DISABLE_UNIT_TESTS=0') and run
+         builds on your machine to exercise the unit tests.  There may
+         be some flakiness in the tests but they have been useful.
+
+    [ ]  Are you able to revert the special pipelining changes for curl
+         bugs 1420 (https://sourceforge.net/p/curl/bugs/1420/)?  This
+         is done by changesets a8784f6e153f and 46fd1a2376ab.
+
+
+1.  Introduction
+
+    Build of curl library from curl.haxx.se.
+
+    Repo structure *now* mostly follows standard conventions (see
+    section at end).
+
+    Prior to 7.24.0, repo didn't follow standard convention and each
+    release was disconnected from previous releases.  Modifications
+    to branch 'default' were re-implemented on every update.
+
+    Running 'configure' modifies source files.  Don't submit these
+    changes to the repo.
+
+    There are PDF files in the distribution which Mercurial does not
+    know how to merge.  There are also unit test data files which are
+    mostly ASCII but a few that are not.  Taking the vendor branch as
+    authoritative is the best default.  So, add the following to
+    .hg/hgrc in the repo so that these files are taken from the other
+    branch:
+
+        [merge-patterns]
+        **.pdf = internal:other
+        curl/tests/data/** = internal:other
+
+
+2.  Modifications
+
+    Essential modifications to curl distributions.
+  2.0 CMake is now used to configure the build.
+  
+    Many of the options listed below can now be specified from curl/CMakeLists.txt.
+    These options should be set as follows:
+        BUILD_CURL_EXE = ON
+        BUILD_CURL_TESTS = ON
+        CURL_STATICLIB = ON
+        ENABLE_ARES = OFF
+        ENABLE_THREADED_RESOLVER = OFF
+    
+    Also curl/CMake/FindOpenSSL.cmake and curl/CMake/FindZLIB.cmake are customized 
+    to find only the versions installed in the packages directory.
+
+  2.1  Do Not Use C-Ares for DNS Lookups
+
+    Use the threaded resolver system which is built on the platform's
+    resolver library and made asynchronous and thread safe.  The
+    c-ares library appears to be at the heart of many of the DNS
+    lookup failures customers see.
+
+    Changes:
+    * curl/lib/config-win32.h modified to enable threaded resolver.
+    * curl/src/config-win32.h modified identically.
+    * configure script invoked with correct arguments to use the
+      threaded resolver on linux and darwin.
+
+    There is some scripting in the build-cmd.sh file to try to catch
+    failures in this area but don't rely on it.
+
+  2.2  Do Not Modify include/curl/curlbuild.h
+
+    The curlbuild.h file distributed in the source tarball is
+    specially constructed for platforms that cannot run configure and
+    probe the environment (i.e. Windows). If you update the vendor
+    branch and then merge back with the default, be certain that
+    curlbuild.h is copied verbatim from the source distribution and is
+    not modified in subsequent commits. Running configure on linux or
+    mac will edit the file, removing the windows specific parts.
+
+  2.3  lib/Makefile.vc10 Modified
+
+    Additional makefile configurations added for our specific type of
+    library dependencies: 'release-ssl-dll-zlib' (release build,
+    static libcurl, dynamic ssl, static zlib) and 'debug-ssl-dll-zlib'
+    (debug build, static libcurl, dynamic ssl, static zlib).
+
+    This file has been edited by lindenlab to pick up the
+    LINDEN_LIBPATH variable and find our autobuild-packaged library
+    files. If you upgrade curl, be sure to carry those modifications
+    forward, or find another way to link in the autobuild libraries.
+
+    Debug and Release builds for all targets use /Z7 flag (and lost
+    any /Gm flag) anticipating static library builds.
+
+  2.4  src/Makefile.vc10 Modified
+
+    Similar changes to build curl.exe on Windows.  Only a
+    release-ssl-dll-zlib configuration added but it can be used to
+    build either a 'release' or 'debug' target curl.exe.
+
+  2.5  Imperfect Mercurial repository work
+
+    The path I took to canonicalize the branch and source code
+    directory structure, at changesets 1b274a267882 and 4a82c402b11f,
+    was not the optimal way.  What I did was basically:
+
+    * hg update vendor
+    * hg mv curl-version curl
+    * hg ci
+    * tar xzf
+    * hg addremove
+    * hg ci
+    * hg update default
+    * hg mv curl-version curl
+    * hg ci
+    * hg merge vendor
+    * hg ci
+
+    What should have happened (and what is happening for other
+    libraries) involves a single 'hg mv' operation:
+
+    * hg update vendor
+    * hg mv curl-version curl
+    * hg ci
+    * hg update default
+    * hg merge vendor (will do the rename)
+    * hg ci
+    * hg update vendor
+    * tar xzf
+    * hg addremove
+    * hg ci
+    * hg update default
+    * hg merge vendor
+    * hg ci
+
+    At some point, we might go back and repair/replace the repo.
+
+  2.6  Unit Test Changes
+
+    Bumped timestamp in tests/data/test172 so test runs.  Not
+    certain how this ever worked, it's stale by several years.
+    Watch for fixes from upstream and restore the file when 
+    possible.  (Fixed in 7.36.0)
+
+  2.7  Pipelining Data Corruption
+
+    Timed out requests involved in pipelines may result in loss of
+    response stream synchronization when other requests follow the
+    timed out requests.  This has been reported to the curl devs as
+    bug 1420 and some defensive measures are taken in the Linden
+    'default' branch until an official fix is available.  Once it is
+    available, these changes (a8784f6e153f and 46fd1a2376ab) should be
+    reverted.
+
+    I recommend testing any 1420 fix or workaround.  The process isn't
+    entirely deterministic.  But some hooks are in place to make this
+    less painful.
+
+    1.  Edit llcorehttp/_httpoprequest.cpp to force a request timeout
+    of one second:
+
+diff -r 0e3365c1843d indra/llcorehttp/_httpoprequest.cpp
+--- a/indra/llcorehttp/_httpoprequest.cpp       Mon Oct 06 15:22:58 2014 -0400
++++ b/indra/llcorehttp/_httpoprequest.cpp       Fri Oct 10 14:31:16 2014 -0400
+@@ -626,8 +626,8 @@
+                // *TODO:  Find a better scheme than timeouts to guarantee liveness.
+                xfer_timeout *= cpolicy.mPipelining;
+        }
+-       // *DEBUG:  Useful for timeout handling and "[curl:bugs] #1420" tests
+-       // xfer_timeout = 1L;
++       // *DEBUG:  Enable following override for timeout handling and "[curl:bugs] #1420" tests
++       xfer_timeout = 1L;
+        code = curl_easy_setopt(mCurlHandle, CURLOPT_TIMEOUT, xfer_timeout);
+        check_curl_easy_code(code, CURLOPT_TIMEOUT);
+        code = curl_easy_setopt(mCurlHandle, CURLOPT_CONNECTTIMEOUT, timeout);
+
+
+    2.  Edit llcorehttp/httpcommon.cpp to disable request retry for
+    the Core_9 (invalid status) error:
+
+diff -r 0e3365c1843d indra/llcorehttp/httpcommon.cpp
+--- a/indra/llcorehttp/httpcommon.cpp   Mon Oct 06 15:22:58 2014 -0400
++++ b/indra/llcorehttp/httpcommon.cpp   Fri Oct 10 14:31:16 2014 -0400
+@@ -254,8 +254,9 @@
+                        *this == op_timedout ||         // Timer expired
+                        *this == post_error ||          // Transport problem
+                        *this == partial_file ||        // Data inconsistency in response
+-                       *this == inv_cont_range ||      // Short data read disagrees with content-range
+-                       *this == inv_status);           // Inv status can reflect internal state problem in libcurl
++                       // *DEBUG:  Comment out 'inv_status' test for [curl:bugs] #1420 testing.
++                       // *this == inv_status ||               // Inv status can reflect internal state problem in libcurl
++                       *this == inv_cont_range);       // Short data read disagrees with content-range
+ }
+ 
+ } // end namespace LLCore
+
+
+    3.  Edit llcorehttp/_httppolicy.cpp and add some chatty logging
+    whenever a request timeout error is generated:
+
+diff -r 0e3365c1843d indra/llcorehttp/_httppolicy.cpp
+--- a/indra/llcorehttp/_httppolicy.cpp  Mon Oct 06 15:22:58 2014 -0400
++++ b/indra/llcorehttp/_httppolicy.cpp  Fri Oct 10 15:10:12 2014 -0400
+@@ -414,6 +414,18 @@
+        // Retry or finalize
+        if (! op->mStatus)
+        {
++               // *DEBUG:  For "[curl:bugs] #1420" tests.  This will interfere
++               // with unit tests due to allocation retention by logging code.
++               // But you won't be checking this in enabled.
++#if 1
++               if (op->mStatus == HttpStatus(HttpStatus::EXT_CURL_EASY, CURLE_OPERATION_TIMEDOUT))
++               {
++                       LL_WARNS(LOG_CORE) << "HTTP request " << static_cast<HttpHandle>(op)
++                                                          << " timed out."
++                                                          << LL_ENDL;
++               }
++#endif
++
+                // If this failed, we might want to retry.
+                if (op->mPolicyRetries < op->mPolicyRetryLimit && op->mStatus.isRetryable())
+                {
+
+    4.  Build and visit mesh- and texture-rich regions.  Monitor the
+    SecondLife.log file for the 'timed out' log message and Core_9
+    errors.  The test isn't deterministic but you want *NO* Core_9
+    errors and *many* 'timed out' messages:
+
+2014-10-10T19:03:15Z WARNING: LLCore::HttpPolicy::stageAfterCompletion: HTTP request 2CC9FCB0 timed out.
+2014-10-10T19:03:15Z WARNING: LLCore::HttpPolicy::stageAfterCompletion: HTTP request 24DA9FC0 timed out.
+2014-10-10T19:03:15Z WARNING: LLCore::HttpPolicy::stageAfterCompletion: HTTP request 2CC9FD90 timed out.
+2014-10-10T19:03:15Z WARNING: LLCore::HttpPolicy::stageAfterCompletion: HTTP request 26D68718 timed out.
+2014-10-10T19:03:15Z WARNING: LLCore::HttpPolicy::stageAfterCompletion: HTTP request 26D67F38 timed out.
+2014-10-10T19:03:15Z WARNING: LLCore::HttpPolicy::stageAfterCompletion: HTTP request 26D68C58 timed out.
+2014-10-10T19:03:15Z WARNING: LLCore::HttpPolicy::stageAfterCompletion: HTTP request 252218F8 timed out.
+
+
+    5.  Follow this test with a Wireshark verification that pipelining
+    is still working.
+
+        
+3.  Source Origin
+    7.47.0:
+	  https://github.com/bagder/curl.git 
+	  (tag:curl-7_47_0)
+	  
+    7.42.1:
+	  https://github.com/bagder/curl.git 
+	  (tag:curl-7_42_1)
+
+    7.38.0:
+      http://curl.haxx.se/download/curl-7.38.0.tar.gz
+
+    7.37.0:
+      http://curl.haxx.se/download/curl-7.37.0.tar.gz
+
+    7.36.0:
+      http://curl.haxx.se/download/curl-7.36.0.tar.gz
+
+    7.34.0:
+      http://curl.haxx.se/download/curl-7.34.0.tar.gz
+
+
+4.  Package Contents
+
+    Common:
+    * include/curl/curl.h
+    * include/curl/curlbuild.h
+    * include/curl/curlrules.h
+    * include/curl/curlver.h
+    * include/curl/easy.h
+    * include/curl/mprintf.h
+    * include/curl/multi.h
+    * include/curl/stdcheaders.h
+    * include/curl/typecheck-gcc.h
+
+    Windows:
+    * lib/release/libcurl.lib
+    * lib/debug/libcurld.lib
+
+    Mac OS X (debug and release):
+    * lib/release/libcurl.a
+    * lib/debug/libcurl.a
+
+    Linux:
+    * lib/release/libcurl.a
+    * lib/debug/libcurl.a
+
+
+5.  Known Dependencies
+
+    This is not authoritative, it's just a reminder to followup
+    with dependent packages.
+
+    * openjpeg (*should* be a dependency when building certain tools)
+    * viewer
+
+
+A.  Appendix A - Notes on 'vendor' branch maintenance
+
+    7.36.0 from 7.34.0.
+
+    This wasquite a bit easier than the effort below.  With the
+    following three commands, only one deleted file ended up being
+    split into two new files.  Good enough for this effort.
+
+    * hg addremove -X curl/docs/examples/pop3slist.c -X curl/docs/examples/imap.c  -s 60
+    * hg rm curl/docs/examples/imap.c
+    * hg rm curl/docs/examples/pop3slist.c
+
+    7.34.0 from 7.24.0.
+
+    Keeping file continuity in the 'vendor' branch was challenging.
+    The library had been reorganized (for the better) and that
+    confused 'hg addremove' more than usual.  This describes what was
+    found during the process and hopefully forewarns the next
+    developer.
+
+    After laying down the 7.34.0 source, a simple 'addremove' run
+    in dry-run mode produces a long list of add and remove operations
+    *and* a substantial number of suspect renames:
+
+      $ hg addremove -s 60 -n
+      [ long list of adds and removes deleted ]
+      recording removal of curl/lib/vc6libcurl.dsw as rename to curl/vs/vc6/lib/vc6libcurl.dsw (100% similar)
+      recording removal of curl/Makefile.msvc.names as rename to curl/winbuild/Makefile.msvc.names (100% similar)
+      recording removal of curl/lib/curl_rand.h as rename to curl/lib/hostcheck.h (78% similar)
+      recording removal of curl/lib/curl_rand.h as rename to curl/tests/unit/unit1330.c (79% similar)
+      recording removal of curl/lib/msvcproj.foot as rename to curl/vs/t/lib/vc6_libcurl_dsp.foot (83% similar)
+      recording removal of curl/lib/curl_rand.h as rename to curl/tests/server/server_setup.h (79% similar)
+      recording removal of curl/lib/curl_rand.h as rename to curl/tests/libtest/lib558.c (67% similar)
+      recording removal of curl/lib/curl_rand.h as rename to curl/lib/http2.h (71% similar)
+      recording removal of curl/tests/data/test1323 as rename to curl/tests/data/test931 (88% similar)
+      recording removal of curl/tests/data/test1322 as rename to curl/tests/data/test875 (88% similar)
+      recording removal of curl/lib/curl_rand.h as rename to curl/lib/bundles.h (63% similar)
+      recording removal of curl/tests/data/test1324 as rename to curl/tests/data/test829 (88% similar)
+      recording removal of curl/vc6curl.dsw as rename to curl/vs/vc6/vc6curl.dsw (92% similar)
+      recording removal of curl/lib/setup_once.h as rename to curl/lib/curl_setup_once.h (92% similar)
+      recording removal of curl/src/vc6curlsrc.dsw as rename to curl/vs/vc6/src/vc6curltool.dsw (88% similar)
+      recording removal of curl/lib/curl_rand.h as rename to curl/lib/polarssl_threadlock.h (61% similar)
+      recording removal of curl/Android.mk as rename to curl/packages/Android/Android.mk (96% similar)
+      recording removal of curl/lib/krb4.h as rename to curl/lib/curl_sec.h (86% similar)
+      recording removal of curl/src/hugehelp.h as rename to curl/lib/dotdot.h (83% similar)
+      recording removal of curl/tests/data/test1324 as rename to curl/tests/data/test1409 (60% similar)
+      recording removal of curl/lib/curl_rand.h as rename to curl/tests/libtest/lib1508.c (75% similar)
+      recording removal of curl/lib/setup.h as rename to curl/lib/curl_setup.h (89% similar)
+      recording removal of curl/src/hugehelp.h as rename to curl/src/tool_hugehelp.h (83% similar)
+      recording removal of curl/docs/examples/htmltitle.cc as rename to curl/docs/examples/htmltitle.cpp (98% similar)
+
+    Of these, lib/curl_rand.*, src/hugehelp.h, lib/krb4.h,
+    tests/data/test815 should not be renamed (they're actually being
+    deleted).  Update the dry-run command with some exclusions:
+
+      $ hg addremove -X curl/lib/curl_rand.h -X curl/lib/curl_rand.c \
+                     -X curl/src/hugehelp.h -X curl/lib/krb4.h \
+                     -X curl/tests/data/test815 -s 60 -n
+
+      recording removal of curl/lib/vc6libcurl.dsw as rename to curl/vs/vc6/lib/vc6libcurl.dsw (100% similar)
+      recording removal of curl/Makefile.msvc.names as rename to curl/winbuild/Makefile.msvc.names (100% similar)
+      recording removal of curl/src/vc6curlsrc.dsw as rename to curl/vs/vc6/src/vc6curltool.dsw (88% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/lib/hostcheck.h (73% similar)
+      recording removal of curl/lib/setup.h as rename to curl/lib/curl_setup.h (89% similar)
+      recording removal of curl/tests/data/test1322 as rename to curl/tests/data/test875 (88% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/tests/unit/unit1330.c (74% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/src/tool_hugehelp.h (76% similar)
+      recording removal of curl/lib/setup_once.h as rename to curl/lib/curl_setup_once.h (92% similar)
+      recording removal of curl/lib/msvcproj.foot as rename to curl/vs/t/lib/vc6_libcurl_dsp.foot (83% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/lib/bundles.h (60% similar)
+      recording removal of curl/tests/data/test1324 as rename to curl/tests/data/test829 (88% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/tests/server/server_setup.h (74% similar)
+      recording removal of curl/vc6curl.dsw as rename to curl/vs/vc6/vc6curl.dsw (92% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/tests/libtest/lib558.c (64% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/lib/http2.h (67% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/lib/dotdot.h (77% similar)
+      recording removal of curl/tests/data/test1323 as rename to curl/tests/data/test931 (88% similar)
+      recording removal of curl/docs/examples/htmltitle.cc as rename to curl/docs/examples/htmltitle.cpp (98% similar)
+      recording removal of curl/tests/data/test1324 as rename to curl/tests/data/test1409 (60% similar)
+      recording removal of curl/src/tool_cb_skt.h as rename to curl/tests/libtest/lib1508.c (70% similar)
+      recording removal of curl/Android.mk as rename to curl/packages/Android/Android.mk (96% similar)
+
+    Better.  Now add src/tool_cb_skt.h and lib/msvcproj.foot (which
+    are also being deleted):
+
+      $ hg addremove -X curl/lib/curl_rand.h -X curl/lib/curl_rand.c \
+                     -X curl/src/hugehelp.h -X curl/lib/krb4.h \
+                     -X curl/tests/data/test815 -X curl/src/tool_cb_skt.h \
+                     -X curl/lib/msvcproj.foot -s 60 -n
+
+      recording removal of curl/lib/vc6libcurl.dsw as rename to curl/vs/vc6/lib/vc6libcurl.dsw (100% similar)
+      recording removal of curl/Makefile.msvc.names as rename to curl/winbuild/Makefile.msvc.names (100% similar)
+      recording removal of curl/src/vc6curlsrc.dsw as rename to curl/vs/vc6/src/vc6curltool.dsw (88% similar)
+      recording removal of curl/docs/examples/printf_macro.h as rename to curl/lib/hostcheck.h (66% similar)
+      recording removal of curl/lib/setup.h as rename to curl/lib/curl_setup.h (89% similar)
+      recording removal of curl/tests/data/test1322 as rename to curl/tests/data/test875 (88% similar)
+      recording removal of curl/docs/examples/printf_macro.h as rename to curl/tests/unit/unit1330.c (67% similar)
+      recording removal of curl/docs/examples/printf_macro.h as rename to curl/src/tool_hugehelp.h (68% similar)
+      recording removal of curl/docs/examples/printf_macro.h as rename to curl/tests/libtest/lib1508.c (64% similar)
+      recording removal of curl/Android.mk as rename to curl/packages/Android/Android.mk (96% similar)
+      recording removal of curl/tests/data/test1324 as rename to curl/tests/data/test829 (88% similar)
+      recording removal of curl/docs/examples/printf_macro.h as rename to curl/tests/server/server_setup.h (67% similar)
+      recording removal of curl/vc6curl.dsw as rename to curl/vs/vc6/vc6curl.dsw (92% similar)
+      recording removal of curl/docs/examples/printf_macro.h as rename to curl/lib/dotdot.h (70% similar)
+      recording removal of curl/docs/examples/printf_macro.h as rename to curl/lib/http2.h (61% similar)
+      recording removal of curl/tests/data/test1323 as rename to curl/tests/data/test931 (88% similar)
+      recording removal of curl/docs/examples/htmltitle.cc as rename to curl/docs/examples/htmltitle.cpp (98% similar)
+      recording removal of curl/tests/data/test1324 as rename to curl/tests/data/test1409 (60% similar)
+      recording removal of curl/lib/setup_once.h as rename to curl/lib/curl_setup_once.h (92% similar)
+
+    Add docs/examples/printf_macro.h (also deleting):
+
+      $ hg addremove -X curl/lib/curl_rand.h -X curl/lib/curl_rand.c \
+                     -X curl/src/hugehelp.h -X curl/lib/krb4.h \
+                     -X curl/tests/data/test815 -X curl/src/tool_cb_skt.h \
+                     -X curl/lib/msvcproj.foot -X curl/docs/examples/printf_macro.h \
+                     -s 60 -n
+
+      recording removal of curl/lib/vc6libcurl.dsw as rename to curl/vs/vc6/lib/vc6libcurl.dsw (100% similar)
+      recording removal of curl/Makefile.msvc.names as rename to curl/winbuild/Makefile.msvc.names (100% similar)
+      recording removal of curl/src/vc6curlsrc.dsw as rename to curl/vs/vc6/src/vc6curltool.dsw (88% similar)
+      recording removal of curl/lib/setup.h as rename to curl/lib/curl_setup.h (89% similar)
+      recording removal of curl/tests/data/test1322 as rename to curl/tests/data/test875 (88% similar)
+      recording removal of curl/tests/data/test1324 as rename to curl/tests/data/test829 (88% similar)
+      recording removal of curl/vc6curl.dsw as rename to curl/vs/vc6/vc6curl.dsw (92% similar)
+      recording removal of curl/Android.mk as rename to curl/packages/Android/Android.mk (96% similar)
+      recording removal of curl/tests/data/test1323 as rename to curl/tests/data/test931 (88% similar)
+      recording removal of curl/docs/examples/htmltitle.cc as rename to curl/docs/examples/htmltitle.cpp (98% similar)
+      recording removal of curl/tests/data/test1324 as rename to curl/tests/data/test1409 (60% similar)
+      recording removal of curl/lib/setup_once.h as rename to curl/lib/curl_setup_once.h (92% similar)
+
+    Exclude the test files (being deleted):
+
+      $ hg addremove -X curl/lib/curl_rand.h -X curl/lib/curl_rand.c \
+                     -X curl/src/hugehelp.h -X curl/lib/krb4.h \
+                     -X curl/tests/data/test815 -X curl/src/tool_cb_skt.h \
+                     -X curl/lib/msvcproj.foot -X curl/docs/examples/printf_macro.h \
+                     -X curl/tests/data/test875 -X curl/tests/data/test829 \
+                     -X curl/tests/data/test931 -X curl/tests/data/test1409 -s 60 -n
+
+      recording removal of curl/lib/vc6libcurl.dsw as rename to curl/vs/vc6/lib/vc6libcurl.dsw (100% similar)
+      recording removal of curl/Makefile.msvc.names as rename to curl/winbuild/Makefile.msvc.names (100% similar)
+      recording removal of curl/src/vc6curlsrc.dsw as rename to curl/vs/vc6/src/vc6curltool.dsw (88% similar)
+      recording removal of curl/lib/setup.h as rename to curl/lib/curl_setup.h (89% similar)
+      recording removal of curl/vc6curl.dsw as rename to curl/vs/vc6/vc6curl.dsw (92% similar)
+      recording removal of curl/Android.mk as rename to curl/packages/Android/Android.mk (96% similar)
+      recording removal of curl/docs/examples/htmltitle.cc as rename to curl/docs/examples/htmltitle.cpp (98% similar)
+      recording removal of curl/lib/setup_once.h as rename to curl/lib/curl_setup_once.h (92% similar)
+
+    That looks like a correct list of renames.  Execute it for effect
+    then check status:
+
+      $ hg addremove -X curl/lib/curl_rand.h -X curl/lib/curl_rand.c \
+                     -X curl/src/hugehelp.h -X curl/lib/krb4.h \
+                     -X curl/tests/data/test815 -X curl/src/tool_cb_skt.h \
+                     -X curl/lib/msvcproj.foot -X curl/docs/examples/printf_macro.h \
+                     -X curl/tests/data/test875 -X curl/tests/data/test829 \
+                     -X curl/tests/data/test931 -X curl/tests/data/test1409 -s 60
+
+      recording removal of curl/lib/vc6libcurl.dsw as rename to curl/vs/vc6/lib/vc6libcurl.dsw (100% similar)
+      recording removal of curl/Makefile.msvc.names as rename to curl/winbuild/Makefile.msvc.names (100% similar)
+      recording removal of curl/src/vc6curlsrc.dsw as rename to curl/vs/vc6/src/vc6curltool.dsw (88% similar)
+      recording removal of curl/lib/setup.h as rename to curl/lib/curl_setup.h (89% similar)
+      recording removal of curl/vc6curl.dsw as rename to curl/vs/vc6/vc6curl.dsw (92% similar)
+      recording removal of curl/Android.mk as rename to curl/packages/Android/Android.mk (96% similar)
+      recording removal of curl/docs/examples/htmltitle.cc as rename to curl/docs/examples/htmltitle.cpp (98% similar)
+      recording removal of curl/lib/setup_once.h as rename to curl/lib/curl_setup_once.h (92% similar)
+      $ hg status
+      ! curl/docs/examples/printf_macro.h
+      ! curl/lib/curl_rand.c
+      ! curl/lib/curl_rand.h
+      ! curl/lib/krb4.h
+      ! curl/lib/msvcproj.foot
+      ! curl/src/hugehelp.h
+      ! curl/src/tool_cb_skt.h
+      ? curl/tests/data/test1409
+      ? curl/tests/data/test829
+      ? curl/tests/data/test875
+      ? curl/tests/data/test931
+
+    Those are removed ('!') and added ('?') files that weren't
+    correctly moved and which now need to 'rm'd and 'add'd,
+    respectively:
+
+      $ hg rm curl/docs/examples/printf_macro.h curl/lib/curl_rand.c \
+              curl/lib/curl_rand.h curl/lib/krb4.h curl/lib/msvcproj.foot \
+              curl/src/hugehelp.h curl/src/tool_cb_skt.h
+      $ hg add curl/tests/data/test{829,875,931,1409}
+
+    And now 'hg status' reports no unaccounted for files in the
+    'vendor' branch.
+
+    Next, we switch over to 'default' branch and prepare for the merge.
+    First, need to disable merging of PDF and test data files as
+    mentioned above.  Add the following to the repo's '.hg/hgrc' file:
+
+      [merge-patterns]
+      **.pdf = internal:other
+      curl/tests/data/** = internal:other
+
+    And now the merge.  The full file list is long, I've extracted the
+    unusual events in the merge here:
+
+      $ hg merge vendor
+      merging curl/Android.mk and curl/packages/Android/Android.mk to curl/packages/Android/Android.mk
+      merging curl/docs/examples/htmltitle.cc and curl/docs/examples/htmltitle.cpp to curl/docs/examples/htmltitle.cpp
+      merging curl/lib/Makefile.vc10
+      warning: conflicts during merge.
+      merging curl/lib/setup.h and curl/lib/curl_setup.h to curl/lib/curl_setup.h
+      merging curl/lib/setup_once.h and curl/lib/curl_setup_once.h to curl/lib/curl_setup_once.h
+      merging curl/src/vc6curlsrc.dsw and curl/vs/vc6/src/vc6curltool.dsw to curl/vs/vc6/src/vc6curltool.dsw
+      merging curl/vc6curl.dsw and curl/vs/vc6/vc6curl.dsw to curl/vs/vc6/vc6curl.dsw
+
+    Check each of the three-way merges and verify that they make
+    sense.  That the underlying file movement by Hg was valid and that
+    the resultant file make sense.  In these cases, all merges appear
+    valid.
+
+    The conflicted .vc10 file requires real attention.  But that's
+    mostly manual editing to get it back into shape with
+    Linden-specific actions and options.  Roughly, the following were
+    done in the merge:
+
+    * Keep '/DUSE_SCHANNEL' from CFLAGSWINSSL.  Selects native 
+      ssl/tls on Windows which we're not using (yet).
+    * Add '/DUSE_OPENSSL' from new 7.34.0 drop to CFLAGSSSL.
+    * CFLAGSZLIB changed to $(LINDEN_INCPATH)
+    * ZLIBLIB to $(LINDEN_LIBPATH)/$(ZLIB_NAME)
+    * Didn't keep the 'advapi32.lib' in WINLIBS which came from
+      the 7.34.0 distribution.  May be needed later, seems to link
+      and run curl.exe fine without.
+    * LFLAGSZLIB in all/most configurations to
+     '/LIBPATH:$(LINDEN_LIBPATH)'.
+    * LFLAGSSSL to '/LIBPATH:$(OPENSSL_PATH)\out32dll' in the
+      'release-ssl-zlib' configuration which I think was pointless.
+    * Drop RESOURCE from 'release-ssl-ssh2-zlib' and
+      'debug-ssl-ssh2-zlib'.
+    * TARGET modified on some configurations.  Think this was
+      unnecessary.
+
+    Finally, the 'hg addremove' process seemed to get a little lost in
+    merging file removals on the vendor branch over to the default branch.
+    In the end, I did a plain diff of the default branch 'curl' directory
+    against a clean unpack of the curl distribution and found I had some
+    deleted files left.  I 'hg rm'd these manually:
+
+      $ hg rm ....
+      R curl/docs/examples/printf_macro.h
+      R curl/lib/config-vms.h
+      R curl/lib/curl_rand.c
+      R curl/lib/curl_rand.h
+      R curl/lib/krb4.c
+      R curl/lib/krb4.h
+      R curl/lib/libcurl.imp
+      R curl/lib/libcurl.vcproj
+      R curl/lib/msvcproj.foot
+      R curl/lib/msvcproj.head
+      R curl/lib/vc6libcurl.dsp
+      R curl/m4/curl-system.m4
+      R curl/packages/vms/hpssl_alpha.opt
+      R curl/packages/vms/hpssl_ia64.opt
+      R curl/packages/vms/hpssl_vax.opt
+      R curl/packages/vms/ldap.opt
+      R curl/packages/vms/openssl_alpha.opt
+      R curl/packages/vms/openssl_ia64.opt
+      R curl/packages/vms/openssl_ssl_alpha.opt
+      R curl/packages/vms/openssl_ssl_ia64.opt
+      R curl/packages/vms/openssl_ssl_vax.opt
+      R curl/packages/vms/openssl_vax.opt
+      R curl/src/config-amigaos.h
+      R curl/src/config-mac.h
+      R curl/src/config-riscos.h
+      R curl/src/config-win32.h
+      R curl/src/curl_config.h.in
+      R curl/src/hugehelp.c
+      R curl/src/hugehelp.h
+      R curl/src/setup.h
+      R curl/src/tool_cb_skt.c
+      R curl/src/tool_cb_skt.h
+      R curl/src/vc6curlsrc.dsp
+      R curl/tests/data/test1322
+      R curl/tests/data/test1323
+      R curl/tests/data/test1324
+
+    And there it is.  7.24.0 upgraded to 7.34.0 with file history
+    maintained (to an approximation).
+
+
+===================================================================
+
+               Third-Party Library Repo Structure
+
+
+Introduction
+
+We want to have a way to capture local modifications to a third-party
+open-source project, such as libcurl, without needing write access to
+their public repository.  We want to be able to carry forward such
+modifications to newer versions of the public project.  All this
+should be independent of the organizational decision as to whether
+it's even desirable to try to submit our local modifications upstream.
+
+Fortunately, the Subversion folks articulated a process years ago that
+addresses this very requirement.  They call it "Vendor Branches."  The
+same tactic, suitably adapted, works with Mercurial too.
+
+The essence of the idea is that we capture and tag a particular
+snapshot of the open-source project.  We develop our local
+modifications to that, and the repository tip incorporates them.  But
+when we want to update to a newer version of the public project, we
+bring it into the repository in such a way that we can discover the
+changes from the original snapshot and the new one -- and then have
+Mercurial apply those deltas to the ''combined'' source.
+
+The following material is adapted from
+http://svnbook.red-bean.com/en/1.1/ch07s05.html, the Red Bean
+Subversion book, but recast for Mercurial.  The Linden source for this
+material is an internal wiki.  There may be superceding documentation
+on the public wiki when you read this.  We recommend searching there
+for updates to conventions below.  And note that each particular
+library may implement variations of this scheme.
+
+
+General Vendor Branch Management Procedure
+
+Managing vendor branches generally works like this.  You create a
+named branch ("vendor") to store the vendor source snapshots.  Then
+you import the third party code into that branch.  Your modified
+branch (named "default") is based on "vendor".  You always make your
+local changes to the default branch.  With each new release of the
+code you are tracking you bring it into the "vendor" branch and merge
+the changes into "default", resolving whatever conflicts occur between
+your local changes and the upstream changes.
+
+Perhaps an example will help to clarify this algorithm.  We'll use a
+scenario where your development team is creating a calculator program
+that links against a third-party complex number arithmetic library,
+libcomplex.  We'll construct a repository specifically for our
+locally-modified version of that library.  To begin, we must
+initialize our repository and create at least one file in our
+"default" branch.
+
+ $ hg init ourcomplex
+ $ cd ourcomplex
+ $ touch README.txt
+ $ hg commit README.txt
+
+Now we can create the vendor branch and do the import of the first
+vendor drop.  We'll call our vendor branch "vendor", and each
+successive code drop will be tagged "current".
+
+ $ hg branch vendor
+ $ tar -xjf ../libcomplex-1.0.tar.bz2
+ $ mv libcomplex-1.0 libcomplex
+ $ hg addremove
+ $ hg commit -m "1.0 source drop"
+ $ hg tag -r tip current
+ $ hg tag -r current 1.0
+
+We now have the current version of the libcomplex source code in
+branch "vendor", tagged "current" and in a non-version-specific source
+code subdirectory ("libcomplex").  Next, we merge it into the default
+branch.  It is in the default branch that we will make our
+customizations.
+
+ $ hg update default
+ $ hg merge vendor
+ $ hg commit -m "initial: 1.0"
+
+We get to work customizing the libcomplex code.  Before we know it,
+our modified version of libcomplex is now completely integrated into
+our calculator program.
+
+A few weeks later, the developers of libcomplex release a new version
+of their library, version 1.1, which contains some features and
+functionality that we really want.  We'd like to upgrade to this new
+version, but without losing the customizations we made to the existing
+version.  What we essentially would like to do is to replace our
+current baseline version of libcomplex 1.0 with a copy of libcomplex
+1.1, and then have Mercurial re-apply the custom modifications we
+previously made to that library to the new version.  But we actually
+approach the problem from the other direction, applying the changes
+made to libcomplex between versions 1.0 and 1.1 to our modified copy
+of it.
+
+To perform this upgrade, we update our repository to our vendor
+branch, and update the "current" tag with the new libcomplex 1.1
+source code.  We quite literally replace the existing files with the
+new files, clearing out the whole tree and exploding the libcomplex
+1.1 release tarball in its place.  The goal here is to make the tip of
+our vendor branch contain only the libcomplex 1.1 code, and to ensure
+that all that code is under version control.  Oh, and we want to do
+this with as little version control history disturbance as possible.
+
+ $ hg update vendor
+ $ rm -rf *
+ $ tar -xjf ../libcomplex-1.1.tar.bz2
+ $ mv libcomplex-1.1 libcomplex
+ $ hg addremove -s 60
+ $ # Additional 'hg add' and 'hg rm' commands if needed
+ $ hg commit -m "1.1 source drop"
+
+After unpacking the 1.1 tarball, hg status will show files with local
+modifications as well as, perhaps, some unversioned or missing files.
+If we did what we were supposed to do, the unversioned files are only
+those new files introduced in the 1.1 release of libcomplex.  The
+missing files are files that were in 1.0 but not in 1.1.  The 'hg
+addremove' command deals with both, and more: the '-s 60' switch
+directs Mercurial to compare added files to deleted files, recognizing
+any file at least 60% similar as a move/rename.
+
+For simple or stable libraries, the 'hg addremove' command should be
+reliable.  For more complicated libraries subject to refactoring or
+large gaps of time between updates (e.g. libcurl), it can get a little
+lost trying to match files in the old release with files in the new
+release.  Pay attention to the output of the command or better still,
+do dry runs.  Files erroneously moved can be excluded with the '-X'
+option and then dealt with individually with 'hg add' and 'hg rm'
+commands after 'hg addremove'.  (The readme file in the curl library
+should document a particularly challenging case.)
+
+The 'addremove' process doesn't have to be perfect.  Recreating the
+evolution of the upstream source tree isn't universally practical.
+But we'd like to capture movement of files in the vendor branch that
+are modified in the default branch.  If achieving that becomes too
+tedious, then re-implementation of the default branch edit in a new
+file is fine.  Just note it here for the next developer.
+
+Finally, once our current working copy contains only the libcomplex
+1.1 code, we commit the changes we made to get it looking that way.
+
+Our current vendor branch now contains the new vendor drop.  We move
+the 'current' tag to the new version (in the same way we previously
+tagged the version 1.0 vendor drop), and then merge the differences
+between the version 1.0 and version 1.1 into our default branch.
+
+ $ hg tag -f -r tip current
+ $ hg tag -r current 1.1
+ $ hg update default
+ $ hg merge vendor
+ # resolve all the conflicts between their changes and our changes
+ # if you will have conflicts in .hgtags, simply take *all* lines
+ ...
+ $ hg commit -m "update with 1.1"
+
+Any additional work needed to get the merged library working can
+now be done on the default branch.
+
+
+Revision Tags
+
+We don't currently make use of Mercurial tags in the build and release
+process for 3rd-party libraries.  But we would like to establish a
+convention to document update and release points.  The tags we would
+like to establish are:
+
+ * 'current' Points to a succession of vendor releases checked into
+   the 'vendor' branch.  Will almost always be at or close to branch
+   head.
+
+ * '<version>' Tag on the 'vendor' branch pointing to a verbatim
+   checkin of a 3rd-party's <version> release.  Example:  '7.21.1' for
+   a particular version of libcurl we have used.
+
+ * Release-type tags on the default branch aren't as useful given how
+   Mercurial handles tags and how autobuild works.
+
+
+Schematic of a Third-Party Repository
+
+Below is the output of the 'hg glog' command showing a library project
+going through an initial 1.0 release and an update from the vendor to
+1.1.  Significant revisions in the repository lifecycle are as
+follows:
+
+ 0  Creation of the repo with an initial file.
+ 1  1.0 code drop on branch 'vendor'
+ 4  Merge of 1.0 code onto branch 'default'
+ 5  Modifications to library we wish to keep over time.  Released.
+ 6  1.1 code drop on branch 'vendor'
+ 9  Merge of 1.1 code onto branch 'default'
+10  Fixes to merge yielding production 1.1 library.  Released.
+ 
+
+@  changeset:   10:888229641f6e
+|  tag:         tip
+|  user:        Monty Brandenberg <monty@lindenlab.com>
+|  date:        Wed Oct 30 13:35:51 2013 -0400
+|  summary:     Work to get 1.1 merge working.  Release.
+|
+o    changeset:   9:925ccdf09f50
+|\   parent:      5:83c5775c23dc
+| |  parent:      8:977001a08e48
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:35:20 2013 -0400
+| |  summary:     update with 1.1
+| |
+| o  changeset:   8:977001a08e48
+| |  branch:      vendor
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:33:49 2013 -0400
+| |  summary:     Added tag 1.1 for changeset 5f6cb89add91
+| |
+| o  changeset:   7:59bce0f6d12f
+| |  branch:      vendor
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:33:41 2013 -0400
+| |  summary:     Added tag current for changeset 5f6cb89add91
+| |
+| o  changeset:   6:5f6cb89add91
+| |  branch:      vendor
+| |  tag:         current
+| |  tag:         1.1
+| |  parent:      3:8525ad934ecd
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:33:29 2013 -0400
+| |  summary:     1.1 source drop
+| |
+o |  changeset:   5:83c5775c23dc
+| |  tag:         1.0
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:32:31 2013 -0400
+| |  summary:     Linden-specific changes to the library.  Release
+| |
+o |  changeset:   4:bccb736585f4
+|\|  parent:      0:400e4516c406
+| |  parent:      3:8525ad934ecd
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:31:40 2013 -0400
+| |  summary:     initial:  1.0
+| |
+| o  changeset:   3:8525ad934ecd
+| |  branch:      vendor
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:30:21 2013 -0400
+| |  summary:     Added tag 1.0 for changeset 8ac3828d03bb
+| |
+| o  changeset:   2:7aa1a1cb62d9
+| |  branch:      vendor
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:30:14 2013 -0400
+| |  summary:     Added tag current for changeset 8ac3828d03bb
+| |
+| o  changeset:   1:8ac3828d03bb
+|/   branch:      vendor
+|    tag:         1.0
+|    user:        Monty Brandenberg <monty@lindenlab.com>
+|    date:        Wed Oct 30 13:30:09 2013 -0400
+|    summary:     1.0 source drop
+|
+o  changeset:   0:400e4516c406
+   user:        Monty Brandenberg <monty@lindenlab.com>
+   date:        Wed Oct 30 13:29:16 2013 -0400
+   summary:     Created repo with initial readme file
+

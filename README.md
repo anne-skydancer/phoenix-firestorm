@@ -19,6 +19,7 @@ Build instructions for each operating system can be found using the links below 
 - [Windows](doc/building_windows.md)
 - [Mac](doc/building_macos.md)
 - [Linux](doc/building_linux.md)
+- [Vulkan Storm JPEG 2000 public/private build policy](doc/vulkanstorm-codec-policy.md)
 
 > [!NOTE]
 > We do not provide support for compiling the viewer or issues resulting from using a self-compiled viewer. However, there is a self-compilers group within Second Life that can be joined to ask questions related to compiling the viewer: [Firestorm Self Compilers](https://tinyurl.com/firestorm-self-compilers)

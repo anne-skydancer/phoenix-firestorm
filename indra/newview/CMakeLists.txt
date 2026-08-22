@@ -2314,6 +2314,9 @@ add_executable(${VIEWER_BINARY_NAME}
 if (USE_GROK)
     target_compile_definitions(${VIEWER_BINARY_NAME} PRIVATE LL_GROK=1)
 endif ()
+if (VULKANSTORM_PRIVATE_BUILD)
+    target_compile_definitions(${VIEWER_BINARY_NAME} PRIVATE LL_VULKANSTORM_PRIVATE_BUILD=1)
+endif ()
 
 # add package files
 file(GLOB EVENT_HOST_SCRIPT_GLOB_LIST
@@ -2458,6 +2461,7 @@ if (WINDOWS)
         "--fmodstudio=${USE_FMODSTUDIO}"
         "--openal=${USE_OPENAL}"
         "--mesazink=${USE_MESAZINK}"
+        "--distribution_policy=${VULKANSTORM_DISTRIBUTION}"
         "--usegrok=${USE_GROK}"
         "--tracy=${USE_TRACY}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"
@@ -2505,6 +2509,7 @@ if (WINDOWS)
             "--fmodstudio=${USE_FMODSTUDIO}"
             "--openal=${USE_OPENAL}"
             "--mesazink=${USE_MESAZINK}"
+            "--distribution_policy=${VULKANSTORM_DISTRIBUTION}"
             "--usegrok=${USE_GROK}"
             "--tracy=${USE_TRACY}"
             "--avx2=${USE_AVX2_OPTIMIZATION}"
@@ -2575,6 +2580,7 @@ if (WINDOWS)
               "--fmodstudio=${USE_FMODSTUDIO}"
               "--openal=${USE_OPENAL}"
               "--mesazink=${USE_MESAZINK}"
+              "--distribution_policy=${VULKANSTORM_DISTRIBUTION}"
               "--usegrok=${USE_GROK}"
               "--tracy=${USE_TRACY}"
               "--velopack=${USE_VELOPACK}"
@@ -2799,6 +2805,7 @@ if (LINUX)
         "--fmodstudio=${USE_FMODSTUDIO}"
         "--openal=${USE_OPENAL}"
         "--mesazink=${USE_MESAZINK}"
+        "--distribution_policy=${VULKANSTORM_DISTRIBUTION}"
         "--usegrok=${USE_GROK}"
         "--tracy=${USE_TRACY}"
         "--avx2=${USE_AVX2_OPTIMIZATION}"        
@@ -2830,6 +2837,7 @@ if (LINUX)
       "--fmodstudio=${USE_FMODSTUDIO}"
       "--openal=${USE_OPENAL}"
       "--mesazink=${USE_MESAZINK}"
+      "--distribution_policy=${VULKANSTORM_DISTRIBUTION}"
       "--usegrok=${USE_GROK}"
       "--tracy=${USE_TRACY}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
@@ -2927,6 +2935,7 @@ if (DARWIN)
       "--fmodstudio=${USE_FMODSTUDIO}"
       "--openal=${USE_OPENAL}"
       "--mesazink=${USE_MESAZINK}"
+      "--distribution_policy=${VULKANSTORM_DISTRIBUTION}"
       "--usegrok=${USE_GROK}"
       "--tracy=${USE_TRACY}"
       "--avx2=${USE_AVX2_OPTIMIZATION}"      
@@ -2966,6 +2975,7 @@ if (DARWIN)
           "--fmodstudio=${USE_FMODSTUDIO}"
           "--openal=${USE_OPENAL}"
           "--mesazink=${USE_MESAZINK}"
+          "--distribution_policy=${VULKANSTORM_DISTRIBUTION}"
           "--usegrok=${USE_GROK}"
           "--tracy=${USE_TRACY}"
           "--avx2=${USE_AVX2_OPTIMIZATION}"          

@@ -1,16 +1,10 @@
 # -*- cmake -*-
 
-# Preferred open-source JPEG 2000 backend. Grok is AGPLv3, so redistributable
-# viewer builds still require the project to apply its chosen license policy.
-option(USE_GROK "Use Grok as the J2C codec instead of OpenJPEG" ON)
+# Optional private-build JPEG 2000 backend. The distribution boundary and the
+# safe OpenJPEG default are enforced by VulkanStormCodecPolicy.cmake.
 set(GROK_ROOT "" CACHE PATH "Path to a built Grok checkout")
 
 include_guard(GLOBAL)
-
-if (USE_KDU AND USE_GROK)
-    message(STATUS "J2C backend: Kakadu (disabling default Grok selection)")
-    set(USE_GROK OFF CACHE BOOL "Use Grok as the J2C codec instead of OpenJPEG" FORCE)
-endif ()
 
 if (USE_GROK)
 

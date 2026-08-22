@@ -60,6 +60,20 @@ try:
 except ImportError:
     from llbase import llsd
 # </FS:Beq>
+
+def validate_vulkanstorm_codec_policy(args):
+    """Repeat the CMake codec boundary at the artifact-assembly boundary."""
+    policy = str(args.get('distribution_policy', 'PUBLIC')).upper()
+    use_grok = str(args.get('usegrok', 'OFF')).lower() in ('1', 'on', 'true', 'yes')
+    if policy not in ('PUBLIC', 'PRIVATE'):
+        raise ManifestError(
+            "distribution-policy must be PUBLIC or PRIVATE, not %r" % policy)
+    if use_grok and policy != 'PRIVATE':
+        raise ManifestError(
+            "Refusing to assemble a public artifact with Grok. "
+            "Grok requires distribution-policy=PRIVATE.")
+    return policy, ('Grok' if use_grok else 'OpenJPEG')
+
 class ViewerManifest(LLManifest,FSViewerManifest):
     def is_packaging_viewer(self):
         # Some commands, files will only be included
@@ -70,7 +84,17 @@ class ViewerManifest(LLManifest,FSViewerManifest):
         return 'package' in self.args['actions']
 
     def construct(self):
+        distribution_policy, j2c_backend = validate_vulkanstorm_codec_policy(self.args)
         super(ViewerManifest, self).construct()
+        if self.is_packaging_viewer() and distribution_policy == 'PRIVATE':
+            marker = (
+                "VULKAN STORM PRIVATE / NON-PUBLIC BUILD\n"
+                "\n"
+                "This artifact was assembled with the PRIVATE distribution policy.\n"
+                "JPEG 2000 backend: %s\n"
+                "It is not approved for public distribution.\n" % j2c_backend)
+            self.put_in_file(marker.encode('utf-8'),
+                             "VULKAN_STORM_PRIVATE_BUILD.txt")
         self.path(src="../../scripts/messages/message_template.msg", dst="app_settings/message_template.msg")
         
         # <FS:LO> Copy dictionaries to a place where the viewer can find them if ran from visual studio
@@ -2571,6 +2595,7 @@ if __name__ == "__main__":
         dict(name='fmodstudio', description="""Indication if fmod studio libraries are needed""", default='OFF'),
         dict(name='openal', description="""Indication openal libraries are needed""", default='OFF'),
         dict(name='mesazink', description="""Indication the Mesa Zink runtime is bundled""", default='OFF'),
+        dict(name='distribution_policy', description="""Vulkan Storm artifact policy: PUBLIC or PRIVATE""", default='PUBLIC'),
         dict(name='usegrok', description="""Indication the Grok J2C runtime is bundled""", default='OFF'),
         dict(name='tracy', description="""Indication tracy profiler is enabled""", default='OFF'),
         dict(name='velopack', description="""Use Velopack installer instead of NSIS""", default='OFF'),

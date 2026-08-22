@@ -1,0 +1,453 @@
+
+0.  Pre-Checkin Checklist
+
+    Performed from top of repo, default branch, head:
+
+    [ ]  Is tag 'current' at or near head of 'vendor'?
+
+         hg heads
+         hg tags
+
+    [ ]  Expected differences between vendor and default?  Very
+         little of the original source should be modified.
+
+         hg diff -rcurrent freetype
+
+    [ ]  Are the 'vendor' and 'default' branch source directories
+         'freetype' and not 'freetype-<version>'?
+
+    [ ]  Examine build log and confirm zlib is detected and used:
+
+         checking for gzsetparams in -lz... yes
+         checking zlib.h usability... yes
+         checking zlib.h presence... yes
+         checking for zlib.h... yes
+
+    [ ]  Check the library dependencies and version strings the built
+         .sos:
+
+         $ strings libfreetype.* | grep 1\\.[0-9]\\.
+         1.2.8
+         1.2.8
+          inflate 1.2.8 Copyright 1995-2013 Mark Adler 
+         1.2.8
+          inflate 1.2.8 Copyright 1995-2013 Mark Adler 
+         1.2.8
+          inflate 1.2.8 Copyright 1995-2013 Mark Adler 
+
+         $ ldd libfreetype.so
+                 linux-gate.so.1 =>  (0xf7769000)
+                 libc.so.6 => /lib32/libc.so.6 (0xf757f000)
+                 /lib/ld-linux.so.2 (0xf776a000)
+
+    [ ]  Check that the shared libraries are not re-exporting other
+         libraries:
+
+         $ nm libfreetype.so | grep flate
+         000626a0 t inflate
+         00064ea0 t inflateCopy
+         000649c0 t inflateEnd
+         00064a20 t inflateGetDictionary
+         00064bb0 t inflateGetHeader
+         000624e0 t inflateInit2_
+         000625f0 t inflateInit_
+         00065170 t inflateMark
+         00062630 t inflatePrime
+         000623c0 t inflateReset
+         00062410 t inflateReset2
+         00062310 t inflateResetKeep
+         00064ad0 t inflateSetDictionary
+         00064bf0 t inflateSync
+         00064e70 t inflateSyncPoint
+         00065140 t inflateUndermine
+         00078e00 r inflate_copyright
+         00066440 t inflate_fast
+         000651c0 t inflate_table
+
+         On Mac, we use hand-constructed symbol lists to remove the
+         zlib symbols from the build .dylibs.  So be particularly
+         thorough and compare *every* symbol exported by libz.a
+         against what these .dylibs are exporting.
+
+         $ nm stage/lib/release/libfreetype.dylib | grep flate
+         0005bb60 t _inflate
+         0005b780 t _inflateCopy
+         0005b3c0 t _inflateEnd
+         0005ba30 t _inflateGetDictionary
+         0005b420 t _inflateGetHeader
+         0005b1c0 t _inflateInit2_
+         0005b290 t _inflateInit_
+         0005b730 t _inflateMark
+         0005b360 t _inflatePrime
+         0005afc0 t _inflateReset
+         0005b080 t _inflateReset2
+         0005af20 t _inflateResetKeep
+         0005bab0 t _inflateSetDictionary
+         0005b450 t _inflateSync
+         0005b6d0 t _inflateSyncPoint
+         0005b700 t _inflateUndermine
+         0005ed10 s _inflate_copyright
+         0005a860 t _inflate_fast
+         0005d670 t _inflate_table
+
+
+1.  Introduction
+
+    Simple build of freetype library from freedesktop.org.
+
+    This repo was originally following the vendor/default branch
+    strategy outlined below.  But with changeset 75760dc4a522, it
+    started fetching source from external sources.  While somewhat
+    interesting, a download per build probably wasn't what the
+    upstream repo had intended people to do and it prevents local
+    source modifications with anything other than a patch hack.
+
+    So, with changeset d81d6f4539d8, the default branch got another
+    head that is back on the vendor/branch strategy as I need to do
+    some tweaks to Windows project files.  The dead head is still
+    present, beware and do not use it.
+
+
+2.  Modifications
+
+    Windows project file changes to use a packaged zlib build.  Well,
+    there *is* a zlib embedded in the resulting libraries and they've
+    done some hacking to make it work.  Look at gzip/ftgzip.c to see
+    what has been done to prevent interactions between their private
+    gzip and a potential 'real usage' in an application.
+
+    On Linux, we either accidentally or intentionally ship without the
+    freetype library at all.  The result is that the viewer doesn't
+    run with these shared libraries.  We build with them then revert
+    (or upgrade) to system-provided libraries.  Accident or
+    carelessness, VWR-28748 suggests that users are better off as a
+    result.  We might want to either make this thing work well or get
+    rid of it entirely and let the host provide it.  For now, we'll
+    'upgrade' to what fontconfig is doing: fully-qualified .so shipped
+    but the symlinks missing so that the system libraries are used by
+    default.
+
+    On Mac, we need to keep archive symbols from libz.a out of the
+    built dylibs but we don't have a convenient link argument to
+    implement it.  So two symbol list files were manually created from
+    the debug and release libz.a files and these are handed off to the
+    -unexported_symbols_list option to the linker.  These files are
+    now supplied by the Darwin zlib package (libz_darwin.exp).
+
+    The above is mostly an exercise in how to do this on Mac.  We'll
+    use static libraries for now.  Easier packaging and that's the
+    general direction we've been heading.
+
+
+3.  Source Origin
+
+    2.4.4:
+      http://download.savannah.gnu.org/releases/freetype/freetype-2.4.4.tar.bz2
+      MD5:  b3e2b6e2f1c3e0dffa1fd2a0f848b671
+
+
+4.  Package Contents
+
+    Common:
+    * include/ft2build.h
+    * include/freetype2/freetype/*.h
+    * include/freetype2/freetype/config/*.h
+    * include/freetype2/freetype/internal/*.h (some platforms)
+
+    Windows:
+    * lib/debug/freetype.lib
+    * lib/release/freetype.lib
+
+    Mac:
+    * lib/debug/libfreetype.a
+    * lib/release/libfreetype.a
+
+    Linux:
+    * lib/debug/libfreetype.a
+    * lib/debug/libfreetype.so.6
+    * lib/debug/libfreetype.so
+    * lib/debug/libfreetype.so.6.6.2
+    * lib/release/libfreetype.a
+    * lib/release/libfreetype.so.6
+    * lib/release/libfreetype.so
+    * lib/release/libfreetype.so.6.6.2
+
+5.  Known Dependencies
+
+    This is not authoritative, it's just a reminder to followup
+    with dependent packages.
+
+    * fontconfig
+
+    * llqtwebkit (possibly)
+
+    * viewer
+
+
+===================================================================
+
+               Third-Party Library Repo Structure
+
+
+Introduction
+
+We want to have a way to capture local modifications to a third-party
+open-source project, such as libcurl, without needing write access to
+their public repository.  We want to be able to carry forward such
+modifications to newer versions of the public project.  All this
+should be independent of the organizational decision as to whether
+it's even desirable to try to submit our local modifications upstream.
+
+Fortunately, the Subversion folks articulated a process years ago that
+addresses this very requirement.  They call it "Vendor Branches."  The
+same tactic, suitably adapted, works with Mercurial too.
+
+The essence of the idea is that we capture and tag a particular
+snapshot of the open-source project.  We develop our local
+modifications to that, and the repository tip incorporates them.  But
+when we want to update to a newer version of the public project, we
+bring it into the repository in such a way that we can discover the
+changes from the original snapshot and the new one -- and then have
+Mercurial apply those deltas to the ''combined'' source.
+
+The following material is adapted from
+http://svnbook.red-bean.com/en/1.1/ch07s05.html, the Red Bean
+Subversion book, but recast for Mercurial.  The Linden source for this
+material is an internal wiki.  There may be superceding documentation
+on the public wiki when you read this.  We recommend searching there
+for updates to conventions below.  And note that each particular
+library may implement variations of this scheme.
+
+
+General Vendor Branch Management Procedure
+
+Managing vendor branches generally works like this.  You create a
+named branch ("vendor") to store the vendor source snapshots.  Then
+you import the third party code into that branch.  Your modified
+branch (named "default") is based on "vendor".  You always make your
+local changes to the default branch.  With each new release of the
+code you are tracking you bring it into the "vendor" branch and merge
+the changes into "default", resolving whatever conflicts occur between
+your local changes and the upstream changes.
+
+Perhaps an example will help to clarify this algorithm.  We'll use a
+scenario where your development team is creating a calculator program
+that links against a third-party complex number arithmetic library,
+libcomplex.  We'll construct a repository specifically for our
+locally-modified version of that library.  To begin, we must
+initialize our repository and create at least one file in our
+"default" branch.
+
+ $ hg init ourcomplex
+ $ cd ourcomplex
+ $ touch README.txt
+ $ hg commit README.txt
+
+Now we can create the vendor branch and do the import of the first
+vendor drop.  We'll call our vendor branch "vendor", and each
+successive code drop will be tagged "current".
+
+ $ hg branch vendor
+ $ tar -xjf ../libcomplex-1.0.tar.bz2
+ $ mv libcomplex-1.0 libcomplex
+ $ hg addremove
+ $ hg commit -m "1.0 source drop"
+ $ hg tag -r tip current
+ $ hg tag -r current 1.0
+
+We now have the current version of the libcomplex source code in
+branch "vendor", tagged "current" and in a non-version-specific source
+code subdirectory ("libcomplex").  Next, we merge it into the default
+branch.  It is in the default branch that we will make our
+customizations.
+
+ $ hg update default
+ $ hg merge vendor
+ $ hg commit -m "initial: 1.0"
+
+We get to work customizing the libcomplex code.  Before we know it,
+our modified version of libcomplex is now completely integrated into
+our calculator program.
+
+A few weeks later, the developers of libcomplex release a new version
+of their library, version 1.1, which contains some features and
+functionality that we really want.  We'd like to upgrade to this new
+version, but without losing the customizations we made to the existing
+version.  What we essentially would like to do is to replace our
+current baseline version of libcomplex 1.0 with a copy of libcomplex
+1.1, and then have Mercurial re-apply the custom modifications we
+previously made to that library to the new version.  But we actually
+approach the problem from the other direction, applying the changes
+made to libcomplex between versions 1.0 and 1.1 to our modified copy
+of it.
+
+To perform this upgrade, we update our repository to our vendor
+branch, and update the "current" tag with the new libcomplex 1.1
+source code.  We quite literally replace the existing files with the
+new files, clearing out the whole tree and exploding the libcomplex
+1.1 release tarball in its place.  The goal here is to make the tip of
+our vendor branch contain only the libcomplex 1.1 code, and to ensure
+that all that code is under version control.  Oh, and we want to do
+this with as little version control history disturbance as possible.
+
+ $ hg update vendor
+ $ rm -rf *
+ $ tar -xjf ../libcomplex-1.1.tar.bz2
+ $ mv libcomplex-1.1 libcomplex
+ $ hg addremove -s 60
+ $ # Additional 'hg add' and 'hg rm' commands if needed
+ $ hg commit -m "1.1 source drop"
+
+After unpacking the 1.1 tarball, hg status will show files with local
+modifications as well as, perhaps, some unversioned or missing files.
+If we did what we were supposed to do, the unversioned files are only
+those new files introduced in the 1.1 release of libcomplex.  The
+missing files are files that were in 1.0 but not in 1.1.  The 'hg
+addremove' command deals with both, and more: the '-s 60' switch
+directs Mercurial to compare added files to deleted files, recognizing
+any file at least 60% similar as a move/rename.
+
+For simple or stable libraries, the 'hg addremove' command should be
+reliable.  For more complicated libraries subject to refactoring or
+large gaps of time between updates (e.g. libcurl), it can get a little
+lost trying to match files in the old release with files in the new
+release.  Pay attention to the output of the command or better still,
+do dry runs.  Files erroneously moved can be excluded with the '-X'
+option and then dealt with individually with 'hg add' and 'hg rm'
+commands after 'hg addremove'.  (The readme file in the curl library
+should document a particularly challenging case.)
+
+The 'addremove' process doesn't have to be perfect.  Recreating the
+evolution of the upstream source tree isn't universally practical.
+But we'd like to capture movement of files in the vendor branch that
+are modified in the default branch.  If achieving that becomes too
+tedious, then re-implementation of the default branch edit in a new
+file is fine.  Just note it here for the next developer.
+
+Finally, once our current working copy contains only the libcomplex
+1.1 code, we commit the changes we made to get it looking that way.
+
+Our current vendor branch now contains the new vendor drop.  We move
+the 'current' tag to the new version (in the same way we previously
+tagged the version 1.0 vendor drop), and then merge the differences
+between the version 1.0 and version 1.1 into our default branch.
+
+ $ hg tag -f -r tip current
+ $ hg tag -r current 1.1
+ $ hg update default
+ $ hg merge vendor
+ # resolve all the conflicts between their changes and our changes
+ # if you will have conflicts in .hgtags, simply take *all* lines
+ ...
+ $ hg commit -m "update with 1.1"
+
+Any additional work needed to get the merged library working can
+now be done on the default branch.
+
+
+Revision Tags
+
+We don't currently make use of Mercurial tags in the build and release
+process for 3rd-party libraries.  But we would like to establish a
+convention to document update and release points.  The tags we would
+like to establish are:
+
+ * 'current' Points to a succession of vendor releases checked into
+   the 'vendor' branch.  Will almost always be at or close to branch
+   head.
+
+ * '<version>' Tag on the 'vendor' branch pointing to a verbatim
+   checkin of a 3rd-party's <version> release.  Example:  '7.21.1' for
+   a particular version of libcurl we have used.
+
+ * Release-type tags on the default branch aren't as useful given how
+   Mercurial handles tags and how autobuild works.
+
+
+Schematic of a Third-Party Repository
+
+Below is the output of the 'hg glog' command showing a library project
+going through an initial 1.0 release and an update from the vendor to
+1.1.  Significant revisions in the repository lifecycle are as
+follows:
+
+ 0  Creation of the repo with an initial file.
+ 1  1.0 code drop on branch 'vendor'
+ 4  Merge of 1.0 code onto branch 'default'
+ 5  Modifications to library we wish to keep over time.  Released.
+ 6  1.1 code drop on branch 'vendor'
+ 9  Merge of 1.1 code onto branch 'default'
+10  Fixes to merge yielding production 1.1 library.  Released.
+ 
+
+@  changeset:   10:888229641f6e
+|  tag:         tip
+|  user:        Monty Brandenberg <monty@lindenlab.com>
+|  date:        Wed Oct 30 13:35:51 2013 -0400
+|  summary:     Work to get 1.1 merge working.  Release.
+|
+o    changeset:   9:925ccdf09f50
+|\   parent:      5:83c5775c23dc
+| |  parent:      8:977001a08e48
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:35:20 2013 -0400
+| |  summary:     update with 1.1
+| |
+| o  changeset:   8:977001a08e48
+| |  branch:      vendor
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:33:49 2013 -0400
+| |  summary:     Added tag 1.1 for changeset 5f6cb89add91
+| |
+| o  changeset:   7:59bce0f6d12f
+| |  branch:      vendor
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:33:41 2013 -0400
+| |  summary:     Added tag current for changeset 5f6cb89add91
+| |
+| o  changeset:   6:5f6cb89add91
+| |  branch:      vendor
+| |  tag:         current
+| |  tag:         1.1
+| |  parent:      3:8525ad934ecd
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:33:29 2013 -0400
+| |  summary:     1.1 source drop
+| |
+o |  changeset:   5:83c5775c23dc
+| |  tag:         1.0
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:32:31 2013 -0400
+| |  summary:     Linden-specific changes to the library.  Release
+| |
+o |  changeset:   4:bccb736585f4
+|\|  parent:      0:400e4516c406
+| |  parent:      3:8525ad934ecd
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:31:40 2013 -0400
+| |  summary:     initial:  1.0
+| |
+| o  changeset:   3:8525ad934ecd
+| |  branch:      vendor
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:30:21 2013 -0400
+| |  summary:     Added tag 1.0 for changeset 8ac3828d03bb
+| |
+| o  changeset:   2:7aa1a1cb62d9
+| |  branch:      vendor
+| |  user:        Monty Brandenberg <monty@lindenlab.com>
+| |  date:        Wed Oct 30 13:30:14 2013 -0400
+| |  summary:     Added tag current for changeset 8ac3828d03bb
+| |
+| o  changeset:   1:8ac3828d03bb
+|/   branch:      vendor
+|    tag:         1.0
+|    user:        Monty Brandenberg <monty@lindenlab.com>
+|    date:        Wed Oct 30 13:30:09 2013 -0400
+|    summary:     1.0 source drop
+|
+o  changeset:   0:400e4516c406
+   user:        Monty Brandenberg <monty@lindenlab.com>
+   date:        Wed Oct 30 13:29:16 2013 -0400
+   summary:     Created repo with initial readme file
+

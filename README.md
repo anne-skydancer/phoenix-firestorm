@@ -6,7 +6,9 @@ This repository contains the official source code for the Firestorm viewer.
 
 ## Open Source
 
-Firestorm is a third party viewer derived from the official [Second Life](https://github.com/secondlife/viewer) client. The client codebase has been open source since 2007 and is available under the LGPL license.
+VulkanStorm is derived from the Firestorm and official [Second Life](https://github.com/secondlife/viewer) clients. This copy has been converted from LGPLv2.1 to the GNU General Public License, version 3, under LGPLv2.1 section 3. Release builds link with the AGPLv3-licensed Grok JPEG 2000 codec as permitted by AGPLv3 section 13.
+
+See [LICENSE](LICENSE), [doc/AGPLv3-license.txt](doc/AGPLv3-license.txt), and [doc/CORRESPONDING_SOURCE.txt](doc/CORRESPONDING_SOURCE.txt) for redistribution terms and source availability. FMOD, Havok, Kakadu, BugSplat, and the Grok GPU plugin are unavailable in this GPLv3 build.
 
 ## Download
 

@@ -2,8 +2,8 @@
   "name": "r8_interaction",
   "schema_version": 3,
   "toolchain": {
-    "glslang_version": "11:16.2.0",
-    "spirv_tools_version": "SPIRV-Tools v2026.2 v2026.2.rc2-1-g2ec8457a",
+    "glslang_version": "11:16.4.0",
+    "spirv_tools_version": "SPIRV-Tools v2026.3 v2026.3.rc1-0-gb707790a",
     "vulkan_target": "vulkan1.3",
     "optimization": "spirv-opt -O"
   },

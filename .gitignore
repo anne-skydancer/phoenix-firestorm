@@ -4,6 +4,7 @@
 *.diff
 *.orig
 *.patch
+!scripts/dependency_patches/*.patch
 *.pyc
 *.rej
 *.swp

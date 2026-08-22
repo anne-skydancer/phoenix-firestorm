@@ -1,0 +1,28 @@
+VulkanStorm Corresponding Source
+===============================
+
+VulkanStorm is distributed under the GNU General Public License, version 3.
+It is linked with Grok, which is distributed under the GNU Affero General
+Public License, version 3.
+
+The complete corresponding source for this build, including the build scripts
+and the exact VulkanStorm revision shown in Help > About, is available from:
+
+    https://github.com/anne-skydancer/phoenix-firestorm
+
+The Grok source used by this release is version 20.3.12:
+
+    https://github.com/GrokImageCompression/grok/releases/tag/v20.3.12
+
+Grok commit: 20ea98f31ace0b0f1413f40188923314f735478d
+Grok annotated tag object: 79bbd701b9d8a1323b6838f992e6abb71176c918
+
+A distributor must ensure that the source for the exact binary it conveys,
+including any local modifications and all scripts needed to build and install
+it, remains available at no charge alongside the binary as required by GPLv3
+section 6 and AGPLv3 section 6. A link to a moving branch is not sufficient for
+a release; publish an immutable source archive or tag for each binary release.
+
+The Grok GPU plugin is not part of VulkanStorm and must not be bundled. Vivox
+voice runs as a separate executable and is distributed as a separate work in
+an aggregate. It must not be linked into the VulkanStorm executable or Grok.

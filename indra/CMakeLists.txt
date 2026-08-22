@@ -51,6 +51,21 @@ set(CMAKE_XCODE_GENERATE_TOP_LEVEL_PROJECT_ONLY ON)
 include(Variables)
 include(BuildVersion)
 
+# VulkanStorm is distributed under GPLv3 and links against AGPLv3 Grok.
+# Proprietary libraries may not be linked into or bundled with this build.
+foreach(_forbidden_option INSTALL_PROPRIETARY USE_FMODSTUDIO FMODSTUDIO HAVOK HAVOK_TPV USE_KDU USE_BUGSPLAT)
+  if (${_forbidden_option})
+    message(FATAL_ERROR
+      "${_forbidden_option}=ON is unavailable in the GPLv3 VulkanStorm build")
+  endif ()
+endforeach()
+
+string(TOLOWER "${VIEWER_CHANNEL}" _viewer_channel_lower)
+if (_viewer_channel_lower MATCHES "release")
+  set(USE_GROK ON CACHE BOOL "Use Grok as the J2C codec instead of OpenJPEG" FORCE)
+  message(STATUS "Release channel: using the Grok J2C backend")
+endif ()
+
 if (NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING
       "Build type.  One of: Release RelWithDebInfo" FORCE)
@@ -99,7 +114,7 @@ endif (FS_PF_USER_AGENT)
 
 # <FS:Ansariel> [AVX Optimization]
 option(USE_AVX_OPTIMIZATION "AVX optimization support" OFF)
-option(USE_AVX2_OPTIMIZATION "AVX2 optimization support" ON)
+option(USE_AVX2_OPTIMIZATION "AVX2 optimization support" OFF)
 if (USE_AVX_OPTIMIZATION)
   if (USE_AVX2_OPTIMIZATION)
     message(FATAL_ERROR "You cannot use AVX and AVX2 at the same time!")
@@ -212,10 +227,10 @@ else (USE_BUGSPLAT)
 endif (USE_BUGSPLAT)
 
 add_subdirectory(${VIEWER_PREFIX}newview)
-add_dependencies(viewer ${VIEWER_BINARY_NAME})
+add_dependencies(viewer firestorm-bin)
 
 set_target_properties(
-    ${VIEWER_BINARY_NAME} PROPERTIES
+    firestorm-bin PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "..\\..\\indra\\newview")
 
 add_subdirectory(${VIEWER_PREFIX}doxygen EXCLUDE_FROM_ALL)

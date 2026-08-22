@@ -5,21 +5,21 @@
 @brief Description of all installer viewer files, and methods for packaging
        them into installers for all supported platforms.
 
-$LicenseInfo:firstyear=2006&license=viewerlgpl$
+$LicenseInfo:firstyear=2006&license=viewergpl$
 Second Life Viewer Source Code
 Copyright (C) 2006-2014, Linden Research, Inc.
 
 This library is free software; you can redistribute it and/or
-modify it under the terms of the GNU Lesser General Public
+modify it under the terms of the GNU General Public
 License as published by the Free Software Foundation;
-version 2.1 of the License only.
+version 3 of the License.
 
 This library is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-Lesser General Public License for more details.
+General Public License for more details.
 
-You should have received a copy of the GNU Lesser General Public
+You should have received a copy of the GNU General Public
 License along with this library; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
@@ -97,7 +97,7 @@ class ViewerManifest(LLManifest,FSViewerManifest):
         # the configuration directory.  Keep its runtime configuration, shaders,
         # and XUI in sync with the source tree even when we are not producing an
         # installer package.  Previously these paths were packaging-only, which
-        # left stale settings and preference panels beside vulkanstorm-bin.exe.
+        # left stale settings and preference panels beside firestorm-bin.exe.
         with self.prefix(src_dst="app_settings"):
             self.exclude("logcontrol.xml")
             self.exclude("logcontrol-dev.xml")
@@ -105,56 +105,9 @@ class ViewerManifest(LLManifest,FSViewerManifest):
             self.path("*.xml")
             self.path("shaders")
 
-        # I2's native Vulkan probe loads the deterministic R4 package at
-        # runtime.  Stage it beside the viewer rather than embedding a build
-        # machine path in the executable.
-        ghi_shader_dir = os.path.join(
-            self.args['build'], os.pardir, 'llrender', 'ghi_shaders')
-        if os.path.isfile(os.path.join(ghi_shader_dir, "r4_opaque.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("r4_opaque.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "r5_material_skin.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("r5_material_skin.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "i6_terrain.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("i6_terrain.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "i7_deferred_lighting.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("i7_deferred_lighting.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "i7_projector_lighting.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("i7_projector_lighting.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "i7_shadow.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("i7_shadow.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "p0_environment.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("p0_environment.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "p0_water.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("p0_water.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "p0_alpha.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("p0_alpha.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "p0_alpha_legacy.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("p0_alpha_legacy.llghisp")
-        if os.path.isfile(os.path.join(ghi_shader_dir, "p0_alpha_peel.llghisp")):
-            with self.prefix(src=ghi_shader_dir, dst="app_settings/ghi_shaders"):
-                self.path("p0_alpha_peel.llghisp")
-
         with self.prefix(src_dst="skins"):
             self.path("*/xui/*/*.xml")
             self.path("*/xui/*/widgets/*.xml")
-
-        # A developer copy does not traverse the complete skin texture tree,
-        # but the startup progress view loads these logos directly from disk.
-        # Keep staged development runs consistent with packaged viewers.
-        if not self.is_packaging_viewer():
-            with self.prefix(src="skins/default/textures/3p_icons",
-                             dst="skins/default/textures/3p_icons"):
-                self.path("*.png")
 
         if self.is_packaging_viewer():
             with self.prefix(src_dst="app_settings"):
@@ -335,8 +288,6 @@ class ViewerManifest(LLManifest,FSViewerManifest):
             channel_qualifier = channel_qualifier[1:]
         if channel_qualifier.startswith('release'):
             channel_type='release'
-        elif channel_qualifier.startswith('dev'):
-            channel_type='dev'
         elif channel_qualifier.startswith('beta'):
             channel_type='beta'
         elif channel_qualifier.startswith('alpha'):
@@ -436,9 +387,7 @@ class ViewerManifest(LLManifest,FSViewerManifest):
     def icon_path(self):
         # <FS:ND> Add -os for oss builds
         chan = self.channel_type()
-        if chan == 'dev':
-            chan = 'development'
-        elif chan in ['alpha', 'nightly','manual', 'profiling']:
+        if chan in ['alpha', 'nightly','manual', 'profiling']:
             chan = 'test'
 
         if self.fs_is_opensim():
@@ -683,9 +632,8 @@ class Windows_x86_64_Manifest(ViewerManifest):
         debpkgdir = os.path.join(pkgdir, "lib", "debug")
 
         if self.is_packaging_viewer():
-            # Find vulkanstorm-bin.exe in the configuration directory, then
-            # rename it to the channel-specific packaged executable.
-            self.path(src='%s/vulkanstorm-bin.exe' % self.args['configuration'], dst=self.final_exe())
+            # Find firestorm-bin.exe in the 'configuration' dir, then rename it to the result of final_exe.
+            self.path(src='%s/firestorm-bin.exe' % self.args['configuration'], dst=self.final_exe())
 
             # <FS:Ansariel> Undo Github-Build stuff - I don't think we need this
             # GITHUB_OUTPUT = os.getenv('GITHUB_OUTPUT')
@@ -803,6 +751,11 @@ class Windows_x86_64_Manifest(ViewerManifest):
             # </FS:ND>
 
         self.path(src="licenses-win32.txt", dst="licenses.txt")
+        self.path(src="../../doc/GPLv3-license.txt", dst="GPLv3-license.txt")
+        self.path(src="../../doc/AGPLv3-license.txt", dst="AGPLv3-license.txt")
+        self.path(src="../../doc/Grok-LICENSE.txt", dst="Grok-LICENSE.txt")
+        self.path(src="../../doc/GROK-NOTICE.txt", dst="GROK-NOTICE.txt")
+        self.path(src="../../doc/CORRESPONDING_SOURCE.txt", dst="CORRESPONDING_SOURCE.txt")
         self.path("featuretable.txt")
         self.path("cube.dae")
 
@@ -1050,7 +1003,7 @@ class Windows_x86_64_Manifest(ViewerManifest):
         #installer_base = self.installer_base_name()
         #exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|secondlife-bin\..*|.*_Setup\.exe|.*-Setup\.exe'
         installer_base = self.fs_installer_basename()
-        exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|vulkanstorm-bin\..*|.*_Setup\.exe|.*-Setup\.exe'
+        exclude_pattern = r'.*\.pdb|.*\.map|.*\.bat|.*\.exp|.*\.lib|.*\.nsi|.*\.tar\.xz|firestorm-bin\..*|.*_Setup\.exe|.*-Setup\.exe'
         # </FS:TJ>
 
         # Channel-specific icon for the Velopack installer.
@@ -1518,7 +1471,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
         # copy over the build result (this is a no-op if run within the xcode
         # script)
         #self.path(os.path.join(self.args['configuration'], self.channel() + ".app"), dst="")
-        self.path(os.path.join(self.args['configuration'], "Vulkanstorm.app"), dst="")
+        self.path(os.path.join(self.args['configuration'], "Firestorm.app"), dst="")
 
         pkgdir = os.path.join(self.args['build'], os.pardir, 'packages')
         relpkgdir = os.path.join(pkgdir, "lib", "release")
@@ -1530,7 +1483,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
 
         with self.prefix(src="", dst="Contents"):  # everything goes in Contents
             with self.prefix(dst="MacOS"):
-                executable = self.dst_path_of("Vulkanstorm") # locate the executable within the bundle.
+                executable = self.dst_path_of("Firestorm") # locate the executable within the bundle.
 
             bugsplat_db = self.args.get('bugsplat')
             print(f"debug: bugsplat_db={bugsplat_db}")
@@ -1644,7 +1597,11 @@ class Darwin_x86_64_Manifest(ViewerManifest):
                 self.path("cube.dae")
 
                 self.path("VivoxAUP.txt")
-                self.path("LGPL-license.txt")
+                self.path(src="../../doc/GPLv3-license.txt", dst="GPLv3-license.txt")
+                self.path(src="../../doc/AGPLv3-license.txt", dst="AGPLv3-license.txt")
+                self.path(src="../../doc/Grok-LICENSE.txt", dst="Grok-LICENSE.txt")
+                self.path(src="../../doc/GROK-NOTICE.txt", dst="GROK-NOTICE.txt")
+                self.path(src="../../doc/CORRESPONDING_SOURCE.txt", dst="CORRESPONDING_SOURCE.txt")
                 with self.prefix(src=pkgdir,dst=""):
                     self.path("ca-bundle.crt")
 
@@ -1797,7 +1754,7 @@ class Darwin_x86_64_Manifest(ViewerManifest):
         if ("package" in self.args['actions'] or 
             "unpacked" in self.args['actions']):
             self.run_command_shell('strip -S %(viewer_binary)r' %
-                            { 'viewer_binary' : self.dst_path_of('Contents/MacOS/Vulkanstorm')})
+                            { 'viewer_binary' : self.dst_path_of('Contents/MacOS/Firestorm')})
 # </FS:Ansariel> construct method VMP trampoline crazy VMP launcher juggling shamelessly replaced with old version
 
     def package_finish(self):
@@ -2191,7 +2148,11 @@ class LinuxManifest(ViewerManifest):
 
         self.path("licenses-linux.txt","licenses.txt")
         self.path("VivoxAUP.txt")
-        self.path("LGPL-license.txt")
+        self.path(src="../../doc/GPLv3-license.txt", dst="GPLv3-license.txt")
+        self.path(src="../../doc/AGPLv3-license.txt", dst="AGPLv3-license.txt")
+        self.path(src="../../doc/Grok-LICENSE.txt", dst="Grok-LICENSE.txt")
+        self.path(src="../../doc/GROK-NOTICE.txt", dst="GROK-NOTICE.txt")
+        self.path(src="../../doc/CORRESPONDING_SOURCE.txt", dst="CORRESPONDING_SOURCE.txt")
         self.path("res/firestorm_icon.png","firestorm_icon.png")
         with self.prefix("linux_tools"):
             self.path("client-readme.txt","README-linux.txt")
@@ -2208,7 +2169,7 @@ class LinuxManifest(ViewerManifest):
 
         with self.prefix(dst="bin"):
             self.path( os.path.join(os.pardir,'build_data.json'), "build_data.json" )
-            self.path("vulkanstorm-bin","do-not-directly-run-vulkanstorm-bin")
+            self.path("firestorm-bin","do-not-directly-run-firestorm-bin")
             self.path("../linux_crash_logger/linux-crash-logger","linux-crash-logger.bin")
             self.path2basename("../llplugin/slplugin", "SLPlugin")
             #this copies over the python wrapper script, associated utilities and required libraries, see SL-321, SL-322 and SL-323

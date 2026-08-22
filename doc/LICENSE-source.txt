@@ -1,15 +1,13 @@
 Source code
 ========
-The license for the source code in this distribution should be clearly
-marked on each source file.  Unless otherwise specified, the source
-code in this distribution ("Source Code") is provided by Linden Lab to
-you under the terms of the GNU Lesser General Public License, version 2.1
-("LGPL"), unless you have obtained a separate licensing agreement
-("Other License"), formally executed by you and Linden Lab.  Terms of
-the GPL can be found in doc/LGPL-license.txt in this distribution, or
-online at 
+The viewer source in this distribution was converted from LGPLv2.1 to
+GPLv3 under LGPLv2.1 section 3. Unless otherwise specified, it is provided
+under the GNU General Public License, version 3. The full terms are in
+LICENSE and doc/GPLv3-license.txt.
 
-https://wiki.secondlife.com/wiki/Linden_Lab_Official:GNU_Lesser_General_Public_License,_version_2.1
+Grok is a separate upstream work licensed under AGPLv3 and is combined
+with the GPLv3 viewer as permitted by AGPLv3 section 13. Its terms and
+notices are in doc/AGPLv3-license.txt and doc/GROK-NOTICE.txt.
 
 By copying, modifying or distributing this software, you acknowledge
 that you have read and understood your obligations described above,

@@ -1,19 +1,15 @@
 # -*- cmake -*-
 # SoLoud audio engine (https://github.com/jarikomppa/soloud), zlib/libpng.
 #
-# Grok/Mesa-style EXTERNAL dependency (NOT vendored): point SOLOUD_ROOT at a
-# latest-stable upstream checkout (with our soloud-contrib fixes applied). We
-# compile the needed sources into a static lib here rather than using SoLoud's
-# upstream "genie" build. Backends: miniaudio (primary, cross-platform), nosound.
-#
-# Opt-in like USE_GROK: --soloud sets -DUSE_SOLOUD:BOOL=ON in configure_firestorm.sh.
+# The configure script fetches a pinned upstream revision and applies the
+# VulkanStorm patch. Backends: miniaudio and nosound.
 include_guard()
 
 set(USE_SOLOUD OFF CACHE BOOL "Build with the SoLoud audio engine backend")
 
 if (USE_SOLOUD)
     if (NOT SOLOUD_ROOT)
-        set(SOLOUD_ROOT "C:/vulkanstorm/soloud" CACHE PATH "SoLoud source checkout")
+        message(FATAL_ERROR "USE_SOLOUD requires the bootstrapped SOLOUD_ROOT")
     endif ()
 
     set(soloud_SOURCE_FILES
@@ -45,14 +41,11 @@ if (USE_SOLOUD)
         )
 
     add_library(soloud STATIC ${soloud_SOURCE_FILES})
-
     target_include_directories(soloud PUBLIC
         ${SOLOUD_ROOT}/include
-        # miniaudio.h exposed for device enumeration in the viewer audio engine
         ${SOLOUD_ROOT}/src/backend/miniaudio)
     target_compile_definitions(soloud PRIVATE WITH_MINIAUDIO=1 WITH_NOSOUND=1)
 
-    # Third-party code: undo the global warnings-as-errors from 00-Common
     if (MSVC)
         target_compile_options(soloud PRIVATE /WX- /W1)
     else ()

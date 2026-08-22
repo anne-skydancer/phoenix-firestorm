@@ -4,6 +4,7 @@
 # viewer builds still require the project to apply its chosen license policy.
 option(USE_GROK "Use Grok as the J2C codec instead of OpenJPEG" ON)
 set(GROK_ROOT "" CACHE PATH "Path to a built Grok checkout")
+set(GROK_REQUIRED_VERSION "20.3.12")
 
 include_guard(GLOBAL)
 
@@ -35,6 +36,13 @@ if (USE_GROK)
         PATHS "${GROK_ROOT}/build/src/lib/core"
         REQUIRED
         NO_DEFAULT_PATH)
+    file(READ "${GROK_GENERATED_INCLUDE_DIR}/grk_config.h" _grok_config)
+    if (NOT _grok_config MATCHES "#define GRK_VERSION_MAJOR 20" OR
+        NOT _grok_config MATCHES "#define GRK_VERSION_MINOR 3" OR
+        NOT _grok_config MATCHES "#define GRK_VERSION_BUILD 12")
+        message(FATAL_ERROR
+            "VulkanStorm requires Grok ${GROK_REQUIRED_VERSION}; GROK_ROOT is incompatible")
+    endif ()
     find_library(GROK_LIBRARY
         NAMES grokj2k
         PATHS "${GROK_ROOT}/build/bin" "${GROK_ROOT}/build/lib"
@@ -55,5 +63,5 @@ if (USE_GROK)
             NO_DEFAULT_PATH)
     endif ()
 
-    message(STATUS "J2C backend: Grok (${GROK_LIBRARY})")
+    message(STATUS "J2C backend: Grok ${GROK_REQUIRED_VERSION} (${GROK_LIBRARY})")
 endif ()

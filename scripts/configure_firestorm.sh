@@ -38,6 +38,7 @@ WANTS_GROK=$TRUE
 WANTS_FMODSTUDIO=$FALSE
 WANTS_OPENAL=$FALSE
 WANTS_SOLOUD=$FALSE
+WANTS_MESAZINK=$FALSE
 WANTS_OPENSIM=$TRUE
 WANTS_SINGLEGRID=$FALSE
 WANTS_HAVOK=$FALSE
@@ -75,24 +76,21 @@ showUsage()
     echo "  --version                : Update version number"
     echo "  --chan  [Release|Dev]            : Dev is the default, sets channel"
     echo "  --btype [Release|RelWithDebInfo] : Release is default, whether to use symbols"
-    echo "  --kdu                    : Build with KDU"
-    echo "  --grok                   : Build with Grok J2C (requires GROK_ROOT)"
+    echo "  --grok                   : Build with Grok J2C from pinned source"
     echo "  --no-grok                : Build with OpenJPEG instead of Grok"
     echo "  --soloud                 : Build with the SoLoud audio engine backend"
+    echo "  --mesazink               : Build and bundle Mesa Zink from pinned source"
     echo "  --package                : Build installer"
     echo "  --velopack               : Build with velopack (Overrides --package)"
     echo "  --no-package             : Build without installer (Overrides --package)"
-    echo "  --fmodstudio             : Build with FMOD Studio"
     echo "  --openal                 : Build with OpenAL"
     echo "  --opensim                : Build with OpenSim support (Disables Havok features)"
     echo "  --no-opensim             : Build without OpenSim support (Overrides --opensim)"
     echo "  --singlegrid <login_uri> : Build for single grid usage (Requires --opensim)"
-    echo "  --havok                  : Build with Havok support (Disables OpenSim support)"
     echo "  --avx                    : Build with Advanced Vector Extensions"
     echo "  --avx2                   : Build with Advanced Vector Extensions 2"
     echo "  --tracy                  : Build with Tracy Profiler support"
     echo "  --lto                    : Build with Link Time Optimization"
-    echo "  --crashreporting         : Build with crash reporting enabled (Windows only)"
     echo "  --testbuild <days>       : Create time-limited test build (build date + <days>)"
     echo "  --platform <platform>    : Build for specified platform (darwin | windows | linux)"
     echo "  --jobs <num>             : Build with <num> jobs in parallel (Linux and Darwin only)"
@@ -108,7 +106,7 @@ getArgs()
 # $* = the options passed in from main
 {
     if [ $# -gt 0 ]; then
-      while getoptex "clean build config version package velopack no-package fmodstudio openal soloud ninja vscode compiler-cache jobs: platform: kdu grok no-grok opensim no-opensim singlegrid: havok avx avx2 tracy lto crashreporting testbuild: help chan: btype:" "$@" ; do
+    while getoptex "clean build config version package velopack no-package openal soloud mesazink ninja vscode compiler-cache jobs: platform: grok no-grok opensim no-opensim singlegrid: avx avx2 tracy lto testbuild: help chan: btype:" "$@" ; do
 
           #ensure options are valid
           if [  -z "$OPTOPT"  ] ; then
@@ -125,25 +123,20 @@ getArgs()
                             BTYPE="$OPTARG"
                           fi
                           ;;
-          kdu)            WANTS_KDU=$TRUE;;
           grok)           WANTS_GROK=$TRUE;;
           no-grok)        WANTS_GROK=$FALSE;;
           soloud)         WANTS_SOLOUD=$TRUE;;
-          fmodstudio)     WANTS_FMODSTUDIO=$TRUE;;
+          mesazink)       WANTS_MESAZINK=$TRUE;;
           openal)         WANTS_OPENAL=$TRUE;;
           opensim)        WANTS_OPENSIM=$TRUE;;
           no-opensim)     WANTS_OPENSIM=$FALSE;;
           singlegrid)     WANTS_SINGLEGRID=$TRUE
                           SINGLEGRID_URI="$OPTARG"
                           ;;
-          havok)          WANTS_HAVOK=$TRUE
-                          WANTS_OPENSIM=$FALSE
-                          ;;
           avx)            WANTS_AVX=$TRUE;;
           avx2)           WANTS_AVX2=$TRUE;;
           tracy)          WANTS_TRACY=$TRUE;;
           lto)            WANTS_LTO=$TRUE;;
-          crashreporting) WANTS_CRASHREPORTING=$TRUE;;
           testbuild)      WANTS_TESTBUILD=$TRUE
                           TESTBUILD_PERIOD="$OPTARG"
                           ;;
@@ -329,6 +322,7 @@ echo -e "           GROK: `b2a $WANTS_GROK`"                                   |
 echo -e "     FMODSTUDIO: `b2a $WANTS_FMODSTUDIO`"                             | tee -a "$LOG"
 echo -e "         OPENAL: `b2a $WANTS_OPENAL`"                                 | tee -a "$LOG"
 echo -e "         SOLOUD: `b2a $WANTS_SOLOUD`"                                 | tee -a "$LOG"
+echo -e "       MESAZINK: `b2a $WANTS_MESAZINK`"                               | tee -a "$LOG"
 echo -e "        OPENSIM: `b2a $WANTS_OPENSIM`"                                | tee -a "$LOG"
 if [ $WANTS_SINGLEGRID -eq $TRUE ] ; then
     echo -e "     SINGLEGRID: `b2a $WANTS_SINGLEGRID` ($SINGLEGRID_URI)"       | tee -a "$LOG"
@@ -371,7 +365,7 @@ then
 
     echo "Setting environment variables for Visual Studio..."
     if [ "$OSTYPE" = "cygwin" ] ; then
-        export AUTOBUILD_EXEC="$(cygpath -u $AUTOBUILD)"
+        export AUTOBUILD_EXEC="$(cygpath -u "$AUTOBUILD")"
     fi
     if [ -z "$AUTOBUILD_EXEC" ]
     then
@@ -382,6 +376,21 @@ then
     eval "$("$AUTOBUILD_EXEC" source_environment)"
     # vsvars is needed for determing path to VS runtime redist files in Copy3rdPartyLibs.cmake
     load_vsvars
+
+    if [ -z "$LL_BUILD" ] ; then
+        LL_BUILD_NAME="LL_BUILD_`echo "$BTYPE" | tr '[:lower:]' '[:upper:]'`FS"
+        if [ $WANTS_AVX2 -eq $TRUE ] && [ "$BTYPE" = "Release" ] ; then
+            LL_BUILD_NAME="${LL_BUILD_NAME}_AVX2"
+        elif [ $WANTS_AVX -eq $TRUE ] && [ "$BTYPE" = "Release" ] ; then
+            LL_BUILD_NAME="${LL_BUILD_NAME}_AVX"
+        fi
+        eval "LL_BUILD_VALUE=\${$LL_BUILD_NAME}"
+        if [ -z "$LL_BUILD_VALUE" ] ; then
+            echo "Autobuild variables do not define $LL_BUILD_NAME."
+            exit 1
+        fi
+        export LL_BUILD="$LL_BUILD_VALUE"
+    fi
 fi
 
 if [ -z "$AUTOBUILD_VARIABLES_FILE" ]
@@ -442,7 +451,7 @@ fi
 if [ \( $WANTS_VERSION -eq $TRUE \) -o \( $WANTS_CONFIG -eq $TRUE \) ] ; then
     echo "Versioning..."
     pushd ..
-    if [ -d .git ]
+    if [ -e .git ]
     then
         buildVer=`git rev-list --count HEAD`
     else
@@ -471,14 +480,20 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
     if [ $WANTS_KDU -eq $TRUE ] ; then
         GROK="-DUSE_GROK:BOOL=OFF"
     elif [ $WANTS_GROK -eq $TRUE ] ; then
-        GROK="-DUSE_GROK:BOOL=ON"
+        DEPENDENCY_ARGS="$DEPENDENCY_ARGS --grok"
     else
         GROK="-DUSE_GROK:BOOL=OFF"
     fi
     if [ $WANTS_SOLOUD -eq $TRUE ] ; then
-        SOLOUD="-DUSE_SOLOUD:BOOL=ON"
+        DEPENDENCY_ARGS="$DEPENDENCY_ARGS --soloud"
     else
         SOLOUD="-DUSE_SOLOUD:BOOL=OFF"
+    fi
+    if [ $WANTS_MESAZINK -eq $TRUE ] ; then
+        DEPENDENCY_ARGS="$DEPENDENCY_ARGS --mesazink"
+        MESAZINK="-DUSE_MESAZINK:BOOL=ON"
+    else
+        MESAZINK="-DUSE_MESAZINK:BOOL=OFF"
     fi
     if [ $WANTS_FMODSTUDIO -eq $TRUE ] ; then
         FMODSTUDIO="-DUSE_FMODSTUDIO:BOOL=ON"
@@ -624,7 +639,39 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
         fi
     fi
 
-    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $SOLOUD $KDU $GROK $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
+    if [ -n "$DEPENDENCY_ARGS" ] ; then
+        SOURCE_ROOT=`cd "$(dirname "$0")/.." && pwd`
+        DEPENDENCY_ROOT="`pwd`/vulkanstorm-dependencies"
+        SOURCE_ROOT_NATIVE="$SOURCE_ROOT"
+        DEPENDENCY_ROOT_NATIVE="$DEPENDENCY_ROOT"
+        INSTALL_DIR_NATIVE="`pwd`/packages"
+        if [ "$OSTYPE" = "cygwin" ] ; then
+            SOURCE_ROOT_NATIVE=`cygpath -m "$SOURCE_ROOT_NATIVE"`
+            DEPENDENCY_ROOT_NATIVE=`cygpath -m "$DEPENDENCY_ROOT_NATIVE"`
+            INSTALL_DIR_NATIVE=`cygpath -m "$INSTALL_DIR_NATIVE"`
+        fi
+        python "$SOURCE_ROOT_NATIVE/scripts/bootstrap_vulkanstorm_dependencies.py" \
+            --root "$DEPENDENCY_ROOT_NATIVE" --install-dir "$INSTALL_DIR_NATIVE" \
+            --cmake-generator "$TARGET" $DEPENDENCY_ARGS
+        if [ $? -ne 0 ] ; then
+            echo "Dependency bootstrap failed!"
+            exit 1
+        fi
+        if [ "$OSTYPE" = "cygwin" ] ; then
+            DEPENDENCY_ROOT_CMAKE=`cygpath -m "$DEPENDENCY_ROOT"`
+        else
+            DEPENDENCY_ROOT_CMAKE="$DEPENDENCY_ROOT"
+        fi
+        if [ $WANTS_SOLOUD -eq $TRUE ] ; then
+            SOLOUD="-DUSE_SOLOUD:BOOL=ON -DSOLOUD_ROOT:PATH=$DEPENDENCY_ROOT_CMAKE/soloud-src"
+        fi
+        if [ $WANTS_GROK -eq $TRUE ] ; then
+            GROK="-DUSE_GROK:BOOL=ON -DGROK_ROOT:PATH=$DEPENDENCY_ROOT_CMAKE/grok-src"
+        fi
+    fi
+
+    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $SOLOUD $MESAZINK $KDU $GROK $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
+          -DUSE_VULKAN_GHI:BOOL=ON \
           $UNATTENDED -DLL_TESTS:BOOL=OFF -DADDRESS_SIZE:STRING=$AUTOBUILD_ADDRSIZE -DCMAKE_BUILD_TYPE:STRING=$BTYPE $CACHE_OPT \
           $CRASH_REPORTING -DVIEWER_SYMBOL_FILE:STRING="${VIEWER_SYMBOL_FILE:-}" $LL_ARGS_PASSTHRU ${VSCODE_FLAGS:-} | tee "$LOG"
     configure_status=${PIPESTATUS[0]}

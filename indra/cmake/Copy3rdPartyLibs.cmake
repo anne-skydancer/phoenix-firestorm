@@ -62,9 +62,15 @@ if(WINDOWS)
         )
 
     # <FS:Ansariel> Only copy OpenJPEG dll if needed
-    if (NOT USE_KDU)
+    if (NOT USE_KDU AND NOT USE_GROK)
         set(release_files ${release_files} openjp2.dll)
-    endif (NOT USE_KDU)
+    elseif (USE_GROK)
+        to_staging_dirs(
+            "${GROK_ROOT}/build/bin"
+            third_party_targets
+            grokj2k.dll
+            )
+    endif ()
     # </FS:Ansariel>
 
     # Filenames are different for 32/64 bit BugSplat file and we don't

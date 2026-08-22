@@ -284,12 +284,6 @@ set(viewer_SOURCE_FILES
     lldonotdisturbnotificationstorage.cpp
     lldndbutton.cpp
     lldrawable.cpp
-      llghialphacapture.cpp
-    llghiopaquecapture.cpp
-      llghimaterialcapture.cpp
-      llghienvironmentcapture.cpp
-      llghiterraincapture.cpp
-    llghiruntime.cpp
     lldrawpool.cpp
     lldrawpoolalpha.cpp
     lldrawpoolavatar.cpp
@@ -471,6 +465,12 @@ set(viewer_SOURCE_FILES
     llgltffoldermodel.cpp
     llgltfmateriallist.cpp
     llgltfmaterialpreviewmgr.cpp
+    llghialphacapture.cpp
+    llghienvironmentcapture.cpp
+    llghimaterialcapture.cpp
+    llghiopaquecapture.cpp
+    llghiruntime.cpp
+    llghiterraincapture.cpp
     llgroupactions.cpp
     llgroupiconctrl.cpp
     llgrouplist.cpp
@@ -942,14 +942,8 @@ else (OPENSIM)
         )
 endif (OPENSIM)
 
-set(VIEWER_BINARY_NAME "vulkanstorm-bin" CACHE STRING
+set(VIEWER_BINARY_NAME "firestorm-bin" CACHE STRING
     "The name of the viewer executable to create.")
-if (VIEWER_BINARY_NAME STREQUAL "firestorm-bin")
-    # Carry existing Vulkanstorm build trees across the product rename while
-    # preserving any genuinely custom binary name.
-    set(VIEWER_BINARY_NAME "vulkanstorm-bin" CACHE STRING
-        "The name of the viewer executable to create." FORCE)
-endif ()
 
 set(viewer_HEADER_FILES
     CMakeLists.txt
@@ -1161,12 +1155,6 @@ set(viewer_HEADER_FILES
     lldndbutton.h
     lldrawable.h
     lldrawpool.h
-      llghialphacapture.h
-    llghiopaquecapture.h
-      llghimaterialcapture.h
-      llghienvironmentcapture.h
-      llghiterraincapture.h
-    llghiruntime.h
     lldrawpoolalpha.h
     lldrawpoolavatar.h
     lldrawpoolbump.h
@@ -1350,6 +1338,12 @@ set(viewer_HEADER_FILES
     llgltffoldermodel.h
     llgltfmateriallist.h
     llgltfmaterialpreviewmgr.h
+    llghialphacapture.h
+    llghienvironmentcapture.h
+    llghimaterialcapture.h
+    llghiopaquecapture.h
+    llghiruntime.h
+    llghiterraincapture.h
     llgroupactions.h
     llgroupiconctrl.h
     llgrouplist.h
@@ -1969,12 +1963,10 @@ if (LINUX)
 
     # Replace the icons with the appropriate ones for the channel
     # ('test' is the default)
-    set(ICON_PATH "development")
+    set(ICON_PATH "private")
     string(TOLOWER ${VIEWER_CHANNEL} channel_lower)
     if(channel_lower MATCHES "release")
         set(ICON_PATH "release")
-    elseif(channel_lower MATCHES "dev")
-        set(ICON_PATH "development")
     elseif(channel_lower MATCHES "beta")
         set(ICON_PATH "beta")
     elseif(channel_lower MATCHES "project")
@@ -2023,14 +2015,12 @@ if (WINDOWS)
 
     # Replace the icons with the appropriate ones for the channel
     # ('test' is the default)
-    set(ICON_PATH "development")
+    set(ICON_PATH "private")
     #set(VIEWER_MACOSX_PHASE "d") # <FS:Ansariel> Moved to OSX section
     string(TOLOWER ${VIEWER_CHANNEL} channel_lower)
     if(channel_lower MATCHES "release")
         set(ICON_PATH "release")
         #set(VIEWER_MACOSX_PHASE "f") # <FS:Ansariel> Moved to OSX section
-    elseif(channel_lower MATCHES "dev")
-        set(ICON_PATH "development")
     elseif(channel_lower MATCHES "beta")
         set(ICON_PATH "beta")
         #set(VIEWER_MACOSX_PHASE "b") # <FS:Ansariel> Moved to OSX section
@@ -2309,12 +2299,6 @@ add_executable(${VIEWER_BINARY_NAME}
     ${viewer_SOURCE_FILES}
     )
 
-# Expose the selected JPEG 2000 implementation to startup branding without
-# coupling viewer code to Grok headers or symbols.
-if (USE_GROK)
-    target_compile_definitions(${VIEWER_BINARY_NAME} PRIVATE LL_GROK=1)
-endif ()
-
 # add package files
 file(GLOB EVENT_HOST_SCRIPT_GLOB_LIST
      ${CMAKE_CURRENT_SOURCE_DIR}/../viewer_components/*.py)
@@ -2366,6 +2350,11 @@ if (WINDOWS)
       #${SHARED_LIB_STAGING_DIR}/${LL_INTDIR}/vivoxoal.dll
       ${AUTOBUILD_INSTALL_DIR}/ca-bundle.crt
       ${CMAKE_CURRENT_SOURCE_DIR}/licenses-win32.txt
+      ${CMAKE_SOURCE_DIR}/../doc/GPLv3-license.txt
+      ${CMAKE_SOURCE_DIR}/../doc/AGPLv3-license.txt
+      ${CMAKE_SOURCE_DIR}/../doc/Grok-LICENSE.txt
+      ${CMAKE_SOURCE_DIR}/../doc/GROK-NOTICE.txt
+      ${CMAKE_SOURCE_DIR}/../doc/CORRESPONDING_SOURCE.txt
       ${CMAKE_CURRENT_SOURCE_DIR}/featuretable.txt
       ${viewer_APPSETTINGS_FILES}
       ${viewer_SHADER_FILES}
@@ -2376,21 +2365,6 @@ if (WINDOWS)
       media_plugin_libvlc
       #media_plugin_example # <FS:Ansariel> Don't package example plugin
       )
-
-    if (USE_VULKAN_GHI)
-      list(APPEND COPY_INPUT_DEPENDENCIES
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/r4_opaque.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/r5_material_skin.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_deferred_lighting.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_projector_lighting.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/i7_shadow.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_environment.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_water.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_alpha.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_alpha_legacy.llghisp
-           ${CMAKE_BINARY_DIR}/llrender/ghi_shaders/p0_alpha_peel.llghisp
-          )
-    endif ()
 
     # <FS:Ansariel> Only copy OpenJPEG dll if needed
     if (NOT USE_KDU AND NOT USE_GROK)
@@ -2482,9 +2456,6 @@ if (WINDOWS)
     add_custom_target(copy_w_viewer_manifest ALL DEPENDS ${CMAKE_CFG_INTDIR}/copy_touched.bat)
 
     add_dependencies(${VIEWER_BINARY_NAME} stage_third_party_libs llcommon llwebrtc copy_w_viewer_manifest)
-    if (USE_VULKAN_GHI)
-      add_dependencies(copy_w_viewer_manifest llrender_ghi_shaders)
-    endif ()
 
     # Useful for remote debugging or profiling if set to target a shared drive. for example, brad sets it to "dist/secondlife" to deploy under
     # the build tree (and then I share that directory) or "f:/dist/secondlife" to deploy to a network mounted drive (although this can be slow).
@@ -2773,7 +2744,7 @@ set(ARTWORK_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH
 # </FS:Ansariel>
 
 if (LINUX)
-  set(product Vulkanstorm-${ARCH}-${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION})
+  set(product Firestorm-${ARCH}-${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION})
 
   # These are the generated targets that are copied to package/
   set(COPY_INPUT_DEPENDENCIES
@@ -2875,13 +2846,13 @@ if (DARWIN)
   # magically known to CMake -- it's that these names are referenced in the
   # Info-SecondLife.plist file in the configure_file() directive below.
   #set(product "${VIEWER_CHANNEL}")
-  set(product "Vulkanstorm")
-  set(MACOSX_EXECUTABLE_NAME "Vulkanstorm")
-  set(MACOSX_BUNDLE_INFO_STRING "Vulkanstorm")
+  set(product "Firestorm")
+  set(MACOSX_EXECUTABLE_NAME "Firestorm")
+  set(MACOSX_BUNDLE_INFO_STRING "Firestorm Viewer")
   set(MACOSX_BUNDLE_ICON_FILE "firestorm_icon.icns")
-  set(MACOSX_BUNDLE_GUI_IDENTIFIER "org.vulkanstorm.viewer")
+  set(MACOSX_BUNDLE_GUI_IDENTIFIER "org.firestormviewer.firestorm")
   set(MACOSX_BUNDLE_LONG_VERSION_STRING "${VIEWER_CHANNEL} ${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
-  set(MACOSX_BUNDLE_BUNDLE_NAME "Vulkanstorm")
+  set(MACOSX_BUNDLE_BUNDLE_NAME "Firestorm")
   set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${VIEWER_SHORT_VERSION}.${VIEWER_VERSION_REVISION}")
   set(MACOSX_BUNDLE_BUNDLE_VERSION "${VIEWER_SHORT_VERSION}${VIEWER_MACOSX_PHASE}${VIEWER_REVISION}")
   set(MACOSX_BUNDLE_COPYRIGHT "Copyright 2010-2026 The Phoenix Firestorm Project, Inc.")

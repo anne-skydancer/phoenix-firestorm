@@ -1,0 +1,99 @@
+From 84b2d8a8ec1a7e67cd5ed61c7f5ee57da1b0bdf7 Mon Sep 17 00:00:00 2001
+From: anne-skydancer <anne.skydancer@outlook.com>
+Date: Sun, 28 Jun 2026 12:14:01 +0100
+Subject: [PATCH 2/2] zink,gallium/aux: defensively handle NULL
+ shaders/programs
+
+A failed shader/program creation should degrade gracefully rather than crash
+in these leaf consumers:
+
+  - pipe_shader_from_nir(): guard a NULL nir_shader.
+  - zink_is_parallel_shader_compilation_finished(): a NULL shader has nothing
+    pending; report finished.
+  - zink_batch_reference_program(): guard a NULL program.
+  - zink null_fs: nir_builder_init_simple_shader() can return NULL; guard it
+    and leave null_fs NULL so the lazy init retries instead of crashing.
+
+Signed-off-by: anne-skydancer <anne.skydancer@outlook.com>
+---
+ src/gallium/auxiliary/nir/pipe_nir.h    |  5 +++++
+ src/gallium/drivers/zink/zink_batch.c   |  3 +++
+ src/gallium/drivers/zink/zink_context.c | 16 +++++++++++++---
+ src/gallium/drivers/zink/zink_screen.c  |  5 +++++
+ 4 files changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/auxiliary/nir/pipe_nir.h b/src/gallium/auxiliary/nir/pipe_nir.h
+index ba25eef..3f53416 100644
+--- a/src/gallium/auxiliary/nir/pipe_nir.h
++++ b/src/gallium/auxiliary/nir/pipe_nir.h
+@@ -14,6 +14,11 @@
+ static inline void *
+ pipe_shader_from_nir(struct pipe_context *pipe, nir_shader *nir)
+ {
++   /* defensive: a failed NIR generator upstream must not crash the
++    * generic helper. Callers already handle a NULL return. */
++   if (!nir)
++      return NULL;
++
+    struct pipe_shader_state state = {
+       .type = PIPE_SHADER_IR_NIR,
+       .ir.nir = nir,
+diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
+index e76470d..5cf6d99 100644
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -1148,6 +1148,9 @@ void
+ zink_batch_reference_program(struct zink_context *ctx,
+                              struct zink_program *pg)
+ {
++   /* guard: a failed program creation must not crash here. */
++   if (!pg)
++      return;
+    struct zink_batch_state *bs = ctx->bs;
+    if (zink_batch_usage_matches(pg->batch_uses, bs) ||
+        !batch_ptr_add_usage(ctx, &bs->programs, pg))
+diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+index e13e6eb..6147dff 100644
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -4037,9 +4037,19 @@ zink_set_null_fs(struct zink_context *ctx)
+    /* otherwise need to bind a null fs */
+    if (!ctx->null_fs) {
+       nir_shader *nir = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &screen->nir_options, "null_fs").shader;
+-      nir->info.separate_shader = true;
+-      ctx->null_fs = pipe_shader_from_nir(&ctx->base, nir);
+-   }
++      /* nir_builder_init_simple_shader can return NULL; guard it
++       * instead of dereferencing. Leaving ctx->null_fs NULL below means this
++       * lazy init is retried next time (deferred), rather than crashing or
++       * permanently dropping the pass. */
++      if (nir) {
++         nir->info.separate_shader = true;
++         ctx->null_fs = pipe_shader_from_nir(&ctx->base, nir);
++      }
++   }
++   /* couldn't build the null fs this time: defer (retry next call)
++    * rather than binding a NULL fragment shader. */
++   if (!ctx->null_fs)
++      return;
+    ctx->saved_fs = ctx->gfx_stages[MESA_SHADER_FRAGMENT];
+    ctx->base.bind_fs_state(&ctx->base, ctx->null_fs);
+ }
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 9084c91..7053181 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -261,6 +261,11 @@ zink_set_max_shader_compiler_threads(struct pipe_screen *pscreen, unsigned max_t
+ static bool
+ zink_is_parallel_shader_compilation_finished(struct pipe_screen *screen, void *shader, mesa_shader_stage shader_type)
+ {
++   /* a NULL shader has nothing pending; report finished rather than
++    * dereferencing it. */
++   if (!shader)
++      return true;
++
+    if (shader_type == MESA_SHADER_COMPUTE) {
+       struct zink_program *pg = shader;
+       return !pg->can_precompile || util_queue_fence_is_signalled(&pg->cache_fence);
+-- 
+2.53.0.windows.2

@@ -1,0 +1,22 @@
+Grok JPEG 2000 codec
+====================
+
+VulkanStorm uses Grok 20.3.12 as its release J2C codec.
+
+Copyright (C) 2016-2026 Grok Image Compression Inc.
+
+Grok is free software licensed under the GNU Affero General Public License,
+version 3. The complete license is included as AGPLv3-license.txt.
+
+Upstream source:
+https://github.com/GrokImageCompression/grok/releases/tag/v20.3.12
+
+VulkanStorm calls Grok through the grokj2k C API and distributes the shared
+Grok runtime with release packages. Grok remains governed by AGPLv3; the
+VulkanStorm portion of the combined work remains governed by GPLv3 as permitted
+by AGPLv3 section 13.
+
+Grok incorporates portions of OpenJPEG under the 2-clause BSD license. The
+Grok LICENSE file contains the applicable OpenJPEG copyright and permission
+notice. Distributors must preserve that notice and audit the licenses of the
+third-party components enabled in their Grok build.

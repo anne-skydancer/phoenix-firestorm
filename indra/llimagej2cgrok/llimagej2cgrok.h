@@ -1,6 +1,9 @@
 /**
  * @file llimagej2cgrok.h
  * @brief JPEG 2000 encode/decode using Grok.
+ *
+ * Copyright (C) 2026 The Phoenix Firestorm Project, Inc.
+ * SPDX-License-Identifier: GPL-3.0-only
  */
 
 #ifndef LL_LLIMAGEJ2CGROK_H

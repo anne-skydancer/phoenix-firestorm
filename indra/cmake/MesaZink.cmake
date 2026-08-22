@@ -1,6 +1,4 @@
 # -*- cmake -*-
-include(Prebuilt)
-
 if (WINDOWS)
     option(USE_MESAZINK "Bundle the Mesa Zink OpenGL-over-Vulkan runtime" OFF)
 else ()
@@ -8,5 +6,9 @@ else ()
 endif ()
 
 if (USE_MESAZINK)
-    use_prebuilt_binary(mesazink)
+    foreach(mesazink_file libgallium_wgl.dll opengl32.dll)
+        if (NOT EXISTS "${AUTOBUILD_INSTALL_DIR}/bin/release/${mesazink_file}")
+            message(FATAL_ERROR "Missing bootstrapped Mesa Zink runtime: ${mesazink_file}")
+        endif ()
+    endforeach()
 endif ()

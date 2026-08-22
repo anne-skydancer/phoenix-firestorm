@@ -20,7 +20,9 @@ struct ProductionWaterDependencies
 {
     std::uint64_t generation = 0;
     ImageViewHandle reflectionColorView;
+    ImageViewHandle refractionColorView;
     ImageViewHandle exclusionMaskView;
+    ImageViewHandle waterDepthView;
 };
 
 struct ProductionWaterResourceLimits
@@ -38,9 +40,12 @@ struct ProductionWaterResourceResult
     std::uint32_t reflectionHeight = 0;
     std::uint32_t exclusionWidth = 0;
     std::uint32_t exclusionHeight = 0;
+    std::uint32_t depthWidth = 0;
+    std::uint32_t depthHeight = 0;
     std::uint64_t uploadBytes = 0;
     std::string reflectionSha256;
     std::string exclusionSha256;
+    std::string depthSha256;
 };
 
 class ProductionWaterResources

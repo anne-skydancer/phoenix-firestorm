@@ -34,6 +34,20 @@ vec3 waveNormal(sampler2D source)
     return normalize(a + b * 0.4 + c * 0.6);
 }
 
+vec3 srgbToLinear(vec3 color)
+{
+    return mix(color / 12.92,
+               pow((color + 0.055) / 1.055, vec3(2.4)),
+               greaterThan(color, vec3(0.04045)));
+}
+
+float packedDepth(vec2 uv)
+{
+    uvec4 bytes = uvec4(round(texture(depthTexture, uv) * 255.0));
+    return uintBitsToFloat(bytes.r | (bytes.g << 8) |
+                           (bytes.b << 16) | (bytes.a << 24));
+}
+
 void main()
 {
     if (W.cameraRoute.w < 0.5)
@@ -53,12 +67,42 @@ void main()
     vec2 distorted = clamp(uv + normal.xy *
         W.waterHeightPhaseBlendRefScale.w / sqrt(distanceToEye),
         vec2(0.0), vec2(0.999));
-    float sceneDepth = texture(depthTexture, distorted).r;
-    if (gl_FragCoord.z < sceneDepth) discard;
+    vec2 depthUv = W.cameraRoute.w > 1.5 ? uv : distorted;
+    float sceneDepth = packedDepth(depthUv);
+    if (gl_FragCoord.z > sceneDepth) discard;
     float shoreline = smoothstep(0.0, 0.0025,
         abs(gl_FragCoord.z - sceneDepth));
     distorted = mix(uv, distorted, shoreline * exclusion);
     vec3 refraction = texture(refractionTexture, distorted).rgb;
+    if (W.cameraRoute.w > 1.5)
+    {
+        vec3 wave1 = texture(normalTexture, bigWaveUv).xyz * 2.0 - 1.0;
+        vec3 wave2 = texture(normalTexture, waveUv.xy).xyz * 2.0 - 1.0;
+        vec3 wave3 = texture(normalTexture, waveUv.zw).xyz * 2.0 - 1.0;
+        vec3 underwaterNormal = normalize(wave1 + wave2 + wave3);
+        vec2 underwaterUv = uv + underwaterNormal.xy *
+            W.waterHeightPhaseBlendRefScale.w * exclusion;
+        vec3 refraction = texture(refractionTexture, underwaterUv).rgb;
+        vec3 planeNormal = normalize(viewNormal);
+        float planeOffset = -dot(viewPosition, planeNormal);
+        vec3 viewDirection = normalize(viewPosition);
+        float eyeSlope = -dot(viewDirection, planeNormal);
+        float eyeDepth = max(-planeOffset, 0.0);
+        vec3 intersection = planeOffset > 0.0
+            ? viewDirection * planeOffset / eyeSlope : vec3(0.0);
+        float waterDepth = max(length(viewPosition - intersection), 0.1);
+        float density = W.fresnelBlurFogDensityExposure.z;
+        float lightScale = 1.0 / max(W.cameraRoute.z, 0.3);
+        float extinction = density + lightScale * eyeSlope;
+        float scatter = pow(min(
+            (-density * pow(0.98, lightScale * eyeDepth) / extinction) *
+            (pow(0.98, extinction * waterDepth) - 1.0), 1.0), 1.0 / 1.7);
+        float attenuation = pow(0.98, waterDepth * density);
+        vec3 color = refraction * attenuation +
+                     srgbToLinear(W.fogColorTonemap.rgb) * scatter;
+        outColor = max(vec4(color, 1.0), vec4(0.0));
+        return;
+    }
     vec3 reflection = texture(reflectionTexture,
                               clamp(uv + normal.xy * 0.02,
                                     vec2(0.0), vec2(0.999))).rgb;
@@ -74,11 +118,5 @@ void main()
     float specular = pow(max(dot(normal, halfVector), 0.0), gloss);
     vec3 color = mix(refraction, reflection, fresnel) +
                  W.lightColor.rgb * specular * exclusion;
-    if (W.cameraRoute.w > 1.5)
-    {
-        float fog = 1.0 - exp(-max(W.fresnelBlurFogDensityExposure.z, 0.0) *
-                              distanceToEye);
-        color = mix(color, W.fogColorTonemap.rgb, clamp(fog, 0.0, 1.0));
-    }
     outColor = vec4(max(color, vec3(0.0)), 1.0);
 }

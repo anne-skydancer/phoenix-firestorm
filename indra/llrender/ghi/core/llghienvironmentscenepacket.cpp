@@ -186,14 +186,14 @@ bool validBindings(const std::vector<EnvironmentTextureBinding>& bindings,
                    std::size_t textureCount)
 {
     if (bindings.size() > static_cast<std::size_t>(
-            EnvironmentTextureSemantic::WaterExclusionMask) + 1)
+            EnvironmentTextureSemantic::WaterDepth) + 1)
         return false;
     for (std::size_t index = 0; index < bindings.size(); ++index)
     {
         const auto& binding = bindings[index];
         if (static_cast<std::uint32_t>(binding.semantic) >
                 static_cast<std::uint32_t>(
-                    EnvironmentTextureSemantic::WaterExclusionMask) ||
+                    EnvironmentTextureSemantic::WaterDepth) ||
             binding.texture >= textureCount ||
             std::any_of(bindings.begin(),
                         bindings.begin() + static_cast<std::ptrdiff_t>(index),
@@ -428,6 +428,10 @@ Status validateEnvironmentScenePacket(const EnvironmentScenePacket& packet)
          !hasBinding(packet.water.textures,
                      EnvironmentTextureSemantic::WaterExclusionMask)))
         return invalid("water route is missing captured dependency resources");
+    if (hasWater && packet.version >= 4 &&
+        !hasBinding(packet.water.textures,
+                    EnvironmentTextureSemantic::WaterDepth))
+        return invalid("water route is missing captured depth");
     if (!hasWater && (!packet.waterVertices.empty() || !packet.waterIndices.empty() ||
                       !packet.waterDraws.empty()))
         return invalid("water geometry supplied without an active water route");

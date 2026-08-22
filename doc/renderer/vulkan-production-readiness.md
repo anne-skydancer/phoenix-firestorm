@@ -165,15 +165,15 @@ tracked separately.
 | P0e1 opaque production frame | Accepted for private, non-presenting execution | Replay the accepted packet on the current OpenGL/Vulkan peers and preserve current-revision evidence. |
 | P0e2a/P0e2b environment packet/live assembly | Accepted | Revalidate codec and same-frame assembly while closing downstream water dependencies. |
 | P0e2c sky executor | Accepted for private, non-presenting execution | Revalidate current peers; retain fail-closed HDRI behavior unless comparable decoded HDRI data is available. |
-| P0e2d water executor | Provisional | Supply real same-frame reflection-color and exclusion resources from P0e4, above-water and underwater captures, qualified shading, and dual-peer image evidence. |
-| P0e2e paired environment qualification | Explicitly unaccepted | Pass same-frame packet identity, nonzero visible water contribution, bounded peer comparison, lifecycle-contract checks, and residency evidence. |
+| P0e2d water executor | Accepted for private, non-presenting execution | Packet v4 owns exact reflection, exclusion, refraction, and visible-water depth inputs. Above-water and underwater OpenGL/Vulkan peers pass visible System OpenGL qualification with the frozen IoU `0.5` and delta-MAE `0.2` gates. |
+| P0e2e paired environment qualification | Accepted on current revision | Authenticated same-frame production/environment/visible-reference triplets pass packet identity, resource generation, nonzero water contribution, bounded peer comparison, clean Vulkan validation, and `39/39` lifecycle contracts. |
 | P0e3a alpha packet | Accepted | Revalidate codec and routing contracts. |
 | P0e3b live alpha assembly | Implemented with live evidence; acceptance not recorded | Record explicit acceptance after current-revision category and packet checks. |
 | P0e3c legacy alpha executor | Validated private; acceptance not recorded | Revalidate selected visible reference comparison, lighting/glow inputs, and route ownership. |
 | P0e3d PPLL executor | Validated private; acceptance not recorded | Revalidate selected-method capture, bounded/overflow stress, visible reference, timing, and memory. |
 | P0e3e depth-peel executor | Validated private; acceptance not recorded | Revalidate selected-method capture, tail/layer policy, visible reference, timing, and memory. |
 | P0e3f alpha qualification | Explicitly unaccepted | Close content breadth, visible comparison, resize/relog/teleport/recovery, provider, performance, and memory evidence. |
-| P0e4 recursive/offscreen views | Accepted; P0.2 closure validated | The authenticated 23-pass packet SHA-256 `d7149541445ff4d118e300e29937d0767cfdd447b7101874125272469a243802` retains six ReflectionProbe, six Mirror, and six CubeSnapshot passes independently plus all five required single views; bounded Vulkan/OpenGL replay covers all 1,472 pixels with normalized image SHA-256 `c88c79c1fe9b9ff495a4817c99eae2acf05ef879a150fad038e239383bb9fdb2`. Environment packet v3 exports real 2560x1350 reflection-color and water-exclusion content through GHI-owned resources. The same-frame production/environment pair at frame 1702 has SHA-256 `501d645e5b9dcd43ace510218380df0793457531c82d9a6738f2ae2e439d3a0e` / `0b44fde72074ffb00bb2146891498f4776121497b41419213fe5ae3174b2376a`; both peers consume reflection SHA-256 `cb5e96126fc0367aa4e5a59874f1d77777b89ba0238a1c4012d091a771627045` and exclusion SHA-256 `d096a8b2da1f3628450de6280b72da0a30a44f5b3967c5e7799b54b91df48e24`, execute seven water draws, and modify exactly 100,352 pixels. P0e2d/P0e2e remain provisional until P0.3 above-water/underwater and visible-reference qualification. |
+| P0e4 recursive/offscreen views | Accepted; P0.2 closure validated | The authenticated 23-pass packet SHA-256 `d7149541445ff4d118e300e29937d0767cfdd447b7101874125272469a243802` retains six ReflectionProbe, six Mirror, and six CubeSnapshot passes independently plus all five required single views; bounded Vulkan/OpenGL replay covers all 1,472 pixels with normalized image SHA-256 `c88c79c1fe9b9ff495a4817c99eae2acf05ef879a150fad038e239383bb9fdb2`. Environment packet v3 exports real 2560x1350 reflection-color and water-exclusion content through GHI-owned resources. The same-frame production/environment pair at frame 1702 has SHA-256 `501d645e5b9dcd43ace510218380df0793457531c82d9a6738f2ae2e439d3a0e` / `0b44fde72074ffb00bb2146891498f4776121497b41419213fe5ae3174b2376a`; both peers consume reflection SHA-256 `cb5e96126fc0367aa4e5a59874f1d77777b89ba0238a1c4012d091a771627045` and exclusion SHA-256 `d096a8b2da1f3628450de6280b72da0a30a44f5b3967c5e7799b54b91df48e24`, execute seven water draws, and modify exactly 100,352 pixels. P0.3 subsequently accepted P0e2d/P0e2e against above-water and underwater visible references. |
 | P0e5 UI/HUD/interaction/snapshots | Open; no acceptance checkpoint | Execute UI0-UI6 semantics in a headless complete-frame compositor, including fonts, media, HUD ordering, picking, snapshots, DPI, and shipped skins. |
 | P0e6 appearance/baking | Open; no acceptance checkpoint | Add backend-neutral layer/mask/composition/readback contracts and private peer bake execution. |
 | P0f legacy confinement | Open; no acceptance checkpoint | Burn down migrated coupling and prove complete-frame Vulkan reachability without an OpenGL context. |
@@ -277,7 +277,7 @@ into generation-matched GHI resources. The frame-1702 Vulkan validation and
 OpenGL peers each modify 100,352 water pixels from those resources. The
 remaining above-water/underwater visual-model qualification is P0.3 scope.
 
-##### P0.3: Close P0e2d/P0e2e environment and water
+##### P0.3: Close P0e2d/P0e2e environment and water (closed)
 
 1. Capture paired same-frame production/environment packets for one visibly
    above-water and one underwater scene using P0e4 resources.
@@ -289,6 +289,43 @@ remaining above-water/underwater visual-model qualification is P0.3 scope.
 
 Pass: both scenes pass `compare_ghi_production_frame.py` with complete manifests
 and P0e2d/P0e2e are explicitly accepted.
+
+Accepted: packet v4 adds exact float32 visible-water depth, retains full-size
+production pre-water color for underwater refraction, and replays the legacy
+underwater distortion/fog route privately. The generated water shader package
+has SHA-256 `d20cdfc5737232d1a82e19126fa784b4e657c8bbd5a320f1b8fd7c225b03bbff`.
+Both peers use the same immutable inputs and Vulkan validation reports no
+validation errors.
+
+The above-water frame 2061 corpus is production packet SHA-256
+`8f5e5f83d6b9c767b404386ccf068c1bda01c73d4dc7966ddb84ed78e43c7e7d`
+(5,257,996 bytes), environment packet SHA-256
+`68788161133af9c5bef09c4dd380466df6289bc7cdb90071c4130d0c18bbd83f`
+(34,334,048 bytes), and visible reference SHA-256
+`817398d6aa41d6b71fb6b791131eab2bceec7de0330043c8957ad36ce58b90fb`
+(20,736,024 bytes). It contains nine environment textures and seven water
+draws. Both peers modify 97,291 water pixels and consume reflection SHA-256
+`c5f30e3c01902ee3133f8631541313c05fda26ac565ca66be43c6ddd227e3ca0`,
+exclusion SHA-256
+`d096a8b2da1f3628450de6280b72da0a30a44f5b3967c5e7799b54b91df48e24`,
+and exact-depth SHA-256
+`58351c1c9f03b22743705c9a829953d8f172b3625d3affdbb3d308fc037ba981`.
+Visible mask IoU is `0.504526`; delta MAE is `0.166145` for OpenGL and
+`0.137261` for Vulkan.
+
+The underwater frame 2054 corpus is production packet SHA-256
+`a580e3d0f654b72978ee47b5ba99e58339c9e3d33665b820a4115204e03b3f41`
+(4,837,044 bytes), environment packet SHA-256
+`8bd0c536afeb0c0dd7bd8891f79f27ad8a1448ba0a0d3d6113e5cc68a34a8122`
+(34,547,980 bytes), and visible reference SHA-256
+`88b19a1d4180fdba5e8bbdefd0e1448301f3174d427255f9838a9dc85a6e7dbf`
+(20,736,024 bytes). It contains nine environment textures and six water draws.
+Both peers modify 6,365 water pixels and consume reflection SHA-256
+`d44cb7ef316bed0f779b77244ca443b3facef5761faf8222e48502672d499555`,
+the same exclusion resource, and exact-depth SHA-256
+`c3b28637a161da9f6c0ca74b5185624d1de2f9a149a3f1a47aa33fb2e917d977`.
+Both visible comparisons produce mask IoU `0.717797` and delta MAE `0.109968`.
+The final GHI contract suite passes `39/39`.
 
 ##### P0.4: Close P0e3f alpha qualification
 

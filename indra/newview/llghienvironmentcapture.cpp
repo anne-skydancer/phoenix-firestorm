@@ -94,6 +94,9 @@ public:
         const char* output = std::getenv("VULKANSTORM_GHI_P0E2_CAPTURE");
         if (!output || !*output) return;
         mOutput = std::filesystem::path(output);
+        if (const char* reference =
+                std::getenv("VULKANSTORM_GHI_P0E2_VISIBLE_REFERENCE"))
+            if (*reference) mVisibleReference = std::filesystem::path(reference);
         mWarmup = 120s;
         if (const char* value =
                 std::getenv("VULKANSTORM_GHI_P0E2_WARMUP_SECONDS"))
@@ -140,6 +143,8 @@ public:
         copyValues(LLViewerCamera::getInstance()->getOrigin(),
                    mPacket.cameraOrigin);
         mTextureIndices.clear();
+        mVisibleBeforeWater.clear();
+        mVisibleAfterWater.clear();
         mSkyObserved = false;
         mWaterObserved = false;
         mBudgetLimited = false;
@@ -665,10 +670,11 @@ public:
 
     void dependency(LLRenderTarget& target,
                     LL::GHI::EnvironmentTextureSemantic semantic,
-                    std::uint32_t components)
+                    std::uint32_t components, bool depth = false)
     {
         if (!mInFrame || !target.isComplete() || !target.getNumTextures() ||
             !target.getWidth() || !target.getHeight() ||
+            (depth && !target.getDepth()) ||
             (components != 1 && components != 4) ||
             mPacket.textures.size() >= 64)
             return;
@@ -700,11 +706,16 @@ public:
         resource.decodedPixels.resize(
             static_cast<std::size_t>(pixels * components));
 
-        target.bindTexture(0, 0, LLTexUnit::TFO_BILINEAR);
+        if (depth)
+            gGL.getTexUnit(0)->bind(&target, true);
+        else
+            target.bindTexture(0, 0, LLTexUnit::TFO_BILINEAR);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         glGetTexImage(GL_TEXTURE_2D, 0,
-                      components == 1 ? GL_RED : GL_RGBA,
-                      GL_UNSIGNED_BYTE, resource.decodedPixels.data());
+                      depth ? GL_DEPTH_COMPONENT
+                            : components == 1 ? GL_RED : GL_RGBA,
+                    depth ? GL_FLOAT : GL_UNSIGNED_BYTE,
+                    resource.decodedPixels.data());
         glPixelStorei(GL_PACK_ALIGNMENT, 4);
         const GLenum error = glGetError();
         if (error != GL_NO_ERROR)
@@ -716,10 +727,37 @@ public:
         }
         resource.contentIdentity = digestFromHex(
             LL::GHI::sha256(resource.decodedPixels));
+        if (semantic == LL::GHI::EnvironmentTextureSemantic::ReflectionColor &&
+            !mVisibleReference.empty())
+        {
+            mVisibleBeforeWater.resize(static_cast<std::size_t>(pixels) * 3);
+            for (std::size_t pixel = 0; pixel < pixels; ++pixel)
+                std::copy_n(resource.decodedPixels.begin() + pixel * 4, 3,
+                            mVisibleBeforeWater.begin() + pixel * 3);
+        }
         const std::uint32_t index =
             static_cast<std::uint32_t>(mPacket.textures.size());
         mPacket.textures.push_back(std::move(resource));
         mPacket.water.textures.push_back({semantic, index});
+    }
+
+    void visibleWaterResult()
+    {
+        if (!mInFrame || mVisibleReference.empty() ||
+            !mPacket.sourceWidth || !mPacket.sourceHeight)
+            return;
+        const std::size_t pixels = static_cast<std::size_t>(
+            mPacket.sourceWidth) * mPacket.sourceHeight;
+        mVisibleAfterWater.resize(pixels * 3);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, mPacket.sourceWidth, mPacket.sourceHeight,
+                     GL_RGB, GL_UNSIGNED_BYTE, mVisibleAfterWater.data());
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        if (glGetError() != GL_NO_ERROR)
+        {
+            mVisibleAfterWater.clear();
+            LL_WARNS("GHI") << "P0e2 post-water readback failed" << LL_ENDL;
+        }
     }
 
     void end()
@@ -786,6 +824,46 @@ public:
                              << mOutput.string() << LL_ENDL;
             return;
         }
+        if (!mVisibleReference.empty())
+        {
+            const std::size_t pixels = static_cast<std::size_t>(
+                mPacket.sourceWidth) * mPacket.sourceHeight;
+            if (mVisibleBeforeWater.size() != pixels * 3 ||
+                mVisibleAfterWater.size() != pixels * 3)
+            {
+                mState = State::Failed;
+                LL_WARNS("GHI")
+                    << "P0e2 visible reference is missing a water boundary"
+                    << LL_ENDL;
+                return;
+            }
+            if (!mVisibleReference.parent_path().empty())
+                std::filesystem::create_directories(
+                    mVisibleReference.parent_path(), error);
+            std::ofstream reference(
+                mVisibleReference, std::ios::binary | std::ios::trunc);
+            reference.write("GHIV", 4);
+            const std::array<std::uint32_t, 3> header{{
+                1, mPacket.sourceWidth, mPacket.sourceHeight}};
+            reference.write(reinterpret_cast<const char*>(header.data()),
+                            sizeof(header));
+            reference.write(reinterpret_cast<const char*>(&mPacket.frameId),
+                            sizeof(mPacket.frameId));
+            reference.write(
+                reinterpret_cast<const char*>(mVisibleBeforeWater.data()),
+                static_cast<std::streamsize>(mVisibleBeforeWater.size()));
+            reference.write(
+                reinterpret_cast<const char*>(mVisibleAfterWater.data()),
+                static_cast<std::streamsize>(mVisibleAfterWater.size()));
+            reference.close();
+            if (!reference)
+            {
+                mState = State::Failed;
+                LL_WARNS("GHI") << "P0e2 visible reference could not write "
+                                 << mVisibleReference.string() << LL_ENDL;
+                return;
+            }
+        }
         mState = State::Complete;
         LL_INFOS("GHI") << "P0e2 environment capture PASS: frame="
                          << mPacket.frameId << " passes=0x" << std::hex
@@ -809,6 +887,9 @@ private:
     std::chrono::steady_clock::time_point mWarmupStart;
     std::chrono::milliseconds mWarmup{0};
     std::filesystem::path mOutput;
+    std::filesystem::path mVisibleReference;
+    std::vector<std::byte> mVisibleBeforeWater;
+    std::vector<std::byte> mVisibleAfterWater;
     std::uint64_t mSceneEpoch = 0;
     std::uint64_t mResourceEpoch = 0;
     std::map<std::string, std::uint32_t> mTextureIndices;
@@ -849,10 +930,21 @@ void LLGHIEnvironmentCapture::observeReflectionColor(LLRenderTarget& target)
         target, LL::GHI::EnvironmentTextureSemantic::ReflectionColor, 4);
 }
 
+void LLGHIEnvironmentCapture::observeWaterDepth(LLRenderTarget& target)
+{
+    mImpl->dependency(
+    target, LL::GHI::EnvironmentTextureSemantic::WaterDepth, 4, true);
+}
+
 void LLGHIEnvironmentCapture::observeWaterExclusionMask(LLRenderTarget& target)
 {
     mImpl->dependency(
         target, LL::GHI::EnvironmentTextureSemantic::WaterExclusionMask, 1);
+}
+
+void LLGHIEnvironmentCapture::observeVisibleWaterResult()
+{
+    mImpl->visibleWaterResult();
 }
 
 void LLGHIEnvironmentCapture::endFrame()

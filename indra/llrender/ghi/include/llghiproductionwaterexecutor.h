@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace LL::GHI
 {
@@ -40,6 +41,8 @@ struct ProductionWaterResult
     bool underwater = false;
     std::string packetSha256;
     std::string colorSha256;
+    std::vector<std::byte> inputPixels;
+    std::vector<std::byte> colorPixels;
 };
 
 class ProductionWaterExecutor

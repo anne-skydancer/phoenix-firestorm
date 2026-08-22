@@ -23,7 +23,7 @@ void main()
     if (W.cameraRoute.w < 0.5)
     {
         vec2 position = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-        screenUv = position;
+        screenUv = vec2(position.x, 1.0 - position.y);
         gl_Position = vec4(position * 2.0 - 1.0, 0.0, 1.0);
         viewPosition = vec3(0.0); viewNormal = vec3(0.0, 0.0, 1.0);
         waveUv = vec4(0.0); bigWaveUv = vec2(0.0); return;

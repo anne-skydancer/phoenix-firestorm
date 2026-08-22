@@ -63,21 +63,24 @@ public:
         result = {};
         Status status = validateEnvironmentScenePacket(packet);
         if (!status) return status;
-        if (packet.version < 3 || !generation)
-            return invalid("production water resources require packet v3 and a generation");
+        if (packet.version < 4 || !generation)
+            return invalid("production water resources require packet v4 and a generation");
         if (!limits.maxPixels || !limits.maxUploadBytes)
             return invalid("production water resource limits must be nonzero");
         if (packet.resourceEpoch <= mResourceEpoch)
             return invalid("production water resources require an increasing resource epoch");
 
-        std::array<Upload, 2> uploads{{
+        std::array<Upload, 3> uploads{{
             {resource(packet, EnvironmentTextureSemantic::ReflectionColor),
              Format::RGBA8UNorm},
             {resource(packet, EnvironmentTextureSemantic::WaterExclusionMask),
-             Format::R8UNorm}}};
-        if (!uploads[0].source || !uploads[1].source ||
+             Format::R8UNorm},
+            {resource(packet, EnvironmentTextureSemantic::WaterDepth),
+             Format::RGBA8UNorm}}};
+        if (!uploads[0].source || !uploads[1].source || !uploads[2].source ||
             uploads[0].source->components != 4 ||
-            uploads[1].source->components != 1)
+            uploads[1].source->components != 1 ||
+            uploads[2].source->components != 4)
             return invalid("production water dependency formats are invalid");
 
         std::uint64_t uploadBytes = 0;
@@ -95,6 +98,7 @@ public:
                 source.decodedPixels.size() >
                     std::numeric_limits<std::uint64_t>::max() - uploadBytes)
                 return invalid("production water dependency content is invalid");
+            uploadBytes = (uploadBytes + 3u) & ~std::uint64_t{3u};
             uploadBytes += source.decodedPixels.size();
         }
         if (uploadBytes > limits.maxUploadBytes)
@@ -108,7 +112,8 @@ public:
         std::array<std::uint64_t, 2> offsets{};
         for (std::size_t index = 0; index < uploads.size(); ++index)
         {
-            offsets[index] = bytes.size();
+            offsets[index] = (bytes.size() + 3u) & ~std::size_t{3u};
+            bytes.resize(static_cast<std::size_t>(offsets[index]));
             bytes.insert(bytes.end(), uploads[index].source->decodedPixels.begin(),
                          uploads[index].source->decodedPixels.end());
             if (!status) break;
@@ -152,10 +157,11 @@ public:
             return status;
         }
 
-        std::array<Upload, 2> previous = mResources;
+        std::array<Upload, 3> previous = mResources;
         mResources = uploads;
         for (auto& resource : mResources) resource.source = nullptr;
-        mDependencies = {generation, uploads[0].view, uploads[1].view};
+        mDependencies = {generation, uploads[0].view, uploads[0].view,
+                         uploads[1].view, uploads[2].view};
         mResourceEpoch = packet.resourceEpoch;
         status = destroy(previous);
         if (!status) return status;
@@ -167,9 +173,12 @@ public:
         result.reflectionHeight = uploads[0].source->height;
         result.exclusionWidth = uploads[1].source->width;
         result.exclusionHeight = uploads[1].source->height;
+        result.depthWidth = uploads[2].source->width;
+        result.depthHeight = uploads[2].source->height;
         result.uploadBytes = uploadBytes;
         result.reflectionSha256 = sha256(uploads[0].source->decodedPixels);
         result.exclusionSha256 = sha256(uploads[1].source->decodedPixels);
+        result.depthSha256 = sha256(uploads[2].source->decodedPixels);
         return Status::success();
     }
 
@@ -180,7 +189,7 @@ public:
 
     Status shutdown()
     {
-        std::array<Upload, 2> previous = mResources;
+        std::array<Upload, 3> previous = mResources;
         mResources = {};
         mDependencies = {};
         mResourceEpoch = 0;
@@ -188,7 +197,7 @@ public:
     }
 
 private:
-    Status destroy(std::array<Upload, 2>& resources)
+    Status destroy(std::array<Upload, 3>& resources)
     {
         Status first = Status::success();
         for (auto& resource : resources)
@@ -210,7 +219,7 @@ private:
     }
 
     Device& mDevice;
-    std::array<Upload, 2> mResources{};
+    std::array<Upload, 3> mResources{};
     ProductionWaterDependencies mDependencies;
     std::uint64_t mResourceEpoch = 0;
 };

@@ -6,15 +6,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
+import os
 import pathlib
+import struct
 import subprocess
 import sys
+import tempfile
 
 
-def run(command: list[str]) -> str:
+def run(command: list[str], environment: dict[str, str] | None = None) -> str:
     completed = subprocess.run(
         command, text=True, encoding="utf-8", errors="replace",
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        env=environment,
     )
     print(completed.stdout, end="")
     if completed.returncode:
@@ -57,6 +61,90 @@ def compare_coverage(
     return not failed
 
 
+def read_visible_reference(path: pathlib.Path) -> tuple[int, int, int, bytes, bytes]:
+    data = path.read_bytes()
+    if len(data) < 24 or data[:4] != b"GHIV":
+        raise RuntimeError("visible reference has an invalid header")
+    version, width, height, frame = struct.unpack_from("<IIIQ", data, 4)
+    size = width * height * 3
+    if version != 1 or not width or not height or len(data) != 24 + size * 2:
+        raise RuntimeError("visible reference has an invalid payload")
+    return width, height, frame, data[24:24 + size], data[24 + size:]
+
+
+def read_water_output(path: pathlib.Path) -> tuple[int, int, int, bytes, bytes]:
+    data = path.read_bytes()
+    if len(data) < 28 or data[:4] != b"GHIW":
+        raise RuntimeError("peer water output has an invalid header")
+    version, width, height, pixel_bytes, frame = struct.unpack_from(
+        "<IIIIQ", data, 4)
+    size = width * height * pixel_bytes
+    if version != 1 or not width or not height or pixel_bytes != 8 or \
+            len(data) != 28 + size * 2:
+        raise RuntimeError("peer water output has an invalid payload")
+    return width, height, frame, data[28:28 + size], data[28 + size:]
+
+
+def compare_visible_water(
+        reference_path: pathlib.Path, peer_path: pathlib.Path,
+        minimum_mask_iou: float, maximum_delta_mae: float) -> bool:
+    source_width, source_height, reference_frame, visible_before, visible_after = \
+        read_visible_reference(reference_path)
+    width, height, peer_frame, peer_before, peer_after = read_water_output(peer_path)
+    if reference_frame != peer_frame:
+        raise RuntimeError("visible reference and peer water output frames differ")
+    if source_width % width or source_height % height:
+        raise RuntimeError("visible reference cannot be evenly reduced to peer extent")
+    scale_x = source_width // width
+    scale_y = source_height // height
+    sample_count = scale_x * scale_y
+    visible_changed = 0
+    peer_changed = 0
+    intersection = 0
+    union = 0
+    error = 0.0
+    for y in range(height):
+        for x in range(width):
+            visible_delta = [0.0, 0.0, 0.0]
+            for canonical_y in range(y * scale_y, (y + 1) * scale_y):
+                source_y = source_height - 1 - canonical_y
+                offset = (source_y * source_width + x * scale_x) * 3
+                for source_x in range(scale_x):
+                    pixel = offset + source_x * 3
+                    for component in range(3):
+                        visible_delta[component] += (
+                            visible_after[pixel + component] -
+                            visible_before[pixel + component]) / 255.0
+            visible_delta = [value / sample_count for value in visible_delta]
+            peer_pixel = (y * width + x) * 8
+            before = struct.unpack_from("<4e", peer_before, peer_pixel)
+            after = struct.unpack_from("<4e", peer_after, peer_pixel)
+            peer_delta = [
+                max(0.0, min(1.0, after[component])) -
+                max(0.0, min(1.0, before[component]))
+                for component in range(3)]
+            visible_mask = max(map(abs, visible_delta)) >= 1.0 / 255.0
+            peer_mask = max(map(abs, peer_delta)) >= 1.0 / 1024.0
+            visible_changed += visible_mask
+            peer_changed += peer_mask
+            intersection += visible_mask and peer_mask
+            union += visible_mask or peer_mask
+            if visible_mask or peer_mask:
+                error += sum(abs(a - b) for a, b in zip(
+                    visible_delta, peer_delta))
+    if not visible_changed or not peer_changed or not union:
+        raise RuntimeError("visible-reference comparison has an empty water mask")
+    mask_iou = intersection / union
+    delta_mae = error / (union * 3)
+    print(
+        "visible-water-reference: "
+        f"frame={peer_frame} visible-modified={visible_changed} "
+        f"peer-modified={peer_changed} mask-iou={mask_iou:.6f} "
+        f"delta-mae={delta_mae:.6f} minimum-mask-iou={minimum_mask_iou} "
+        f"maximum-delta-mae={maximum_delta_mae}")
+    return mask_iou >= minimum_mask_iou and delta_mae <= maximum_delta_mae
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--packet", type=pathlib.Path, required=True)
@@ -66,6 +154,9 @@ def main() -> int:
     parser.add_argument("--adapter", type=int, default=0)
     parser.add_argument("--absolute-coverage-tolerance", type=int, default=256)
     parser.add_argument("--relative-coverage-tolerance", type=float, default=0.001)
+    parser.add_argument("--visible-reference", type=pathlib.Path)
+    parser.add_argument("--minimum-water-mask-iou", type=float, default=0.5)
+    parser.add_argument("--maximum-water-delta-mae", type=float, default=0.2)
     parser.add_argument("--no-validation", action="store_true")
     args = parser.parse_args()
 
@@ -81,6 +172,14 @@ def main() -> int:
         parser.error("--absolute-coverage-tolerance must not be negative")
     if not 0.0 <= args.relative_coverage_tolerance <= 1.0:
         parser.error("--relative-coverage-tolerance must be between 0 and 1")
+    if not 0.0 <= args.minimum_water_mask_iou <= 1.0:
+        parser.error("--minimum-water-mask-iou must be between 0 and 1")
+    if not 0.0 <= args.maximum_water_delta_mae <= 1.0:
+        parser.error("--maximum-water-delta-mae must be between 0 and 1")
+    if args.visible_reference is not None and args.environment is None:
+        parser.error("--visible-reference requires --environment")
+    if args.visible_reference is not None and not args.visible_reference.is_file():
+        parser.error(f"file not found: {args.visible_reference}")
 
     packet_hash = hashlib.sha256(args.packet.read_bytes()).hexdigest()
     common = [str(args.packet), "--adapter", str(args.adapter)]
@@ -88,11 +187,19 @@ def main() -> int:
     if args.environment is not None:
         environment_hash = hashlib.sha256(args.environment.read_bytes()).hexdigest()
         common.extend(["--environment", str(args.environment)])
-    gl_output = run([str(args.opengl), *common])
+    temporary = tempfile.TemporaryDirectory(prefix="ghi-water-")
+    temporary_path = pathlib.Path(temporary.name)
+    gl_water = temporary_path / "opengl.ghiw"
+    vk_water = temporary_path / "vulkan.ghiw"
+    gl_environment = os.environ.copy()
+    gl_environment["VULKANSTORM_GHI_WATER_OUTPUT"] = str(gl_water)
+    vk_environment = os.environ.copy()
+    vk_environment["VULKANSTORM_GHI_WATER_OUTPUT"] = str(vk_water)
+    gl_output = run([str(args.opengl), *common], gl_environment)
     vk_command = [str(args.vulkan), *common]
     if not args.no_validation:
         vk_command.append("--validation")
-    vk_output = run(vk_command)
+    vk_output = run(vk_command, vk_environment)
 
     if token(gl_output, "backend") != "OpenGL":
         raise RuntimeError("OpenGL replay identified the wrong backend")
@@ -175,6 +282,13 @@ def main() -> int:
         passed &= compare_coverage(
             "water-modified", gl_water_modified, vk_water_modified,
             args.absolute_coverage_tolerance, args.relative_coverage_tolerance)
+        if args.visible_reference is not None:
+            passed &= compare_visible_water(
+                args.visible_reference, gl_water,
+                args.minimum_water_mask_iou, args.maximum_water_delta_mae)
+            passed &= compare_visible_water(
+                args.visible_reference, vk_water,
+                args.minimum_water_mask_iou, args.maximum_water_delta_mae)
     if not passed:
         print("P0e1 production-frame peer comparison FAIL", file=sys.stderr)
         return 1

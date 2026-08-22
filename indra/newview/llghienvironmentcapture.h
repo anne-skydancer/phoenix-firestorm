@@ -33,7 +33,9 @@ public:
                       LLViewerTexture* next_normal_map,
                       bool normal_mip_filtering);
     void observeReflectionColor(LLRenderTarget& target);
+    void observeWaterDepth(LLRenderTarget& target);
     void observeWaterExclusionMask(LLRenderTarget& target);
+    void observeVisibleWaterResult();
     void endFrame();
 
 private:

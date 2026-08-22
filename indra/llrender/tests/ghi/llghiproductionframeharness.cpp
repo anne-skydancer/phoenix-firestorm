@@ -432,7 +432,32 @@ int main(int argc, char** argv)
                   << " reflection-sha256="
                   << waterResourceResult.reflectionSha256
                   << " exclusion-sha256="
-                  << waterResourceResult.exclusionSha256;
+                  << waterResourceResult.exclusionSha256
+                  << " depth-sha256="
+                  << waterResourceResult.depthSha256;
+        if (const char* output = std::getenv(
+                "VULKANSTORM_GHI_WATER_OUTPUT"))
+        {
+            std::ofstream stream(output, std::ios::binary | std::ios::trunc);
+            stream.write("GHIW", 4);
+            const std::array<std::uint32_t, 4> header{{
+                1, targetResult.width, targetResult.height, 8}};
+            stream.write(reinterpret_cast<const char*>(header.data()),
+                         sizeof(header));
+            stream.write(reinterpret_cast<const char*>(&waterResult.frameId),
+                         sizeof(waterResult.frameId));
+            stream.write(
+                reinterpret_cast<const char*>(waterResult.inputPixels.data()),
+                static_cast<std::streamsize>(waterResult.inputPixels.size()));
+            stream.write(
+                reinterpret_cast<const char*>(waterResult.colorPixels.data()),
+                static_cast<std::streamsize>(waterResult.colorPixels.size()));
+            if (!stream)
+            {
+                std::cerr << "could not write water output " << output << '\n';
+                return 9;
+            }
+        }
     }
     std::cout << " lighting-coverage=" << lightingResult.litNonClearPixels
               << " lighting-sha256=" << lightingResult.lightingSha256;

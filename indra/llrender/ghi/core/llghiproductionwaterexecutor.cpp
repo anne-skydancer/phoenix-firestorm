@@ -116,7 +116,8 @@ UniformData waterUniforms(const EnvironmentScenePacket& packet,
     const auto mvp = multiply(packet.projectionMatrix, modelView);
     std::copy(mvp.begin(), mvp.end(), data.begin());
     std::copy(modelView.begin(), modelView.end(), data.begin() + 16);
-    std::copy(packet.cameraOrigin.begin(), packet.cameraOrigin.end(),
+    std::copy(packet.water.clampedLightNormal.begin(),
+              packet.water.clampedLightNormal.end(),
               data.begin() + 32);
     data[35] = route;
     data[36] = packet.water.waveDirection1[0];
@@ -179,7 +180,8 @@ public:
             return invalid("production water shared targets are incomplete");
         if (dependencies.generation != targets.generation ||
             !dependencies.reflectionColorView ||
-            !dependencies.exclusionMaskView)
+            !dependencies.refractionColorView ||
+            !dependencies.exclusionMaskView || !dependencies.waterDepthView)
             return invalid("production water dependencies are incomplete or stale");
         if (!limits.maxDraws || !limits.maxVertices || !limits.maxIndices ||
             !limits.maxUploadBytes || !limits.maxTextureBytes)
@@ -215,6 +217,8 @@ public:
         if (distinctNormals) textures.push_back(std::move(nextNormal));
         if (!(status = uploadTextures(textures))) return status;
         const std::size_t nextTexture = distinctNormals ? 1 : 0;
+        const ImageViewHandle refractionView = underwater
+            ? dependencies.refractionColorView : targets.lightingView;
 
         std::vector<WaterSceneVertex> vertices(3);
         vertices.insert(vertices.end(), packet.waterVertices.begin(),
@@ -310,13 +314,13 @@ public:
                 {2, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
                  {}, 0, 0, textures[nextTexture].view, mNormalSampler},
                 {3, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
-                 {}, 0, 0, targets.lightingView, mClampSampler},
+                 {}, 0, 0, refractionView, mClampSampler},
                 {4, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
                  {}, 0, 0, dependencies.reflectionColorView, mClampSampler},
                 {5, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
                  {}, 0, 0, dependencies.exclusionMaskView, mClampSampler},
                 {6, 0, ShaderPackageDesc::BindingType::CombinedImageSampler,
-                 {}, 0, 0, targets.depthView, mClampSampler}};
+                 {}, 0, 0, dependencies.waterDepthView, mDepthSampler}};
             sets.push_back(mDevice.createBindingSet(desc, status));
         }
         if (!status) { cleanup(); return status; }
@@ -338,15 +342,6 @@ public:
             staging, indexBuffer, indexCopy);
         if (status) status = commands.copyBuffer(
             staging, uniformBuffer, uniformCopy);
-        if (status)
-        {
-            BufferImageCopyRegion region;
-            region.imageSubresource = {ImageAspect::Color, 0, 0, 1};
-            region.imageExtent = {targets.width, targets.height, 1};
-            const std::array<BufferImageCopyRegion, 1> copies{{region}};
-            status = commands.copyImageToBuffer(
-                targets.lightingImage, mInputReadback, copies);
-        }
         RenderingInfo renderingInfo;
         renderingInfo.semanticId = 0x5030453257415445ull;
         renderingInfo.width = targets.width;
@@ -369,7 +364,36 @@ public:
             indexBuffer, 0, IndexType::UInt32);
         if (status) status = commands.bindBindingSet(0, sets[0]);
         if (status) status = commands.drawIndexed({3, 1, 0, 0, 0});
+        if (rendering)
+        {
+            const Status ended = commands.endRendering();
+            rendering = false;
+            if (status && !ended) status = ended;
+        }
+        if (status)
+        {
+            BufferImageCopyRegion region;
+            region.imageSubresource = {ImageAspect::Color, 0, 0, 1};
+            region.imageExtent = {targets.width, targets.height, 1};
+            const std::array<BufferImageCopyRegion, 1> copies{{region}};
+            status = commands.copyImageToBuffer(
+                mOutputImage, mInputReadback, copies);
+        }
+        renderingInfo.colors[0].load = LoadOp::Load;
+        if (status)
+        {
+            status = commands.beginRendering(renderingInfo);
+            rendering = status.ok();
+        }
+        if (status) status = commands.setViewport(
+            {0, 0, static_cast<float>(targets.width),
+             static_cast<float>(targets.height), 0, 1});
+        if (status) status = commands.setScissor(
+            {0, 0, targets.width, targets.height});
         if (status) status = commands.bindPipeline(mWaterPipeline);
+        if (status) status = commands.bindVertexBuffer(0, vertexBuffer, 0);
+        if (status) status = commands.bindIndexBuffer(
+            indexBuffer, 0, IndexType::UInt32);
         for (std::size_t draw = 0;
              status && draw < packet.waterDraws.size(); ++draw)
         {
@@ -450,6 +474,8 @@ public:
             }
         }
         mResult.colorSha256 = sha256(pixels);
+        mResult.inputPixels = inputPixels;
+        mResult.colorPixels = pixels;
         for (std::size_t pixel = 0;
              pixel < static_cast<std::size_t>(mWidth) * mHeight; ++pixel)
         {
@@ -479,6 +505,7 @@ public:
         destroy(mWaterPipeline, first);
         destroy(mCopyPipeline, first);
         destroy(mNormalSampler, first);
+        destroy(mDepthSampler, first);
         destroy(mClampSampler, first);
         destroy(mShader, first);
         return first;
@@ -622,6 +649,9 @@ private:
         SamplerDesc normal;
         normal.addressU = normal.addressV = normal.addressW = AddressMode::Repeat;
         if (status) mNormalSampler = mDevice.createSampler(normal, status);
+        SamplerDesc depth = clamp;
+        depth.minFilter = depth.magFilter = depth.mipFilter = Filter::Nearest;
+        if (status) mDepthSampler = mDevice.createSampler(depth, status);
 
         auto makePipeline = [&]()
         {
@@ -664,6 +694,7 @@ private:
     PipelineHandle mWaterPipeline;
     SamplerHandle mClampSampler;
     SamplerHandle mNormalSampler;
+    SamplerHandle mDepthSampler;
     ImageHandle mOutputImage;
     ImageViewHandle mOutputView;
     BufferHandle mReadback;

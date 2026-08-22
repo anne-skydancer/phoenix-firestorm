@@ -138,7 +138,10 @@ void LLDrawPoolWater::beginPostDeferredPass(S32 pass)
 
         dst.flush();
         if (LLGHIEnvironmentCapture::active())
+        {
             LLGHIEnvironmentCapture::instance().observeReflectionColor(dst);
+            LLGHIEnvironmentCapture::instance().observeWaterDepth(dst);
+        }
     }
 }
 
@@ -319,6 +322,8 @@ void LLDrawPoolWater::renderPostDeferred(S32 pass)
     // That flag was not actually used anywhere in the shaders.
     // - Geenz 2025-02-11
     pushWaterPlanes(0);
+    if (LLGHIEnvironmentCapture::active())
+        LLGHIEnvironmentCapture::instance().observeVisibleWaterResult();
 
     // clean up
     gPipeline.unbindDeferredShader(*shader);

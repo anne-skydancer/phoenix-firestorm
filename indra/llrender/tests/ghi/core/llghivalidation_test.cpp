@@ -3390,6 +3390,13 @@ void LLGHIValidationObject::test<38>()
     exclusion.components = 1;
     exclusion.decodedPixels = {std::byte{255}};
     source.textures.push_back(std::move(exclusion));
+    MaterialTextureResource depth = source.textures.back();
+    depth.sourceIdentity[0] = std::byte{8};
+    depth.contentIdentity[0] = std::byte{24};
+    depth.components = 4;
+    depth.decodedPixels = {
+        std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+    source.textures.push_back(std::move(depth));
     source.sky.textures = {
         {EnvironmentTextureSemantic::Sun, 0},
         {EnvironmentTextureSemantic::Moon, 1},
@@ -3398,7 +3405,8 @@ void LLGHIValidationObject::test<38>()
     source.water.textures = {
         {EnvironmentTextureSemantic::WaterNormal, 4},
         {EnvironmentTextureSemantic::ReflectionColor, 5},
-        {EnvironmentTextureSemantic::WaterExclusionMask, 6}};
+        {EnvironmentTextureSemantic::WaterExclusionMask, 6},
+        {EnvironmentTextureSemantic::WaterDepth, 7}};
     source.skyVertices = {
         {{{-1.f, -1.f, 0.f}}, {{0.f, 0.f}}, {{1.f, 1.f, 1.f, 1.f}}},
         {{{ 1.f, -1.f, 0.f}}, {{1.f, 0.f}}, {{1.f, 1.f, 1.f, 1.f}}},
@@ -3451,14 +3459,17 @@ void LLGHIValidationObject::test<38>()
     Status status = resources.update(
         source, 9, ProductionWaterResourceLimits{}, resourceResult);
     ensure(status.message(), status.ok());
-    ensure("P0e2 water resources publish both GHI views",
+        ensure("P0e2 water resources publish all GHI views",
            resources.dependencies().reflectionColorView &&
-           resources.dependencies().exclusionMaskView);
+            resources.dependencies().refractionColorView &&
+            resources.dependencies().exclusionMaskView &&
+            resources.dependencies().waterDepthView);
     ensure_equals("P0e2 water resources publish the target generation",
                   resources.dependencies().generation, std::uint64_t{9});
     ensure("P0e2 water resources report content identities",
            !resourceResult.reflectionSha256.empty() &&
-           !resourceResult.exclusionSha256.empty());
+           !resourceResult.exclusionSha256.empty() &&
+           !resourceResult.depthSha256.empty());
     status = resources.update(
         source, 10, ProductionWaterResourceLimits{}, resourceResult);
     ensure("P0e2 water resources reject a stale resource epoch", !status);
@@ -3474,6 +3485,10 @@ void LLGHIValidationObject::test<38>()
            !validateEnvironmentScenePacket(invalid));
     invalid = source;
     invalid.water.textures.pop_back();
+        ensure("P0e2 v4 water requires captured depth content",
+            !validateEnvironmentScenePacket(invalid));
+        invalid = source;
+        invalid.water.textures.erase(invalid.water.textures.begin() + 2);
     ensure("P0e2 v3 water requires captured exclusion content",
            !validateEnvironmentScenePacket(invalid));
     invalid = source;

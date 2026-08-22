@@ -357,6 +357,15 @@ echo -e "       Logging to $LOG"
 
 if [ $TARGET_PLATFORM == "windows" ]
 then
+    CMAKE_EXECUTABLE="${VULKANSTORM_CMAKE:-$(command -v cmake)}"
+    if [ "$OSTYPE" = "cygwin" ] && [ -n "$VULKANSTORM_CMAKE" ] ; then
+        CMAKE_EXECUTABLE="$(cygpath -u "$VULKANSTORM_CMAKE")"
+    fi
+    if [ -z "$CMAKE_EXECUTABLE" ] || [ ! -x "$CMAKE_EXECUTABLE" ] ; then
+        echo "Standalone CMake was not found. Set VULKANSTORM_CMAKE to cmake.exe."
+        exit 1
+    fi
+
     if [ -z "${AUTOBUILD_VSVER}" ]
     then
         echo "AUTOBUILD_VSVER not set, this can lead to Autobuild picking a higher VS version than desired."
@@ -376,6 +385,8 @@ then
     eval "$("$AUTOBUILD_EXEC" source_environment)"
     # vsvars is needed for determing path to VS runtime redist files in Copy3rdPartyLibs.cmake
     load_vsvars
+    echo "Using standalone CMake: $CMAKE_EXECUTABLE"
+    "$CMAKE_EXECUTABLE" --version | head -n 1
 
     if [ -z "$LL_BUILD" ] ; then
         LL_BUILD_NAME="LL_BUILD_`echo "$BTYPE" | tr '[:lower:]' '[:upper:]'`FS"
@@ -670,7 +681,7 @@ if [ $WANTS_CONFIG -eq $TRUE ] ; then
         fi
     fi
 
-    cmake -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $SOLOUD $MESAZINK $KDU $GROK $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
+    "${CMAKE_EXECUTABLE:-cmake}" -G "$TARGET" $CMAKE_ARCH ../indra $CHANNEL ${GITHASH} $FMODSTUDIO $OPENAL $SOLOUD $MESAZINK $KDU $GROK $OPENSIM $SINGLEGRID $HAVOK $AVX_OPTIMIZATION $AVX2_OPTIMIZATION $TRACY_PROFILER $LTO $TESTBUILD $PACKAGE $VELOPACK \
           -DUSE_VULKAN_GHI:BOOL=ON \
           $UNATTENDED -DLL_TESTS:BOOL=OFF -DADDRESS_SIZE:STRING=$AUTOBUILD_ADDRSIZE -DCMAKE_BUILD_TYPE:STRING=$BTYPE $CACHE_OPT \
           $CRASH_REPORTING -DVIEWER_SYMBOL_FILE:STRING="${VIEWER_SYMBOL_FILE:-}" $LL_ARGS_PASSTHRU ${VSCODE_FLAGS:-} | tee "$LOG"

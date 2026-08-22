@@ -875,7 +875,7 @@ class Windows_x86_64_Manifest(ViewerManifest):
 
         self.fs_copy_windows_manifest( )
 
-    def nsi_file_commands(self, install=True):
+    def inno_file_commands(self):
         # <FS:Ansariel> Undo Github-Build stuff - I don't think we need this
         #def INSTDIR(path):
         #    # Note that '$INSTDIR' is purely textual here: we write
@@ -918,46 +918,20 @@ class Windows_x86_64_Manifest(ViewerManifest):
 
         #return '\n'.join(result)
 
-        def wpath(path):
-            if path.endswith('/') or path.endswith(os.path.sep):
-                path = path[:-1]
-            path = path.replace('/', '\\')
-            return path
+        def quote(value):
+            return value.replace('"', '""')
 
-        result = ""
+        result = []
         dest_files = [pair[1] for pair in self.file_list if pair[0] and os.path.isfile(pair[1]) and not pair[1].endswith(".pdb") ] #<FS:ND/> Don't include pdb files.
-        # sort deepest hierarchy first
-        dest_files.sort(key=lambda f: (f.count(os.path.sep), f), reverse=True)
-        out_path = None
+        dest_files.sort()
         for pkg_file in dest_files:
             rel_file = os.path.normpath(pkg_file.replace(self.get_dst_prefix()+os.path.sep,''))
-            installed_dir = wpath(os.path.join('$INSTDIR', os.path.dirname(rel_file)))
-            pkg_file = wpath(os.path.normpath(pkg_file))
-            if installed_dir != out_path:
-                if install:
-                    out_path = installed_dir
-                    result += 'SetOutPath ' + out_path + '\n'
-            if install:
-                result += 'File ' + pkg_file + '\n'
-            else:
-                result += 'Delete ' + wpath(os.path.join('$INSTDIR', rel_file)) + '\n'
+            destination = os.path.dirname(rel_file).replace('/', '\\')
+            destination = "{app}" if not destination else "{app}\\" + destination
+            result.append('Source: "%s"; DestDir: "%s"; Flags: ignoreversion' %
+                          (quote(os.path.normpath(pkg_file)), quote(destination)))
 
-        # at the end of a delete, just rmdir all the directories
-        if not install:
-            deleted_file_dirs = [os.path.dirname(pair[1].replace(self.get_dst_prefix()+os.path.sep,'')) for pair in self.file_list]
-            # find all ancestors so that we don't skip any dirs that happened to have no non-dir children
-            deleted_dirs = []
-            for d in deleted_file_dirs:
-                deleted_dirs.extend(path_ancestors(d))
-            # sort deepest hierarchy first
-            deleted_dirs.sort(key=lambda f: (f.count(os.path.sep), f), reverse=True)
-            prev = None
-            for d in deleted_dirs:
-                if d != prev:   # skip duplicates
-                    result += 'RMDir ' + wpath(os.path.join('$INSTDIR', os.path.normpath(d))) + '\n'
-                prev = d
-
-        return result
+        return '\n'.join(result)
         # </FS:Ansariel>
     def dl_url_from_channel(self):
         if self.channel_type() == 'release':
@@ -984,8 +958,7 @@ class Windows_x86_64_Manifest(ViewerManifest):
             self.velopack_package_finish()
             return
 
-        # NSIS packaging (legacy)
-        self.nsis_package_finish()
+        self.inno_package_finish()
 
     def velopack_package_finish(self):
         # packId determines install folder: %LocalAppData%\{packId}
@@ -1104,8 +1077,8 @@ class Windows_x86_64_Manifest(ViewerManifest):
         #self.set_github_output('velopack_releases', releases_dir)
         # </FS:TJ>
 
-    def nsis_package_finish(self):
-        """Package the viewer using NSIS installer (legacy)"""
+    def inno_package_finish(self):
+        """Package the viewer using Inno Setup."""
         # a standard map of strings for replacing in the templates
         substitution_strings = {
             'version' : '.'.join(self.args['version']),
@@ -1127,91 +1100,46 @@ class Windows_x86_64_Manifest(ViewerManifest):
         # </FS:ND>
         
         substitution_strings['installer_file'] = installer_file
-        substitution_strings['is64bit'] = (1 if (self.address_size == 64) else 0)
-        substitution_strings['isavx2'] = (1 if (self.fs_is_avx2()) else 0)
-        substitution_strings['is_opensim'] = self.fs_is_opensim() # <FS:Ansariel> FIRE-30446: Register hop-protocol for OS version only
-        substitution_strings['friendly_app_name'] = self.friendly_app_name() # <FS:Ansariel> FIRE-30446: Set FriendlyAppName for protocol registrations
-        substitution_strings['icon_suffix'] = ("_os" if (self.fs_is_opensim()) else "") # <FS:Ansariel> FIRE-24335: Use different icon for OpenSim version
+        substitution_strings['isavx2'] = '1' if self.fs_is_avx2() else '0'
+        substitution_strings['is_opensim'] = '1' if self.fs_is_opensim() else '0'
+        substitution_strings['friendly_app_name'] = self.friendly_app_name()
+        substitution_strings['icon_suffix'] = "_os" if self.fs_is_opensim() else ""
+        substitution_strings['source'] = self.get_src_prefix()
 
-        version_vars = """
-        !define INSTEXE "%(final_exe)s"
-        !define VERSION "%(version_short)s"
-        !define VERSION_LONG "%(version)s"
-        !define VERSION_DASHES "%(version_dashes)s"
-        !define VERSION_REGISTRY "%(version_registry)s"
-        !define VIEWER_EXE "%(final_exe)s"
-        """ % substitution_strings
-
-        if self.channel_type() == 'release':
-            substitution_strings['caption'] = CHANNEL_VENDOR_BASE
-        else:
-            substitution_strings['caption'] = self.app_name() + ' ${VERSION}'
-
-        inst_vars_template = """
-            OutFile "%(installer_file)s"
-            !define INSTNAME   "%(app_name_oneword)s"
-            !define SHORTCUT   "%(app_name)s"
-            !define DL_URL   "%(dl_url)s"
-            !define URLNAME   "secondlife"
-            !define IS64BIT   "%(is64bit)d"
-            !define ISAVX2   "%(isavx2)d"
-            !define ISOPENSIM   "%(is_opensim)d"
-            !define APPNAME   "%(friendly_app_name)s"
-            !define ICON_SUFFIX   "%(icon_suffix)s"
-            Caption "%(caption)s"
-            """
-
-        engage_registry="SetRegView 64"
-        program_files="!define MULTIUSER_USE_PROGRAMFILES64"
-
-        # Dump the installers/windows directory into the raw app image tree
-        # because NSIS needs those files. But don't use path() because we
-        # don't want them installed with the viewer - they're only for use by
-        # the installer itself.
-        # <FS:Ansariel> Undo Github-Build stuff - I don't think we need this
-        #shutil.copytree(os.path.join(self.get_src_prefix(), 'installers', 'windows'),
-        #                os.path.join(self.get_dst_prefix(), 'installers', 'windows'),
-        #                dirs_exist_ok=True)
-        # </FS:Ansariel>
-
-        tempfile = "firestorm_setup_tmp.nsi"
+        tempfile = "firestorm_setup_tmp.iss"
 
         self.fs_sign_win_binaries() # <FS:ND/> Sign files, step one. Sign compiled binaries
 
-        # the following replaces strings in the nsi template
-        # it also does python-style % substitution
-        self.replace_in("installers/windows/installer_template.nsi", tempfile, {
-                "%%VERSION%%":version_vars,
-                # The template references "%%SOURCE%%\installers\windows\...".
-                # Now that we've copied that directory into the app image
-                # tree, we can just replace %%SOURCE%% with '.'.
-                #"%%SOURCE%%":'.', <FS:Ansariel> Undo Github-Build stuff
-                "%%SOURCE%%":self.get_src_prefix(),
-                "%%INST_VARS%%":inst_vars_template % substitution_strings,
-                "%%INSTALL_FILES%%":self.nsi_file_commands(True),
-                "%%PROGRAMFILES%%":program_files,
-                "%%ENGAGEREGISTRY%%":engage_registry,
-                "%%DELETE_FILES%%":self.nsi_file_commands(False)})
+        self.replace_in("installers/windows/installer_template.iss", tempfile, {
+                "%%APP_NAME%%":substitution_strings['app_name'],
+                "%%APP_NAME_ONEWORD%%":substitution_strings['app_name_oneword'],
+                "%%FRIENDLY_APP_NAME%%":substitution_strings['friendly_app_name'],
+                "%%VERSION%%":substitution_strings['version'],
+                "%%FINAL_EXE%%":substitution_strings['final_exe'],
+                "%%INSTALLER_BASENAME%%":os.path.splitext(installer_file)[0],
+                "%%OUTPUT_DIR%%":self.get_dst_prefix(),
+                "%%SOURCE%%":substitution_strings['source'],
+                "%%ICON_SUFFIX%%":substitution_strings['icon_suffix'],
+                "%%IS_AVX2%%":substitution_strings['isavx2'],
+                "%%IS_OPENSIM%%":substitution_strings['is_opensim'],
+                "%%DOWNLOAD_URL%%":substitution_strings['dl_url'],
+                "%%INSTALL_FILES%%":self.inno_file_commands()})
 
-        # <FS:Ansariel> Undo Github-Build stuff
-        # Check two paths, one for Program Files, and one for Program Files (x86).
-        # Yay 64bit windows.
-        nsis_path = "makensis.exe"
-        for program_files in '${programfiles}', '${programfiles(x86)}':
-            for nesis_path in 'NSIS', 'NSIS\\Unicode':
-                possible_path = os.path.expandvars(f"{program_files}\\{nesis_path}\\makensis.exe")
-                if os.path.exists(possible_path):
-                    nsis_path = possible_path
-                    break
+        inno_compiler = os.getenv('INNO_SETUP_COMPILER')
+        if not inno_compiler:
+            candidates = [
+                os.path.expandvars(r'%ProgramFiles%\Inno Setup 7\ISCC.exe'),
+                os.path.expandvars(r'%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe'),
+            ]
+            inno_compiler = next((path for path in candidates if os.path.isfile(path)), 'ISCC.exe')
 
-        self.run_command([possible_path, '/V2', self.dst_path_of(tempfile)])
+        self.run_command([inno_compiler, '/Qp', self.dst_path_of(tempfile)])
 
         self.fs_sign_win_installer(substitution_strings) # <FS:ND/> Sign files, step two. Sign installer.
         self.fs_save_windows_symbols()
 
         self.created_path(self.dst_path_of(installer_file))
         self.package_file = installer_file
-        # </FS:Ansariel>
 
     def sign(self, exe):
         sign_py = os.environ.get('SIGN', r'C:\buildscripts\code-signing\sign.py')
